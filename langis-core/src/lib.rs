@@ -113,7 +113,11 @@ pub enum Event {
     Conversations(Vec<Conversation>),
     /// Profile or group picture of a conversation, replacing any earlier one.
     Avatar { conversation: ConversationId, avatar: Arc<Avatar> },
+    /// The complete stored history of a conversation, answering [`Command::LoadHistory`].
     History { conversation: ConversationId, messages: Vec<ChatMessage> },
+    /// A conversation's newest stored message, so it can be sorted and previewed before its
+    /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
+    Latest(ChatMessage),
     Message(ChatMessage),
     Error(String),
 }

@@ -378,7 +378,7 @@ async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events)
         // Newest first; skip receipts and the like.
         for content in contents.flatten() {
             if let Some(message) = to_chat_message(manager, &mut names, id.clone(), &content).await {
-                let _ = events.send(Event::History { conversation: id, messages: vec![message] });
+                let _ = events.send(Event::Latest(message));
                 break;
             }
         }

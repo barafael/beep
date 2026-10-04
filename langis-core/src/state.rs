@@ -169,6 +169,17 @@ impl ChatState {
                     }
                 }
             }
+            Event::Latest(message) => {
+                let id = message.conversation.clone();
+                let history = self.history.entry(id.clone()).or_default();
+                if insert(history, message).is_some() {
+                    self.sort_conversations();
+                    update.conversations = true;
+                    if self.selected.as_ref() == Some(&id) {
+                        update.messages = MessagesUpdate::Reset;
+                    }
+                }
+            }
             Event::Message(message) => {
                 let id = message.conversation.clone();
                 let outgoing = message.outgoing;
@@ -449,6 +460,18 @@ mod tests {
         state.apply(Event::History { conversation: id.clone(), messages: Vec::new() });
         assert!(state.select(&id).is_none());
         assert!(state.select(&ConversationId("nope".into())).is_none());
+    }
+
+    #[test]
+    fn latest_message_previews_without_counting_as_loaded() {
+        let mut state = state();
+        let id = ConversationId("a".into());
+        state.apply(Event::Latest(message("a", "Alice", 5, false)));
+        let view = state.conversations().find(|c| c.conversation.id == id).unwrap();
+        assert_eq!(view.last_message.unwrap().timestamp, 5);
+        assert_eq!(view.unread, 0);
+        // Opening it still fetches the full history.
+        assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
     }
 
     #[test]
