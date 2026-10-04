@@ -8,7 +8,11 @@ use std::{
 };
 
 use crate::settings::NotificationContent;
-use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, apply_reaction, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, Command,
+    Conversation, ConversationId, Event, HistoryTransfer, Password, Picture, QrMatrix, Quote,
+    apply_reaction,
+};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -18,7 +22,10 @@ pub enum Screen {
     #[default]
     Connecting,
     /// See [`Event::PasswordRequired`].
-    Password { new: bool, error: Option<String> },
+    Password {
+        new: bool,
+        error: Option<String>,
+    },
     Link(QrMatrix),
     Chats,
 }
@@ -86,7 +93,10 @@ impl ConversationView<'_> {
         };
         let body = match message.body.lines().next() {
             Some(line) => line.to_string(),
-            None => message.attachments.first().map_or_else(String::new, |a| describe_kind(a.kind).to_string()),
+            None => message
+                .attachments
+                .first()
+                .map_or_else(String::new, |a| describe_kind(a.kind).to_string()),
         };
         if message.outgoing {
             format!("You: {body}")
@@ -101,7 +111,11 @@ impl ConversationView<'_> {
 pub enum Notice {
     /// `conversation` is `None` for a summary, which just opens the app. A newer notice for
     /// the same conversation replaces the older one.
-    Show { conversation: Option<ConversationId>, title: String, body: String },
+    Show {
+        conversation: Option<ConversationId>,
+        title: String,
+        body: String,
+    },
     /// The conversation was read; its notification is stale.
     Withdraw(ConversationId),
 }
@@ -148,7 +162,10 @@ pub fn describe_kind(kind: AttachmentKind) -> &'static str {
 
 /// Whether an attachment is fetched as soon as its message is shown.
 pub fn shown_inline(kind: AttachmentKind) -> bool {
-    matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::LongText)
+    matches!(
+        kind,
+        AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::LongText
+    )
 }
 
 #[derive(Default)]
@@ -242,7 +259,12 @@ impl ChatState {
                 self.saves.insert(id, state);
                 update.rows = true;
             }
-            Event::Reaction { conversation, target, reaction, remove } => {
+            Event::Reaction {
+                conversation,
+                target,
+                reaction,
+                remove,
+            } => {
                 // A reaction to a message not loaded yet is folded in when its history loads.
                 if let Some(history) = self.history.get_mut(&conversation)
                     && apply_reaction(history, &target, reaction, remove)
@@ -251,7 +273,10 @@ impl ChatState {
                     update.rows = true;
                 }
             }
-            Event::Avatar { conversation, avatar } => {
+            Event::Avatar {
+                conversation,
+                avatar,
+            } => {
                 self.avatars.insert(conversation, avatar);
                 update.conversations = true;
             }
@@ -333,7 +358,9 @@ impl ChatState {
         self.selected = Some(id.clone());
         // Picking a search result ends the search; the chosen chat stays on the list.
         self.filter.clear();
-        self.notifications.pending.push(Notice::Withdraw(id.clone()));
+        self.notifications
+            .pending
+            .push(Notice::Withdraw(id.clone()));
         (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
     }
 
@@ -345,8 +372,14 @@ impl ChatState {
             return None;
         }
         self.unread.remove(id);
-        self.notifications.pending.push(Notice::Withdraw(id.clone()));
-        Some(Command::Send { conversation: id.clone(), body: body.to_string(), quote: None })
+        self.notifications
+            .pending
+            .push(Notice::Withdraw(id.clone()));
+        Some(Command::Send {
+            conversation: id.clone(),
+            body: body.to_string(),
+            quote: None,
+        })
     }
 
     pub fn set_notifications(&mut self, enabled: bool, content: NotificationContent) {
@@ -359,7 +392,9 @@ impl ChatState {
     pub fn set_window_focused(&mut self, focused: bool) {
         self.notifications.window_focused = focused;
         if let (true, Some(id)) = (focused, &self.selected) {
-            self.notifications.pending.push(Notice::Withdraw(id.clone()));
+            self.notifications
+                .pending
+                .push(Notice::Withdraw(id.clone()));
         }
     }
 
@@ -381,7 +416,11 @@ impl ChatState {
             *n.caught_up.entry(id.clone()).or_default() += 1;
             return;
         }
-        let group = self.conversations.iter().find(|c| &c.id == id).filter(|c| c.is_group);
+        let group = self
+            .conversations
+            .iter()
+            .find(|c| &c.id == id)
+            .filter(|c| c.is_group);
         let name = match group {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
@@ -391,7 +430,11 @@ impl ChatState {
             NotificationContent::NameOnly => (name, "New message".into()),
             NotificationContent::Nothing => ("langis".into(), "New message".into()),
         };
-        n.pending.push(Notice::Show { conversation: Some(id.clone()), title, body });
+        n.pending.push(Notice::Show {
+            conversation: Some(id.clone()),
+            title,
+            body,
+        });
     }
 
     fn announce_caught_up(&mut self) {
@@ -406,13 +449,19 @@ impl ChatState {
             (_, 1) => format!("{messages} new messages"),
             _ => format!("{messages} new messages in {chats} chats"),
         };
-        n.pending.push(Notice::Show { conversation: None, title: "langis".into(), body });
+        n.pending.push(Notice::Show {
+            conversation: None,
+            title: "langis".into(),
+            body,
+        });
     }
 
     /// Validates the password form. On success returns the unlock command and shows the
     /// connecting screen; otherwise puts the reason on the password screen.
     pub fn unlock(&mut self, password: &str, confirmation: &str) -> Option<Command> {
-        let Screen::Password { new, error } = &mut self.screen else { return None };
+        let Screen::Password { new, error } = &mut self.screen else {
+            return None;
+        };
         let problem = if password.is_empty() {
             Some("Enter a password.".to_string())
         } else if *new && password.chars().count() < MIN_PASSWORD_LEN {
@@ -442,7 +491,11 @@ impl ChatState {
             return None;
         }
         let conversation = self.selected.clone()?;
-        Some(Command::Send { conversation, body: text.trim().to_string(), quote: self.replying.take() })
+        Some(Command::Send {
+            conversation,
+            body: text.trim().to_string(),
+            quote: self.replying.take(),
+        })
     }
 
     /// Reacts to the `index`th message of [`ChatState::messages`] with `emoji`; reacting with
@@ -505,11 +558,18 @@ impl ChatState {
     /// Asks for an inline attachment of a message being shown, unless it is already there or
     /// on its way. After a failure, asking again retries.
     pub fn fetch_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
-        if matches!(self.attachments.get(id), Some(AttachmentState::Loading | AttachmentState::Ready(_))) {
+        if matches!(
+            self.attachments.get(id),
+            Some(AttachmentState::Loading | AttachmentState::Ready(_))
+        ) {
             return None;
         }
-        let attachment = self.find_attachment(id).filter(|a| shown_inline(a.kind))?.clone();
-        self.attachments.insert(id.clone(), AttachmentState::Loading);
+        let attachment = self
+            .find_attachment(id)
+            .filter(|a| shown_inline(a.kind))?
+            .clone();
+        self.attachments
+            .insert(id.clone(), AttachmentState::Loading);
         Some(Command::FetchAttachment(attachment))
     }
 
@@ -518,14 +578,21 @@ impl ChatState {
         if matches!(self.saves.get(id), Some(SaveState::Saving)) {
             return None;
         }
-        let attachment = self.find_attachment(id).filter(|a| a.kind != AttachmentKind::ViewOnce)?.clone();
+        let attachment = self
+            .find_attachment(id)
+            .filter(|a| a.kind != AttachmentKind::ViewOnce)?
+            .clone();
         self.saves.insert(id.clone(), SaveState::Saving);
         Some(Command::SaveAttachment(attachment))
     }
 
     /// Only attachments of the selected conversation can be asked for.
     fn find_attachment(&self, id: &AttachmentId) -> Option<&Attachment> {
-        self.history.get(self.selected.as_ref()?)?.iter().flat_map(|m| &m.attachments).find(|a| &a.id == id)
+        self.history
+            .get(self.selected.as_ref()?)?
+            .iter()
+            .flat_map(|m| &m.attachments)
+            .find(|a| &a.id == id)
     }
 
     /// While waiting for the phone, gives up on the history transfer.
@@ -584,7 +651,10 @@ impl ChatState {
     /// never written to, so a new chat can be started. Empty shows the usual list again.
     pub fn search(&mut self, text: &str) -> Update {
         self.filter = text.trim().to_owned();
-        Update { conversations: true, ..Update::default() }
+        Update {
+            conversations: true,
+            ..Update::default()
+        }
     }
 
     pub fn searching(&self) -> bool {
@@ -621,7 +691,10 @@ impl ChatState {
 
     /// The fetched full text of a long message.
     fn full_text(&self, message: &ChatMessage) -> Option<&str> {
-        let long = message.attachments.iter().find(|a| a.kind == AttachmentKind::LongText)?;
+        let long = message
+            .attachments
+            .iter()
+            .find(|a| a.kind == AttachmentKind::LongText)?;
         match self.attachments.get(&long.id)? {
             AttachmentState::Ready(AttachmentContent::Text(text)) => Some(text),
             _ => None,
@@ -699,7 +772,11 @@ pub fn format_time(timestamp: u64) -> String {
         return String::new();
     };
     let time = time.to_zoned(jiff::tz::TimeZone::system());
-    let format = if time.date() == jiff::Zoned::now().date() { "%H:%M" } else { "%b %e, %H:%M" };
+    let format = if time.date() == jiff::Zoned::now().date() {
+        "%H:%M"
+    } else {
+        "%b %e, %H:%M"
+    };
     time.strftime(format).to_string()
 }
 
@@ -723,7 +800,7 @@ mod tests {
             body: format!("{sender} at {timestamp}\nsecond line"),
             timestamp,
             outgoing,
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -751,9 +828,15 @@ mod tests {
         notices
             .iter()
             .filter_map(|n| match n {
-                Notice::Show { conversation, title, body } => {
-                    Some((conversation.as_ref().map(|c| c.0.as_str()), title.as_str(), body.as_str()))
-                }
+                Notice::Show {
+                    conversation,
+                    title,
+                    body,
+                } => Some((
+                    conversation.as_ref().map(|c| c.0.as_str()),
+                    title.as_str(),
+                    body.as_str(),
+                )),
                 Notice::Withdraw(_) => None,
             })
             .collect()
@@ -763,19 +846,32 @@ mod tests {
     fn incoming_messages_notify_unless_their_chat_is_in_front() {
         let mut state = notifying();
         state.apply(Event::Message(message("a", "Alice", 1, false)));
-        assert_eq!(shown(&state.take_notices()), [(Some("a"), "Alice", "Alice at 1\nsecond line")]);
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(Some("a"), "Alice", "Alice at 1\nsecond line")]
+        );
 
         state.select(&ConversationId("a".into()));
         state.set_window_focused(true);
         state.take_notices();
         state.apply(Event::Message(message("a", "Alice", 2, false)));
-        assert!(shown(&state.take_notices()).is_empty(), "open chat in a focused window");
+        assert!(
+            shown(&state.take_notices()).is_empty(),
+            "open chat in a focused window"
+        );
         state.apply(Event::Message(message("g", "Carol", 3, false)));
-        assert_eq!(shown(&state.take_notices()), [(Some("g"), "Carol in g", "Carol at 3\nsecond line")]);
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(Some("g"), "Carol in g", "Carol at 3\nsecond line")]
+        );
 
         state.set_window_focused(false);
         state.apply(Event::Message(message("a", "Alice", 4, false)));
-        assert_eq!(shown(&state.take_notices()).len(), 1, "open chat, but window in the background");
+        assert_eq!(
+            shown(&state.take_notices()).len(),
+            1,
+            "open chat, but window in the background"
+        );
     }
 
     #[test]
@@ -801,7 +897,10 @@ mod tests {
         }
         assert!(state.take_notices().is_empty());
         state.apply(Event::Synced);
-        assert_eq!(shown(&state.take_notices()), [(None, "langis", "3 new messages in 2 chats")]);
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(None, "langis", "3 new messages in 2 chats")]
+        );
         state.apply(Event::Synced);
         assert!(state.take_notices().is_empty());
     }
@@ -811,17 +910,29 @@ mod tests {
         let mut state = notifying();
         state.set_notifications(true, NotificationContent::NameOnly);
         state.apply(Event::Message(message("a", "Alice", 1, false)));
-        assert_eq!(shown(&state.take_notices()), [(Some("a"), "Alice", "New message")]);
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(Some("a"), "Alice", "New message")]
+        );
         state.set_notifications(true, NotificationContent::Nothing);
         state.apply(Event::Message(message("a", "Alice", 2, false)));
-        assert_eq!(shown(&state.take_notices()), [(Some("a"), "langis", "New message")]);
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(Some("a"), "langis", "New message")]
+        );
     }
 
     #[test]
     fn attachment_only_messages_say_what_they_are() {
         let mut state = notifying();
-        state.apply(Event::Message(ChatMessage { body: String::new(), ..with_attachment("a", 9, "p", AttachmentKind::Image) }));
-        assert_eq!(shown(&state.take_notices()), [(Some("a"), "Alice", "📷 Photo")]);
+        state.apply(Event::Message(ChatMessage {
+            body: String::new(),
+            ..with_attachment("a", 9, "p", AttachmentKind::Image)
+        }));
+        assert_eq!(
+            shown(&state.take_notices()),
+            [(Some("a"), "Alice", "📷 Photo")]
+        );
     }
 
     #[test]
@@ -831,9 +942,18 @@ mod tests {
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         state.take_notices();
         let reply = state.reply(&a, " thanks ");
-        assert!(matches!(reply, Some(Command::Send { conversation, body, quote: None }) if conversation == a && body == "thanks"));
+        assert!(
+            matches!(reply, Some(Command::Send { conversation, body, quote: None }) if conversation == a && body == "thanks")
+        );
         assert_eq!(state.take_notices(), [Notice::Withdraw(a.clone())]);
-        assert_eq!(state.conversations().find(|c| c.conversation.id == a).unwrap().unread, 0);
+        assert_eq!(
+            state
+                .conversations()
+                .find(|c| c.conversation.id == a)
+                .unwrap()
+                .unread,
+            0
+        );
         assert!(state.reply(&a, "  ").is_none());
         assert!(state.reply(&ConversationId("nope".into()), "hi").is_none());
         state.select(&a);
@@ -869,7 +989,10 @@ mod tests {
         );
         // Not loaded yet (in flight, or the load failed): asking again retries.
         assert!(state.select(&id).is_some());
-        state.apply(Event::History { conversation: id.clone(), messages: Vec::new() });
+        state.apply(Event::History {
+            conversation: id.clone(),
+            messages: Vec::new(),
+        });
         assert!(state.select(&id).is_none());
         assert!(state.select(&ConversationId("nope".into())).is_none());
     }
@@ -879,14 +1002,22 @@ mod tests {
         let mut state = state();
         let id = ConversationId("a".into());
         state.apply(Event::Latest(message("a", "Alice", 5, false)));
-        let view = state.conversations().find(|c| c.conversation.id == id).unwrap();
+        let view = state
+            .conversations()
+            .find(|c| c.conversation.id == id)
+            .unwrap();
         assert_eq!(view.last_message.unwrap().timestamp, 5);
         assert_eq!(view.unread, 0);
         // Opening it still fetches the full history.
         assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
     }
 
-    fn with_attachment(conversation: &str, timestamp: u64, id: &str, kind: AttachmentKind) -> ChatMessage {
+    fn with_attachment(
+        conversation: &str,
+        timestamp: u64,
+        id: &str,
+        kind: AttachmentKind,
+    ) -> ChatMessage {
         let attachment = Attachment {
             id: AttachmentId(id.into()),
             kind,
@@ -897,59 +1028,133 @@ mod tests {
             height: 0,
             pointer: Arc::from(Vec::new()),
         };
-        ChatMessage { attachments: vec![attachment], ..message(conversation, "Alice", timestamp, false) }
+        ChatMessage {
+            attachments: vec![attachment],
+            ..message(conversation, "Alice", timestamp, false)
+        }
     }
 
     #[test]
     fn attachments_are_fetched_once_and_only_for_the_selected_chat() {
         let mut state = state();
         let photo = AttachmentId("photo".into());
-        state.apply(Event::Message(with_attachment("a", 1, "photo", AttachmentKind::Image)));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            1,
+            "photo",
+            AttachmentKind::Image,
+        )));
         assert!(state.fetch_attachment(&photo).is_none(), "not selected");
         state.select(&ConversationId("a".into()));
-        assert!(matches!(state.fetch_attachment(&photo), Some(Command::FetchAttachment(a)) if a.id == photo));
+        assert!(
+            matches!(state.fetch_attachment(&photo), Some(Command::FetchAttachment(a)) if a.id == photo)
+        );
         assert!(state.fetch_attachment(&photo).is_none(), "already asked");
-        let update = state.apply(Event::Attachment { id: photo.clone(), content: Err("gone".into()) });
+        let update = state.apply(Event::Attachment {
+            id: photo.clone(),
+            content: Err("gone".into()),
+        });
         assert!(update.rows);
-        assert_eq!(state.attachment(&photo), Some(&AttachmentState::Failed("gone".into())));
+        assert_eq!(
+            state.attachment(&photo),
+            Some(&AttachmentState::Failed("gone".into()))
+        );
     }
 
     #[test]
     fn long_text_replaces_the_body_once_fetched() {
         let mut state = state();
-        state.apply(Event::Message(with_attachment("a", 1, "long", AttachmentKind::LongText)));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            1,
+            "long",
+            AttachmentKind::LongText,
+        )));
         state.select(&ConversationId("a".into()));
         assert_ne!(state.messages().next().unwrap().body, "the whole story");
-        state.apply(Event::Attachment { id: AttachmentId("long".into()), content: Ok(AttachmentContent::Text("the whole story".into())) });
+        state.apply(Event::Attachment {
+            id: AttachmentId("long".into()),
+            content: Ok(AttachmentContent::Text("the whole story".into())),
+        });
         assert_eq!(state.messages().next().unwrap().body, "the whole story");
     }
 
     #[test]
     fn view_once_media_is_not_saved() {
         let mut state = state();
-        state.apply(Event::Message(with_attachment("a", 1, "once", AttachmentKind::ViewOnce)));
-        state.apply(Event::Message(with_attachment("a", 2, "file", AttachmentKind::File)));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            1,
+            "once",
+            AttachmentKind::ViewOnce,
+        )));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            2,
+            "file",
+            AttachmentKind::File,
+        )));
         state.select(&ConversationId("a".into()));
-        assert!(state.save_attachment(&AttachmentId("once".into())).is_none());
-        assert!(state.save_attachment(&AttachmentId("file".into())).is_some());
-        assert!(state.save_attachment(&AttachmentId("file".into())).is_none(), "already saving");
+        assert!(
+            state
+                .save_attachment(&AttachmentId("once".into()))
+                .is_none()
+        );
+        assert!(
+            state
+                .save_attachment(&AttachmentId("file".into()))
+                .is_some()
+        );
+        assert!(
+            state
+                .save_attachment(&AttachmentId("file".into()))
+                .is_none(),
+            "already saving"
+        );
     }
 
     #[test]
     fn saving_keeps_the_shown_picture_and_failures_can_be_retried() {
         let mut state = state();
         let photo = AttachmentId("photo".into());
-        state.apply(Event::Message(with_attachment("a", 1, "photo", AttachmentKind::Image)));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            1,
+            "photo",
+            AttachmentKind::Image,
+        )));
         state.select(&ConversationId("a".into()));
         assert!(state.fetch_attachment(&photo).is_some());
-        state.apply(Event::Attachment { id: photo.clone(), content: Err("offline".into()) });
-        assert!(state.fetch_attachment(&photo).is_some(), "retry after failure");
-        let picture = AttachmentContent::Picture(Arc::new(Picture { width: 1, height: 1, rgba: vec![0; 4] }));
-        state.apply(Event::Attachment { id: photo.clone(), content: Ok(picture.clone()) });
+        state.apply(Event::Attachment {
+            id: photo.clone(),
+            content: Err("offline".into()),
+        });
+        assert!(
+            state.fetch_attachment(&photo).is_some(),
+            "retry after failure"
+        );
+        let picture = AttachmentContent::Picture(Arc::new(Picture {
+            width: 1,
+            height: 1,
+            rgba: vec![0; 4],
+        }));
+        state.apply(Event::Attachment {
+            id: photo.clone(),
+            content: Ok(picture.clone()),
+        });
         assert!(state.save_attachment(&photo).is_some());
-        state.apply(Event::AttachmentSaved { id: photo.clone(), path: Ok("/tmp/photo.jpg".into()) });
-        assert_eq!(state.attachment(&photo), Some(&AttachmentState::Ready(picture)));
-        assert_eq!(state.saved(&photo), Some(&SaveState::Saved("/tmp/photo.jpg".into())));
+        state.apply(Event::AttachmentSaved {
+            id: photo.clone(),
+            path: Ok("/tmp/photo.jpg".into()),
+        });
+        assert_eq!(
+            state.attachment(&photo),
+            Some(&AttachmentState::Ready(picture))
+        );
+        assert_eq!(
+            state.saved(&photo),
+            Some(&SaveState::Saved("/tmp/photo.jpg".into()))
+        );
         assert!(state.fetch_attachment(&photo).is_none(), "already shown");
     }
 
@@ -959,11 +1164,17 @@ mod tests {
         // "a" is a contact without messages, so it isn't listed until searched for.
         assert!(state.conversations().all(|c| c.conversation.id.0 != "a"));
         state.search("A");
-        let found: Vec<_> = state.conversations().map(|c| c.conversation.id.0.clone()).collect();
+        let found: Vec<_> = state
+            .conversations()
+            .map(|c| c.conversation.id.0.clone())
+            .collect();
         assert_eq!(found, ["a"]);
         state.select(&ConversationId("a".into()));
         assert!(!state.searching());
-        assert!(state.conversations().any(|c| c.conversation.id.0 == "a"), "selected stays listed");
+        assert!(
+            state.conversations().any(|c| c.conversation.id.0 == "a"),
+            "selected stays listed"
+        );
     }
 
     #[test]
@@ -974,7 +1185,14 @@ mod tests {
         state.select(&ConversationId("a".into()));
         state.reply_to(0);
         let quote = state.replying().unwrap().clone();
-        assert_eq!((quote.author.as_str(), quote.author_id.as_str(), quote.timestamp), ("Alice", "alice", 7));
+        assert_eq!(
+            (
+                quote.author.as_str(),
+                quote.author_id.as_str(),
+                quote.timestamp
+            ),
+            ("Alice", "alice", 7)
+        );
         let sent = state.compose("sure");
         assert!(matches!(sent, Some(Command::Send { quote: Some(q), .. }) if q == quote));
         assert!(state.replying().is_none(), "sending uses it up");
@@ -985,7 +1203,12 @@ mod tests {
     }
 
     fn reaction(emoji: &str, sender: &str, outgoing: bool) -> crate::Reaction {
-        crate::Reaction { emoji: emoji.into(), sender_id: sender.into(), sender: sender.into(), outgoing }
+        crate::Reaction {
+            emoji: emoji.into(),
+            sender_id: sender.into(),
+            sender: sender.into(),
+            outgoing,
+        }
     }
 
     #[test]
@@ -995,17 +1218,40 @@ mod tests {
         state.select(&ConversationId("a".into()));
         let target = state.messages().next().unwrap().message.reference();
         let react = |state: &mut ChatState, r, remove| {
-            state.apply(Event::Reaction { conversation: ConversationId("a".into()), target: target.clone(), reaction: r, remove })
+            state.apply(Event::Reaction {
+                conversation: ConversationId("a".into()),
+                target: target.clone(),
+                reaction: r,
+                remove,
+            })
         };
         assert!(react(&mut state, reaction("👍", "bob", false), false).rows);
         react(&mut state, reaction("❤️", "bob", false), false);
         react(&mut state, reaction("😂", "me", true), false);
-        let emojis: Vec<_> = state.messages().next().unwrap().message.reactions.iter().map(|r| r.emoji.clone()).collect();
-        assert_eq!(emojis, ["❤️", "😂"], "Bob's second reaction replaced his first");
+        let emojis: Vec<_> = state
+            .messages()
+            .next()
+            .unwrap()
+            .message
+            .reactions
+            .iter()
+            .map(|r| r.emoji.clone())
+            .collect();
+        assert_eq!(
+            emojis,
+            ["❤️", "😂"],
+            "Bob's second reaction replaced his first"
+        );
 
         // Reacting with our current emoji takes it back; another one replaces it.
-        assert!(matches!(state.react(0, "😂"), Some(Command::React { remove: true, .. })));
-        assert!(matches!(state.react(0, "👍"), Some(Command::React { remove: false, .. })));
+        assert!(matches!(
+            state.react(0, "😂"),
+            Some(Command::React { remove: true, .. })
+        ));
+        assert!(matches!(
+            state.react(0, "👍"),
+            Some(Command::React { remove: false, .. })
+        ));
         react(&mut state, reaction("😂", "me", true), true);
         assert_eq!(state.messages().next().unwrap().message.reactions.len(), 1);
     }
@@ -1023,7 +1269,9 @@ mod tests {
         assert!(state.skip_history().is_none());
         state.apply(Event::HistoryTransfer(HistoryTransfer::Waiting));
         assert!(matches!(state.skip_history(), Some(Command::SkipHistory)));
-        state.apply(Event::HistoryTransfer(HistoryTransfer::Importing { messages: 3 }));
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Importing {
+            messages: 3,
+        }));
         assert!(state.skip_history().is_none());
         state.apply(Event::HistoryTransfer(HistoryTransfer::Finished));
         assert_eq!(state.transfer(), None);
@@ -1078,14 +1326,20 @@ mod tests {
         let mut renamed = conversation("a", false);
         renamed.title = "Alice".into();
         state.apply(Event::Conversations(vec![conversation("n", true), renamed]));
-        let titles: Vec<_> = state.conversations().map(|c| c.conversation.title.as_str()).collect();
+        let titles: Vec<_> = state
+            .conversations()
+            .map(|c| c.conversation.title.as_str())
+            .collect();
         assert_eq!(titles, ["Alice", "g", "n"]);
     }
 
     #[test]
     fn list_holds_groups_and_active_chats_names_before_numbers() {
         let mut state = ChatState::default();
-        let titled = |id: &str, title: &str, is_group| Conversation { title: title.into(), ..conversation(id, is_group) };
+        let titled = |id: &str, title: &str, is_group| Conversation {
+            title: title.into(),
+            ..conversation(id, is_group)
+        };
         state.apply(Event::Conversations(vec![
             titled("1", "+49 151 1234567", true),
             titled("2", "bob", true),
@@ -1093,11 +1347,17 @@ mod tests {
             // A synced contact never written to.
             titled("4", "Zoe", false),
         ]));
-        let titles: Vec<_> = state.conversations().map(|c| c.conversation.title.as_str()).collect();
+        let titles: Vec<_> = state
+            .conversations()
+            .map(|c| c.conversation.title.as_str())
+            .collect();
         assert_eq!(titles, ["Alice", "bob", "+49 151 1234567"]);
         // Writing to them puts them on the list, at the top.
         state.apply(Event::Message(message("4", "Zoe", 1, false)));
-        assert_eq!(state.conversations().next().unwrap().conversation.title, "Zoe");
+        assert_eq!(
+            state.conversations().next().unwrap().conversation.title,
+            "Zoe"
+        );
         assert_eq!(state.selected_index(), None);
         state.select(&ConversationId("4".into()));
         assert_eq!(state.selected_index(), Some(0));
@@ -1111,7 +1371,10 @@ mod tests {
             update.merge(state.apply(Event::Message(message("a", "Alice", ts, false))))
         });
         assert_eq!(update.messages, MessagesUpdate::Appended(3));
-        let stamps: Vec<_> = state.last_messages(2).map(|m| m.message.timestamp).collect();
+        let stamps: Vec<_> = state
+            .last_messages(2)
+            .map(|m| m.message.timestamp)
+            .collect();
         assert_eq!(stamps, [2, 3]);
         // An out-of-order message in the same batch forces a full re-read.
         let update = update.merge(state.apply(Event::Message(message("a", "Bob", 0, false))));
@@ -1177,10 +1440,18 @@ mod tests {
     #[test]
     fn new_password_is_validated_before_unlocking() {
         let mut state = ChatState::default();
-        assert!(state.unlock("whatever", "whatever").is_none(), "no password requested yet");
-        state.apply(Event::PasswordRequired { new: true, error: None });
+        assert!(
+            state.unlock("whatever", "whatever").is_none(),
+            "no password requested yet"
+        );
+        state.apply(Event::PasswordRequired {
+            new: true,
+            error: None,
+        });
         assert!(state.unlock("short", "short").is_none());
-        assert!(matches!(state.screen(), Screen::Password { error: Some(e), .. } if e.contains("8")));
+        assert!(
+            matches!(state.screen(), Screen::Password { error: Some(e), .. } if e.contains("8"))
+        );
         assert!(state.unlock("long enough", "long enougj").is_none());
         let command = state.unlock("long enough", "long enough");
         assert!(matches!(command, Some(Command::Unlock(p)) if p.expose() == "long enough"));
@@ -1190,7 +1461,10 @@ mod tests {
     #[test]
     fn existing_password_needs_no_confirmation() {
         let mut state = ChatState::default();
-        state.apply(Event::PasswordRequired { new: false, error: Some("Wrong password.".into()) });
+        state.apply(Event::PasswordRequired {
+            new: false,
+            error: Some("Wrong password.".into()),
+        });
         assert!(state.unlock("", "").is_none());
         assert!(state.unlock("x", "").is_some());
     }

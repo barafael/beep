@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use keyring_core::{CredentialStore, Entry, Error as KeyringError};
@@ -25,7 +25,23 @@ pub type Key = Zeroizing<[u8; 32]>;
 #[derive(Debug, PartialEq, Eq)]
 pub enum KeySource {
     Keyring,
-    Password { salt: [u8; 16] },
+    Password { salt: [u8; 16], kdf: Kdf },
+}
+
+/// Argon2id cost of a password-derived key. Recorded with the salt, so making it stronger for
+/// new databases never changes the key of an existing one (which would lock its owner out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kdf {
+    /// The `argon2` crate's default, 19 MiB and 2 passes: databases made before `V2`.
+    V1,
+    /// 64 MiB and 3 passes, about 60 ms on a current laptop. The key goes to SQLCipher raw, so
+    /// this cost is all that stands between a stolen database file and a password guess.
+    V2,
+}
+
+impl Kdf {
+    /// What new databases use.
+    pub const CURRENT: Self = Self::V2;
 }
 
 impl KeySource {
@@ -36,24 +52,102 @@ impl KeySource {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        let invalid = || io::Error::new(io::ErrorKind::InvalidData, format!("unrecognized {}", path.display()));
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unrecognized {}", path.display()),
+            )
+        };
         match text.split_whitespace().collect::<Vec<_>>()[..] {
             ["keyring"] => Ok(Some(Self::Keyring)),
-            ["password", salt] => {
+            [tag @ ("password" | "password2"), salt] => {
                 let mut bytes = [0; 16];
                 hex::decode_to_slice(salt, &mut bytes).map_err(|_| invalid())?;
-                Ok(Some(Self::Password { salt: bytes }))
+                let kdf = if tag == "password" { Kdf::V1 } else { Kdf::V2 };
+                Ok(Some(Self::Password { salt: bytes, kdf }))
             }
             _ => Err(invalid()),
         }
     }
 
+    /// Writes the source atomically and private to its owner; see [`write_private`].
     pub fn write(&self, path: &Path) -> io::Result<()> {
         let text = match self {
             Self::Keyring => "keyring\n".to_string(),
-            Self::Password { salt } => format!("password {}\n", hex::encode(salt)),
+            Self::Password { salt, kdf: Kdf::V1 } => format!("password {}\n", hex::encode(salt)),
+            Self::Password { salt, kdf: Kdf::V2 } => format!("password2 {}\n", hex::encode(salt)),
         };
-        fs::write(path, text)
+        write_private(path, text.as_bytes())
+    }
+}
+
+/// Writes `bytes` to `path` readable by its owner only, never leaving a half-written file: the
+/// key source records how to derive the database key, so a truncated one would lock the user
+/// out of their history.
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = write_private_file(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    file.persist()
+}
+
+/// Creates `dir` if missing and restricts it to its owner, so other users on the machine can't
+/// copy the database inside and attack its password offline. Also tightens a directory an
+/// earlier version left world-readable.
+pub fn restrict_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    restrict(dir, 0o700)
+}
+
+/// Restricts `path` to its owner.
+pub fn restrict_file(path: &Path) -> io::Result<()> {
+    restrict(path, 0o600)
+}
+
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = fs::Permissions::from_mode(mode);
+    if fs::metadata(path)?.permissions() != permissions {
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+/// Windows has no unix modes; the user's profile directory already keeps others out.
+#[cfg(not(unix))]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+/// A file built under a temporary name beside `path` (created 0600 by `tempfile`) and renamed
+/// over it by [`PendingFile::persist`], for contents that arrive in pieces. Dropping it instead
+/// deletes the temporary and leaves any previous file untouched.
+pub fn write_private_file(path: &Path) -> io::Result<PendingFile> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let temp = tempfile::Builder::new().prefix(".langis-").tempfile_in(dir)?;
+    Ok(PendingFile { temp, path: path.to_path_buf() })
+}
+
+pub struct PendingFile {
+    temp: tempfile::NamedTempFile,
+    path: PathBuf,
+}
+
+impl PendingFile {
+    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        io::Write::write_all(&mut self.temp, bytes)
+    }
+
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.temp.as_file().sync_all()
+    }
+
+    pub fn persist(self) -> io::Result<()> {
+        self.temp.persist(&self.path).map(drop).map_err(|error| error.error)
     }
 }
 
@@ -90,9 +184,16 @@ pub fn create_keyring_key(account: &str) -> Result<Key, String> {
 }
 
 /// Derives the key for a password-protected database.
-pub fn password_key(password: &str, salt: &[u8; 16]) -> Key {
+pub fn password_key(password: &str, salt: &[u8; 16], kdf: Kdf) -> Key {
+    let argon2 = match kdf {
+        Kdf::V1 => argon2::Argon2::default(),
+        Kdf::V2 => {
+            let params = argon2::Params::new(64 * 1024, 3, 1, None).expect("valid Argon2 parameters");
+            argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        }
+    };
     let mut key = Zeroizing::new([0; 32]);
-    argon2::Argon2::default()
+    argon2
         .hash_password_into(password.as_bytes(), salt, &mut key[..])
         .expect("argon2 accepts a 16-byte salt and 32-byte output");
     key
@@ -134,26 +235,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_source_round_trips() {
-        let dir = std::env::temp_dir().join(format!("langis-vault-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("key");
+    fn key_source_round_trips_privately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
         assert_eq!(KeySource::read(&path).unwrap(), None);
-        for source in [KeySource::Keyring, KeySource::Password { salt: [7; 16] }] {
+        let sources =
+            [KeySource::Keyring, KeySource::Password { salt: [7; 16], kdf: Kdf::V1 }, KeySource::Password { salt: [7; 16], kdf: Kdf::V2 }];
+        for source in sources {
             source.write(&path).unwrap();
             assert_eq!(KeySource::read(&path).unwrap(), Some(source));
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let leftovers = fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "temporary files left behind");
         fs::write(&path, "garbage").unwrap();
         assert!(KeySource::read(&path).is_err());
-        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Databases made before the stronger parameters must keep opening with their password.
+    #[test]
+    fn existing_password_databases_keep_their_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        fs::write(&path, format!("password {}\n", hex::encode([1; 16]))).unwrap();
+        let Some(KeySource::Password { salt, kdf }) = KeySource::read(&path).unwrap() else { panic!() };
+        assert_eq!(kdf, Kdf::V1);
+        let mut before = [0; 32];
+        argon2::Argon2::default().hash_password_into(b"hunter22", &salt, &mut before).unwrap();
+        assert_eq!(*password_key("hunter22", &salt, kdf), before);
+        assert_ne!(*password_key("hunter22", &salt, Kdf::V2), before);
     }
 
     #[test]
     fn password_key_depends_on_password_and_salt() {
-        let key = password_key("hunter22", &[1; 16]);
-        assert_eq!(*key, *password_key("hunter22", &[1; 16]));
-        assert_ne!(*key, *password_key("hunter23", &[1; 16]));
-        assert_ne!(*key, *password_key("hunter22", &[2; 16]));
+        // V1: cheap in debug builds, and the parameters don't matter here.
+        let key = password_key("hunter22", &[1; 16], Kdf::V1);
+        assert_eq!(*key, *password_key("hunter22", &[1; 16], Kdf::V1));
+        assert_ne!(*key, *password_key("hunter23", &[1; 16], Kdf::V1));
+        assert_ne!(*key, *password_key("hunter22", &[2; 16], Kdf::V1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_directory_is_made_private_even_if_it_existed() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("langis");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        restrict_dir(&dir).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
     /// Talks to the real OS credential store, read-only: `cargo test -- --ignored keyring`.

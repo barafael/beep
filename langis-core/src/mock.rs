@@ -1,6 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::{Reaction, Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, Command,
+    Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Picture, QrMatrix, Quote,
+    Reaction, now_millis,
+};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -10,13 +14,27 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
 
 pub fn run(commands: Inbox, events: Events) {
     // `LANGIS_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
-    if std::env::var_os("LANGIS_MOCK_PASSWORD").is_some() {
-        let mut request = Event::PasswordRequired { new: false, error: None };
+    if cfg!(debug_assertions) && std::env::var_os("LANGIS_MOCK_PASSWORD").is_some() {
+        let mut request = Event::PasswordRequired {
+            new: false,
+            error: None,
+        };
         loop {
             let _ = events.send(request);
-            match commands.iter().find_map(|c| if let Command::Unlock(p) = c { Some(p) } else { None }) {
+            match commands.iter().find_map(|c| {
+                if let Command::Unlock(p) = c {
+                    Some(p)
+                } else {
+                    None
+                }
+            }) {
                 Some(p) if p.expose() == "password" => break,
-                Some(_) => request = Event::PasswordRequired { new: false, error: Some("Wrong password.".into()) },
+                Some(_) => {
+                    request = Event::PasswordRequired {
+                        new: false,
+                        error: Some("Wrong password.".into()),
+                    }
+                }
                 None => return,
             }
         }
@@ -25,7 +43,9 @@ pub fn run(commands: Inbox, events: Events) {
     let url = "sgnl://linkdevice?uuid=mock&pub_key=mock";
     let _ = events.send(Event::LinkQr(QrMatrix::encode(url).unwrap()));
     std::thread::sleep(Duration::from_secs(2));
-    let _ = events.send(Event::Linked { account: "+49 151 0000000 (mock)".into() });
+    let _ = events.send(Event::Linked {
+        account: "+49 151 0000000 (mock)".into(),
+    });
     // `LANGIS_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
     // phone takes 6 seconds and can be skipped.
     // Commands that arrive meanwhile are handled afterwards, as in the real backend.
@@ -66,7 +86,10 @@ pub fn run(commands: Inbox, events: Events) {
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
-    let _ = events.send(Event::Avatar { conversation: ConversationId("alice".into()), avatar: Arc::new(gradient(96)) });
+    let _ = events.send(Event::Avatar {
+        conversation: ConversationId("alice".into()),
+        avatar: Arc::new(gradient(96)),
+    });
     let _ = events.send(Event::Synced);
 
     // Fixed at startup so repeated history loads return identical messages.
@@ -85,35 +108,82 @@ pub fn run(commands: Inbox, events: Events) {
         };
         match next {
             Ok(Command::Unlock(_) | Command::SkipHistory) => {}
-            Ok(Command::React { conversation, target, emoji, remove }) => {
-                let reaction = Reaction { emoji, sender_id: "you".into(), sender: "You".into(), outgoing: true };
-                let _ = events.send(Event::Reaction { conversation, target, reaction, remove });
+            Ok(Command::React {
+                conversation,
+                target,
+                emoji,
+                remove,
+            }) => {
+                let reaction = Reaction {
+                    emoji,
+                    sender_id: "you".into(),
+                    sender: "You".into(),
+                    outgoing: true,
+                };
+                let _ = events.send(Event::Reaction {
+                    conversation,
+                    target,
+                    reaction,
+                    remove,
+                });
             }
             // Every mock attachment is the same picture; saving pretends to succeed.
             Ok(Command::FetchAttachment(attachment)) => {
                 std::thread::sleep(Duration::from_millis(400));
                 let content = match attachment.kind {
-                    AttachmentKind::LongText => Ok(AttachmentContent::Text(format!("{} (and the rest)", "A long message ".repeat(20)))),
+                    AttachmentKind::LongText => Ok(AttachmentContent::Text(format!(
+                        "{} (and the rest)",
+                        "A long message ".repeat(20)
+                    ))),
                     _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
                 };
-                let _ = events.send(Event::Attachment { id: attachment.id, content });
+                let _ = events.send(Event::Attachment {
+                    id: attachment.id,
+                    content,
+                });
             }
             Ok(Command::SaveAttachment(attachment)) => {
-                let path = Ok(std::env::temp_dir().join(attachment.file_name.unwrap_or_else(|| "attachment".into())));
-                let _ = events.send(Event::AttachmentSaved { id: attachment.id, path });
+                let path = Ok(std::env::temp_dir()
+                    .join(attachment.file_name.unwrap_or_else(|| "attachment".into())));
+                let _ = events.send(Event::AttachmentSaved {
+                    id: attachment.id,
+                    path,
+                });
             }
             Ok(Command::LoadHistory(id)) => {
                 let messages = history(&id, started);
-                let _ = events.send(Event::History { conversation: id, messages });
+                let _ = events.send(Event::History {
+                    conversation: id,
+                    messages,
+                });
             }
-            Ok(Command::Send { conversation, body, quote }) => {
+            Ok(Command::Send {
+                conversation,
+                body,
+                quote,
+            }) => {
                 let echo = format!("You said: {body}");
-                let _ = events.send(Event::Message(ChatMessage { quote, ..message(&conversation.0, "You", &body, now_millis(), true) }));
+                let _ = events.send(Event::Message(ChatMessage {
+                    quote,
+                    ..message(&conversation.0, "You", &body, now_millis(), true)
+                }));
                 std::thread::sleep(Duration::from_millis(600));
-                let _ = events.send(Event::Message(message(&conversation.0, "Echo", &echo, now_millis(), false)));
+                let _ = events.send(Event::Message(message(
+                    &conversation.0,
+                    "Echo",
+                    &echo,
+                    now_millis(),
+                    false,
+                )));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                let _ = events.send(Event::Message(message("bob", "Bob", "ping", now_millis(), false)));
+                let _ = events.send(Event::Message(message(
+                    "bob",
+                    "Bob",
+                    "ping",
+                    now_millis(),
+                    false,
+                )));
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
         }
@@ -129,10 +199,20 @@ fn gradient(side: u32) -> Picture {
             [255 - t / 2, 120 + t / 3, t, 255]
         })
         .collect();
-    Picture { width: side, height: side, rgba }
+    Picture {
+        width: side,
+        height: side,
+        rgba,
+    }
 }
 
-fn message(conversation: &str, sender: &str, body: &str, timestamp: u64, outgoing: bool) -> ChatMessage {
+fn message(
+    conversation: &str,
+    sender: &str,
+    body: &str,
+    timestamp: u64,
+    outgoing: bool,
+) -> ChatMessage {
     ChatMessage {
         conversation: ConversationId(conversation.into()),
         sender_id: sender.to_lowercase(),
@@ -149,19 +229,52 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
     let ago = |minutes: u64| started - minutes * 60_000;
     match id.0.as_str() {
         "alice" => vec![
-            message("alice", "Alice", "Hey! Did you try the new client?", ago(42), false),
-            message("alice", "You", "Building it right now, in Rust.", ago(40), true),
+            message(
+                "alice",
+                "Alice",
+                "Hey! Did you try the new client?",
+                ago(42),
+                false,
+            ),
+            message(
+                "alice",
+                "You",
+                "Building it right now, in Rust.",
+                ago(40),
+                true,
+            ),
             ChatMessage {
-                quote: Some(Quote { author: "You".into(), text: "Building it right now, in Rust.".into(), ..Default::default() }),
+                quote: Some(Quote {
+                    author: "You".into(),
+                    text: "Building it right now, in Rust.".into(),
+                    ..Default::default()
+                }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
             },
             ChatMessage {
-                attachments: vec![attachment("photo", AttachmentKind::Image, "image/jpeg", None, (800, 600))],
-                reactions: vec![Reaction { emoji: "😮".into(), sender_id: "you".into(), sender: "You".into(), outgoing: true }],
+                attachments: vec![attachment(
+                    "photo",
+                    AttachmentKind::Image,
+                    "image/jpeg",
+                    None,
+                    (800, 600),
+                )],
+                reactions: vec![Reaction {
+                    emoji: "😮".into(),
+                    sender_id: "you".into(),
+                    sender: "You".into(),
+                    outgoing: true,
+                }],
                 ..message("alice", "Alice", "The view from the hut", ago(30), false)
             },
             ChatMessage {
-                attachments: vec![attachment("notes", AttachmentKind::File, "application/pdf", Some("route-notes.pdf"), (0, 0))],
+                attachments: vec![attachment(
+                    "notes",
+                    AttachmentKind::File,
+                    "application/pdf",
+                    Some("route-notes.pdf"),
+                    (0, 0),
+                )],
                 ..message("alice", "You", "", ago(29), true)
             },
         ],
@@ -170,17 +283,51 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             ChatMessage {
                 reactions: ["ferris", "dana", "eve"]
                     .iter()
-                    .map(|who| Reaction { emoji: "👍".into(), sender_id: (*who).into(), sender: (*who).into(), outgoing: false })
-                    .chain([Reaction { emoji: "❤️".into(), sender_id: "you".into(), sender: "You".into(), outgoing: true }])
+                    .map(|who| Reaction {
+                        emoji: "👍".into(),
+                        sender_id: (*who).into(),
+                        sender: (*who).into(),
+                        outgoing: false,
+                    })
+                    .chain([Reaction {
+                        emoji: "❤️".into(),
+                        sender_id: "you".into(),
+                        sender: "You".into(),
+                        outgoing: true,
+                    }])
                     .collect(),
-                ..message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false)
+                ..message(
+                    "rust",
+                    "Carol",
+                    "Slint, if you want it to look native.",
+                    ago(118),
+                    false,
+                )
             },
             ChatMessage {
-                attachments: vec![attachment("long", AttachmentKind::LongText, "text/x-signal-plain", None, (0, 0))],
-                ..message("rust", "Ferris", "A long message A long message A long…", ago(117), false)
+                attachments: vec![attachment(
+                    "long",
+                    AttachmentKind::LongText,
+                    "text/x-signal-plain",
+                    None,
+                    (0, 0),
+                )],
+                ..message(
+                    "rust",
+                    "Ferris",
+                    "A long message A long message A long…",
+                    ago(117),
+                    false,
+                )
             },
             ChatMessage {
-                attachments: vec![attachment("sticker", AttachmentKind::Sticker, "image/webp", None, (512, 512))],
+                attachments: vec![attachment(
+                    "sticker",
+                    AttachmentKind::Sticker,
+                    "image/webp",
+                    None,
+                    (512, 512),
+                )],
                 ..message("rust", "Carol", "", ago(116), false)
             },
         ],
@@ -188,7 +335,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
     }
 }
 
-fn attachment(id: &str, kind: AttachmentKind, content_type: &str, file_name: Option<&str>, (width, height): (u32, u32)) -> Attachment {
+fn attachment(
+    id: &str,
+    kind: AttachmentKind,
+    content_type: &str,
+    file_name: Option<&str>,
+    (width, height): (u32, u32),
+) -> Attachment {
     Attachment {
         id: AttachmentId(id.into()),
         kind,

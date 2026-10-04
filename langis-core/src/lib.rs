@@ -5,16 +5,16 @@
 //! ever blocks the other. All types here are plain data so any toolkit can
 //! render them.
 
-mod mock;
-mod qr;
-pub mod settings;
-pub mod state;
-#[cfg(feature = "signal")]
-mod signal;
 #[cfg(feature = "signal")]
 mod attachments;
 #[cfg(feature = "signal")]
 mod import;
+mod mock;
+mod qr;
+pub mod settings;
+#[cfg(feature = "signal")]
+mod signal;
+pub mod state;
 #[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]
@@ -59,7 +59,10 @@ pub struct ChatMessage {
 impl ChatMessage {
     /// How Signal refers to this message, e.g. from reactions.
     pub fn reference(&self) -> MessageRef {
-        MessageRef { author_id: self.sender_id.clone(), timestamp: self.timestamp }
+        MessageRef {
+            author_id: self.sender_id.clone(),
+            timestamp: self.timestamp,
+        }
     }
 }
 
@@ -84,14 +87,23 @@ pub struct Reaction {
 /// Puts a reaction on, or takes it off, the message it targets among `messages`. Each person
 /// has at most one reaction per message; a new one replaces theirs. Returns whether a message
 /// changed.
-pub(crate) fn apply_reaction(messages: &mut [ChatMessage], target: &MessageRef, reaction: Reaction, remove: bool) -> bool {
-    let Some(message) =
-        messages.iter_mut().rev().find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+pub(crate) fn apply_reaction(
+    messages: &mut [ChatMessage],
+    target: &MessageRef,
+    reaction: Reaction,
+    remove: bool,
+) -> bool {
+    let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
     else {
         return false;
     };
     let before = message.reactions.len();
-    message.reactions.retain(|r| r.sender_id != reaction.sender_id);
+    message
+        .reactions
+        .retain(|r| r.sender_id != reaction.sender_id);
     if remove {
         message.reactions.len() != before
     } else {
@@ -190,7 +202,9 @@ pub enum HistoryTransfer {
     Waiting,
     Downloading,
     /// This many messages imported so far.
-    Importing { messages: usize },
+    Importing {
+        messages: usize,
+    },
     /// Done, failed or skipped; errors arrive separately.
     Finished,
 }
@@ -219,11 +233,16 @@ impl std::fmt::Debug for Password {
 pub enum Event {
     /// No system keyring is available: the local database is protected by a password.
     /// `new` means none has been chosen yet; `error` explains why the last attempt failed.
-    PasswordRequired { new: bool, error: Option<String> },
+    PasswordRequired {
+        new: bool,
+        error: Option<String>,
+    },
     /// Not linked yet: show this QR code to be scanned from the phone.
     LinkQr(QrMatrix),
     /// Linked (or loaded an existing registration) as `account`.
-    Linked { account: String },
+    Linked {
+        account: String,
+    },
     /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
     Reconnecting,
     /// Progress of the message history transfer right after linking.
@@ -233,15 +252,32 @@ pub enum Event {
     /// New or changed conversations, merged by id.
     Conversations(Vec<Conversation>),
     /// Profile or group picture of a conversation, replacing any earlier one.
-    Avatar { conversation: ConversationId, avatar: Arc<Picture> },
+    Avatar {
+        conversation: ConversationId,
+        avatar: Arc<Picture>,
+    },
     /// Someone reacted to a message, or took their reaction back.
-    Reaction { conversation: ConversationId, target: MessageRef, reaction: Reaction, remove: bool },
+    Reaction {
+        conversation: ConversationId,
+        target: MessageRef,
+        reaction: Reaction,
+        remove: bool,
+    },
     /// Answer to [`Command::FetchAttachment`].
-    Attachment { id: AttachmentId, content: Result<AttachmentContent, String> },
+    Attachment {
+        id: AttachmentId,
+        content: Result<AttachmentContent, String>,
+    },
     /// Answer to [`Command::SaveAttachment`]: where the file was written.
-    AttachmentSaved { id: AttachmentId, path: Result<std::path::PathBuf, String> },
+    AttachmentSaved {
+        id: AttachmentId,
+        path: Result<std::path::PathBuf, String>,
+    },
     /// The complete stored history of a conversation, answering [`Command::LoadHistory`].
-    History { conversation: ConversationId, messages: Vec<ChatMessage> },
+    History {
+        conversation: ConversationId,
+        messages: Vec<ChatMessage>,
+    },
     /// A conversation's newest stored message, so it can be sorted and previewed before its
     /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
     Latest(ChatMessage),
@@ -261,9 +297,18 @@ pub enum Command {
     /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
     SaveAttachment(Attachment),
     /// `quote` makes it a reply to that message.
-    Send { conversation: ConversationId, body: String, quote: Option<Quote> },
+    Send {
+        conversation: ConversationId,
+        body: String,
+        quote: Option<Quote>,
+    },
     /// Reacts to a message with `emoji`, or takes our reaction back.
-    React { conversation: ConversationId, target: MessageRef, emoji: String, remove: bool },
+    React {
+        conversation: ConversationId,
+        target: MessageRef,
+        emoji: String,
+        remove: bool,
+    },
 }
 
 pub struct Config {
@@ -273,7 +318,9 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { device_name: "langis".into() }
+        Self {
+            device_name: "langis".into(),
+        }
     }
 }
 
@@ -354,11 +401,17 @@ impl Backend {
         Self::spawn(mock::run)
     }
 
-    /// Starts the real backend, or the mock one when `LANGIS_MOCK` is set or the
-    /// `signal` feature is disabled.
+    /// Whether [`Backend::from_env`] runs the mock. It sends nothing, so UIs should say so.
+    /// Debug builds only: in a release, a stray variable in the environment must not turn the
+    /// app into a convincing fake that swallows messages.
+    pub fn mock_requested() -> bool {
+        !cfg!(feature = "signal") || (cfg!(debug_assertions) && std::env::var_os("LANGIS_MOCK").is_some())
+    }
+
+    /// Starts the real backend, or the mock one when [`Backend::mock_requested`].
     pub fn from_env(config: Config) -> Self {
         #[cfg(feature = "signal")]
-        if std::env::var_os("LANGIS_MOCK").is_none() {
+        if !Self::mock_requested() {
             return Self::start(config);
         }
         let _ = config;
@@ -375,7 +428,11 @@ impl Backend {
             .stack_size(64 * 1024 * 1024)
             .spawn(move || run(Inbox(command_rx), Events(event_tx)))
             .expect("failed to spawn backend thread");
-        Self { commands: Commands(command_tx), events: event_rx, thread: Some(thread) }
+        Self {
+            commands: Commands(command_tx),
+            events: event_rx,
+            thread: Some(thread),
+        }
     }
 
     pub fn send(&self, command: Command) {

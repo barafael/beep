@@ -67,11 +67,14 @@ impl Default for Settings {
 impl Settings {
     /// The saved settings; defaults for anything missing or unreadable.
     pub fn load() -> Self {
-        path().and_then(|path| std::fs::read_to_string(path).ok()).map_or_else(Self::default, |text| Self::parse(&text))
+        path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map_or_else(Self::default, |text| Self::parse(&text))
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let path = path().ok_or_else(|| std::io::Error::other("could not determine a config directory"))?;
+        let path = path()
+            .ok_or_else(|| std::io::Error::other("could not determine a config directory"))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -83,7 +86,9 @@ impl Settings {
     fn parse(text: &str) -> Self {
         let mut settings = Self::default();
         for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else { continue };
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
             match (key.trim(), value.trim()) {
                 ("theme", "system") => settings.theme = Theme::System,
                 ("theme", "light") => settings.theme = Theme::Light,
@@ -98,8 +103,12 @@ impl Settings {
                 ("notification_content", "name_and_message") => {
                     settings.notification_content = NotificationContent::NameAndMessage
                 }
-                ("notification_content", "name_only") => settings.notification_content = NotificationContent::NameOnly,
-                ("notification_content", "nothing") => settings.notification_content = NotificationContent::Nothing,
+                ("notification_content", "name_only") => {
+                    settings.notification_content = NotificationContent::NameOnly
+                }
+                ("notification_content", "nothing") => {
+                    settings.notification_content = NotificationContent::Nothing
+                }
                 _ => {}
             }
         }
@@ -153,7 +162,14 @@ mod tests {
 
     #[test]
     fn ignores_what_it_does_not_know() {
-        let settings = Settings::parse("theme = sepia\nfuture_option = 3\ngarbage\ntext_size=small\n");
-        assert_eq!(settings, Settings { text_size: TextSize::Small, ..Settings::default() });
+        let settings =
+            Settings::parse("theme = sepia\nfuture_option = 3\ngarbage\ntext_size=small\n");
+        assert_eq!(
+            settings,
+            Settings {
+                text_size: TextSize::Small,
+                ..Settings::default()
+            }
+        );
     }
 }

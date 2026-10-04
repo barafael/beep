@@ -20,6 +20,7 @@ use libsignal_message_backup::{
     key::MessageBackupKey,
     parse::VarintDelimitedReader,
 };
+use presage::{Error as PresageError, libsignal_service::push_service::ServiceError};
 use presage::{
     libsignal_service::{
         configuration::Endpoint,
@@ -29,7 +30,6 @@ use presage::{
     manager::TransferArchive,
     store::ContentsStore,
 };
-use presage::{Error as PresageError, libsignal_service::push_service::ServiceError};
 use tracing::{info, warn};
 
 use crate::{
@@ -43,6 +43,11 @@ pub(crate) const LINK_CAPABILITY: &str = "backup5";
 
 /// How long the phone gets to upload the archive, as in Signal Desktop.
 const MAX_WAIT: Duration = Duration::from_secs(60 * 60);
+/// Ceiling on the downloaded archive. It holds text and pointers to attachments, not the
+/// attachments themselves (a long-time user's was well under 1 MB), so this is generous; it only
+/// stops a misbehaving server from filling the disk.
+const MAX_ARCHIVE_BYTES: u64 = 2_000_000_000;
+
 /// Per request; the HTTP client gives up after 65 seconds.
 const POLL: Duration = Duration::from_secs(55);
 
@@ -58,7 +63,12 @@ pub(crate) enum Outcome {
 
 /// Waits for the archive the phone uploads after linking, downloads it to `dir` and imports
 /// it into the manager's store. On `Err`, part of the history may have been stored.
-pub(crate) async fn receive_history(manager: &Mgr, key: [u8; 32], dir: &Path, events: &Events) -> Result<Outcome, String> {
+pub(crate) async fn receive_history(
+    manager: &Mgr,
+    key: [u8; 32],
+    dir: &Path,
+    events: &Events,
+) -> Result<Outcome, String> {
     let path = dir.join("history-transfer.bin");
     // However this ends, even if the caller drops it midway (skip, quit), the archive goes.
     let _cleanup = RemoveOnDrop(path.clone());
@@ -96,7 +106,10 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
         match manager.transfer_archive(POLL).await {
             Ok(None) => continue,
             Ok(Some(archive)) => {
-                info!(waited_secs = started.elapsed().as_secs(), "the primary device answered");
+                info!(
+                    waited_secs = started.elapsed().as_secs(),
+                    "the primary device answered"
+                );
                 return Ok(archive);
             }
             // The link itself is no good; waiting longer won't help.
@@ -116,7 +129,7 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
 async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), String> {
-    use std::io::Write as _;
+    let too_big = || format!("The message history is larger than {} MB, which no phone sends.", MAX_ARCHIVE_BYTES / 1_000_000);
 
     let servers = manager.registration_data().signal_servers;
     let mut response = PushService::new(servers, None, "langis")
@@ -130,15 +143,24 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Res
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("failed to download the message history: {e}"))?;
-    let mut file = std::fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
-    let mut size = 0usize;
-    while let Some(chunk) =
-        response.chunk().await.map_err(|e| format!("failed to download the message history: {e}"))?
-    {
-        size += chunk.len();
+    // Refused before writing anything when the server says, and while writing otherwise, so a
+    // misbehaving server can't fill the disk.
+    if response.content_length().is_some_and(|length| length > MAX_ARCHIVE_BYTES) {
+        return Err(too_big());
+    }
+    // Private to the user and complete or absent: built under a temporary name.
+    let mut file =
+        crate::vault::write_private_file(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let mut size = 0u64;
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("failed to download the message history: {e}"))? {
+        size += chunk.len() as u64;
+        if size > MAX_ARCHIVE_BYTES {
+            return Err(too_big());
+        }
         file.write_all(&chunk).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     }
     file.sync_all().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    file.persist().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     info!(bytes = size, "history archive downloaded");
     Ok(())
 }
@@ -164,7 +186,11 @@ where
     // The first frame is a `BackupInfo` (version and time), which we don't need.
     let mut info_frame = true;
     let mut reported = 0;
-    while let Some(frame) = reader.read_next().await.map_err(|e| format!("failed to read the message history: {e}"))? {
+    while let Some(frame) = reader
+        .read_next()
+        .await
+        .map_err(|e| format!("failed to read the message history: {e}"))?
+    {
         if std::mem::take(&mut info_frame) {
             continue;
         }
@@ -174,7 +200,9 @@ where
         let messages = importer.stats().messages;
         if messages >= reported + 500 {
             reported = messages;
-            let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Importing { messages }));
+            let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Importing {
+                messages,
+            }));
         }
     }
     for record in importer.finish() {
@@ -183,8 +211,12 @@ where
     // Drain any trailing bytes so the HMAC covers everything, then check it once more.
     let mut rest = reader.into_inner();
     let mut sink = Vec::new();
-    rest.read_to_end(&mut sink).await.map_err(|e| format!("failed to read the message history: {e}"))?;
-    rest.verify_hmac().await.map_err(|e| format!("the message history failed its integrity check: {e}"))?;
+    rest.read_to_end(&mut sink)
+        .await
+        .map_err(|e| format!("failed to read the message history: {e}"))?;
+    rest.verify_hmac()
+        .await
+        .map_err(|e| format!("the message history failed its integrity check: {e}"))?;
     Ok(importer.stats())
 }
 
@@ -222,7 +254,8 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("langis-transfer-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("langis-transfer-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("archive"), ARCHIVE).unwrap();
             Self { dir }
@@ -250,7 +283,11 @@ mod tests {
     }
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
     }
 
     #[test]
@@ -258,10 +295,23 @@ mod tests {
         let scratch = Scratch::new("import");
         let stats = block_on(async {
             let mut store = scratch.store().await;
-            import_archive(fixture_key(), &fixture_aci(), &scratch.archive(), &mut store, &events()).await
+            import_archive(
+                fixture_key(),
+                &fixture_aci(),
+                &scratch.archive(),
+                &mut store,
+                &events(),
+            )
+            .await
         });
         // Only the account frame is not imported; there are no contacts or messages.
-        assert_eq!(stats.unwrap(), Stats { skipped: 1, ..Stats::default() });
+        assert_eq!(
+            stats.unwrap(),
+            Stats {
+                skipped: 1,
+                ..Stats::default()
+            }
+        );
     }
 
     #[test]
@@ -269,7 +319,14 @@ mod tests {
         let scratch = Scratch::new("wrong-account");
         let result = block_on(async {
             let mut store = scratch.store().await;
-            import_archive(fixture_key(), &Aci::from_uuid_bytes([0x22; 16]), &scratch.archive(), &mut store, &events()).await
+            import_archive(
+                fixture_key(),
+                &Aci::from_uuid_bytes([0x22; 16]),
+                &scratch.archive(),
+                &mut store,
+                &events(),
+            )
+            .await
         });
         assert!(result.is_err());
     }
@@ -280,12 +337,18 @@ mod tests {
         let scratch = Scratch::new("validate");
         let key = message_backup_key(fixture_key(), &fixture_aci());
         let result = block_on(async {
-            BackupReader::new_encrypted_compressed(&key, FileReaderFactory { path: scratch.archive() }, Purpose::DeviceTransfer)
-                .await
-                .unwrap()
-                .validate_all()
-                .await
-                .result
+            BackupReader::new_encrypted_compressed(
+                &key,
+                FileReaderFactory {
+                    path: scratch.archive(),
+                },
+                Purpose::DeviceTransfer,
+            )
+            .await
+            .unwrap()
+            .validate_all()
+            .await
+            .result
         });
         assert!(result.is_ok(), "{result:?}");
     }

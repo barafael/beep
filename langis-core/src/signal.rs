@@ -1,6 +1,13 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::{Cell, RefCell}, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::{Duration, Instant}};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
@@ -20,15 +27,17 @@ use presage::{
     store::{ContentExt, ContentsStore, StateStore, Thread},
 };
 use presage_store_sqlite::SqliteStore;
-use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
+use sqlx::{
+    ConnectOptions,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+};
 use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{debug, info, warn};
 
 use crate::{
-    Picture, attachments, transfer,
-    ChatMessage, Command, Config, MessageRef, Quote, Reaction, apply_reaction, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
-    QrMatrix,
-    now_millis,
+    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, HistoryTransfer,
+    Inbox, MessageRef, Password, Picture, QrMatrix, Quote, Reaction, apply_reaction, attachments,
+    now_millis, transfer,
     vault::{self, KeySource, KeyringKey},
 };
 
@@ -44,9 +53,10 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
     let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
-        Ok(Some((store, closed))) => {
-            (local.block_on(&runtime, session(config, store, commands, events.clone())), Some(closed))
-        }
+        Ok(Some((store, closed))) => (
+            local.block_on(&runtime, session(config, store, commands, events.clone())),
+            Some(closed),
+        ),
         // The UI went away while we were waiting for a password.
         Ok(None) => (Ok(()), None),
         Err(error) => (Err(error), None),
@@ -78,7 +88,9 @@ impl Paths {
     fn new() -> Result<Self, String> {
         // `LANGIS_DATA_DIR` keeps a separate account, e.g. to link a second device for testing.
         // Its database key gets its own keyring entry, so it never replaces the default one.
-        let (dir, keyring_account) = match std::env::var_os("LANGIS_DATA_DIR") {
+        // A development aid: release builds always use the standard place.
+        let custom = if cfg!(debug_assertions) { std::env::var_os("LANGIS_DATA_DIR") } else { None };
+        let (dir, keyring_account) = match custom {
             Some(dir) => {
                 let dir = PathBuf::from(dir);
                 let account = format!("{}:{}", vault::DEFAULT_ACCOUNT, dir.display());
@@ -92,8 +104,21 @@ impl Paths {
                 vault::DEFAULT_ACCOUNT.to_owned(),
             ),
         };
-        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
-        Ok(Self { db: dir.join("langis.db3"), key_source: dir.join("langis.key"), dir, keyring_account })
+        // 0700: the database is only as private as the directory holding it.
+        vault::restrict_dir(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        // Earlier versions wrote it world-readable.
+        match vault::restrict_file(&dir.join("langis.key")) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                warn!(%error, "could not make the key source private");
+            }
+            _ => {}
+        }
+        Ok(Self {
+            db: dir.join("langis.db3"),
+            key_source: dir.join("langis.key"),
+            dir,
+            keyring_account,
+        })
     }
 
     /// Exists while a message history transfer is unfinished. Its one-time key lives only in
@@ -113,7 +138,7 @@ fn unlock(
     events: &Events,
 ) -> Result<Option<(SqliteStore, Closed)>, String> {
     let paths = Paths::new()?;
-    let salt = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
+    let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
         Some(KeySource::Keyring) => {
             let key = match vault::keyring_key(&paths.keyring_account) {
                 KeyringKey::Found(key) => key,
@@ -132,7 +157,7 @@ fn unlock(
             };
             return open_store(runtime, local, &paths, &key).map(Some);
         }
-        Some(KeySource::Password { salt }) => salt,
+        Some(KeySource::Password { salt, kdf }) => (salt, kdf),
         None if paths.db.exists() => {
             return Err(format!(
                 "{} has no recorded encryption key. To link this device again, delete it.",
@@ -147,8 +172,9 @@ fn unlock(
             Err(reason) => {
                 info!(%reason, "no usable system keyring; protecting the database with a password");
                 let salt = vault::random_salt();
-                write_source(&paths, &KeySource::Password { salt })?;
-                salt
+                let kdf = vault::Kdf::CURRENT;
+                write_source(&paths, &KeySource::Password { salt, kdf })?;
+                (salt, kdf)
             }
         },
     };
@@ -157,9 +183,20 @@ fn unlock(
     let new = !paths.db.exists();
     let mut error = None;
     loop {
-        let _ = events.send(Event::PasswordRequired { new, error: error.take() });
-        let Some(password) = wait_for_password(commands) else { return Ok(None) };
-        let key = vault::password_key(password.expose(), &salt);
+        let _ = events.send(Event::PasswordRequired {
+            new,
+            error: error.take(),
+        });
+        let Some(password) = wait_for_password(commands) else {
+            return Ok(None);
+        };
+        // The UI checks this too, but the key is the only way back into the messages, so the
+        // backend doesn't take a too-short one from any frontend.
+        if new && let Err(problem) = check_new_password(password.expose()) {
+            error = Some(problem);
+            continue;
+        }
+        let key = vault::password_key(password.expose(), &salt, kdf);
         match open_store(runtime, local, &paths, &key) {
             Ok(store) => return Ok(Some(store)),
             Err(reason) if !new => {
@@ -175,6 +212,14 @@ fn write_source(paths: &Paths, source: &KeySource) -> Result<(), String> {
     source
         .write(&paths.key_source)
         .map_err(|e| format!("failed to write {}: {e}", paths.key_source.display()))
+}
+
+/// The policy for a new database password; mirrors `state::ChatState::unlock`.
+fn check_new_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < crate::state::MIN_PASSWORD_LEN {
+        return Err(format!("Use at least {} characters.", crate::state::MIN_PASSWORD_LEN));
+    }
+    Ok(())
 }
 
 fn wait_for_password(commands: &Inbox) -> Option<Password> {
@@ -199,6 +244,13 @@ fn open_store(
         .filename(&paths.db)
         .create_if_missing(true)
         .foreign_keys(true)
+        // The receive task and the command loop share the pool; without a timeout a write that
+        // overlaps a read fails with SQLITE_BUSY instead of waiting. WAL lets readers and the
+        // writer proceed together. FULL, not NORMAL: losing the last commits on power loss could
+        // lose session state, and then messages can't be decrypted.
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
+        .busy_timeout(Duration::from_secs(10))
         // sqlx keeps its own copy of this string; it can't be wiped.
         .pragma("key", vault::sqlcipher_pragma(key).to_string())
         // The key is part of the SQL text (pragmas take no parameters), so statements must
@@ -208,10 +260,19 @@ fn open_store(
             let _ = &open;
             a.cmp(b)
         });
-    local
+    let store = local
         .block_on(runtime, SqliteStore::open_with_options(options, OnNewIdentity::Trust))
-        .map(|store| (store, closed))
-        .map_err(|e| format!("failed to open the database: {e}"))
+        .map_err(|e| format!("failed to open the database: {e}"))?;
+    // SQLite creates its files with the process umask, typically world-readable; another user
+    // could copy them and attack the password offline. (The directory is private too.)
+    for path in [paths.db.clone(), paths.db.with_extension("db3-wal"), paths.db.with_extension("db3-shm")] {
+        if let Err(error) = vault::restrict_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(path = %path.display(), %error, "could not make a database file private");
+        }
+    }
+    Ok((store, closed))
 }
 
 async fn session(
@@ -234,14 +295,19 @@ async fn session(
     let paths = Paths::new()?;
     let linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) if !paths.transfer_marker().exists() => {
-            let account = manager.registration_data().service_ids.aci().service_id_string();
+            let account = manager
+                .registration_data()
+                .service_ids
+                .aci()
+                .service_id_string();
             let _ = events.send(Event::Linked { account });
             Some((manager, Vec::new()))
         }
         Ok(manager) => {
             unlink(manager).await;
             let _ = events.send(Event::Error(
-                "The message history transfer was interrupted. Link this device again to retry.".into(),
+                "The message history transfer was interrupted. Link this device again to retry."
+                    .into(),
             ));
             reset(store.clone(), &paths).await?;
             link_with_history(store, &config, &events, &mut command_rx, &paths).await?
@@ -252,7 +318,9 @@ async fn session(
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
     // `None`: the UI went away while linking.
-    let Some((mut manager, pending)) = linked else { return Ok(()) };
+    let Some((mut manager, pending)) = linked else {
+        return Ok(());
+    };
 
     let threads: Threads = Rc::default();
     if send_conversations(&manager, &threads, &events).await == 0 {
@@ -265,12 +333,21 @@ async fn session(
     }
 
     // In the background, so receiving starts right away.
-    tokio::task::spawn_local(send_latest_messages(manager.clone(), threads.clone(), events.clone()));
+    tokio::task::spawn_local(send_latest_messages(
+        manager.clone(),
+        threads.clone(),
+        events.clone(),
+    ));
 
     let downloads = attachments::download_limit();
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
-    tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone(), avatars));
+    tokio::task::spawn_local(receive(
+        manager.clone(),
+        threads.clone(),
+        events.clone(),
+        avatars,
+    ));
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
@@ -306,9 +383,15 @@ async fn link_with_history(
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),
         };
-        let account = manager.registration_data().service_ids.aci().service_id_string();
+        let account = manager
+            .registration_data()
+            .service_ids
+            .aci()
+            .service_id_string();
         let _ = events.send(Event::Linked { account });
-        let Some(key) = key else { return Ok(Some((manager, Vec::new()))) };
+        let Some(key) = key else {
+            return Ok(Some((manager, Vec::new())));
+        };
 
         write_marker(paths)?;
         let mut pending = Vec::new();
@@ -333,14 +416,20 @@ async fn link_with_history(
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
         match result {
             Ok(transfer::Outcome::Imported | transfer::Outcome::WithoutHistory) => {
-                std::fs::remove_file(paths.transfer_marker())
-                    .map_err(|e| format!("failed to remove {}: {e}", paths.transfer_marker().display()))?;
+                std::fs::remove_file(paths.transfer_marker()).map_err(|e| {
+                    format!(
+                        "failed to remove {}: {e}",
+                        paths.transfer_marker().display()
+                    )
+                })?;
                 return Ok(Some((manager, pending)));
             }
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
                 warn!(%error, "message history transfer failed");
-                let _ = events.send(Event::Error(format!("{error} Link this device again to retry.")));
+                let _ = events.send(Event::Error(format!(
+                    "{error} Link this device again to retry."
+                )));
             }
         }
         unlink(manager).await;
@@ -363,19 +452,30 @@ fn write_marker(paths: &Paths) -> Result<(), String> {
 
 /// Forgets the registration and everything stored with it, ready to link again.
 async fn reset(mut store: SqliteStore, paths: &Paths) -> Result<(), String> {
-    store.clear_registration().await.map_err(|e| format!("failed to reset the database: {e}"))?;
-    store.clear_contents().await.map_err(|e| format!("failed to reset the database: {e}"))?;
+    store
+        .clear_registration()
+        .await
+        .map_err(|e| format!("failed to reset the database: {e}"))?;
+    store
+        .clear_contents()
+        .await
+        .map_err(|e| format!("failed to reset the database: {e}"))?;
     match std::fs::remove_file(paths.transfer_marker()) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            Err(format!("failed to remove {}: {error}", paths.transfer_marker().display()))
-        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
+            "failed to remove {}: {error}",
+            paths.transfer_marker().display()
+        )),
         _ => Ok(()),
     }
 }
 
 /// Links this device; also returns the one-time key for the history transfer if the user
 /// chose to transfer it.
-async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<(Mgr, Option<[u8; 32]>), String> {
+async fn link(
+    store: SqliteStore,
+    config: &Config,
+    events: &Events,
+) -> Result<(Mgr, Option<[u8; 32]>), String> {
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
         Manager::link_secondary_device_with_history(
@@ -385,12 +485,14 @@ async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<(M
             url_tx,
         ),
         async {
-            if let Ok(mut url) = url_rx.await
-                && let Some(qr) = QrMatrix::encode(
-                    url.query_pairs_mut().append_pair("capabilities", transfer::LINK_CAPABILITY).finish().as_str(),
-                )
-            {
-                let _ = events.send(Event::LinkQr(qr));
+            if let Ok(mut url) = url_rx.await {
+                let url = url.query_pairs_mut().append_pair("capabilities", transfer::LINK_CAPABILITY).finish();
+                // Said rather than swallowed: otherwise the user faces a blank panel and a link
+                // that never completes.
+                let _ = events.send(match QrMatrix::encode(url.as_str()) {
+                    Some(qr) => Event::LinkQr(qr),
+                    None => Event::Error("The linking code couldn't be drawn. Restart langis to try again.".into()),
+                });
             }
         },
     )
@@ -439,7 +541,11 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
     }
     let contacts = all.len();
     // Messages to yourself; listed once there are some.
-    all.push(register(threads, Thread::Contact(own_id(manager)), "Note to Self".into()));
+    all.push(register(
+        threads,
+        Thread::Contact(own_id(manager)),
+        "Note to Self".into(),
+    ));
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
             all.push(register(threads, Thread::Group(key), group.title));
@@ -456,15 +562,27 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
 /// reaches further back for quiet conversations, instead of reading every chat's full history.
 async fn send_latest_messages(manager: Mgr, threads: Threads, events: Events) {
     const DAY: u64 = 24 * 60 * 60 * 1000;
-    let threads: Vec<_> = threads.borrow().iter().map(|(id, thread)| (id.clone(), thread.clone())).collect();
+    let threads: Vec<_> = threads
+        .borrow()
+        .iter()
+        .map(|(id, thread)| (id.clone(), thread.clone()))
+        .collect();
     let mut names = Names::new();
     let now = now_millis();
     'threads: for (id, thread) in threads {
-        for since in [now.saturating_sub(7 * DAY), now.saturating_sub(180 * DAY), 0] {
-            let Ok(contents) = manager.store().messages(&thread, since..).await else { continue 'threads };
+        for since in [
+            now.saturating_sub(7 * DAY),
+            now.saturating_sub(180 * DAY),
+            0,
+        ] {
+            let Ok(contents) = manager.store().messages(&thread, since..).await else {
+                continue 'threads;
+            };
             // Newest first; skip receipts and the like.
             for content in contents.flatten() {
-                if let Some(message) = to_chat_message(&manager, &mut names, id.clone(), &content).await {
+                if let Some(message) =
+                    to_chat_message(&manager, &mut names, id.clone(), &content).await
+                {
                     if !events.send(Event::Latest(message)) {
                         return;
                     }
@@ -497,7 +615,12 @@ enum AvatarRun {
 
 impl AvatarFetcher {
     fn new(manager: Mgr, threads: Threads, events: Events) -> Self {
-        Self { run: Rc::new(Cell::new(AvatarRun::Idle)), manager, threads, events }
+        Self {
+            run: Rc::new(Cell::new(AvatarRun::Idle)),
+            manager,
+            threads,
+            events,
+        }
     }
 
     fn request(&self) {
@@ -507,7 +630,12 @@ impl AvatarFetcher {
                 let this = self.clone();
                 tokio::task::spawn_local(async move {
                     loop {
-                        fetch_avatars(this.manager.clone(), this.threads.clone(), this.events.clone()).await;
+                        fetch_avatars(
+                            this.manager.clone(),
+                            this.threads.clone(),
+                            this.events.clone(),
+                        )
+                        .await;
                         if this.run.get() == AvatarRun::Again {
                             this.run.set(AvatarRun::Running);
                         } else {
@@ -530,20 +658,30 @@ impl AvatarFetcher {
 /// (the contact sync no longer carries it). Until then the picture from the contact sync, i.e.
 /// what the phone shows, stands in.
 async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
-    let threads: Vec<_> = threads.borrow().iter().map(|(id, thread)| (id.clone(), thread.clone())).collect();
+    let threads: Vec<_> = threads
+        .borrow()
+        .iter()
+        .map(|(id, thread)| (id.clone(), thread.clone()))
+        .collect();
     let (mut found, mut none, mut failed) = (0, 0, 0);
     for (id, thread) in threads {
         let picture = match thread {
             Thread::Contact(ServiceId::Aci(aci)) => {
                 let id = ServiceId::Aci(aci);
                 let profile = match manager.store().profile_key(&id).await {
-                    Ok(Some(key)) => manager.retrieve_profile_avatar_by_uuid(aci.into(), key).await,
+                    Ok(Some(key)) => {
+                        manager
+                            .retrieve_profile_avatar_by_uuid(aci.into(), key)
+                            .await
+                    }
                     _ => Ok(None),
                 };
                 match profile {
                     Ok(None) => {
                         let contact = manager.store().contact_by_id(&id).await.ok().flatten();
-                        Ok(contact.and_then(|c| c.avatar).map(|avatar| avatar.reader.to_vec()))
+                        Ok(contact
+                            .and_then(|c| c.avatar)
+                            .map(|avatar| avatar.reader.to_vec()))
                     }
                     profile => profile,
                 }
@@ -551,9 +689,18 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             Thread::Contact(_) => continue,
             Thread::Group(key) => {
                 // presage only refetches the group if this revision is newer than the cached one.
-                let revision = manager.store().group(key).await.ok().flatten().map_or(0, |group| group.revision);
-                let context =
-                    GroupContextV2 { master_key: Some(key.to_vec()), revision: Some(revision), ..Default::default() };
+                let revision = manager
+                    .store()
+                    .group(key)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or(0, |group| group.revision);
+                let context = GroupContextV2 {
+                    master_key: Some(key.to_vec()),
+                    revision: Some(revision),
+                    ..Default::default()
+                };
                 manager.retrieve_group_avatar(context).await
             }
         };
@@ -561,7 +708,10 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             Ok(Some(bytes)) => match decode_avatar(&bytes) {
                 Some(avatar) => {
                     found += 1;
-                    if !events.send(Event::Avatar { conversation: id, avatar: Arc::new(avatar) }) {
+                    if !events.send(Event::Avatar {
+                        conversation: id,
+                        avatar: Arc::new(avatar),
+                    }) {
                         return;
                     }
                 }
@@ -586,14 +736,27 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
 
 /// Crops to a square and scales to [`AVATAR_SIDE`].
 fn decode_avatar(bytes: &[u8]) -> Option<Picture> {
-    let image = image::load_from_memory(bytes).ok()?;
-    let square = image.resize_to_fill(AVATAR_SIDE, AVATAR_SIDE, image::imageops::FilterType::Lanczos3);
-    Some(Picture { width: AVATAR_SIDE, height: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
+    let image = attachments::decode_limited(bytes)?;
+    let square = image.resize_to_fill(
+        AVATAR_SIDE,
+        AVATAR_SIDE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    Some(Picture {
+        width: AVATAR_SIDE,
+        height: AVATAR_SIDE,
+        rgba: square.into_rgba8().into_raw(),
+    })
 }
 
 /// Sends a data message to a 1:1 chat or a group. presage fills in the message's timestamp
 /// from `timestamp`.
-async fn send_data(manager: &mut Mgr, thread: &Thread, mut message: DataMessage, timestamp: u64) -> Result<(), String> {
+async fn send_data(
+    manager: &mut Mgr,
+    thread: &Thread,
+    mut message: DataMessage,
+    timestamp: u64,
+) -> Result<(), String> {
     let sent = match thread {
         Thread::Contact(recipient) => manager.send_message(*recipient, message, timestamp).await,
         Thread::Group(key) => {
@@ -602,8 +765,11 @@ async fn send_data(manager: &mut Mgr, thread: &Thread, mut message: DataMessage,
                 Ok(Some(group)) => group.revision,
                 _ => 0,
             };
-            message.group_v2 =
-                Some(GroupContextV2 { master_key: Some(key.to_vec()), revision: Some(revision), ..Default::default() });
+            message.group_v2 = Some(GroupContextV2 {
+                master_key: Some(key.to_vec()),
+                revision: Some(revision),
+                ..Default::default()
+            });
             manager.send_message_to_group(key, message, timestamp).await
         }
     };
@@ -649,7 +815,17 @@ async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: Av
                 while let Some(received) = messages.next().await {
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &threads, &events, &avatars, &mut names, &mut resets, received).await {
+                    if !handle_received(
+                        &manager,
+                        &threads,
+                        &events,
+                        &avatars,
+                        &mut names,
+                        &mut resets,
+                        received,
+                    )
+                    .await
+                    {
                         return;
                     }
                 }
@@ -690,19 +866,28 @@ async fn handle_received(
             // starts a new one (and can resend). Not more than hourly, so a peer that keeps
             // failing can't keep us resetting.
             let reset = matches!(sender, ServiceId::Aci(_))
-                && resets.get(&sender).is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
+                && resets
+                    .get(&sender)
+                    .is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
             if reset {
                 resets.insert(sender, Instant::now());
-                match manager.clone().send_session_reset(&sender, now_millis()).await {
+                match manager
+                    .clone()
+                    .send_session_reset(&sender, now_millis())
+                    .await
+                {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
                     Err(error) => warn!(%error, "failed to reset the session"),
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
-            let conversation = ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
+            let conversation =
+                ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
             let name = sender_name(manager, names, sender).await;
             let body = if reset {
-                format!("⚠ A message from {name} couldn't be decrypted. The connection was reset; it may arrive again.")
+                format!(
+                    "⚠ A message from {name} couldn't be decrypted. The connection was reset; it may arrive again."
+                )
             } else {
                 format!("⚠ A message from {name} couldn't be decrypted.")
             };
@@ -716,10 +901,17 @@ async fn handle_received(
             }))
         }
         Received::Content(content) => {
-            let Ok(thread) = Thread::try_from(&*content) else { return true };
+            let Ok(thread) = Thread::try_from(&*content) else {
+                return true;
+            };
             let id = ensure_conversation(manager, threads, events, thread).await;
             if let Some((target, reaction, remove)) = to_reaction(manager, names, &content).await {
-                return events.send(Event::Reaction { conversation: id, target, reaction, remove });
+                return events.send(Event::Reaction {
+                    conversation: id,
+                    target,
+                    reaction,
+                    remove,
+                });
             }
             match to_chat_message(manager, names, id, &content).await {
                 Some(message) => events.send(Event::Message(message)),
@@ -730,7 +922,12 @@ async fn handle_received(
 }
 
 /// Registers `thread` and announces it to the UI if it's the first we hear of it.
-async fn ensure_conversation(manager: &Mgr, threads: &Threads, events: &Events, thread: Thread) -> ConversationId {
+async fn ensure_conversation(
+    manager: &Mgr,
+    threads: &Threads,
+    events: &Events,
+    thread: Thread,
+) -> ConversationId {
     let id = conversation_id(&thread);
     if !threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
@@ -743,11 +940,19 @@ async fn ensure_conversation(manager: &Mgr, threads: &Threads, events: &Events, 
 
 /// Extracts displayable text; returns `None` for receipts, typing indicators, etc.
 /// A reaction, from someone else or (synced from the phone) from us.
-async fn to_reaction(manager: &Mgr, names: &mut Names, content: &Content) -> Option<(MessageRef, Reaction, bool)> {
+async fn to_reaction(
+    manager: &Mgr,
+    names: &mut Names,
+    content: &Content,
+) -> Option<(MessageRef, Reaction, bool)> {
     let (data, outgoing) = match &content.body {
         ContentBody::DataMessage(data) => (data, false),
         ContentBody::SynchronizeMessage(SyncMessage {
-            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+            content:
+                Some(SyncContent::Sent(Sent {
+                    message: Some(data),
+                    ..
+                })),
             ..
         }) => (data, true),
         _ => return None,
@@ -757,7 +962,11 @@ async fn to_reaction(manager: &Mgr, names: &mut Names, content: &Content) -> Opt
         author_id: reaction.target_author_aci.clone()?,
         timestamp: reaction.target_sent_timestamp?,
     };
-    let sender = if outgoing { "You".to_string() } else { sender_name(manager, names, content.metadata.sender).await };
+    let sender = if outgoing {
+        "You".to_string()
+    } else {
+        sender_name(manager, names, content.metadata.sender).await
+    };
     let reaction_view = Reaction {
         emoji: reaction.emoji.clone().unwrap_or_default(),
         sender_id: content.metadata.sender.service_id_string(),
@@ -776,7 +985,11 @@ async fn to_chat_message(
     let (data, outgoing) = match &content.body {
         ContentBody::DataMessage(data) => (data, false),
         ContentBody::SynchronizeMessage(SyncMessage {
-            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+            content:
+                Some(SyncContent::Sent(Sent {
+                    message: Some(data),
+                    ..
+                })),
             ..
         }) => (data, true),
         _ => return None,
@@ -793,7 +1006,11 @@ async fn to_chat_message(
     };
     let quote = match &data.quote {
         Some(quote) => {
-            let author = match quote.author_aci.as_deref().and_then(ServiceId::parse_from_service_id_string) {
+            let author = match quote
+                .author_aci
+                .as_deref()
+                .and_then(ServiceId::parse_from_service_id_string)
+            {
                 Some(author) if author == own_id(manager) => "You".to_string(),
                 Some(author) => sender_name(manager, names, author).await,
                 None => String::new(),
@@ -831,10 +1048,20 @@ async fn handle(
     match command {
         // In the background, so commands keep flowing while files download.
         Command::FetchAttachment(attachment) => {
-            tokio::task::spawn_local(attachments::fetch(servers, attachment, events.clone(), downloads.clone()));
+            tokio::task::spawn_local(attachments::fetch(
+                servers,
+                attachment,
+                events.clone(),
+                downloads.clone(),
+            ));
         }
         Command::SaveAttachment(attachment) => {
-            tokio::task::spawn_local(attachments::save(servers, attachment, events.clone(), downloads.clone()));
+            tokio::task::spawn_local(attachments::save(
+                servers,
+                attachment,
+                events.clone(),
+                downloads.clone(),
+            ));
         }
         // Already unlocked.
         Command::Unlock(_) => {}
@@ -854,9 +1081,13 @@ async fn handle(
             // Oldest first, so reactions find their message and later ones win.
             let contents: Vec<_> = contents.flatten().collect();
             for content in contents.iter().rev() {
-                if let Some((target, reaction, remove)) = to_reaction(manager, &mut names, content).await {
+                if let Some((target, reaction, remove)) =
+                    to_reaction(manager, &mut names, content).await
+                {
                     apply_reaction(&mut messages, &target, reaction, remove);
-                } else if let Some(message) = to_chat_message(manager, &mut names, id.clone(), content).await {
+                } else if let Some(message) =
+                    to_chat_message(manager, &mut names, id.clone(), content).await
+                {
                     messages.push(message);
                 }
             }
@@ -865,7 +1096,12 @@ async fn handle(
                 messages,
             });
         }
-        Command::React { conversation, target, emoji, remove } => {
+        Command::React {
+            conversation,
+            target,
+            emoji,
+            remove,
+        } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {
                 return Err("unknown conversation".into());
             };
@@ -880,11 +1116,24 @@ async fn handle(
                 ..Default::default()
             };
             send_data(manager, &thread, message, now_millis()).await?;
-            let reaction =
-                Reaction { emoji, sender_id: own_id(manager).service_id_string(), sender: "You".into(), outgoing: true };
-            let _ = events.send(Event::Reaction { conversation, target, reaction, remove });
+            let reaction = Reaction {
+                emoji,
+                sender_id: own_id(manager).service_id_string(),
+                sender: "You".into(),
+                outgoing: true,
+            };
+            let _ = events.send(Event::Reaction {
+                conversation,
+                target,
+                reaction,
+                remove,
+            });
         }
-        Command::Send { conversation, body, quote } => {
+        Command::Send {
+            conversation,
+            body,
+            quote,
+        } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {
                 return Err("unknown conversation".into());
             };
@@ -892,12 +1141,14 @@ async fn handle(
             let timestamp = now_millis();
             let message = DataMessage {
                 body: Some(body.clone()),
-                quote: quote.as_ref().map(|quote| presage::proto::data_message::Quote {
-                    id: Some(quote.timestamp),
-                    author_aci: Some(quote.author_id.clone()),
-                    text: Some(quote.text.clone()),
-                    ..Default::default()
-                }),
+                quote: quote
+                    .as_ref()
+                    .map(|quote| presage::proto::data_message::Quote {
+                        id: Some(quote.timestamp),
+                        author_aci: Some(quote.author_id.clone()),
+                        text: Some(quote.text.clone()),
+                        ..Default::default()
+                    }),
                 ..Default::default()
             };
             send_data(manager, &thread, message, timestamp).await?;
@@ -924,6 +1175,15 @@ async fn handle(
 mod tests {
     use super::*;
 
+    /// Counted in characters: seven accented letters are too short even though they take
+    /// fourteen bytes, and eight are enough.
+    #[test]
+    fn new_passwords_need_eight_characters_not_bytes() {
+        assert!(check_new_password("").is_err());
+        assert!(check_new_password("äöüäöüä").is_err());
+        assert!(check_new_password("äöüäöüäö").is_ok());
+    }
+
     #[test]
     fn database_opens_only_with_its_key() {
         let dir = std::env::temp_dir().join(format!("langis-db-{}", std::process::id()));
@@ -934,12 +1194,15 @@ mod tests {
             dir: dir.clone(),
             keyring_account: "unused".into(),
         };
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let local = LocalSet::new();
 
-        let key = vault::password_key("correct horse", &[3; 16]);
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
         drop(open_store(&runtime, &local, &paths, &key).expect("creates the database"));
-        let wrong = vault::password_key("wrong horse", &[3; 16]);
+        let wrong = vault::password_key("wrong horse", &[3; 16], vault::Kdf::V1);
         assert!(open_store(&runtime, &local, &paths, &wrong).is_err());
         assert!(open_store(&runtime, &local, &paths, &key).is_ok());
         // Encrypted: no plaintext SQLite header.

@@ -33,9 +33,18 @@ use protobuf::Message as _;
 /// What a frame turns into, ready to be stored.
 #[derive(Debug)]
 pub(crate) enum Record {
-    Contact { contact: Contact, profile_key: Option<ProfileKey> },
-    Group { master_key: [u8; 32], group: Group },
-    Message { thread: Thread, content: Content },
+    Contact {
+        contact: Contact,
+        profile_key: Option<ProfileKey>,
+    },
+    Group {
+        master_key: [u8; 32],
+        group: Group,
+    },
+    Message {
+        thread: Thread,
+        content: Content,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -91,10 +100,13 @@ impl Importer {
 
     /// Converts one encoded `Frame` (not the leading `BackupInfo`).
     pub(crate) fn frame(&mut self, bytes: &[u8]) -> Result<Vec<Record>, String> {
-        let frame = proto::Frame::parse_from_bytes(bytes).map_err(|e| format!("malformed history frame: {e}"))?;
+        let frame = proto::Frame::parse_from_bytes(bytes)
+            .map_err(|e| format!("malformed history frame: {e}"))?;
         let mut records = Vec::new();
         match frame.item {
-            Some(proto::frame::Item::Recipient(recipient)) => records.extend(self.recipient(recipient)),
+            Some(proto::frame::Item::Recipient(recipient)) => {
+                records.extend(self.recipient(recipient))
+            }
             Some(proto::frame::Item::Chat(chat)) => {
                 records.extend(self.flush_groups());
                 self.chats.insert(chat.id, chat.recipientId);
@@ -107,7 +119,11 @@ impl Importer {
                         let group_v2 = match &content.body {
                             ContentBody::DataMessage(data) => data.group_v2.clone(),
                             ContentBody::SynchronizeMessage(SyncMessage {
-                                content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+                                content:
+                                    Some(SyncContent::Sent(Sent {
+                                        message: Some(data),
+                                        ..
+                                    })),
                                 ..
                             }) => data.group_v2.clone(),
                             _ => None,
@@ -147,12 +163,21 @@ impl Importer {
                     self.profile_keys.insert(aci, key);
                 }
                 self.stats.contacts += 1;
-                Some(Record::Contact { contact, profile_key })
+                Some(Record::Contact {
+                    contact,
+                    profile_key,
+                })
             }
             Destination::Group(group) => {
                 let master_key: [u8; 32] = group.masterKey.as_slice().try_into().ok()?;
                 let revision = group.snapshot.version;
-                self.recipients.insert(recipient.id, Party::Group { master_key, revision });
+                self.recipients.insert(
+                    recipient.id,
+                    Party::Group {
+                        master_key,
+                        revision,
+                    },
+                );
                 self.pending_groups.push((master_key, group));
                 None
             }
@@ -169,17 +194,23 @@ impl Importer {
         self.stats.groups += pending.len();
         pending
             .into_iter()
-            .map(|(master_key, group)| Record::Group { master_key, group: self.convert_group(&group) })
+            .map(|(master_key, group)| Record::Group {
+                master_key,
+                group: self.convert_group(&group),
+            })
             .collect()
     }
 
     fn convert_group(&self, group: &proto::Group) -> Group {
         let snapshot = &group.snapshot;
-        let text = |blob: &protobuf::MessageField<proto::group::GroupAttributeBlob>| match &blob.content {
-            Some(proto::group::group_attribute_blob::Content::Title(text))
-            | Some(proto::group::group_attribute_blob::Content::DescriptionText(text)) => text.clone(),
-            _ => String::new(),
-        };
+        let text =
+            |blob: &protobuf::MessageField<proto::group::GroupAttributeBlob>| match &blob.content {
+                Some(proto::group::group_attribute_blob::Content::Title(text))
+                | Some(proto::group::group_attribute_blob::Content::DescriptionText(text)) => {
+                    text.clone()
+                }
+                _ => String::new(),
+            };
         let members = snapshot
             .members
             .iter()
@@ -192,7 +223,11 @@ impl Importer {
                         _ => Role::Default,
                     },
                     // Unknown keys get fixed up when presage next fetches the group.
-                    profile_key: self.profile_keys.get(&aci).copied().unwrap_or(ProfileKey::create([0; 32])),
+                    profile_key: self
+                        .profile_keys
+                        .get(&aci)
+                        .copied()
+                        .unwrap_or(ProfileKey::create([0; 32])),
                     joined_at_revision: member.joinedAtVersion,
                     label: None,
                     label_emoji: None,
@@ -227,13 +262,23 @@ impl Importer {
         };
         let body = message.text.body.clone();
         // Attachments no longer on the transit CDN can't be fetched, so they are left out.
-        let mut attachments: Vec<_> =
-            message.attachments.iter().filter_map(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default())).collect();
+        let mut attachments: Vec<_> = message
+            .attachments
+            .iter()
+            .filter_map(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default()))
+            .collect();
         // The body holds the beginning of a long message; this its full text.
-        attachments.extend(message.longText.as_ref().and_then(|file| attachment_pointer(file, Default::default())));
+        attachments.extend(
+            message
+                .longText
+                .as_ref()
+                .and_then(|file| attachment_pointer(file, Default::default())),
+        );
         // A viewed view-once message has no attachment left; there is nothing to show then.
         attachments.extend(
-            view_once.and_then(|v| v.attachment.as_ref()).and_then(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default())),
+            view_once
+                .and_then(|v| v.attachment.as_ref())
+                .and_then(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default())),
         );
         let sticker = sticker.map(|sticker| DataSticker {
             pack_id: Some(sticker.packId.clone()),
@@ -242,7 +287,10 @@ impl Importer {
             emoji: sticker.emoji.clone(),
             data: attachment_pointer(&sticker.data, Default::default()),
         });
-        if body.is_empty() && attachments.is_empty() && sticker.as_ref().is_none_or(|s| s.data.is_none()) {
+        if body.is_empty()
+            && attachments.is_empty()
+            && sticker.as_ref().is_none_or(|s| s.data.is_none())
+        {
             return None;
         }
         // langis doesn't delete disappearing messages yet, but at least it won't bring back
@@ -257,9 +305,16 @@ impl Importer {
         let (thread, group_v2) = match *chat {
             Party::Me => (Thread::Contact(ServiceId::Aci(self.me)), None),
             Party::Contact(aci) => (Thread::Contact(ServiceId::Aci(aci)), None),
-            Party::Group { master_key, revision } => (
+            Party::Group {
+                master_key,
+                revision,
+            } => (
                 Thread::Group(master_key),
-                Some(GroupContextV2 { master_key: Some(master_key.to_vec()), revision: Some(revision), ..Default::default() }),
+                Some(GroupContextV2 {
+                    master_key: Some(master_key.to_vec()),
+                    revision: Some(revision),
+                    ..Default::default()
+                }),
             ),
         };
         let author = match self.recipients.get(&item.authorId)? {
@@ -295,18 +350,33 @@ impl Importer {
         use proto::chat_item::DirectionalDetails;
         let (outgoing, server_timestamp, sealed) = match &item.directionalDetails {
             Some(DirectionalDetails::Outgoing(outgoing)) => (true, outgoing.dateReceived, false),
-            Some(DirectionalDetails::Incoming(incoming)) => {
-                (false, incoming.dateServerSent.unwrap_or(incoming.dateReceived), incoming.sealedSender)
-            }
+            Some(DirectionalDetails::Incoming(incoming)) => (
+                false,
+                incoming.dateServerSent.unwrap_or(incoming.dateReceived),
+                incoming.sealedSender,
+            ),
             _ => return None,
         };
-        let content = self.content(&thread, author, data, item.dateSent, server_timestamp, sealed, outgoing);
+        let content = self.content(
+            &thread,
+            author,
+            data,
+            item.dateSent,
+            server_timestamp,
+            sealed,
+            outgoing,
+        );
         Some((thread, content))
     }
 
     /// The reactions on a chat item, each as the reaction message its author sent, the way
     /// presage stores live ones.
-    fn reactions(&self, item: &proto::ChatItem, thread: &Thread, group_v2: Option<GroupContextV2>) -> Vec<Record> {
+    fn reactions(
+        &self,
+        item: &proto::ChatItem,
+        thread: &Thread,
+        group_v2: Option<GroupContextV2>,
+    ) -> Vec<Record> {
         use proto::chat_item::Item;
         let reactions = match &item.item {
             Some(Item::StandardMessage(message)) => &message.reactions,
@@ -314,7 +384,9 @@ impl Importer {
             Some(Item::ViewOnceMessage(view_once)) => &view_once.reactions,
             _ => return Vec::new(),
         };
-        let Some(target_author) = self.aci_of(item.authorId) else { return Vec::new() };
+        let Some(target_author) = self.aci_of(item.authorId) else {
+            return Vec::new();
+        };
         reactions
             .iter()
             .filter_map(|reaction| {
@@ -332,8 +404,12 @@ impl Importer {
                     ..Default::default()
                 };
                 let sent = reaction.sentTimestamp;
-                let content = self.content(thread, author, data, sent, sent, false, author == self.me);
-                Some(Record::Message { thread: thread.clone(), content })
+                let content =
+                    self.content(thread, author, data, sent, sent, false, author == self.me);
+                Some(Record::Message {
+                    thread: thread.clone(),
+                    content,
+                })
             })
             .collect()
     }
@@ -365,8 +441,16 @@ impl Importer {
                 Thread::Contact(id) => Some(id.service_id_string()),
                 Thread::Group(_) => None,
             };
-            let sent = Sent { destination_service_id: destination, timestamp: Some(sent), message: Some(data), ..Default::default() };
-            ContentBody::SynchronizeMessage(SyncMessage { content: Some(SyncContent::Sent(sent)), ..Default::default() })
+            let sent = Sent {
+                destination_service_id: destination,
+                timestamp: Some(sent),
+                message: Some(data),
+                ..Default::default()
+            };
+            ContentBody::SynchronizeMessage(SyncMessage {
+                content: Some(SyncContent::Sent(sent)),
+                ..Default::default()
+            })
         } else {
             ContentBody::DataMessage(data)
         };
@@ -388,10 +472,15 @@ impl Importer {
 
 /// Where to download an attachment from the transit CDN, as a live message would carry it.
 /// `None` if it isn't there (any more).
-fn attachment_pointer(file: &proto::FilePointer, flag: proto::message_attachment::Flag) -> Option<AttachmentPointer> {
+fn attachment_pointer(
+    file: &proto::FilePointer,
+    flag: proto::message_attachment::Flag,
+) -> Option<AttachmentPointer> {
     use proto::{file_pointer::locator_info::IntegrityCheck, message_attachment::Flag};
     let locator = file.locatorInfo.as_ref()?;
-    let (Some(cdn_key), Some(cdn_number)) = (locator.transitCdnKey.clone(), locator.transitCdnNumber) else {
+    let (Some(cdn_key), Some(cdn_number)) =
+        (locator.transitCdnKey.clone(), locator.transitCdnNumber)
+    else {
         return None;
     };
     // Media the phone already downloaded carries a hash of the plaintext instead, which the
@@ -429,8 +518,13 @@ fn attachment_pointer(file: &proto::FilePointer, flag: proto::message_attachment
 /// Contacts without an ACI can't be messaged or stored by presage, so they are dropped.
 fn convert_contact(contact: &proto::Contact) -> Option<(Contact, Option<ProfileKey>)> {
     let uuid = Uuid::from_slice(contact.aci.as_deref()?).ok()?;
-    let profile_key: Option<[u8; 32]> = contact.profileKey.as_deref().and_then(|key| key.try_into().ok());
-    let phone_number = contact.e164.and_then(|number| phonenumber::parse(None, format!("+{number}")).ok());
+    let profile_key: Option<[u8; 32]> = contact
+        .profileKey
+        .as_deref()
+        .and_then(|key| key.try_into().ok());
+    let phone_number = contact
+        .e164
+        .and_then(|number| phonenumber::parse(None, format!("+{number}")).ok());
     let contact = Contact {
         uuid,
         phone_number,
@@ -449,13 +543,20 @@ fn convert_contact(contact: &proto::Contact) -> Option<(Contact, Option<ProfileK
 /// book, then the name on their profile. Empty if none is set.
 fn display_name(contact: &proto::Contact) -> String {
     let join = |given: &str, family: &str| format!("{given} {family}").trim().to_owned();
-    let nickname = contact.nickname.as_ref().map(|name| join(&name.given, &name.family)).unwrap_or_default();
+    let nickname = contact
+        .nickname
+        .as_ref()
+        .map(|name| join(&name.given, &name.family))
+        .unwrap_or_default();
     let system = join(&contact.systemGivenName, &contact.systemFamilyName);
     let profile = join(
         contact.profileGivenName.as_deref().unwrap_or_default(),
         contact.profileFamilyName.as_deref().unwrap_or_default(),
     );
-    [nickname, system, profile].into_iter().find(|name| !name.is_empty()).unwrap_or_default()
+    [nickname, system, profile]
+        .into_iter()
+        .find(|name| !name.is_empty())
+        .unwrap_or_default()
 }
 
 fn datetime(millis: u64) -> chrono::DateTime<chrono::Utc> {
@@ -468,7 +569,10 @@ where
     S::ContentsStoreError: std::fmt::Display,
 {
     let result = match record {
-        Record::Contact { contact, profile_key } => {
+        Record::Contact {
+            contact,
+            profile_key,
+        } => {
             let uuid = contact.uuid;
             match store.save_contact(&contact).await {
                 Ok(()) => match profile_key {
@@ -501,7 +605,12 @@ mod tests {
     const NOW: u64 = 1_000_000;
 
     fn frame(item: proto::frame::Item) -> Vec<u8> {
-        proto::Frame { item: Some(item), ..Default::default() }.write_to_bytes().unwrap()
+        proto::Frame {
+            item: Some(item),
+            ..Default::default()
+        }
+        .write_to_bytes()
+        .unwrap()
     }
 
     fn recipient(id: u64, destination: Destination) -> Vec<u8> {
@@ -513,7 +622,11 @@ mod tests {
     }
 
     fn chat(id: u64, recipient_id: u64) -> Vec<u8> {
-        frame(proto::frame::Item::Chat(proto::Chat { id, recipientId: recipient_id, ..Default::default() }))
+        frame(proto::frame::Item::Chat(proto::Chat {
+            id,
+            recipientId: recipient_id,
+            ..Default::default()
+        }))
     }
 
     fn text(chat_id: u64, author_id: u64, sent: u64, outgoing: bool, body: &str) -> Vec<u8> {
@@ -526,7 +639,10 @@ mod tests {
             })
         };
         let message = proto::StandardMessage {
-            text: MessageField::some(proto::Text { body: body.into(), ..Default::default() }),
+            text: MessageField::some(proto::Text {
+                body: body.into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         frame(proto::frame::Item::ChatItem(proto::ChatItem {
@@ -551,10 +667,15 @@ mod tests {
             ..Default::default()
         };
         let title = proto::group::GroupAttributeBlob {
-            content: Some(proto::group::group_attribute_blob::Content::Title("Climbing".into())),
+            content: Some(proto::group::group_attribute_blob::Content::Title(
+                "Climbing".into(),
+            )),
             ..Default::default()
         };
-        let member = |id: [u8; 16]| proto::group::Member { userId: id.to_vec(), ..Default::default() };
+        let member = |id: [u8; 16]| proto::group::Member {
+            userId: id.to_vec(),
+            ..Default::default()
+        };
         let group = proto::Group {
             masterKey: GROUP_KEY.to_vec(),
             snapshot: MessageField::some(proto::group::GroupSnapshot {
@@ -599,27 +720,46 @@ mod tests {
     #[test]
     fn converts_contacts_groups_and_text_messages() {
         let (records, stats) = import(&archive());
-        assert_eq!(stats, Stats { contacts: 1, groups: 1, messages: 3, reactions: 0, skipped: 1 });
+        assert_eq!(
+            stats,
+            Stats {
+                contacts: 1,
+                groups: 1,
+                messages: 3,
+                reactions: 0,
+                skipped: 1
+            }
+        );
 
-        let Some(Record::Contact { contact, profile_key }) =
-            records.iter().find(|r| matches!(r, Record::Contact { .. }))
+        let Some(Record::Contact {
+            contact,
+            profile_key,
+        }) = records.iter().find(|r| matches!(r, Record::Contact { .. }))
         else {
             panic!("no contact")
         };
         // The address book name wins over the profile name.
         assert_eq!(contact.name, "Alice Liddell");
-        assert_eq!(contact.phone_number.as_ref().unwrap().to_string(), "+4915112345678");
+        assert_eq!(
+            contact.phone_number.as_ref().unwrap().to_string(),
+            "+4915112345678"
+        );
         assert!(profile_key.is_some());
 
         // The group was held back until Alice's profile key was known.
-        let Some(Record::Group { master_key, group }) = records.iter().find(|r| matches!(r, Record::Group { .. }))
+        let Some(Record::Group { master_key, group }) =
+            records.iter().find(|r| matches!(r, Record::Group { .. }))
         else {
             panic!("no group")
         };
         assert_eq!(*master_key, GROUP_KEY);
         assert_eq!(group.title, "Climbing");
         assert_eq!(group.revision, 5);
-        let alice = group.members.iter().find(|m| m.aci == Aci::from_uuid_bytes(ALICE)).unwrap();
+        let alice = group
+            .members
+            .iter()
+            .find(|m| m.aci == Aci::from_uuid_bytes(ALICE))
+            .unwrap();
         assert_eq!(alice.profile_key.get_bytes(), ALICE_KEY);
     }
 
@@ -637,25 +777,44 @@ mod tests {
 
         let (thread, incoming) = messages[0];
         assert_eq!(*thread, alice);
-        assert_eq!(incoming.metadata.sender, ServiceId::Aci(Aci::from_uuid_bytes(ALICE)));
+        assert_eq!(
+            incoming.metadata.sender,
+            ServiceId::Aci(Aci::from_uuid_bytes(ALICE))
+        );
         assert_eq!(incoming.timestamp(), 1000);
-        assert!(matches!(&incoming.body, ContentBody::DataMessage(DataMessage { body: Some(b), .. }) if b == "Hi!"));
+        assert!(
+            matches!(&incoming.body, ContentBody::DataMessage(DataMessage { body: Some(b), .. }) if b == "Hi!")
+        );
 
         // What we wrote comes back as a "sent" sync message addressed to Alice.
         let (thread, outgoing) = messages[1];
         assert_eq!(*thread, alice);
         assert_eq!(outgoing.timestamp(), 2000);
-        let ContentBody::SynchronizeMessage(SyncMessage { content: Some(SyncContent::Sent(sent)), .. }) = &outgoing.body
+        let ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Sent(sent)),
+            ..
+        }) = &outgoing.body
         else {
             panic!("not a sync message: {:?}", outgoing.body)
         };
-        assert_eq!(sent.destination_service_id.as_deref(), Some(alice_id().as_str()));
-        assert_eq!(sent.message.as_ref().unwrap().body.as_deref(), Some("Hello, Alice"));
+        assert_eq!(
+            sent.destination_service_id.as_deref(),
+            Some(alice_id().as_str())
+        );
+        assert_eq!(
+            sent.message.as_ref().unwrap().body.as_deref(),
+            Some("Hello, Alice")
+        );
 
         let (thread, in_group) = messages[2];
         assert_eq!(*thread, Thread::Group(GROUP_KEY));
-        let ContentBody::DataMessage(data) = &in_group.body else { panic!("not a data message") };
-        assert_eq!(data.group_v2.as_ref().unwrap().master_key.as_deref(), Some(&GROUP_KEY[..]));
+        let ContentBody::DataMessage(data) = &in_group.body else {
+            panic!("not a data message")
+        };
+        assert_eq!(
+            data.group_v2.as_ref().unwrap().master_key.as_deref(),
+            Some(&GROUP_KEY[..])
+        );
     }
 
     #[test]
@@ -663,11 +822,17 @@ mod tests {
         let mut frames = archive();
         let reply = |sent, expire: Option<(u64, u64)>, body: &str| {
             let message = proto::StandardMessage {
-                text: MessageField::some(proto::Text { body: body.into(), ..Default::default() }),
+                text: MessageField::some(proto::Text {
+                    body: body.into(),
+                    ..Default::default()
+                }),
                 quote: MessageField::some(proto::Quote {
                     targetSentTimestamp: Some(1000),
                     authorId: 2,
-                    text: MessageField::some(proto::Text { body: "Hi!".into(), ..Default::default() }),
+                    text: MessageField::some(proto::Text {
+                        body: "Hi!".into(),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -693,20 +858,37 @@ mod tests {
         let bodies: Vec<_> = records
             .iter()
             .filter_map(|r| match r {
-                Record::Message { content: Content { body: ContentBody::SynchronizeMessage(sync), .. }, .. } => match &sync.content {
+                Record::Message {
+                    content:
+                        Content {
+                            body: ContentBody::SynchronizeMessage(sync),
+                            ..
+                        },
+                    ..
+                } => match &sync.content {
                     Some(SyncContent::Sent(sent)) => sent.message.clone(),
                     _ => None,
                 },
                 _ => None,
             })
             .collect();
-        assert!(bodies.iter().all(|data| data.body.as_deref() != Some("gone")));
-        let reply = bodies.iter().find(|data| data.body.as_deref() == Some("Hi yourself")).unwrap();
+        assert!(
+            bodies
+                .iter()
+                .all(|data| data.body.as_deref() != Some("gone"))
+        );
+        let reply = bodies
+            .iter()
+            .find(|data| data.body.as_deref() == Some("Hi yourself"))
+            .unwrap();
         let quote = reply.quote.as_ref().unwrap();
         assert_eq!(quote.id, Some(1000));
         assert_eq!(quote.author_aci.as_deref(), Some(alice_id().as_str()));
         assert_eq!(quote.text.as_deref(), Some("Hi!"));
-        let lasting = bodies.iter().find(|data| data.body.as_deref() == Some("still here")).unwrap();
+        let lasting = bodies
+            .iter()
+            .find(|data| data.body.as_deref() == Some("still here"))
+            .unwrap();
         assert_eq!(lasting.expire_timer, Some((NOW / 1000) as u32));
     }
 
@@ -715,10 +897,23 @@ mod tests {
         use proto::chat_item::Item;
         let mut frames = archive();
         let reacted = proto::StandardMessage {
-            text: MessageField::some(proto::Text { body: "Summit!".into(), ..Default::default() }),
+            text: MessageField::some(proto::Text {
+                body: "Summit!".into(),
+                ..Default::default()
+            }),
             reactions: vec![
-                proto::Reaction { emoji: "🎉".into(), authorId: 1, sentTimestamp: 9100, ..Default::default() },
-                proto::Reaction { emoji: "❤️".into(), authorId: 2, sentTimestamp: 9200, ..Default::default() },
+                proto::Reaction {
+                    emoji: "🎉".into(),
+                    authorId: 1,
+                    sentTimestamp: 9100,
+                    ..Default::default()
+                },
+                proto::Reaction {
+                    emoji: "❤️".into(),
+                    authorId: 2,
+                    sentTimestamp: 9200,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -733,20 +928,35 @@ mod tests {
                     let (data, outgoing) = match &content.body {
                         ContentBody::DataMessage(data) => (data, false),
                         ContentBody::SynchronizeMessage(SyncMessage {
-                            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+                            content:
+                                Some(SyncContent::Sent(Sent {
+                                    message: Some(data),
+                                    ..
+                                })),
                             ..
                         }) => (data, true),
                         _ => return None,
                     };
                     let reaction = data.reaction.as_ref()?;
-                    Some((reaction.emoji.clone().unwrap(), outgoing, content.metadata.sender, reaction.target_sent_timestamp))
+                    Some((
+                        reaction.emoji.clone().unwrap(),
+                        outgoing,
+                        content.metadata.sender,
+                        reaction.target_sent_timestamp,
+                    ))
                 }
                 _ => None,
             })
             .collect();
         let alice = ServiceId::Aci(Aci::from_uuid_bytes(ALICE));
         let me = ServiceId::Aci(Aci::from_uuid_bytes(ME));
-        assert_eq!(reactions, [("🎉".into(), true, me, Some(9000)), ("❤️".into(), false, alice, Some(9000))]);
+        assert_eq!(
+            reactions,
+            [
+                ("🎉".into(), true, me, Some(9000)),
+                ("❤️".into(), false, alice, Some(9000))
+            ]
+        );
     }
 
     fn file(content_type: &str, transit: bool) -> proto::FilePointer {
@@ -758,7 +968,9 @@ mod tests {
                 size: 4321,
                 transitCdnKey: transit.then(|| "key".into()),
                 transitCdnNumber: transit.then_some(3),
-                integrityCheck: Some(proto::file_pointer::locator_info::IntegrityCheck::EncryptedDigest(vec![6; 32])),
+                integrityCheck: Some(
+                    proto::file_pointer::locator_info::IntegrityCheck::EncryptedDigest(vec![6; 32]),
+                ),
                 ..Default::default()
             }),
             ..Default::default()
@@ -779,20 +991,40 @@ mod tests {
     #[test]
     fn imports_attachments_still_on_the_cdn() {
         use proto::chat_item::Item;
-        let attached = |files: Vec<proto::FilePointer>, long: Option<proto::FilePointer>| proto::StandardMessage {
-            attachments: files
-                .into_iter()
-                .map(|pointer| proto::MessageAttachment { pointer: MessageField::some(pointer), ..Default::default() })
-                .collect(),
-            longText: long.map_or_else(MessageField::none, MessageField::some),
-            ..Default::default()
+        let attached = |files: Vec<proto::FilePointer>, long: Option<proto::FilePointer>| {
+            proto::StandardMessage {
+                attachments: files
+                    .into_iter()
+                    .map(|pointer| proto::MessageAttachment {
+                        pointer: MessageField::some(pointer),
+                        ..Default::default()
+                    })
+                    .collect(),
+                longText: long.map_or_else(MessageField::none, MessageField::some),
+                ..Default::default()
+            }
         };
         let mut frames = archive();
         // A photo, plus one that has left the CDN.
-        frames.push(incoming(8000, Item::StandardMessage(attached(vec![file("image/jpeg", true), file("image/jpeg", false)], None))));
+        frames.push(incoming(
+            8000,
+            Item::StandardMessage(attached(
+                vec![file("image/jpeg", true), file("image/jpeg", false)],
+                None,
+            )),
+        ));
         // Only gone media: nothing to show.
-        frames.push(incoming(8100, Item::StandardMessage(attached(vec![file("image/jpeg", false)], None))));
-        frames.push(incoming(8200, Item::StandardMessage(attached(Vec::new(), Some(file("text/x-signal-plain", true))))));
+        frames.push(incoming(
+            8100,
+            Item::StandardMessage(attached(vec![file("image/jpeg", false)], None)),
+        ));
+        frames.push(incoming(
+            8200,
+            Item::StandardMessage(attached(
+                Vec::new(),
+                Some(file("text/x-signal-plain", true)),
+            )),
+        ));
         frames.push(incoming(
             8300,
             Item::StickerMessage(proto::StickerMessage {
@@ -813,22 +1045,42 @@ mod tests {
         let kinds: Vec<Vec<AttachmentKind>> = records
             .iter()
             .filter_map(|r| match r {
-                Record::Message { content: Content { body: ContentBody::DataMessage(data), .. }, .. }
-                    if data.body.is_none() || !data.attachments.is_empty() =>
-                {
-                    Some(crate::attachments::of_message(data).iter().map(|a| a.kind).collect())
-                }
+                Record::Message {
+                    content:
+                        Content {
+                            body: ContentBody::DataMessage(data),
+                            ..
+                        },
+                    ..
+                } if data.body.is_none() || !data.attachments.is_empty() => Some(
+                    crate::attachments::of_message(data)
+                        .iter()
+                        .map(|a| a.kind)
+                        .collect(),
+                ),
                 _ => None,
             })
             .collect();
-        assert_eq!(kinds, [vec![AttachmentKind::Image], vec![AttachmentKind::LongText], vec![AttachmentKind::Sticker]]);
+        assert_eq!(
+            kinds,
+            [
+                vec![AttachmentKind::Image],
+                vec![AttachmentKind::LongText],
+                vec![AttachmentKind::Sticker]
+            ]
+        );
 
         let photo = records
             .iter()
             .find_map(|r| match r {
-                Record::Message { content: Content { body: ContentBody::DataMessage(data), .. }, .. } => {
-                    data.attachments.first().cloned()
-                }
+                Record::Message {
+                    content:
+                        Content {
+                            body: ContentBody::DataMessage(data),
+                            ..
+                        },
+                    ..
+                } => data.attachments.first().cloned(),
                 _ => None,
             })
             .unwrap();
@@ -847,7 +1099,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("langis-import-store-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let url = format!("sqlite://{}?mode=rwc", dir.join("store.db3").display());
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
             let mut store = SqliteStore::open(&url, OnNewIdentity::Trust).await.unwrap();
             // Twice: importing again must not duplicate anything.
@@ -862,9 +1117,26 @@ mod tests {
             assert_eq!(contacts.len(), 1);
             assert_eq!(contacts[0].name, "Alice Liddell");
             assert!(store.profile_key(&alice).await.unwrap().is_some());
-            assert_eq!(store.group(GROUP_KEY).await.unwrap().unwrap().title, "Climbing");
-            assert_eq!(store.messages(&Thread::Contact(alice), ..).await.unwrap().count(), 2);
-            assert_eq!(store.messages(&Thread::Group(GROUP_KEY), ..).await.unwrap().count(), 1);
+            assert_eq!(
+                store.group(GROUP_KEY).await.unwrap().unwrap().title,
+                "Climbing"
+            );
+            assert_eq!(
+                store
+                    .messages(&Thread::Contact(alice), ..)
+                    .await
+                    .unwrap()
+                    .count(),
+                2
+            );
+            assert_eq!(
+                store
+                    .messages(&Thread::Group(GROUP_KEY), ..)
+                    .await
+                    .unwrap()
+                    .count(),
+                1
+            );
         });
         std::fs::remove_dir_all(&dir).unwrap();
     }

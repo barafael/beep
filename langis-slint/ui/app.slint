@@ -668,7 +668,9 @@ component SettingsPage inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "langis";
+    // Rust says "MOCK" here when the mock backend runs, since it sends nothing.
+    in property <string> window-title: "langis";
+    title: root.window-title;
     icon: @image-url("../assets/langis.svg");
     min-width: 720px;
     min-height: 480px;
