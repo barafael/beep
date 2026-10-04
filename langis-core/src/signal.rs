@@ -81,7 +81,11 @@ impl Paths {
     fn new() -> Result<Self, String> {
         // `LANGIS_DATA_DIR` keeps a separate account, e.g. to link a second device for testing.
         // Its database key gets its own keyring entry, so it never replaces the default one.
-        let (dir, keyring_account) = match std::env::var_os("LANGIS_DATA_DIR") {
+        // Debug builds only: it lets anyone who can set the environment for this process decide
+        // where an encrypted database and its key file are written, which is not something a
+        // shipped client should take from the environment.
+        let custom = if cfg!(debug_assertions) { std::env::var_os("LANGIS_DATA_DIR") } else { None };
+        let (dir, keyring_account) = match custom {
             Some(dir) => {
                 let dir = PathBuf::from(dir);
                 let account = format!("{}:{}", vault::DEFAULT_ACCOUNT, dir.display());

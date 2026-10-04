@@ -379,7 +379,10 @@ component SettingsPage inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "langis";
+    // Spelled out in the title bar when the mock backend is running: it sends nothing, so
+    // anyone reading over a shoulder should not mistake it for a real conversation.
+    in property <bool> mock;
+    title: root.mock ? "langis — MOCK (nothing is sent)" : "langis";
     icon: @image-url("../assets/langis.svg");
     min-width: 720px;
     min-height: 480px;

@@ -28,6 +28,8 @@ pub struct Langis {
     password: Zeroizing<String>,
     confirmation: Zeroizing<String>,
     composer: ElementRef<TextBox>,
+    /// Whether the mock backend is running; it sends nothing at all.
+    mock: bool,
 }
 
 impl Langis {
@@ -57,6 +59,7 @@ impl Component for Langis {
             password: Zeroizing::default(),
             confirmation: Zeroizing::default(),
             composer: ElementRef::new(),
+            mock: Backend::mock_requested(),
         };
         this.listen(context);
         this
@@ -101,7 +104,13 @@ impl Component for Langis {
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
-        context.window_title("langis");
+        // Spelled out in the title bar when the mock backend is running: it sends nothing, so
+        // anyone reading over a shoulder should not mistake it for a real conversation.
+        if self.mock {
+            context.window_title("langis — MOCK (nothing is sent)");
+        } else {
+            context.window_title("langis");
+        }
         context.window_visuals(
             WindowVisuals::new()
                 .backdrop(WindowBackdrop::Mica)

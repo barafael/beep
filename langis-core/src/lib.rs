@@ -208,12 +208,30 @@ impl Backend {
 
     /// Starts the real backend, or the mock one when `LANGIS_MOCK` is set or the
     /// `signal` feature is disabled.
+    /// Whether the mock backend was requested through `LANGIS_MOCK`.
+    ///
+    /// The mock never sends anything: a user who thinks they are messaging someone while
+    /// looking at canned data would never notice, so this stays off in release builds and is
+    /// `pub` so the frontends can mark the window title.
+    pub fn mock_requested() -> bool {
+        std::env::var_os("LANGIS_MOCK").is_some()
+    }
+
+    /// Starts the real backend, or the mock one when `LANGIS_MOCK` is set or the
+    /// `signal` feature is disabled.
+    ///
+    /// `LANGIS_MOCK` is honoured in debug builds only. The mock never sends anything, so in a
+    /// release build a stray variable in the environment must not be able to turn a shipped
+    /// client into a convincing fake that silently swallows messages.
     pub fn from_env(config: Config) -> Self {
-        #[cfg(feature = "signal")]
-        if std::env::var_os("LANGIS_MOCK").is_none() {
+        // `LANGIS_MOCK` counts only in debug builds; see the doc comment.
+        let mock = cfg!(debug_assertions) && Self::mock_requested();
+        if !mock {
+            #[cfg(feature = "signal")]
             return Self::start(config);
+            #[cfg(not(feature = "signal"))]
+            let _ = config;
         }
-        let _ = config;
         Self::mock()
     }
 

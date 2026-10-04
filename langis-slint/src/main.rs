@@ -91,6 +91,10 @@ fn main() -> Result<(), slint::PlatformError> {
     show_settings(&window, &settings);
     let config = Config::default();
     window.set_device_name(config.device_name.as_str().into());
+    if Backend::mock_requested() {
+        // The mock sends nothing at all, so say so where it can't be missed.
+        window.set_mock(true);
+    }
     let backend = Backend::from_env(config);
     let chat = Rc::new(RefCell::new(ChatState::default()));
 

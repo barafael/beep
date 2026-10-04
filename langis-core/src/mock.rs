@@ -8,14 +8,22 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("bob", "Bob", false),
 ];
 
+/// `LANGIS_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
+/// Only available in debug builds, like the mock backend itself.
+pub(crate) fn mock_password_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("LANGIS_MOCK_PASSWORD").is_some()
+}
+
+/// The password the mock expects when [`mock_password_requested`] is set.
+pub(crate) const MOCK_PASSWORD: &str = "password";
+
 pub fn run(commands: Inbox, events: Events) {
-    // `LANGIS_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
-    if std::env::var_os("LANGIS_MOCK_PASSWORD").is_some() {
+    if mock_password_requested() {
         let mut request = Event::PasswordRequired { new: false, error: None };
         loop {
             let _ = events.send(request);
             match commands.iter().find_map(|c| if let Command::Unlock(p) = c { Some(p) } else { None }) {
-                Some(p) if p.expose() == "password" => break,
+                Some(p) if p.expose() == MOCK_PASSWORD => break,
                 Some(_) => request = Event::PasswordRequired { new: false, error: Some("Wrong password.".into()) },
                 None => return,
             }
