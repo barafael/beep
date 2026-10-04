@@ -597,7 +597,10 @@ component SettingsPage inherits Rectangle {
                 SectionTitle { text: "Appearance"; }
                 SettingRow {
                     label: "Theme";
+                    // Qt styles (System, Fusion) take their colours from the desktop.
+                    hint: root.widget-style <= 1 ? "The System and Fusion styles follow your desktop's colours." : "";
                     ComboBox {
+                        enabled: root.widget-style > 1;
                         width: 200px;
                         model: ["System", "Light", "Dark"];
                         current-index <=> root.theme;

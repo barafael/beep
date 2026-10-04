@@ -65,8 +65,13 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
         let _ = events.send(Event::Error(error));
     }
     // Drop the tasks still holding the store, then wait for its connections to close, so
-    // `Backend::shutdown` returns only once the database is no longer in use.
-    drop(local);
+    // `Backend::shutdown` returns only once the database is no longer in use. Inside the
+    // runtime: a task stopped mid-query drops a pooled connection, which hands itself back to
+    // the pool on the runtime (outside it, sqlx panics and the wait below never happens).
+    {
+        let _context = runtime.enter();
+        drop(local);
+    }
     drop(runtime);
     if let Some(closed) = closed {
         let _ = closed.recv_timeout(Duration::from_secs(5));
