@@ -12,6 +12,42 @@ pub enum Theme {
     Dark,
 }
 
+/// The look of the widgets, for UIs that offer several.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WidgetStyle {
+    /// The platform's own (Qt on Linux, in the desktop's Qt style).
+    #[default]
+    Native,
+    /// Qt's Fusion style: the native widgets, but the same on every desktop.
+    Fusion,
+    Fluent,
+    Material,
+    Cupertino,
+    Cosmic,
+}
+
+impl WidgetStyle {
+    pub const ALL: [Self; 6] = [
+        Self::Native,
+        Self::Fusion,
+        Self::Fluent,
+        Self::Material,
+        Self::Cupertino,
+        Self::Cosmic,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Fusion => "fusion",
+            Self::Fluent => "fluent",
+            Self::Material => "material",
+            Self::Cupertino => "cupertino",
+            Self::Cosmic => "cosmic",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextSize {
     Small,
@@ -44,6 +80,7 @@ pub enum NotificationContent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
+    pub style: WidgetStyle,
     pub text_size: TextSize,
     /// Show profile and group pictures rather than only initials.
     pub show_avatars: bool,
@@ -56,6 +93,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
+            style: WidgetStyle::default(),
             text_size: TextSize::default(),
             show_avatars: true,
             notifications: true,
@@ -93,6 +131,11 @@ impl Settings {
                 ("theme", "system") => settings.theme = Theme::System,
                 ("theme", "light") => settings.theme = Theme::Light,
                 ("theme", "dark") => settings.theme = Theme::Dark,
+                ("style", value) => {
+                    if let Some(style) = WidgetStyle::ALL.into_iter().find(|s| s.key() == value) {
+                        settings.style = style;
+                    }
+                }
                 ("text_size", "small") => settings.text_size = TextSize::Small,
                 ("text_size", "default") => settings.text_size = TextSize::Default,
                 ("text_size", "large") => settings.text_size = TextSize::Large,
@@ -132,9 +175,11 @@ impl Settings {
             NotificationContent::Nothing => "nothing",
         };
         format!(
-            "theme = {theme}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
+            "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {notification_content}\n",
-            self.show_avatars, self.notifications
+            self.style.key(),
+            self.show_avatars,
+            self.notifications
         )
     }
 }
@@ -150,14 +195,17 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let settings = Settings {
-            theme: Theme::Dark,
-            text_size: TextSize::Large,
-            show_avatars: false,
-            notifications: false,
-            notification_content: NotificationContent::NameOnly,
-        };
-        assert_eq!(Settings::parse(&settings.to_text()), settings);
+        for style in WidgetStyle::ALL {
+            let settings = Settings {
+                theme: Theme::Dark,
+                style,
+                text_size: TextSize::Large,
+                show_avatars: false,
+                notifications: false,
+                notification_content: NotificationContent::NameOnly,
+            };
+            assert_eq!(Settings::parse(&settings.to_text()), settings);
+        }
     }
 
     #[test]

@@ -546,6 +546,8 @@ component SectionTitle inherits Text {
 
 component SettingsPage inherits Rectangle {
     in-out property <int> theme;
+    in-out property <int> widget-style;
+    in property <string> style-note;
     in-out property <int> text-size;
     in-out property <bool> show-avatars;
     in-out property <bool> notifications;
@@ -596,16 +598,27 @@ component SettingsPage inherits Rectangle {
                 SettingRow {
                     label: "Theme";
                     ComboBox {
-                        width: 160px;
+                        width: 200px;
                         model: ["System", "Light", "Dark"];
                         current-index <=> root.theme;
                         selected => { root.changed-settings(); }
                     }
                 }
                 SettingRow {
+                    label: "Style";
+                    hint: root.style-note;
+                    ComboBox {
+                        width: 200px;
+                        // In the order of `WidgetStyle::ALL`.
+                        model: ["System", "Fusion", "Fluent", "Material", "Cupertino", "Cosmic"];
+                        current-index <=> root.widget-style;
+                        selected => { root.changed-settings(); }
+                    }
+                }
+                SettingRow {
                     label: "Text size";
                     ComboBox {
-                        width: 160px;
+                        width: 200px;
                         model: ["Small", "Default", "Large"];
                         current-index <=> root.text-size;
                         selected => { root.changed-settings(); }
@@ -633,7 +646,7 @@ component SettingsPage inherits Rectangle {
                 SettingRow {
                     label: "Show";
                     ComboBox {
-                        width: 160px;
+                        width: 200px;
                         enabled: root.notifications;
                         model: ["Name and message", "Name only", "Nothing"];
                         current-index <=> root.notification-content;
@@ -696,6 +709,9 @@ export component AppWindow inherits Window {
 
     // Settings: indexes into the choices shown on the settings page.
     in-out property <int> theme;
+    in-out property <int> widget-style;
+    // Explains a style change that waits for a restart; empty otherwise.
+    in property <string> style-note;
     in-out property <int> text-size: 1;
     in-out property <bool> show-avatars: true;
     in-out property <bool> notifications: true;
@@ -888,6 +904,8 @@ export component AppWindow inherits Window {
             if root.settings-open: SettingsPage {
                 horizontal-stretch: 1;
                 theme <=> root.theme;
+                widget-style <=> root.widget-style;
+                style-note: root.style-note;
                 text-size <=> root.text-size;
                 show-avatars <=> root.show-avatars;
                 notifications <=> root.notifications;
