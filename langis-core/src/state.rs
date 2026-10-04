@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{Avatar, ChatMessage, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{Avatar, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -99,6 +99,7 @@ pub struct ChatState {
     screen: Screen,
     account: String,
     synced: bool,
+    transfer: Option<HistoryTransfer>,
     error: Option<String>,
     /// Most recently active first; see [`ChatState::sort_conversations`].
     conversations: Vec<Conversation>,
@@ -130,6 +131,8 @@ impl ChatState {
             }
             Event::Synced => self.synced = true,
             Event::Reconnecting => self.synced = false,
+            Event::HistoryTransfer(HistoryTransfer::Finished) => self.transfer = None,
+            Event::HistoryTransfer(stage) => self.transfer = Some(stage),
             Event::Conversations(list) => {
                 for conversation in list {
                     match self
@@ -251,6 +254,11 @@ impl ChatState {
 
     pub fn account(&self) -> &str {
         &self.account
+    }
+
+    /// The message history transfer in progress, if any.
+    pub fn transfer(&self) -> Option<HistoryTransfer> {
+        self.transfer
     }
 
     pub fn synced(&self) -> bool {

@@ -12,6 +12,8 @@ pub mod state;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "signal")]
+mod import;
+#[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]
 mod vault;
@@ -60,6 +62,18 @@ impl std::fmt::Debug for Avatar {
     }
 }
 
+/// Stages of the message history transfer; see [`Event::HistoryTransfer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryTransfer {
+    /// Waiting for the phone to upload the history.
+    Waiting,
+    Downloading,
+    /// This many messages imported so far.
+    Importing { messages: usize },
+    /// Done, failed or skipped; errors arrive separately.
+    Finished,
+}
+
 /// A user-entered password. Wiped from memory on drop and never printed.
 #[derive(Clone)]
 pub struct Password(zeroize::Zeroizing<String>);
@@ -91,6 +105,8 @@ pub enum Event {
     Linked { account: String },
     /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
     Reconnecting,
+    /// Progress of the message history transfer right after linking.
+    HistoryTransfer(HistoryTransfer),
     /// Initial message queue drained; it is now safe to send.
     Synced,
     /// New or changed conversations, merged by id.

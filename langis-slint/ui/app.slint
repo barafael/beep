@@ -394,6 +394,8 @@ export component AppWindow inherits Window {
     in property <string> account;
     in property <string> error;
     in property <bool> synced;
+    // Progress of the message history transfer after linking; empty when there is none.
+    in property <string> history-status;
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
     in property <int> selected: -1;
@@ -512,6 +514,24 @@ export component AppWindow inherits Window {
                                 font-size: 1.2rem;
                                 color: Palette.foreground.with-alpha(0.75);
                             }
+                        }
+                    }
+                    if root.history-status != "": HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-bottom: 8px;
+                        spacing: 8px;
+                        Spinner {
+                            indeterminate: true;
+                            width: 16px;
+                            height: 16px;
+                        }
+                        Text {
+                            text: root.history-status;
+                            wrap: word-wrap;
+                            font-size: 0.85rem;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground.with-alpha(0.7);
                         }
                     }
                     ListView {

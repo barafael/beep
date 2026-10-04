@@ -20,7 +20,9 @@ presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ef7
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
-libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
+# `test-util` only makes its generated protobuf types public; it adds no dependencies. Using
+# them keeps us on exactly the schema its parser and validator use.
+libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0", features = ["test-util"] }
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]

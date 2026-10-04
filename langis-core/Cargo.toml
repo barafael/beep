@@ -14,7 +14,7 @@ signal = [
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
-    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image",
+    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono",
 ]
 
 [dependencies]
@@ -38,6 +38,9 @@ keyring-core = { version = "1", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 libsignal-message-backup = { workspace = true, optional = true }
 libsignal-account-keys = { workspace = true, optional = true }
+# Same versions as libsignal-message-backup and libsignal-service use.
+protobuf = { version = "3.7", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 # Same version as libsignal-service; only to download the history archive through its `PushService`.
 reqwest = { version = "0.13", default-features = false, optional = true }
 jiff = "0.2"

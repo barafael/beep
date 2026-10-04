@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::{Avatar, ChatMessage, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{Avatar, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -26,6 +26,19 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::LinkQr(QrMatrix::encode(url).unwrap()));
     std::thread::sleep(Duration::from_secs(2));
     let _ = events.send(Event::Linked { account: "+49 151 0000000 (mock)".into() });
+    // `LANGIS_MOCK_TRANSFER=1` walks through a message history transfer.
+    if std::env::var_os("LANGIS_MOCK_TRANSFER").is_some() {
+        for stage in [
+            HistoryTransfer::Waiting,
+            HistoryTransfer::Downloading,
+            HistoryTransfer::Importing { messages: 500 },
+            HistoryTransfer::Importing { messages: 1000 },
+            HistoryTransfer::Finished,
+        ] {
+            let _ = events.send(Event::HistoryTransfer(stage));
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
     let conversations = CONVERSATIONS
         .iter()
         .map(|&(id, title, is_group)| Conversation {

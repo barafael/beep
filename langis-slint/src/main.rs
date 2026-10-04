@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use langis_core::settings::{Settings, TextSize, Theme};
 use langis_core::state::{self, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
-use langis_core::{Avatar, Backend, Command, Commands, Config, ConversationId, Event, QrMatrix};
+use langis_core::{Avatar, Backend, Command, Commands, Config, ConversationId, Event, HistoryTransfer, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
@@ -221,6 +221,15 @@ fn render(window: &AppWindow, chat: &ChatState, avatars: &AvatarImages, update: 
         window.set_account(chat.account().into());
     }
     window.set_synced(chat.synced());
+    window.set_history_status(
+        match chat.transfer() {
+            None | Some(HistoryTransfer::Finished) => String::new(),
+            Some(HistoryTransfer::Waiting) => "Waiting for your phone to send your message history…".into(),
+            Some(HistoryTransfer::Downloading) => "Downloading your message history…".into(),
+            Some(HistoryTransfer::Importing { messages }) => format!("Importing your message history… {messages} messages"),
+        }
+        .into(),
+    );
     window.set_error(chat.error().unwrap_or_default().into());
     window.set_can_send(chat.can_compose(&window.get_draft()));
 

@@ -249,7 +249,7 @@ async fn session(
     let mut pending = Vec::new();
     if let Some(key) = history_key {
         let dir = Paths::new()?.dir;
-        let transfer = transfer::receive_history(&manager, key, &dir);
+        let transfer = transfer::receive_history(&manager, key, &dir, &events);
         pin_mut!(transfer);
         let result = loop {
             tokio::select! {
