@@ -1,6 +1,6 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::{Cell, RefCell}, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
+use std::{cell::{Cell, RefCell}, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::{Duration, Instant}};
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
@@ -595,6 +595,11 @@ fn own_id(manager: &Mgr) -> ServiceId {
     ServiceId::Aci(manager.registration_data().service_ids.aci())
 }
 
+/// When we last reset the session with each sender; see `SESSION_RESET_INTERVAL`.
+type Resets = HashMap<ServiceId, Instant>;
+
+const SESSION_RESET_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 /// Display names by sender service ID, so each sender is looked up in the store only once.
 type Names = HashMap<String, String>;
 
@@ -616,6 +621,7 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
 async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: AvatarFetcher) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
+    let mut resets = Resets::new();
     let mut backoff = Duration::from_secs(1);
     loop {
         match manager.receive_messages().await {
@@ -624,7 +630,7 @@ async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: Av
                 while let Some(received) = messages.next().await {
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &threads, &events, &avatars, &mut names, received).await {
+                    if !handle_received(&manager, &threads, &events, &avatars, &mut names, &mut resets, received).await {
                         return;
                     }
                 }
@@ -647,6 +653,7 @@ async fn handle_received(
     events: &Events,
     avatars: &AvatarFetcher,
     names: &mut Names,
+    resets: &mut Resets,
     received: Received,
 ) -> bool {
     match received {
@@ -660,13 +667,30 @@ async fn handle_received(
         }
         Received::DecryptionError(sender) => {
             warn!(sender = %sender.service_id_string(), "decryption error");
+            // A broken session stays broken until someone resets it; the sender's app then
+            // starts a new one (and can resend). Not more than hourly, so a peer that keeps
+            // failing can't keep us resetting.
+            let reset = matches!(sender, ServiceId::Aci(_))
+                && resets.get(&sender).is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
+            if reset {
+                resets.insert(sender, Instant::now());
+                match manager.clone().send_session_reset(&sender, now_millis()).await {
+                    Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
+                    Err(error) => warn!(%error, "failed to reset the session"),
+                }
+            }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
             let conversation = ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
             let name = sender_name(manager, names, sender).await;
+            let body = if reset {
+                format!("⚠ A message from {name} couldn't be decrypted. The connection was reset; it may arrive again.")
+            } else {
+                format!("⚠ A message from {name} couldn't be decrypted.")
+            };
             events.send(Event::Message(ChatMessage {
                 conversation,
                 sender_id: sender.service_id_string(),
-                body: format!("⚠ A message from {name} couldn't be decrypted."),
+                body,
                 sender: name,
                 timestamp: now_millis(),
                 ..Default::default()
