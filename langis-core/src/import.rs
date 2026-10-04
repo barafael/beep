@@ -21,8 +21,9 @@ use presage::{
         groups::{Group, Member},
     },
     proto::{
-        SyncMessage,
-        data_message::Quote,
+        AttachmentPointer, SyncMessage,
+        attachment_pointer::{AttachmentIdentifier, Flags},
+        data_message::{Quote, Sticker as DataSticker},
         sync_message::{Content as SyncContent, Sent},
     },
     store::{ContentsStore, Thread},
@@ -204,9 +205,32 @@ impl Importer {
     /// A text message as presage would have stored it on receipt: a data message if incoming,
     /// a "sent" sync message if we wrote it. Anything else is skipped for now.
     fn message(&self, item: &proto::ChatItem) -> Option<(Thread, Content)> {
-        let Some(proto::chat_item::Item::StandardMessage(message)) = &item.item else { return None };
+        use proto::chat_item::Item;
+        let empty = proto::StandardMessage::default();
+        let (message, sticker, view_once) = match &item.item {
+            Some(Item::StandardMessage(message)) => (message, None, None),
+            Some(Item::StickerMessage(sticker)) => (&empty, Some(&sticker.sticker), None),
+            Some(Item::ViewOnceMessage(view_once)) => (&empty, None, Some(view_once)),
+            _ => return None,
+        };
         let body = message.text.body.clone();
-        if body.is_empty() {
+        // Attachments no longer on the transit CDN can't be fetched, so they are left out.
+        let mut attachments: Vec<_> =
+            message.attachments.iter().filter_map(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default())).collect();
+        // The body holds the beginning of a long message; this its full text.
+        attachments.extend(message.longText.as_ref().and_then(|file| attachment_pointer(file, Default::default())));
+        // A viewed view-once message has no attachment left; there is nothing to show then.
+        attachments.extend(
+            view_once.and_then(|v| v.attachment.as_ref()).and_then(|a| attachment_pointer(&a.pointer, a.flag.enum_value_or_default())),
+        );
+        let sticker = sticker.map(|sticker| DataSticker {
+            pack_id: Some(sticker.packId.clone()),
+            pack_key: Some(sticker.packKey.clone()),
+            sticker_id: Some(sticker.stickerId),
+            emoji: sticker.emoji.clone(),
+            data: attachment_pointer(&sticker.data, Default::default()),
+        });
+        if body.is_empty() && attachments.is_empty() && sticker.as_ref().is_none_or(|s| s.data.is_none()) {
             return None;
         }
         // langis doesn't delete disappearing messages yet, but at least it won't bring back
@@ -245,10 +269,13 @@ impl Importer {
             })
         });
         let data = DataMessage {
-            body: Some(body),
+            body: (!body.is_empty()).then_some(body),
             timestamp: Some(item.dateSent),
             group_v2,
             quote,
+            attachments,
+            sticker,
+            is_view_once: view_once.map(|_| true),
             expire_timer: item.expiresInMs.map(|ms| (ms / 1000) as u32),
             ..Default::default()
         };
@@ -290,6 +317,46 @@ impl Importer {
         };
         Some((thread, Content { metadata, body }))
     }
+}
+
+/// Where to download an attachment from the transit CDN, as a live message would carry it.
+/// `None` if it isn't there (any more).
+fn attachment_pointer(file: &proto::FilePointer, flag: proto::message_attachment::Flag) -> Option<AttachmentPointer> {
+    use proto::{file_pointer::locator_info::IntegrityCheck, message_attachment::Flag};
+    let locator = file.locatorInfo.as_ref()?;
+    let (Some(cdn_key), Some(cdn_number)) = (locator.transitCdnKey.clone(), locator.transitCdnNumber) else {
+        return None;
+    };
+    // Media the phone already downloaded carries a hash of the plaintext instead, which the
+    // pointer has no field for; the attachment's own HMAC still authenticates it.
+    let digest = match &locator.integrityCheck {
+        Some(IntegrityCheck::EncryptedDigest(digest)) => Some(digest.clone()),
+        _ => None,
+    };
+    let flags = match flag {
+        Flag::VOICE_MESSAGE => Some(Flags::VoiceMessage as u32),
+        Flag::BORDERLESS => Some(Flags::Borderless as u32),
+        Flag::GIF => Some(Flags::Gif as u32),
+        Flag::NONE => None,
+    };
+    Some(AttachmentPointer {
+        attachment_identifier: Some(AttachmentIdentifier::CdnKey(cdn_key)),
+        cdn_number: Some(cdn_number),
+        key: Some(locator.key.clone()),
+        size: Some(locator.size),
+        digest,
+        content_type: file.contentType.clone(),
+        file_name: file.fileName.clone(),
+        width: file.width,
+        height: file.height,
+        caption: file.caption.clone(),
+        blur_hash: file.blurHash.clone(),
+        upload_timestamp: locator.transitTierUploadTimestamp,
+        incremental_mac: file.incrementalMac.clone(),
+        chunk_size: file.incrementalMacChunkSize,
+        flags,
+        ..Default::default()
+    })
 }
 
 /// Contacts without an ACI can't be messaged or stored by presage, so they are dropped.
@@ -357,6 +424,8 @@ mod tests {
     use presage_store_sqlite::SqliteStore;
     use proto::{chat_item::DirectionalDetails, recipient::Destination};
     use protobuf::MessageField;
+
+    use crate::AttachmentKind;
 
     const ME: [u8; 16] = [1; 16];
     const ALICE: [u8; 16] = [2; 16];
@@ -572,6 +641,95 @@ mod tests {
         assert_eq!(quote.text.as_deref(), Some("Hi!"));
         let lasting = bodies.iter().find(|data| data.body.as_deref() == Some("still here")).unwrap();
         assert_eq!(lasting.expire_timer, Some((NOW / 1000) as u32));
+    }
+
+    fn file(content_type: &str, transit: bool) -> proto::FilePointer {
+        proto::FilePointer {
+            contentType: Some(content_type.into()),
+            width: Some(800),
+            locatorInfo: MessageField::some(proto::file_pointer::LocatorInfo {
+                key: vec![5; 64],
+                size: 4321,
+                transitCdnKey: transit.then(|| "key".into()),
+                transitCdnNumber: transit.then_some(3),
+                integrityCheck: Some(proto::file_pointer::locator_info::IntegrityCheck::EncryptedDigest(vec![6; 32])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn incoming(sent: u64, item: proto::chat_item::Item) -> Vec<u8> {
+        frame(proto::frame::Item::ChatItem(proto::ChatItem {
+            chatId: 10,
+            authorId: 2,
+            dateSent: sent,
+            directionalDetails: Some(DirectionalDetails::Incoming(Default::default())),
+            item: Some(item),
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn imports_attachments_still_on_the_cdn() {
+        use proto::chat_item::Item;
+        let attached = |files: Vec<proto::FilePointer>, long: Option<proto::FilePointer>| proto::StandardMessage {
+            attachments: files
+                .into_iter()
+                .map(|pointer| proto::MessageAttachment { pointer: MessageField::some(pointer), ..Default::default() })
+                .collect(),
+            longText: long.map_or_else(MessageField::none, MessageField::some),
+            ..Default::default()
+        };
+        let mut frames = archive();
+        // A photo, plus one that has left the CDN.
+        frames.push(incoming(8000, Item::StandardMessage(attached(vec![file("image/jpeg", true), file("image/jpeg", false)], None))));
+        // Only gone media: nothing to show.
+        frames.push(incoming(8100, Item::StandardMessage(attached(vec![file("image/jpeg", false)], None))));
+        frames.push(incoming(8200, Item::StandardMessage(attached(Vec::new(), Some(file("text/x-signal-plain", true))))));
+        frames.push(incoming(
+            8300,
+            Item::StickerMessage(proto::StickerMessage {
+                sticker: MessageField::some(proto::Sticker {
+                    packId: vec![1],
+                    packKey: vec![2],
+                    data: MessageField::some(file("image/webp", true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        ));
+        // Already viewed: no attachment left.
+        frames.push(incoming(8400, Item::ViewOnceMessage(Default::default())));
+        let (records, stats) = import(&frames);
+        assert_eq!(stats.messages, 3 + 3);
+
+        let kinds: Vec<Vec<AttachmentKind>> = records
+            .iter()
+            .filter_map(|r| match r {
+                Record::Message { content: Content { body: ContentBody::DataMessage(data), .. }, .. }
+                    if data.body.is_none() || !data.attachments.is_empty() =>
+                {
+                    Some(crate::attachments::of_message(data).iter().map(|a| a.kind).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, [vec![AttachmentKind::Image], vec![AttachmentKind::LongText], vec![AttachmentKind::Sticker]]);
+
+        let photo = records
+            .iter()
+            .find_map(|r| match r {
+                Record::Message { content: Content { body: ContentBody::DataMessage(data), .. }, .. } => {
+                    data.attachments.first().cloned()
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(photo.cdn_number, Some(3));
+        assert_eq!(photo.key.as_deref(), Some(&[5; 64][..]));
+        assert_eq!(photo.digest.as_deref(), Some(&[6; 32][..]));
+        assert_eq!((photo.size, photo.width), (Some(4321), Some(800)));
     }
 
     fn alice_id() -> String {

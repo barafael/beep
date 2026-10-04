@@ -12,6 +12,8 @@ pub mod state;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "signal")]
+mod attachments;
+#[cfg(feature = "signal")]
 mod import;
 #[cfg(feature = "signal")]
 mod transfer;
@@ -49,6 +51,7 @@ pub struct ChatMessage {
     pub outgoing: bool,
     /// The message this one replies to.
     pub quote: Option<Quote>,
+    pub attachments: Vec<Attachment>,
 }
 
 /// What a reply shows of the message it answers.
@@ -59,17 +62,75 @@ pub struct Quote {
     pub text: String,
 }
 
-/// A square profile or group picture, decoded to RGBA (row-major, 4 bytes per pixel).
+/// A decoded image: an avatar, an attached picture or a sticker. RGBA, row-major, 4 bytes
+/// per pixel.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Avatar {
-    pub side: u32,
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
     pub rgba: Vec<u8>,
 }
 
-impl std::fmt::Debug for Avatar {
+impl std::fmt::Debug for Picture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Avatar({0}x{0})", self.side)
+        write!(f, "Picture({}x{})", self.width, self.height)
     }
+}
+
+/// Identifies an attachment across events; see [`Attachment::id`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AttachmentId(pub String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    Audio,
+    VoiceNote,
+    Sticker,
+    /// The full text of a long message; the message body holds only its beginning.
+    LongText,
+    /// Meant to be viewed once, on the phone.
+    ViewOnce,
+    File,
+}
+
+/// A file attached to a message. Signal keeps attachments on its servers for about 45 days;
+/// they are downloaded on demand, never stored unencrypted except when saved by the user.
+#[derive(Clone, PartialEq)]
+pub struct Attachment {
+    pub id: AttachmentId,
+    pub kind: AttachmentKind,
+    pub content_type: String,
+    pub file_name: Option<String>,
+    /// In bytes.
+    pub size: u64,
+    /// In pixels, if the sender said; 0 otherwise.
+    pub width: u32,
+    pub height: u32,
+    /// Where and how to download it, opaque to UIs (an encoded Signal attachment pointer).
+    pub(crate) pointer: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for Attachment {
+    // Leaves out the pointer, which holds the attachment's key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attachment")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("content_type", &self.content_type)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A downloaded attachment, as far as UIs can show it; see [`Event::Attachment`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachmentContent {
+    /// Images and stickers, scaled down for display.
+    Picture(Arc<Picture>),
+    /// Long message text.
+    Text(String),
 }
 
 /// Stages of the message history transfer; see [`Event::HistoryTransfer`].
@@ -122,7 +183,11 @@ pub enum Event {
     /// New or changed conversations, merged by id.
     Conversations(Vec<Conversation>),
     /// Profile or group picture of a conversation, replacing any earlier one.
-    Avatar { conversation: ConversationId, avatar: Arc<Avatar> },
+    Avatar { conversation: ConversationId, avatar: Arc<Picture> },
+    /// Answer to [`Command::FetchAttachment`].
+    Attachment { id: AttachmentId, content: Result<AttachmentContent, String> },
+    /// Answer to [`Command::SaveAttachment`]: where the file was written.
+    AttachmentSaved { id: AttachmentId, path: Result<std::path::PathBuf, String> },
     /// The complete stored history of a conversation, answering [`Command::LoadHistory`].
     History { conversation: ConversationId, messages: Vec<ChatMessage> },
     /// A conversation's newest stored message, so it can be sorted and previewed before its
@@ -139,6 +204,10 @@ pub enum Command {
     LoadHistory(ConversationId),
     /// Stop waiting for the phone to send the message history, and continue without it.
     SkipHistory,
+    /// Download an image, sticker or long text for display; see [`Event::Attachment`].
+    FetchAttachment(Attachment),
+    /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
+    SaveAttachment(Attachment),
     Send { conversation: ConversationId, body: String },
 }
 

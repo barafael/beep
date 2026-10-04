@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{Avatar, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -28,6 +28,9 @@ pub struct Update {
     pub screen: bool,
     pub conversations: bool,
     pub messages: MessagesUpdate,
+    /// Some attachment changed state (see [`ChatState::attachment`]); messages showing one
+    /// need redrawing.
+    pub attachments: bool,
 }
 
 impl Update {
@@ -37,6 +40,7 @@ impl Update {
             screen: self.screen || other.screen,
             conversations: self.conversations || other.conversations,
             messages: self.messages.merge(other.messages),
+            attachments: self.attachments || other.attachments,
         }
     }
 }
@@ -67,7 +71,7 @@ impl MessagesUpdate {
 pub struct ConversationView<'a> {
     pub conversation: &'a Conversation,
     /// Shared, so UIs can cache what they convert it into and tell when it changed.
-    pub avatar: Option<&'a Arc<Avatar>>,
+    pub avatar: Option<&'a Arc<Picture>>,
     pub last_message: Option<&'a ChatMessage>,
     pub unread: u32,
     pub selected: bool,
@@ -79,7 +83,10 @@ impl ConversationView<'_> {
         let Some(message) = self.last_message else {
             return String::new();
         };
-        let body = message.body.lines().next().unwrap_or_default();
+        let body = match message.body.lines().next() {
+            Some(line) => line.to_string(),
+            None => message.attachments.first().map_or_else(String::new, |a| describe_kind(a.kind).to_string()),
+        };
         if message.outgoing {
             format!("You: {body}")
         } else {
@@ -92,6 +99,37 @@ pub struct MessageView<'a> {
     pub message: &'a ChatMessage,
     /// Show the sender's name above the message (incoming group messages, first of a run).
     pub show_sender: bool,
+    /// The message text: its full text if it is long and that has been fetched.
+    pub body: &'a str,
+}
+
+/// Where a download for display or saving stands; see [`ChatState::attachment`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachmentState {
+    Loading,
+    Ready(AttachmentContent),
+    Saving,
+    Saved(std::path::PathBuf),
+    Failed(String),
+}
+
+/// A word or two for what an attachment is, e.g. for previews.
+pub fn describe_kind(kind: AttachmentKind) -> &'static str {
+    match kind {
+        AttachmentKind::Image => "📷 Photo",
+        AttachmentKind::Video => "🎞 Video",
+        AttachmentKind::Audio => "🎵 Audio",
+        AttachmentKind::VoiceNote => "🎤 Voice message",
+        AttachmentKind::Sticker => "Sticker",
+        AttachmentKind::LongText => "Long message",
+        AttachmentKind::ViewOnce => "View-once media",
+        AttachmentKind::File => "📎 File",
+    }
+}
+
+/// Whether an attachment is fetched as soon as its message is shown.
+pub fn shown_inline(kind: AttachmentKind) -> bool {
+    matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::LongText)
 }
 
 #[derive(Default)]
@@ -106,7 +144,8 @@ pub struct ChatState {
     unread: HashMap<ConversationId, u32>,
     /// Per conversation, sorted and unique by [`message_key`].
     history: HashMap<ConversationId, Vec<ChatMessage>>,
-    avatars: HashMap<ConversationId, Arc<Avatar>>,
+    avatars: HashMap<ConversationId, Arc<Picture>>,
+    attachments: HashMap<AttachmentId, AttachmentState>,
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
@@ -146,6 +185,26 @@ impl ChatState {
                 }
                 self.sort_conversations();
                 update.conversations = true;
+            }
+            Event::Attachment { id, content } => {
+                let state = match content {
+                    Ok(content) => AttachmentState::Ready(content),
+                    Err(error) => AttachmentState::Failed(error),
+                };
+                self.attachments.insert(id, state);
+                update.attachments = true;
+            }
+            Event::AttachmentSaved { id, path } => {
+                // A failed save leaves what was there for display.
+                let state = match path {
+                    Ok(path) => AttachmentState::Saved(path),
+                    Err(error) => {
+                        self.error = Some(error);
+                        AttachmentState::Failed("Couldn't save it.".into())
+                    }
+                };
+                self.attachments.insert(id, state);
+                update.attachments = true;
             }
             Event::Avatar { conversation, avatar } => {
                 self.avatars.insert(conversation, avatar);
@@ -267,6 +326,36 @@ impl ChatState {
         &self.account
     }
 
+    /// The download of an attachment for display, if it was asked for.
+    pub fn attachment(&self, id: &AttachmentId) -> Option<&AttachmentState> {
+        self.attachments.get(id)
+    }
+
+    /// Asks for an inline attachment of a message being shown, unless that happened already.
+    pub fn fetch_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
+        if self.attachments.contains_key(id) {
+            return None;
+        }
+        let attachment = self.find_attachment(id).filter(|a| shown_inline(a.kind))?.clone();
+        self.attachments.insert(id.clone(), AttachmentState::Loading);
+        Some(Command::FetchAttachment(attachment))
+    }
+
+    /// Saves an attachment of the selected conversation to the downloads folder.
+    pub fn save_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
+        if matches!(self.attachments.get(id), Some(AttachmentState::Saving)) {
+            return None;
+        }
+        let attachment = self.find_attachment(id).filter(|a| a.kind != AttachmentKind::ViewOnce)?.clone();
+        self.attachments.insert(id.clone(), AttachmentState::Saving);
+        Some(Command::SaveAttachment(attachment))
+    }
+
+    /// Only attachments of the selected conversation can be asked for.
+    fn find_attachment(&self, id: &AttachmentId) -> Option<&Attachment> {
+        self.history.get(self.selected.as_ref()?)?.iter().flat_map(|m| &m.attachments).find(|a| &a.id == id)
+    }
+
     /// While waiting for the phone, gives up on the history transfer.
     pub fn skip_history(&mut self) -> Option<Command> {
         (self.transfer == Some(HistoryTransfer::Waiting)).then_some(Command::SkipHistory)
@@ -330,6 +419,7 @@ impl ChatState {
                 show_sender: group
                     && !message.outgoing
                     && (i == 0 || history[i - 1].sender_id != message.sender_id),
+                body: self.full_text(message).unwrap_or(&message.body),
             })
     }
 
@@ -339,6 +429,15 @@ impl ChatState {
         let messages = self.messages();
         let skip = messages.len().saturating_sub(n);
         messages.skip(skip)
+    }
+
+    /// The fetched full text of a long message.
+    fn full_text(&self, message: &ChatMessage) -> Option<&str> {
+        let long = message.attachments.iter().find(|a| a.kind == AttachmentKind::LongText)?;
+        match self.attachments.get(&long.id)? {
+            AttachmentState::Ready(AttachmentContent::Text(text)) => Some(text),
+            _ => None,
+        }
     }
 
     fn last_of(&self, id: &ConversationId) -> Option<&ChatMessage> {
@@ -398,6 +497,15 @@ pub fn avatar_index(id: &ConversationId, len: usize) -> usize {
 }
 
 /// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
+/// "240 KB", "1.2 MB": sizes as people read them.
+pub fn format_size(bytes: u64) -> String {
+    match bytes {
+        0..1_000 => format!("{bytes} B"),
+        1_000..1_000_000 => format!("{} KB", bytes / 1_000),
+        _ => format!("{:.1} MB", bytes as f64 / 1_000_000.0),
+    }
+}
+
 pub fn format_time(timestamp: u64) -> String {
     let Ok(time) = jiff::Timestamp::from_millisecond(timestamp as i64) else {
         return String::new();
@@ -488,6 +596,62 @@ mod tests {
         assert_eq!(view.unread, 0);
         // Opening it still fetches the full history.
         assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
+    }
+
+    fn with_attachment(conversation: &str, timestamp: u64, id: &str, kind: AttachmentKind) -> ChatMessage {
+        let attachment = Attachment {
+            id: AttachmentId(id.into()),
+            kind,
+            content_type: String::new(),
+            file_name: None,
+            size: 1,
+            width: 0,
+            height: 0,
+            pointer: Arc::from(Vec::new()),
+        };
+        ChatMessage { attachments: vec![attachment], ..message(conversation, "Alice", timestamp, false) }
+    }
+
+    #[test]
+    fn attachments_are_fetched_once_and_only_for_the_selected_chat() {
+        let mut state = state();
+        let photo = AttachmentId("photo".into());
+        state.apply(Event::Message(with_attachment("a", 1, "photo", AttachmentKind::Image)));
+        assert!(state.fetch_attachment(&photo).is_none(), "not selected");
+        state.select(&ConversationId("a".into()));
+        assert!(matches!(state.fetch_attachment(&photo), Some(Command::FetchAttachment(a)) if a.id == photo));
+        assert!(state.fetch_attachment(&photo).is_none(), "already asked");
+        let update = state.apply(Event::Attachment { id: photo.clone(), content: Err("gone".into()) });
+        assert!(update.attachments);
+        assert_eq!(state.attachment(&photo), Some(&AttachmentState::Failed("gone".into())));
+    }
+
+    #[test]
+    fn long_text_replaces_the_body_once_fetched() {
+        let mut state = state();
+        state.apply(Event::Message(with_attachment("a", 1, "long", AttachmentKind::LongText)));
+        state.select(&ConversationId("a".into()));
+        assert_ne!(state.messages().next().unwrap().body, "the whole story");
+        state.apply(Event::Attachment { id: AttachmentId("long".into()), content: Ok(AttachmentContent::Text("the whole story".into())) });
+        assert_eq!(state.messages().next().unwrap().body, "the whole story");
+    }
+
+    #[test]
+    fn view_once_media_is_not_saved() {
+        let mut state = state();
+        state.apply(Event::Message(with_attachment("a", 1, "once", AttachmentKind::ViewOnce)));
+        state.apply(Event::Message(with_attachment("a", 2, "file", AttachmentKind::File)));
+        state.select(&ConversationId("a".into()));
+        assert!(state.save_attachment(&AttachmentId("once".into())).is_none());
+        assert!(state.save_attachment(&AttachmentId("file".into())).is_some());
+        assert!(state.save_attachment(&AttachmentId("file".into())).is_none(), "already saving");
+    }
+
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(format_size(999), "999 B");
+        assert_eq!(format_size(245_760), "245 KB");
+        assert_eq!(format_size(1_250_000), "1.2 MB");
     }
 
     #[test]

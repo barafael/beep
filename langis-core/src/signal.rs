@@ -25,7 +25,7 @@ use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{debug, info, warn};
 
 use crate::{
-    Avatar, transfer,
+    Picture, attachments, transfer,
     ChatMessage, Command, Config, Quote, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
     QrMatrix,
     now_millis,
@@ -265,16 +265,17 @@ async fn session(
 
     send_latest_messages(&manager, &threads, &events).await;
 
+    let downloads = attachments::download_limit();
     tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone()));
     tokio::task::spawn_local(fetch_avatars(manager.clone(), threads.clone(), events.clone()));
 
     for command in pending {
-        if let Err(error) = handle(&mut manager, &threads, &events, command).await {
+        if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
             let _ = events.send(Event::Error(error));
         }
     }
     while let Some(command) = command_rx.recv().await {
-        if let Err(error) = handle(&mut manager, &threads, &events, command).await {
+        if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
             let _ = events.send(Event::Error(error));
         }
     }
@@ -519,10 +520,10 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
 }
 
 /// Crops to a square and scales to [`AVATAR_SIDE`].
-fn decode_avatar(bytes: &[u8]) -> Option<Avatar> {
+fn decode_avatar(bytes: &[u8]) -> Option<Picture> {
     let image = image::load_from_memory(bytes).ok()?;
     let square = image.resize_to_fill(AVATAR_SIDE, AVATAR_SIDE, image::imageops::FilterType::Lanczos3);
-    Some(Avatar { side: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
+    Some(Picture { width: AVATAR_SIDE, height: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
 }
 
 fn own_id(manager: &Mgr) -> ServiceId {
@@ -644,7 +645,8 @@ async fn to_chat_message(
         _ => return None,
     };
     let body = data.body.clone().unwrap_or_default();
-    if body.is_empty() {
+    let attachments = attachments::of_message(data);
+    if body.is_empty() && attachments.is_empty() {
         return None;
     }
     let sender = if outgoing {
@@ -671,6 +673,7 @@ async fn to_chat_message(
         timestamp: content.timestamp(),
         outgoing,
         quote,
+        attachments,
     })
 }
 
@@ -678,9 +681,18 @@ async fn handle(
     manager: &mut Mgr,
     threads: &Threads,
     events: &Events,
+    downloads: &Rc<tokio::sync::Semaphore>,
     command: Command,
 ) -> Result<(), String> {
+    let servers = manager.registration_data().signal_servers;
     match command {
+        // In the background, so commands keep flowing while files download.
+        Command::FetchAttachment(attachment) => {
+            tokio::task::spawn_local(attachments::fetch(servers, attachment, events.clone(), downloads.clone()));
+        }
+        Command::SaveAttachment(attachment) => {
+            tokio::task::spawn_local(attachments::save(servers, attachment, events.clone(), downloads.clone()));
+        }
         // Already unlocked.
         Command::Unlock(_) => {}
         // Only meaningful during the transfer; see `link_with_history`.

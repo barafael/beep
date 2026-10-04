@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::{Avatar, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -67,6 +67,19 @@ pub fn run(commands: Inbox, events: Events) {
     loop {
         match commands.recv_timeout(Duration::from_secs(20)) {
             Ok(Command::Unlock(_) | Command::SkipHistory) => {}
+            // Every mock attachment is the same picture; saving pretends to succeed.
+            Ok(Command::FetchAttachment(attachment)) => {
+                std::thread::sleep(Duration::from_millis(400));
+                let content = match attachment.kind {
+                    AttachmentKind::LongText => Ok(AttachmentContent::Text(format!("{} (and the rest)", "A long message ".repeat(20)))),
+                    _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
+                };
+                let _ = events.send(Event::Attachment { id: attachment.id, content });
+            }
+            Ok(Command::SaveAttachment(attachment)) => {
+                let path = Ok(std::env::temp_dir().join(attachment.file_name.unwrap_or_else(|| "attachment".into())));
+                let _ = events.send(Event::AttachmentSaved { id: attachment.id, path });
+            }
             Ok(Command::LoadHistory(id)) => {
                 let messages = history(&id, started);
                 let _ = events.send(Event::History { conversation: id, messages });
@@ -86,7 +99,7 @@ pub fn run(commands: Inbox, events: Events) {
 }
 
 /// A diagonal gradient, standing in for a profile picture.
-fn gradient(side: u32) -> Avatar {
+fn gradient(side: u32) -> Picture {
     let rgba = (0..side * side)
         .flat_map(|i| {
             let (x, y) = (i % side, i / side);
@@ -94,7 +107,7 @@ fn gradient(side: u32) -> Avatar {
             [255 - t / 2, 120 + t / 3, t, 255]
         })
         .collect();
-    Avatar { side, rgba }
+    Picture { width: side, height: side, rgba }
 }
 
 fn message(conversation: &str, sender: &str, body: &str, timestamp: u64, outgoing: bool) -> ChatMessage {
@@ -120,11 +133,40 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 quote: Some(Quote { author: "You".into(), text: "Building it right now, in Rust.".into() }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
             },
+            ChatMessage {
+                attachments: vec![attachment("photo", AttachmentKind::Image, "image/jpeg", None, (800, 600))],
+                ..message("alice", "Alice", "The view from the hut", ago(30), false)
+            },
+            ChatMessage {
+                attachments: vec![attachment("notes", AttachmentKind::File, "application/pdf", Some("route-notes.pdf"), (0, 0))],
+                ..message("alice", "You", "", ago(29), true)
+            },
         ],
         "rust" => vec![
             message("rust", "Ferris", "Slint or iced?", ago(120), false),
             message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false),
+            ChatMessage {
+                attachments: vec![attachment("long", AttachmentKind::LongText, "text/x-signal-plain", None, (0, 0))],
+                ..message("rust", "Ferris", "A long message A long message A long…", ago(117), false)
+            },
+            ChatMessage {
+                attachments: vec![attachment("sticker", AttachmentKind::Sticker, "image/webp", None, (512, 512))],
+                ..message("rust", "Carol", "", ago(116), false)
+            },
         ],
         _ => Vec::new(),
+    }
+}
+
+fn attachment(id: &str, kind: AttachmentKind, content_type: &str, file_name: Option<&str>, (width, height): (u32, u32)) -> Attachment {
+    Attachment {
+        id: AttachmentId(id.into()),
+        kind,
+        content_type: content_type.into(),
+        file_name: file_name.map(Into::into),
+        size: 245_760,
+        width,
+        height,
+        pointer: Arc::from(Vec::new()),
     }
 }

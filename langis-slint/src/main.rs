@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use langis_core::settings::{Settings, TextSize, Theme};
-use langis_core::state::{self, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
-use langis_core::{Avatar, Backend, Command, Commands, Config, ConversationId, Event, HistoryTransfer, QrMatrix};
+use langis_core::state::{self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
+use langis_core::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, Backend, Command, Commands, Config, ConversationId, Event, HistoryTransfer, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
@@ -30,9 +30,9 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
 
-    let avatars = Rc::new(AvatarImages::default());
-    avatars.enabled.set(settings.show_avatars);
-    let app = App { window: window.as_weak(), chat: chat.clone(), avatars: avatars.clone(), commands: backend.commands() };
+    let images = Rc::new(Images::default());
+    images.avatars_enabled.set(settings.show_avatars);
+    let app = App { window: window.as_weak(), chat: chat.clone(), images: images.clone(), commands: backend.commands() };
     window.on_select({
         let app = app.clone();
         move |id| {
@@ -74,9 +74,21 @@ fn main() -> Result<(), slint::PlatformError> {
                 tracing::warn!(%error, "failed to save settings");
             }
             // The theme applies in the UI itself; pictures need the list rebuilt.
-            if app.avatars.enabled.replace(settings.show_avatars) != settings.show_avatars {
+            if app.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars {
                 app.act(|_, _| (None, Update { conversations: true, ..Update::default() }));
             }
+        }
+    });
+    window.on_fetch_attachment({
+        let app = app.clone();
+        move |id| {
+            app.act(|chat, _| (chat.fetch_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
+        }
+    });
+    window.on_save_attachment({
+        let app = app.clone();
+        move |id| {
+            app.act(|chat, _| (chat.save_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
         }
     });
     window.on_skip_history({
@@ -105,14 +117,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 update.merge(chat.apply(event))
             });
-            render(&window, &chat, &avatars, update);
+            render(&window, &chat, &images, update);
         }
         // The channel only closes early if the backend thread died without reporting why
         // (a panic); say so instead of leaving a frozen window.
         if let Some(window) = weak.upgrade() {
             let mut chat = chat.borrow_mut();
             let update = chat.apply(Event::Error("The Signal backend stopped unexpectedly.".into()));
-            render(&window, &chat, &avatars, update);
+            render(&window, &chat, &images, update);
         }
     })
     .expect("the event loop is set up");
@@ -129,7 +141,7 @@ fn main() -> Result<(), slint::PlatformError> {
 struct App {
     window: slint::Weak<AppWindow>,
     chat: Rc<RefCell<ChatState>>,
-    avatars: Rc<AvatarImages>,
+    images: Rc<Images>,
     commands: Commands,
 }
 
@@ -141,34 +153,49 @@ impl App {
         if let Some(command) = command {
             self.commands.send(command);
         }
-        render(&window, &chat, &self.avatars, update);
+        render(&window, &chat, &self.images, update);
     }
 }
 
-/// Avatars converted to Slint images, so re-rendering the list neither copies pixels again
+/// Pictures converted to Slint images once, so re-rendering lists neither copies pixels again
 /// nor makes unchanged rows look changed.
 #[derive(Default)]
-struct AvatarImages {
-    images: RefCell<HashMap<ConversationId, (Arc<Avatar>, Image)>>,
+struct Images {
+    avatars: ImageCache<ConversationId>,
+    attachments: ImageCache<AttachmentId>,
     /// The "Profile pictures" setting.
-    enabled: Cell<bool>,
+    avatars_enabled: Cell<bool>,
 }
 
-impl AvatarImages {
+impl Images {
     /// Empty when pictures are turned off.
-    fn get(&self, id: &ConversationId, avatar: &Arc<Avatar>) -> Image {
-        if !self.enabled.get() {
+    fn avatar(&self, id: &ConversationId, avatar: &Arc<Picture>) -> Image {
+        if !self.avatars_enabled.get() {
             return Image::default();
         }
-        let mut images = self.images.borrow_mut();
-        if let Some((cached, image)) = images.get(id)
-            && Arc::ptr_eq(cached, avatar)
+        self.avatars.get(id, avatar)
+    }
+}
+
+struct ImageCache<K>(RefCell<HashMap<K, (Arc<Picture>, Image)>>);
+
+impl<K> Default for ImageCache<K> {
+    fn default() -> Self {
+        Self(RefCell::default())
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
+    fn get(&self, key: &K, picture: &Arc<Picture>) -> Image {
+        let mut images = self.0.borrow_mut();
+        if let Some((cached, image)) = images.get(key)
+            && Arc::ptr_eq(cached, picture)
         {
             return image.clone();
         }
-        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&avatar.rgba, avatar.side, avatar.side);
+        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&picture.rgba, picture.width, picture.height);
         let image = Image::from_rgba8(buffer);
-        images.insert(id.clone(), (avatar.clone(), image.clone()));
+        images.insert(key.clone(), (picture.clone(), image.clone()));
         image
     }
 }
@@ -207,7 +234,7 @@ fn read_settings(window: &AppWindow) -> Settings {
 
 /// Brings the window in line with `chat`, touching only what `update` says changed (plus the
 /// cheap status properties).
-fn render(window: &AppWindow, chat: &ChatState, avatars: &AvatarImages, update: Update) {
+fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update) {
     if update.screen {
         match chat.screen() {
             state::Screen::Connecting => window.set_screen(Screen::Connecting),
@@ -244,14 +271,28 @@ fn render(window: &AppWindow, chat: &ChatState, avatars: &AvatarImages, update: 
         MessagesUpdate::Unchanged => {}
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
-                messages.push(message_item(&message));
+                messages.push(message_item(&message, chat, images));
             }
         }
-        MessagesUpdate::Reset => messages.set_vec(chat.messages().map(|m| message_item(&m)).collect::<Vec<_>>()),
+        MessagesUpdate::Reset => {
+            messages.set_vec(chat.messages().map(|m| message_item(&m, chat, images)).collect::<Vec<_>>())
+        }
+    }
+    // Downloads finishing redraw only the messages that show attachments.
+    if update.attachments && update.messages != MessagesUpdate::Reset {
+        for (row, message) in chat.messages().enumerate() {
+            if message.message.attachments.is_empty() {
+                continue;
+            }
+            let item = message_item(&message, chat, images);
+            if messages.row_data(row).as_ref() != Some(&item) {
+                messages.set_row_data(row, item);
+            }
+        }
     }
 
     if update.conversations {
-        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, avatars)).collect();
+        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, images)).collect();
         let conversations = window.get_conversations();
         let conversations = vec_model(&conversations);
         // Update in place where possible so the list keeps its scroll position.
@@ -273,7 +314,7 @@ fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
     model.as_any().downcast_ref().expect("models are VecModels, set up in main")
 }
 
-fn conversation_item(view: &ConversationView, avatars: &AvatarImages) -> ConversationItem {
+fn conversation_item(view: &ConversationView, images: &Images) -> ConversationItem {
     // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
     const PALETTE: [u32; 8] = [
         0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0,
@@ -285,22 +326,68 @@ fn conversation_item(view: &ConversationView, avatars: &AvatarImages) -> Convers
         title: c.title.as_str().into(),
         initials: state::initials(&c.title).into(),
         avatar_color: Color::from_argb_encoded(0xff00_0000 | rgb),
-        avatar: view.avatar.map(|avatar| avatars.get(&c.id, avatar)).unwrap_or_default(),
+        avatar: view.avatar.map(|avatar| images.avatar(&c.id, avatar)).unwrap_or_default(),
         preview: view.preview().into(),
         unread: view.unread as i32,
     }
 }
 
-fn message_item(view: &MessageView) -> MessageItem {
+fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> MessageItem {
     let m = view.message;
+    let attachments: Vec<_> = m.attachments.iter().map(|a| attachment_item(a, chat.attachment(&a.id), images)).collect();
     MessageItem {
         sender: m.sender.as_str().into(),
-        body: m.body.as_str().into(),
+        body: view.body.into(),
         time: state::format_time(m.timestamp).into(),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
+        attachments: ModelRc::new(VecModel::from(attachments)),
+    }
+}
+
+fn attachment_item(attachment: &Attachment, download: Option<&AttachmentState>, images: &Images) -> AttachmentItem {
+    let kind = attachment.kind;
+    let inline = matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker);
+    let picture = match download {
+        Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => Some(picture),
+        _ => None,
+    };
+    // Fit into the bubble, keeping the shape the sender reported (or the picture has).
+    let (max, fallback) = if kind == AttachmentKind::Sticker { (128.0, (128.0, 128.0)) } else { (280.0, (240.0, 180.0)) };
+    let (w, h) = match picture {
+        Some(p) => (p.width as f32, p.height as f32),
+        None if attachment.width > 0 && attachment.height > 0 => (attachment.width as f32, attachment.height as f32),
+        None => fallback,
+    };
+    let scale = (max / w.max(h)).min(1.0);
+    let name = match kind {
+        AttachmentKind::File => attachment.file_name.as_deref().unwrap_or(state::describe_kind(kind)),
+        _ => state::describe_kind(kind),
+    };
+    let label = match kind {
+        AttachmentKind::ViewOnce => "View-once media: open it on your phone".to_string(),
+        AttachmentKind::File => format!("📎 {name} · {}", state::format_size(attachment.size)),
+        _ => format!("{name} · {}", state::format_size(attachment.size)),
+    };
+    let status = match download {
+        None | Some(AttachmentState::Loading | AttachmentState::Ready(_)) => String::new(),
+        Some(AttachmentState::Saving) => "Saving…".into(),
+        Some(AttachmentState::Saved(path)) => format!("Saved to {}", path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("disk")),
+        Some(AttachmentState::Failed(error)) => error.clone(),
+    };
+    AttachmentItem {
+        id: attachment.id.0.as_str().into(),
+        inline,
+        hidden: kind == AttachmentKind::LongText,
+        fetch: download.is_none() && state::shown_inline(kind),
+        picture: picture.map(|p| images.attachments.get(&attachment.id, p)).unwrap_or_default(),
+        width: w * scale,
+        height: h * scale,
+        label: label.into(),
+        status: status.into(),
+        can_save: !matches!(kind, AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker),
     }
 }
 

@@ -11,6 +11,26 @@ export struct ConversationItem {
     unread: int,
 }
 
+export struct AttachmentItem {
+    id: string,
+    // Shown as a picture (photos, stickers); otherwise as a row with a label.
+    inline: bool,
+    // Not shown at all; fetched for its content (the full text of a long message).
+    hidden: bool,
+    // Ask the backend for it once it is shown.
+    fetch: bool,
+    // Empty (zero width) until downloaded.
+    picture: image,
+    // The picture's size in the bubble, known before it is downloaded.
+    width: length,
+    height: length,
+    // E.g. "📎 route-notes.pdf · 240 KB".
+    label: string,
+    // "Saved to Downloads", an error, or empty.
+    status: string,
+    can-save: bool,
+}
+
 export struct MessageItem {
     sender: string,
     body: string,
@@ -21,6 +41,7 @@ export struct MessageItem {
     // The message this one replies to; both empty if it isn't a reply.
     quote-author: string,
     quote-text: string,
+    attachments: [AttachmentItem],
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -104,9 +125,82 @@ component ConversationRow inherits Rectangle {
     }
 }
 
+component AttachmentView inherits VerticalLayout {
+    in property <AttachmentItem> item;
+    in property <bool> outgoing;
+    callback fetch(string);
+    callback save(string);
+
+    property <color> ink: outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+    spacing: 4px;
+    // The list only creates rows that are on screen, so this downloads only what is seen.
+    init => {
+        if root.item.fetch { root.fetch(root.item.id); }
+    }
+
+    if root.item.inline: Rectangle {
+        width: root.item.width;
+        height: root.item.height;
+        border-radius: 8px;
+        clip: true;
+        background: root.ink.with-alpha(0.08);
+        if root.item.picture.width > 0: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.item.picture;
+            image-fit: contain;
+        }
+        if root.item.picture.width == 0 && root.item.status == "": Spinner {
+            indeterminate: true;
+            width: 24px;
+            height: 24px;
+        }
+        if root.item.picture.width == 0 && root.item.status != "": Text {
+            text: root.item.status;
+            wrap: word-wrap;
+            width: parent.width - 16px;
+            horizontal-alignment: center;
+            font-size: 0.8rem;
+            color: root.ink.with-alpha(0.7);
+        }
+    }
+    if !root.item.inline || root.item.can-save: HorizontalLayout {
+        spacing: 8px;
+        if !root.item.inline: Text {
+            text: root.item.label;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: root.ink;
+        }
+        if root.item.inline || root.item.status != "": Text {
+            text: root.item.inline && root.item.picture.width == 0 ? "" : root.item.status;
+            vertical-alignment: center;
+            font-size: 0.8rem;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: root.ink.with-alpha(0.7);
+        }
+        if root.item.can-save: save-touch := TouchArea {
+            width: save-label.preferred-width;
+            mouse-cursor: pointer;
+            clicked => { root.save(root.item.id); }
+            save-label := Text {
+                text: "Save";
+                font-size: 0.85rem;
+                font-weight: 600;
+                vertical-alignment: center;
+                color: save-touch.has-hover ? root.ink : root.ink.with-alpha(0.75);
+            }
+        }
+    }
+}
+
 component Bubble inherits HorizontalLayout {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
+    callback fetch-attachment(string);
+    callback save-attachment(string);
 
     alignment: item.outgoing ? end : start;
     padding-left: 16px;
@@ -164,7 +258,16 @@ component Bubble inherits HorizontalLayout {
                         }
                     }
                 }
-                Text {
+                for attachment in item.attachments: AttachmentView {
+                    // A long message's full text replaces the body; it isn't shown itself.
+                    visible: !attachment.hidden;
+                    height: attachment.hidden ? 0 : self.preferred-height;
+                    item: attachment;
+                    outgoing: item.outgoing;
+                    fetch(id) => { root.fetch-attachment(id); }
+                    save(id) => { root.save-attachment(id); }
+                }
+                if item.body != "": Text {
                     text: item.body;
                     wrap: word-wrap;
                     color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
@@ -466,6 +569,8 @@ export component AppWindow inherits Window {
     callback unlock(string, string);
     callback settings-changed;
     callback skip-history;
+    callback fetch-attachment(string);
+    callback save-attachment(string);
 
     VerticalLayout {
         if root.error != "": Rectangle {
@@ -655,7 +760,9 @@ export component AppWindow inherits Window {
                     property <int> conversation: root.selected;
                     vertical-stretch: 1;
                     changed conversation => { self.follow = true; }
-                    changed content-y => {
+                    // Only the user's own scrolling decides; content growing (pictures arriving,
+                    // rows being measured) moves the viewport too and must not stop following.
+                    scrolled => {
                         self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
                     }
                     changed content-height => {
@@ -666,6 +773,8 @@ export component AppWindow inherits Window {
                     for item in root.messages: Bubble {
                         item: item;
                         max-bubble-width: message-list.visible-width * 0.7;
+                        fetch-attachment(id) => { root.fetch-attachment(id); }
+                        save-attachment(id) => { root.save-attachment(id); }
                     }
                 }
 
