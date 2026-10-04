@@ -27,7 +27,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 /// Opaque, stable identifier of a 1:1 chat or group.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ConversationId(pub String);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,7 +37,7 @@ pub struct Conversation {
     pub is_group: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatMessage {
     pub conversation: ConversationId,
     /// Stable identity of the author (a Signal service ID); `sender` is only a display name.
@@ -47,6 +47,16 @@ pub struct ChatMessage {
     /// Milliseconds since the Unix epoch, as used by Signal.
     pub timestamp: u64,
     pub outgoing: bool,
+    /// The message this one replies to.
+    pub quote: Option<Quote>,
+}
+
+/// What a reply shows of the message it answers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Quote {
+    /// Display name of the quoted message's author.
+    pub author: String,
+    pub text: String,
 }
 
 /// A square profile or group picture, decoded to RGBA (row-major, 4 bytes per pixel).

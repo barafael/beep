@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::{Avatar, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{Avatar, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -55,34 +55,20 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::Avatar { conversation: ConversationId("alice".into()), avatar: Arc::new(gradient(96)) });
     let _ = events.send(Event::Synced);
 
-    let message = |conversation: &str, sender: &str, body: &str, timestamp, outgoing| ChatMessage {
-        conversation: ConversationId(conversation.into()),
-        sender_id: sender.to_lowercase(),
-        sender: sender.into(),
-        body: body.into(),
-        timestamp,
-        outgoing,
-    };
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();
-    let ago = |minutes: u64| started - minutes * 60_000;
+    // Like the real backend: each conversation's newest message, for sorting and previews.
+    for &(id, _, _) in CONVERSATIONS {
+        if let Some(latest) = history(&ConversationId(id.into()), started).pop() {
+            let _ = events.send(Event::Latest(latest));
+        }
+    }
 
     loop {
         match commands.recv_timeout(Duration::from_secs(20)) {
             Ok(Command::Unlock(_) | Command::SkipHistory) => {}
             Ok(Command::LoadHistory(id)) => {
-                let messages = match id.0.as_str() {
-                    "alice" => vec![
-                        message("alice", "Alice", "Hey! Did you try the new client?", ago(42), false),
-                        message("alice", "You", "Building it right now, in Rust.", ago(40), true),
-                        message("alice", "Alice", "Of course you are 😄", ago(39), false),
-                    ],
-                    "rust" => vec![
-                        message("rust", "Ferris", "Slint or iced?", ago(120), false),
-                        message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false),
-                    ],
-                    _ => Vec::new(),
-                };
+                let messages = history(&id, started);
                 let _ = events.send(Event::History { conversation: id, messages });
             }
             Ok(Command::Send { conversation, body }) => {
@@ -109,4 +95,36 @@ fn gradient(side: u32) -> Avatar {
         })
         .collect();
     Avatar { side, rgba }
+}
+
+fn message(conversation: &str, sender: &str, body: &str, timestamp: u64, outgoing: bool) -> ChatMessage {
+    ChatMessage {
+        conversation: ConversationId(conversation.into()),
+        sender_id: sender.to_lowercase(),
+        sender: sender.into(),
+        body: body.into(),
+        timestamp,
+        outgoing,
+        ..Default::default()
+    }
+}
+
+/// The stored history of a mock conversation, relative to `started`.
+fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
+    let ago = |minutes: u64| started - minutes * 60_000;
+    match id.0.as_str() {
+        "alice" => vec![
+            message("alice", "Alice", "Hey! Did you try the new client?", ago(42), false),
+            message("alice", "You", "Building it right now, in Rust.", ago(40), true),
+            ChatMessage {
+                quote: Some(Quote { author: "You".into(), text: "Building it right now, in Rust.".into() }),
+                ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
+            },
+        ],
+        "rust" => vec![
+            message("rust", "Ferris", "Slint or iced?", ago(120), false),
+            message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false),
+        ],
+        _ => Vec::new(),
+    }
 }

@@ -299,6 +299,8 @@ fn message_item(view: &MessageView) -> MessageItem {
         time: state::format_time(m.timestamp).into(),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
+        quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
+        quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
     }
 }
 

@@ -22,6 +22,7 @@ use presage::{
     },
     proto::{
         SyncMessage,
+        data_message::Quote,
         sync_message::{Content as SyncContent, Sent},
     },
     store::{ContentsStore, Thread},
@@ -56,6 +57,8 @@ enum Party {
 
 pub(crate) struct Importer {
     me: Aci,
+    /// Milliseconds since the epoch; disappearing messages expired by then are dropped.
+    now: u64,
     recipients: HashMap<u64, Party>,
     /// Chat id to recipient id.
     chats: HashMap<u64, u64>,
@@ -66,10 +69,12 @@ pub(crate) struct Importer {
 }
 
 impl Importer {
-    /// `me` is our own ACI: the author of outgoing messages.
-    pub(crate) fn new(me: Aci) -> Self {
+    /// `me` is our own ACI: the author of outgoing messages. `now` is the current time in
+    /// milliseconds since the epoch.
+    pub(crate) fn new(me: Aci, now: u64) -> Self {
         Self {
             me,
+            now,
             recipients: HashMap::new(),
             chats: HashMap::new(),
             profile_keys: HashMap::new(),
@@ -204,6 +209,14 @@ impl Importer {
         if body.is_empty() {
             return None;
         }
+        // langis doesn't delete disappearing messages yet, but at least it won't bring back
+        // the ones that are already gone on the phone.
+        if let (Some(start), Some(lifetime)) = (item.expireStartDate, item.expiresInMs)
+            && lifetime > 0
+            && start.saturating_add(lifetime) <= self.now
+        {
+            return None;
+        }
         let chat = self.recipients.get(self.chats.get(&item.chatId)?)?;
         let (thread, group_v2) = match *chat {
             Party::Me => (Thread::Contact(ServiceId::Aci(self.me)), None),
@@ -218,7 +231,27 @@ impl Importer {
             Party::Contact(aci) => *aci,
             Party::Group { .. } => return None,
         };
-        let data = DataMessage { body: Some(body), timestamp: Some(item.dateSent), group_v2, ..Default::default() };
+        let quote = message.quote.as_ref().and_then(|quote| {
+            let author = match self.recipients.get(&quote.authorId)? {
+                Party::Me => self.me,
+                Party::Contact(aci) => *aci,
+                Party::Group { .. } => return None,
+            };
+            Some(Quote {
+                id: quote.targetSentTimestamp,
+                author_aci: Some(ServiceId::Aci(author).service_id_string()),
+                text: quote.text.as_ref().map(|text| text.body.clone()),
+                ..Default::default()
+            })
+        });
+        let data = DataMessage {
+            body: Some(body),
+            timestamp: Some(item.dateSent),
+            group_v2,
+            quote,
+            expire_timer: item.expiresInMs.map(|ms| (ms / 1000) as u32),
+            ..Default::default()
+        };
 
         use proto::chat_item::DirectionalDetails;
         let (body, server_timestamp, sealed) = match &item.directionalDetails {
@@ -329,6 +362,7 @@ mod tests {
     const ALICE: [u8; 16] = [2; 16];
     const GROUP_KEY: [u8; 32] = [7; 32];
     const ALICE_KEY: [u8; 32] = [9; 32];
+    const NOW: u64 = 1_000_000;
 
     fn frame(item: proto::frame::Item) -> Vec<u8> {
         proto::Frame { item: Some(item), ..Default::default() }.write_to_bytes().unwrap()
@@ -417,7 +451,7 @@ mod tests {
     }
 
     fn import(frames: &[Vec<u8>]) -> (Vec<Record>, Stats) {
-        let mut importer = Importer::new(Aci::from_uuid_bytes(ME));
+        let mut importer = Importer::new(Aci::from_uuid_bytes(ME), NOW);
         let mut records = Vec::new();
         for frame in frames {
             records.extend(importer.frame(frame).unwrap());
@@ -486,6 +520,58 @@ mod tests {
         assert_eq!(*thread, Thread::Group(GROUP_KEY));
         let ContentBody::DataMessage(data) = &in_group.body else { panic!("not a data message") };
         assert_eq!(data.group_v2.as_ref().unwrap().master_key.as_deref(), Some(&GROUP_KEY[..]));
+    }
+
+    #[test]
+    fn keeps_quotes_and_drops_expired_disappearing_messages() {
+        let mut frames = archive();
+        let reply = |sent, expire: Option<(u64, u64)>, body: &str| {
+            let message = proto::StandardMessage {
+                text: MessageField::some(proto::Text { body: body.into(), ..Default::default() }),
+                quote: MessageField::some(proto::Quote {
+                    targetSentTimestamp: Some(1000),
+                    authorId: 2,
+                    text: MessageField::some(proto::Text { body: "Hi!".into(), ..Default::default() }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            frame(proto::frame::Item::ChatItem(proto::ChatItem {
+                chatId: 10,
+                authorId: 1,
+                dateSent: sent,
+                expireStartDate: expire.map(|(start, _)| start),
+                expiresInMs: expire.map(|(_, lifetime)| lifetime),
+                directionalDetails: Some(DirectionalDetails::Outgoing(Default::default())),
+                item: Some(proto::chat_item::Item::StandardMessage(message)),
+                ..Default::default()
+            }))
+        };
+        frames.push(reply(5000, None, "Hi yourself"));
+        // Expired before NOW, and still running at NOW.
+        frames.push(reply(6000, Some((6000, 1000)), "gone"));
+        frames.push(reply(7000, Some((7000, NOW)), "still here"));
+        let (records, stats) = import(&frames);
+        assert_eq!(stats.messages, 5);
+
+        let bodies: Vec<_> = records
+            .iter()
+            .filter_map(|r| match r {
+                Record::Message { content: Content { body: ContentBody::SynchronizeMessage(sync), .. }, .. } => match &sync.content {
+                    Some(SyncContent::Sent(sent)) => sent.message.clone(),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(bodies.iter().all(|data| data.body.as_deref() != Some("gone")));
+        let reply = bodies.iter().find(|data| data.body.as_deref() == Some("Hi yourself")).unwrap();
+        let quote = reply.quote.as_ref().unwrap();
+        assert_eq!(quote.id, Some(1000));
+        assert_eq!(quote.author_aci.as_deref(), Some(alice_id().as_str()));
+        assert_eq!(quote.text.as_deref(), Some("Hi!"));
+        let lasting = bodies.iter().find(|data| data.body.as_deref() == Some("still here")).unwrap();
+        assert_eq!(lasting.expire_timer, Some((NOW / 1000) as u32));
     }
 
     fn alice_id() -> String {

@@ -285,8 +285,10 @@ impl ChatState {
         self.error.as_deref()
     }
 
+    /// The chat list: groups and conversations that have messages, most recently active
+    /// first. Synced contacts never written to stay out of it.
     pub fn conversations(&self) -> impl Iterator<Item = ConversationView<'_>> {
-        self.conversations.iter().map(|c| ConversationView {
+        self.listed().map(|c| ConversationView {
             conversation: c,
             avatar: self.avatars.get(&c.id),
             last_message: self.last_of(&c.id),
@@ -296,12 +298,20 @@ impl ChatState {
     }
 
     pub fn selected(&self) -> Option<&Conversation> {
-        self.selected_index().map(|i| &self.conversations[i])
+        let id = self.selected.as_ref()?;
+        self.conversations.iter().find(|c| &c.id == id)
     }
 
+    /// Position of the selected conversation in [`ChatState::conversations`].
     pub fn selected_index(&self) -> Option<usize> {
         let id = self.selected.as_ref()?;
-        self.conversations.iter().position(|c| &c.id == id)
+        self.listed().position(|c| &c.id == id)
+    }
+
+    fn listed(&self) -> impl Iterator<Item = &Conversation> {
+        self.conversations.iter().filter(|c| {
+            c.is_group || self.last_of(&c.id).is_some() || self.selected.as_ref() == Some(&c.id)
+        })
     }
 
     /// Messages of the selected conversation, oldest first.
@@ -417,6 +427,7 @@ mod tests {
             body: format!("{sender} at {timestamp}\nsecond line"),
             timestamp,
             outgoing,
+        ..Default::default()
         }
     }
 
@@ -535,31 +546,34 @@ mod tests {
     fn conversations_upsert_in_activity_order() {
         let mut state = state();
         state.apply(Event::Message(message("g", "Carol", 1, false)));
+        state.apply(Event::Message(message("a", "Alice", 2, false)));
         // A partial update never drops conversations, and renames apply in place.
         let mut renamed = conversation("a", false);
         renamed.title = "Alice".into();
-        state.apply(Event::Conversations(vec![
-            conversation("n", false),
-            renamed,
-        ]));
-        let titles: Vec<_> = state
-            .conversations()
-            .map(|c| c.conversation.title.as_str())
-            .collect();
-        assert_eq!(titles, ["g", "Alice", "n"]);
+        state.apply(Event::Conversations(vec![conversation("n", true), renamed]));
+        let titles: Vec<_> = state.conversations().map(|c| c.conversation.title.as_str()).collect();
+        assert_eq!(titles, ["Alice", "g", "n"]);
     }
 
     #[test]
-    fn inactive_conversations_list_names_before_numbers() {
+    fn list_holds_groups_and_active_chats_names_before_numbers() {
         let mut state = ChatState::default();
-        let titled = |id: &str, title: &str| Conversation { title: title.into(), ..conversation(id, false) };
+        let titled = |id: &str, title: &str, is_group| Conversation { title: title.into(), ..conversation(id, is_group) };
         state.apply(Event::Conversations(vec![
-            titled("1", "+49 151 1234567"),
-            titled("2", "bob"),
-            titled("3", "Alice"),
+            titled("1", "+49 151 1234567", true),
+            titled("2", "bob", true),
+            titled("3", "Alice", true),
+            // A synced contact never written to.
+            titled("4", "Zoe", false),
         ]));
         let titles: Vec<_> = state.conversations().map(|c| c.conversation.title.as_str()).collect();
         assert_eq!(titles, ["Alice", "bob", "+49 151 1234567"]);
+        // Writing to them puts them on the list, at the top.
+        state.apply(Event::Message(message("4", "Zoe", 1, false)));
+        assert_eq!(state.conversations().next().unwrap().conversation.title, "Zoe");
+        assert_eq!(state.selected_index(), None);
+        state.select(&ConversationId("4".into()));
+        assert_eq!(state.selected_index(), Some(0));
     }
 
     #[test]

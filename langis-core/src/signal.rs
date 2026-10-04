@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     Avatar, transfer,
-    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
+    ChatMessage, Command, Config, Quote, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
     QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
@@ -426,6 +426,8 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
         }
     }
     let contacts = all.len();
+    // Messages to yourself; listed once there are some.
+    all.push(register(threads, Thread::Contact(own_id(manager)), "Note to Self".into()));
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
             all.push(register(threads, Thread::Group(key), group.title));
@@ -523,6 +525,10 @@ fn decode_avatar(bytes: &[u8]) -> Option<Avatar> {
     Some(Avatar { side: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
 }
 
+fn own_id(manager: &Mgr) -> ServiceId {
+    ServiceId::Aci(manager.registration_data().service_ids.aci())
+}
+
 /// Display names by sender service ID, so each sender is looked up in the store only once.
 type Names = HashMap<String, String>;
 
@@ -596,7 +602,7 @@ async fn handle_received(
                 body: format!("⚠ A message from {name} couldn't be decrypted."),
                 sender: name,
                 timestamp: now_millis(),
-                outgoing: false,
+                ..Default::default()
             }))
         }
         Received::Content(content) => {
@@ -629,27 +635,33 @@ async fn to_chat_message(
     conversation: ConversationId,
     content: &Content,
 ) -> Option<ChatMessage> {
-    let (body, outgoing) = match &content.body {
-        ContentBody::DataMessage(DataMessage {
-            body: Some(body), ..
-        }) => (body.clone(), false),
+    let (data, outgoing) = match &content.body {
+        ContentBody::DataMessage(data) => (data, false),
         ContentBody::SynchronizeMessage(SyncMessage {
-            content:
-                Some(SyncContent::Sent(Sent {
-                    message:
-                        Some(DataMessage {
-                            body: Some(body), ..
-                        }),
-                    ..
-                })),
+            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
             ..
-        }) => (body.clone(), true),
+        }) => (data, true),
         _ => return None,
     };
+    let body = data.body.clone().unwrap_or_default();
+    if body.is_empty() {
+        return None;
+    }
     let sender = if outgoing {
         "You".to_string()
     } else {
         sender_name(manager, names, content.metadata.sender).await
+    };
+    let quote = match &data.quote {
+        Some(quote) => {
+            let author = match quote.author_aci.as_deref().and_then(ServiceId::parse_from_service_id_string) {
+                Some(author) if author == own_id(manager) => "You".to_string(),
+                Some(author) => sender_name(manager, names, author).await,
+                None => String::new(),
+            };
+            Some(Quote { author, text: quote.text.clone().unwrap_or_default() })
+        }
+        None => None,
     };
     Some(ChatMessage {
         conversation,
@@ -658,6 +670,7 @@ async fn to_chat_message(
         body,
         timestamp: content.timestamp(),
         outgoing,
+        quote,
     })
 }
 
@@ -735,6 +748,7 @@ async fn handle(
                 body,
                 timestamp,
                 outgoing: true,
+                ..Default::default()
             }));
         }
     }

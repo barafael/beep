@@ -141,7 +141,7 @@ where
         .await
         .map_err(|e| format!("failed to decrypt the message history: {e}"))?;
     let mut reader = VarintDelimitedReader::new(frames);
-    let mut importer = Importer::new(*aci);
+    let mut importer = Importer::new(*aci, crate::now_millis());
     // The first frame is a `BackupInfo` (version and time), which we don't need.
     let mut info_frame = true;
     while let Some(frame) = reader.read_next().await.map_err(|e| format!("failed to read the message history: {e}"))? {
