@@ -89,7 +89,11 @@ impl Paths {
         // `LANGIS_DATA_DIR` keeps a separate account, e.g. to link a second device for testing.
         // Its database key gets its own keyring entry, so it never replaces the default one.
         // A development aid: release builds always use the standard place.
-        let custom = if cfg!(debug_assertions) { std::env::var_os("LANGIS_DATA_DIR") } else { None };
+        let custom = if cfg!(debug_assertions) {
+            std::env::var_os("LANGIS_DATA_DIR")
+        } else {
+            None
+        };
         let (dir, keyring_account) = match custom {
             Some(dir) => {
                 let dir = PathBuf::from(dir);
@@ -105,7 +109,8 @@ impl Paths {
             ),
         };
         // 0700: the database is only as private as the directory holding it.
-        vault::restrict_dir(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        vault::restrict_dir(&dir)
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
         // Earlier versions wrote it world-readable.
         match vault::restrict_file(&dir.join("langis.key")) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -217,7 +222,10 @@ fn write_source(paths: &Paths, source: &KeySource) -> Result<(), String> {
 /// The policy for a new database password; mirrors `state::ChatState::unlock`.
 fn check_new_password(password: &str) -> Result<(), String> {
     if password.chars().count() < crate::state::MIN_PASSWORD_LEN {
-        return Err(format!("Use at least {} characters.", crate::state::MIN_PASSWORD_LEN));
+        return Err(format!(
+            "Use at least {} characters.",
+            crate::state::MIN_PASSWORD_LEN
+        ));
     }
     Ok(())
 }
@@ -261,11 +269,18 @@ fn open_store(
             a.cmp(b)
         });
     let store = local
-        .block_on(runtime, SqliteStore::open_with_options(options, OnNewIdentity::Trust))
+        .block_on(
+            runtime,
+            SqliteStore::open_with_options(options, OnNewIdentity::Trust),
+        )
         .map_err(|e| format!("failed to open the database: {e}"))?;
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
-    for path in [paths.db.clone(), paths.db.with_extension("db3-wal"), paths.db.with_extension("db3-shm")] {
+    for path in [
+        paths.db.clone(),
+        paths.db.with_extension("db3-wal"),
+        paths.db.with_extension("db3-shm"),
+    ] {
         if let Err(error) = vault::restrict_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
@@ -486,12 +501,17 @@ async fn link(
         ),
         async {
             if let Ok(mut url) = url_rx.await {
-                let url = url.query_pairs_mut().append_pair("capabilities", transfer::LINK_CAPABILITY).finish();
+                let url = url
+                    .query_pairs_mut()
+                    .append_pair("capabilities", transfer::LINK_CAPABILITY)
+                    .finish();
                 // Said rather than swallowed: otherwise the user faces a blank panel and a link
                 // that never completes.
                 let _ = events.send(match QrMatrix::encode(url.as_str()) {
                     Some(qr) => Event::LinkQr(qr),
-                    None => Event::Error("The linking code couldn't be drawn. Restart langis to try again.".into()),
+                    None => Event::Error(
+                        "The linking code couldn't be drawn. Restart langis to try again.".into(),
+                    ),
                 });
             }
         },

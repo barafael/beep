@@ -73,7 +73,6 @@ fn clamp_plaintext(rust_log: &str) -> String {
     kept.join(",")
 }
 
-
 /// The filter for this process: [`log_filter`] unless plaintext logging was asked for.
 pub fn from_env() -> tracing_subscriber::EnvFilter {
     let rust_log = std::env::var("RUST_LOG").unwrap_or_default();
@@ -87,7 +86,7 @@ pub fn from_env() -> tracing_subscriber::EnvFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::{log_filter, PLAINTEXT_TARGETS};
+    use super::{PLAINTEXT_TARGETS, log_filter};
     use std::sync::{Arc, Mutex};
 
     /// Captures formatted log output so a test can assert on what was written.
@@ -143,7 +142,10 @@ mod tests {
             "/^presage.*/=debug",
         ] {
             let logged = logged(rust_log, presage_debug);
-            assert!(!logged.contains("42"), "`{rust_log}` logged a body: {logged}");
+            assert!(
+                !logged.contains("42"),
+                "`{rust_log}` logged a body: {logged}"
+            );
         }
     }
 
@@ -168,7 +170,10 @@ mod tests {
                         ),
                     }
                 });
-                assert!(!logged.contains("42"), "`{rust_log}` logged from {target}: {logged}");
+                assert!(
+                    !logged.contains("42"),
+                    "`{rust_log}` logged from {target}: {logged}"
+                );
             }
         }
     }

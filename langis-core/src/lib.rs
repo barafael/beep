@@ -405,7 +405,8 @@ impl Backend {
     /// Debug builds only: in a release, a stray variable in the environment must not turn the
     /// app into a convincing fake that swallows messages.
     pub fn mock_requested() -> bool {
-        !cfg!(feature = "signal") || (cfg!(debug_assertions) && std::env::var_os("LANGIS_MOCK").is_some())
+        !cfg!(feature = "signal")
+            || (cfg!(debug_assertions) && std::env::var_os("LANGIS_MOCK").is_some())
     }
 
     /// Starts the real backend, or the mock one when [`Backend::mock_requested`].

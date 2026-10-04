@@ -128,8 +128,13 @@ pub fn write_private_file(path: &Path) -> io::Result<PendingFile> {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let temp = tempfile::Builder::new().prefix(".langis-").tempfile_in(dir)?;
-    Ok(PendingFile { temp, path: path.to_path_buf() })
+    let temp = tempfile::Builder::new()
+        .prefix(".langis-")
+        .tempfile_in(dir)?;
+    Ok(PendingFile {
+        temp,
+        path: path.to_path_buf(),
+    })
 }
 
 pub struct PendingFile {
@@ -147,7 +152,10 @@ impl PendingFile {
     }
 
     pub fn persist(self) -> io::Result<()> {
-        self.temp.persist(&self.path).map(drop).map_err(|error| error.error)
+        self.temp
+            .persist(&self.path)
+            .map(drop)
+            .map_err(|error| error.error)
     }
 }
 
@@ -188,7 +196,8 @@ pub fn password_key(password: &str, salt: &[u8; 16], kdf: Kdf) -> Key {
     let argon2 = match kdf {
         Kdf::V1 => argon2::Argon2::default(),
         Kdf::V2 => {
-            let params = argon2::Params::new(64 * 1024, 3, 1, None).expect("valid Argon2 parameters");
+            let params =
+                argon2::Params::new(64 * 1024, 3, 1, None).expect("valid Argon2 parameters");
             argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
         }
     };
@@ -239,8 +248,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key");
         assert_eq!(KeySource::read(&path).unwrap(), None);
-        let sources =
-            [KeySource::Keyring, KeySource::Password { salt: [7; 16], kdf: Kdf::V1 }, KeySource::Password { salt: [7; 16], kdf: Kdf::V2 }];
+        let sources = [
+            KeySource::Keyring,
+            KeySource::Password {
+                salt: [7; 16],
+                kdf: Kdf::V1,
+            },
+            KeySource::Password {
+                salt: [7; 16],
+                kdf: Kdf::V2,
+            },
+        ];
         for source in sources {
             source.write(&path).unwrap();
             assert_eq!(KeySource::read(&path).unwrap(), Some(source));
@@ -248,7 +266,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let leftovers = fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(leftovers, 1, "temporary files left behind");
@@ -262,10 +283,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key");
         fs::write(&path, format!("password {}\n", hex::encode([1; 16]))).unwrap();
-        let Some(KeySource::Password { salt, kdf }) = KeySource::read(&path).unwrap() else { panic!() };
+        let Some(KeySource::Password { salt, kdf }) = KeySource::read(&path).unwrap() else {
+            panic!()
+        };
         assert_eq!(kdf, Kdf::V1);
         let mut before = [0; 32];
-        argon2::Argon2::default().hash_password_into(b"hunter22", &salt, &mut before).unwrap();
+        argon2::Argon2::default()
+            .hash_password_into(b"hunter22", &salt, &mut before)
+            .unwrap();
         assert_eq!(*password_key("hunter22", &salt, kdf), before);
         assert_ne!(*password_key("hunter22", &salt, Kdf::V2), before);
     }
@@ -288,7 +313,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         restrict_dir(&dir).unwrap();
-        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     /// Talks to the real OS credential store, read-only: `cargo test -- --ignored keyring`.

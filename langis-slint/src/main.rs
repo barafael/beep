@@ -28,7 +28,9 @@ const APP: AppInfo = AppInfo {
 };
 
 fn main() -> Result<(), slint::PlatformError> {
-    tracing_subscriber::fmt().with_env_filter(logging::from_env()).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(logging::from_env())
+        .init();
 
     let window = AppWindow::new()?;
     if Backend::mock_requested() {

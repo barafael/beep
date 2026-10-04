@@ -50,8 +50,16 @@ mod tests {
         // Four quiet modules on each side, and the pixels are RGBA.
         assert_eq!(side, (qr.width + 8) * 2);
         assert_eq!(pixels.len(), side * side * 4);
-        assert!(pixels.chunks_exact(4).any(|p| p == [0, 0, 0, 0xff]), "no dark modules");
-        assert!(pixels.chunks_exact(4).any(|p| p == [0xff, 0xff, 0xff, 0xff]), "no light modules");
+        assert!(
+            pixels.chunks_exact(4).any(|p| p == [0, 0, 0, 0xff]),
+            "no dark modules"
+        );
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|p| p == [0xff, 0xff, 0xff, 0xff]),
+            "no light modules"
+        );
     }
 
     /// The quiet zone is what lets a scanner find the code, so it must never be trimmed.

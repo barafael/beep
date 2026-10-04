@@ -129,7 +129,12 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
 async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), String> {
-    let too_big = || format!("The message history is larger than {} MB, which no phone sends.", MAX_ARCHIVE_BYTES / 1_000_000);
+    let too_big = || {
+        format!(
+            "The message history is larger than {} MB, which no phone sends.",
+            MAX_ARCHIVE_BYTES / 1_000_000
+        )
+    };
 
     let servers = manager.registration_data().signal_servers;
     let mut response = PushService::new(servers, None, "langis")
@@ -145,22 +150,32 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Res
         .map_err(|e| format!("failed to download the message history: {e}"))?;
     // Refused before writing anything when the server says, and while writing otherwise, so a
     // misbehaving server can't fill the disk.
-    if response.content_length().is_some_and(|length| length > MAX_ARCHIVE_BYTES) {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
+    {
         return Err(too_big());
     }
     // Private to the user and complete or absent: built under a temporary name.
-    let mut file =
-        crate::vault::write_private_file(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let mut file = crate::vault::write_private_file(path)
+        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
     let mut size = 0u64;
-    while let Some(chunk) = response.chunk().await.map_err(|e| format!("failed to download the message history: {e}"))? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("failed to download the message history: {e}"))?
+    {
         size += chunk.len() as u64;
         if size > MAX_ARCHIVE_BYTES {
             return Err(too_big());
         }
-        file.write_all(&chunk).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     }
-    file.sync_all().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    file.persist().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    file.persist()
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     info!(bytes = size, "history archive downloaded");
     Ok(())
 }

@@ -234,7 +234,9 @@ pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
     limits.max_image_width = Some(12_000);
     limits.max_image_height = Some(12_000);
     limits.max_alloc = Some(512 * 1024 * 1024);
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()?;
     reader.limits(limits);
     reader.decode().ok()
 }
