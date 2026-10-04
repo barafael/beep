@@ -31,6 +31,7 @@ use crate::{
     Avatar, transfer,
     ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Inbox, Password, QrMatrix,
     now_millis,
+    state::MIN_PASSWORD_LEN,
     vault::{self, KeySource, KeyringKey},
 };
 
@@ -153,18 +154,82 @@ fn unlock(
     // Until the database exists, the password is being chosen rather than checked.
     let new = !paths.db.exists();
     let mut error = None;
+    let mut failures: u32 = 0;
     loop {
         let _ = events.send(Event::PasswordRequired { new, error: error.take() });
         let Some(password) = wait_for_password(commands) else { return Ok(None) };
+
+        // The UI validates the form before sending, but langis-core is the trust boundary:
+        // a frontend could send a one-character password, or a password nobody confirmed, and
+        // that key would then be the only way back into the user's own messages.
+        if new {
+            if let Err(problem) = check_new_password(password.expose()) {
+                error = Some(problem);
+                continue;
+            }
+        }
+
+        // Argon2 makes each attempt costly, but without a pause someone at an unlocked session
+        // can still try thousands per minute. The delay caps out at 30 seconds; it is not meant
+        // to be a rate limiter against someone who already has the database file, since no
+        // in-process delay can help there and Argon2's cost is what counts.
+        if failures > 0 {
+            let pause_ms = [1_000, 2_000, 5_000, 10_000, 30_000][(failures as usize - 1).min(4)];
+            // When choosing a new password the user may simply be mistyping their own, so don't
+            // make them wait through the whole ladder.
+            let pause_ms = if new { pause_ms.min(2_000) } else { pause_ms };
+            info!(failures, pause_ms, "waiting before the next unlock attempt");
+            std::thread::sleep(Duration::from_millis(pause_ms));
+        }
+
         let key = vault::password_key(password.expose(), &salt);
+        // The key is derived from a borrowed password, so the plaintext is wiped as soon as the
+        // store has taken its own copy of the key.
+        drop(password);
         match open_store(runtime, local, &paths, &key) {
             Ok(store) => return Ok(Some(store)),
             Err(reason) if !new => {
-                warn!(%reason, "failed to unlock the database");
+                warn!(%reason, failures = failures + 1, "failed to unlock the database");
                 error = Some("Wrong password.".into());
+                failures += 1;
             }
             Err(reason) => return Err(reason),
         }
+    }
+}
+
+/// The policy a new database password has to satisfy, enforced here as well as in the UI so that
+/// no frontend can bypass it. Mirrors the checks in `state::ChatState::unlock`.
+fn check_new_password(password: &str) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("Enter a password.".into());
+    }
+    if password.chars().count() < MIN_PASSWORD_LEN {
+        return Err(format!("Use at least {MIN_PASSWORD_LEN} characters."));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod unlock_tests {
+    use super::check_new_password;
+
+    /// The backend enforces the policy itself, so a frontend cannot derive the key from a
+    /// one-character password.
+    #[test]
+    fn a_new_password_must_be_long_enough() {
+        assert!(check_new_password("").is_err());
+        assert!(check_new_password("short").is_err());
+        assert!(check_new_password("1234567").is_err());
+        assert!(check_new_password("12345678").is_ok());
+        assert!(check_new_password("a considerably longer passphrase").is_ok());
+    }
+
+    /// Length is counted in characters, not bytes, so a non-latin passphrase isn't rejected
+    /// for being long in bytes but short in letters.
+    #[test]
+    fn length_is_measured_in_characters() {
+        assert!(check_new_password("Passwortübersicht").is_ok());
     }
 }
 
