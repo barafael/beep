@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::settings::NotificationContent;
-use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, apply_reaction, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -29,9 +29,9 @@ pub struct Update {
     pub screen: bool,
     pub conversations: bool,
     pub messages: MessagesUpdate,
-    /// Some attachment changed state (see [`ChatState::attachment`]); messages showing one
-    /// need redrawing.
-    pub attachments: bool,
+    /// Messages already shown changed in place (an attachment downloaded, a reaction came
+    /// in); their rows need redrawing.
+    pub rows: bool,
 }
 
 impl Update {
@@ -41,7 +41,7 @@ impl Update {
             screen: self.screen || other.screen,
             conversations: self.conversations || other.conversations,
             messages: self.messages.merge(other.messages),
-            attachments: self.attachments || other.attachments,
+            rows: self.rows || other.rows,
         }
     }
 }
@@ -232,7 +232,7 @@ impl ChatState {
                     Err(error) => AttachmentState::Failed(error),
                 };
                 self.attachments.insert(id, state);
-                update.attachments = true;
+                update.rows = true;
             }
             Event::AttachmentSaved { id, path } => {
                 let state = match path {
@@ -240,7 +240,16 @@ impl ChatState {
                     Err(error) => SaveState::Failed(error),
                 };
                 self.saves.insert(id, state);
-                update.attachments = true;
+                update.rows = true;
+            }
+            Event::Reaction { conversation, target, reaction, remove } => {
+                // A reaction to a message not loaded yet is folded in when its history loads.
+                if let Some(history) = self.history.get_mut(&conversation)
+                    && apply_reaction(history, &target, reaction, remove)
+                    && self.selected.as_ref() == Some(&conversation)
+                {
+                    update.rows = true;
+                }
             }
             Event::Avatar { conversation, avatar } => {
                 self.avatars.insert(conversation, avatar);
@@ -434,6 +443,20 @@ impl ChatState {
         }
         let conversation = self.selected.clone()?;
         Some(Command::Send { conversation, body: text.trim().to_string(), quote: self.replying.take() })
+    }
+
+    /// Reacts to the `index`th message of [`ChatState::messages`] with `emoji`; reacting with
+    /// the emoji we already put there takes it back.
+    pub fn react(&self, index: usize, emoji: &str) -> Option<Command> {
+        let conversation = self.selected.clone()?;
+        let message = self.messages().nth(index)?.message;
+        let ours = message.reactions.iter().find(|r| r.outgoing);
+        Some(Command::React {
+            conversation,
+            target: message.reference(),
+            emoji: emoji.to_owned(),
+            remove: ours.is_some_and(|r| r.emoji == emoji),
+        })
     }
 
     /// Starts a reply to the `index`th message of [`ChatState::messages`].
@@ -887,7 +910,7 @@ mod tests {
         assert!(matches!(state.fetch_attachment(&photo), Some(Command::FetchAttachment(a)) if a.id == photo));
         assert!(state.fetch_attachment(&photo).is_none(), "already asked");
         let update = state.apply(Event::Attachment { id: photo.clone(), content: Err("gone".into()) });
-        assert!(update.attachments);
+        assert!(update.rows);
         assert_eq!(state.attachment(&photo), Some(&AttachmentState::Failed("gone".into())));
     }
 
@@ -959,6 +982,32 @@ mod tests {
         state.reply_to(0);
         state.select(&ConversationId("g".into()));
         assert!(state.replying().is_none(), "another chat drops it");
+    }
+
+    fn reaction(emoji: &str, sender: &str, outgoing: bool) -> crate::Reaction {
+        crate::Reaction { emoji: emoji.into(), sender_id: sender.into(), sender: sender.into(), outgoing }
+    }
+
+    #[test]
+    fn one_reaction_per_person_and_ours_toggles() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Alice", 7, false)));
+        state.select(&ConversationId("a".into()));
+        let target = state.messages().next().unwrap().message.reference();
+        let react = |state: &mut ChatState, r, remove| {
+            state.apply(Event::Reaction { conversation: ConversationId("a".into()), target: target.clone(), reaction: r, remove })
+        };
+        assert!(react(&mut state, reaction("👍", "bob", false), false).rows);
+        react(&mut state, reaction("❤️", "bob", false), false);
+        react(&mut state, reaction("😂", "me", true), false);
+        let emojis: Vec<_> = state.messages().next().unwrap().message.reactions.iter().map(|r| r.emoji.clone()).collect();
+        assert_eq!(emojis, ["❤️", "😂"], "Bob's second reaction replaced his first");
+
+        // Reacting with our current emoji takes it back; another one replaces it.
+        assert!(matches!(state.react(0, "😂"), Some(Command::React { remove: true, .. })));
+        assert!(matches!(state.react(0, "👍"), Some(Command::React { remove: false, .. })));
+        react(&mut state, reaction("😂", "me", true), true);
+        assert_eq!(state.messages().next().unwrap().message.reactions.len(), 1);
     }
 
     #[test]

@@ -23,7 +23,7 @@ use presage::{
     proto::{
         AttachmentPointer, SyncMessage,
         attachment_pointer::{AttachmentIdentifier, Flags},
-        data_message::{Quote, Sticker as DataSticker},
+        data_message::{Quote, Reaction as DataReaction, Sticker as DataSticker},
         sync_message::{Content as SyncContent, Sent},
     },
     store::{ContentsStore, Thread},
@@ -43,6 +43,7 @@ pub(crate) struct Stats {
     pub contacts: usize,
     pub groups: usize,
     pub messages: usize,
+    pub reactions: usize,
     /// Frames and chat items this version does not import (attachments-only messages, calls,
     /// group updates, …).
     pub skipped: usize,
@@ -103,7 +104,18 @@ impl Importer {
                 match self.message(&item) {
                     Some((thread, content)) => {
                         self.stats.messages += 1;
+                        let group_v2 = match &content.body {
+                            ContentBody::DataMessage(data) => data.group_v2.clone(),
+                            ContentBody::SynchronizeMessage(SyncMessage {
+                                content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+                                ..
+                            }) => data.group_v2.clone(),
+                            _ => None,
+                        };
+                        let reactions = self.reactions(&item, &thread, group_v2);
+                        self.stats.reactions += reactions.len();
                         records.push(Record::Message { thread, content });
+                        records.extend(reactions);
                     }
                     None => self.stats.skipped += 1,
                 }
@@ -281,41 +293,96 @@ impl Importer {
         };
 
         use proto::chat_item::DirectionalDetails;
-        let (body, server_timestamp, sealed) = match &item.directionalDetails {
-            Some(DirectionalDetails::Outgoing(outgoing)) => {
-                let destination = match thread {
-                    Thread::Contact(id) => Some(id.service_id_string()),
-                    Thread::Group(_) => None,
-                };
-                let sent = Sent {
-                    destination_service_id: destination,
-                    timestamp: Some(item.dateSent),
-                    message: Some(data),
+        let (outgoing, server_timestamp, sealed) = match &item.directionalDetails {
+            Some(DirectionalDetails::Outgoing(outgoing)) => (true, outgoing.dateReceived, false),
+            Some(DirectionalDetails::Incoming(incoming)) => {
+                (false, incoming.dateServerSent.unwrap_or(incoming.dateReceived), incoming.sealedSender)
+            }
+            _ => return None,
+        };
+        let content = self.content(&thread, author, data, item.dateSent, server_timestamp, sealed, outgoing);
+        Some((thread, content))
+    }
+
+    /// The reactions on a chat item, each as the reaction message its author sent, the way
+    /// presage stores live ones.
+    fn reactions(&self, item: &proto::ChatItem, thread: &Thread, group_v2: Option<GroupContextV2>) -> Vec<Record> {
+        use proto::chat_item::Item;
+        let reactions = match &item.item {
+            Some(Item::StandardMessage(message)) => &message.reactions,
+            Some(Item::StickerMessage(sticker)) => &sticker.reactions,
+            Some(Item::ViewOnceMessage(view_once)) => &view_once.reactions,
+            _ => return Vec::new(),
+        };
+        let Some(target_author) = self.aci_of(item.authorId) else { return Vec::new() };
+        reactions
+            .iter()
+            .filter_map(|reaction| {
+                let author = self.aci_of(reaction.authorId)?;
+                let data = DataMessage {
+                    reaction: Some(DataReaction {
+                        emoji: Some(reaction.emoji.clone()),
+                        remove: Some(false),
+                        target_author_aci: Some(ServiceId::Aci(target_author).service_id_string()),
+                        target_sent_timestamp: Some(item.dateSent),
+                        ..Default::default()
+                    }),
+                    timestamp: Some(reaction.sentTimestamp),
+                    group_v2: group_v2.clone(),
                     ..Default::default()
                 };
-                let sync = SyncMessage { content: Some(SyncContent::Sent(sent)), ..Default::default() };
-                (ContentBody::SynchronizeMessage(sync), outgoing.dateReceived, false)
-            }
-            Some(DirectionalDetails::Incoming(incoming)) => (
-                ContentBody::DataMessage(data),
-                incoming.dateServerSent.unwrap_or(incoming.dateReceived),
-                incoming.sealedSender,
-            ),
-            _ => return None,
+                let sent = reaction.sentTimestamp;
+                let content = self.content(thread, author, data, sent, sent, false, author == self.me);
+                Some(Record::Message { thread: thread.clone(), content })
+            })
+            .collect()
+    }
+
+    /// The person a recipient id stands for.
+    fn aci_of(&self, recipient: u64) -> Option<Aci> {
+        match self.recipients.get(&recipient)? {
+            Party::Me => Some(self.me),
+            Party::Contact(aci) => Some(*aci),
+            Party::Group { .. } => None,
+        }
+    }
+
+    /// Wraps a data message as presage stores it: as received if someone else wrote it, as a
+    /// "sent" sync message if we did.
+    #[allow(clippy::too_many_arguments)]
+    fn content(
+        &self,
+        thread: &Thread,
+        author: Aci,
+        data: DataMessage,
+        sent: u64,
+        server_timestamp: u64,
+        sealed: bool,
+        outgoing: bool,
+    ) -> Content {
+        let body = if outgoing {
+            let destination = match thread {
+                Thread::Contact(id) => Some(id.service_id_string()),
+                Thread::Group(_) => None,
+            };
+            let sent = Sent { destination_service_id: destination, timestamp: Some(sent), message: Some(data), ..Default::default() };
+            ContentBody::SynchronizeMessage(SyncMessage { content: Some(SyncContent::Sent(sent)), ..Default::default() })
+        } else {
+            ContentBody::DataMessage(data)
         };
         let metadata = Metadata {
             sender: ServiceId::Aci(author),
             destination: ServiceId::Aci(self.me),
             sender_device: *DEFAULT_DEVICE_ID,
             pni_verified: None,
-            client_timestamp: datetime(item.dateSent),
+            client_timestamp: datetime(sent),
             server_timestamp: datetime(server_timestamp),
             needs_receipt: false,
             unidentified_sender: sealed,
             was_plaintext: false,
             server_guid: None,
         };
-        Some((thread, Content { metadata, body }))
+        Content { metadata, body }
     }
 }
 
@@ -532,7 +599,7 @@ mod tests {
     #[test]
     fn converts_contacts_groups_and_text_messages() {
         let (records, stats) = import(&archive());
-        assert_eq!(stats, Stats { contacts: 1, groups: 1, messages: 3, skipped: 1 });
+        assert_eq!(stats, Stats { contacts: 1, groups: 1, messages: 3, reactions: 0, skipped: 1 });
 
         let Some(Record::Contact { contact, profile_key }) =
             records.iter().find(|r| matches!(r, Record::Contact { .. }))
@@ -641,6 +708,45 @@ mod tests {
         assert_eq!(quote.text.as_deref(), Some("Hi!"));
         let lasting = bodies.iter().find(|data| data.body.as_deref() == Some("still here")).unwrap();
         assert_eq!(lasting.expire_timer, Some((NOW / 1000) as u32));
+    }
+
+    #[test]
+    fn reactions_become_their_authors_reaction_messages() {
+        use proto::chat_item::Item;
+        let mut frames = archive();
+        let reacted = proto::StandardMessage {
+            text: MessageField::some(proto::Text { body: "Summit!".into(), ..Default::default() }),
+            reactions: vec![
+                proto::Reaction { emoji: "🎉".into(), authorId: 1, sentTimestamp: 9100, ..Default::default() },
+                proto::Reaction { emoji: "❤️".into(), authorId: 2, sentTimestamp: 9200, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        frames.push(incoming(9000, Item::StandardMessage(reacted)));
+        let (records, stats) = import(&frames);
+        assert_eq!(stats.reactions, 2);
+
+        let reactions: Vec<_> = records
+            .iter()
+            .filter_map(|r| match r {
+                Record::Message { content, .. } => {
+                    let (data, outgoing) = match &content.body {
+                        ContentBody::DataMessage(data) => (data, false),
+                        ContentBody::SynchronizeMessage(SyncMessage {
+                            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+                            ..
+                        }) => (data, true),
+                        _ => return None,
+                    };
+                    let reaction = data.reaction.as_ref()?;
+                    Some((reaction.emoji.clone().unwrap(), outgoing, content.metadata.sender, reaction.target_sent_timestamp))
+                }
+                _ => None,
+            })
+            .collect();
+        let alice = ServiceId::Aci(Aci::from_uuid_bytes(ALICE));
+        let me = ServiceId::Aci(Aci::from_uuid_bytes(ME));
+        assert_eq!(reactions, [("🎉".into(), true, me, Some(9000)), ("❤️".into(), false, alice, Some(9000))]);
     }
 
     fn file(content_type: &str, transit: bool) -> proto::FilePointer {

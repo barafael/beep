@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{Reaction, Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -85,6 +85,10 @@ pub fn run(commands: Inbox, events: Events) {
         };
         match next {
             Ok(Command::Unlock(_) | Command::SkipHistory) => {}
+            Ok(Command::React { conversation, target, emoji, remove }) => {
+                let reaction = Reaction { emoji, sender_id: "you".into(), sender: "You".into(), outgoing: true };
+                let _ = events.send(Event::Reaction { conversation, target, reaction, remove });
+            }
             // Every mock attachment is the same picture; saving pretends to succeed.
             Ok(Command::FetchAttachment(attachment)) => {
                 std::thread::sleep(Duration::from_millis(400));
@@ -153,6 +157,7 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             },
             ChatMessage {
                 attachments: vec![attachment("photo", AttachmentKind::Image, "image/jpeg", None, (800, 600))],
+                reactions: vec![Reaction { emoji: "😮".into(), sender_id: "you".into(), sender: "You".into(), outgoing: true }],
                 ..message("alice", "Alice", "The view from the hut", ago(30), false)
             },
             ChatMessage {
@@ -162,7 +167,14 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
         ],
         "rust" => vec![
             message("rust", "Ferris", "Slint or iced?", ago(120), false),
-            message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false),
+            ChatMessage {
+                reactions: ["ferris", "dana", "eve"]
+                    .iter()
+                    .map(|who| Reaction { emoji: "👍".into(), sender_id: (*who).into(), sender: (*who).into(), outgoing: false })
+                    .chain([Reaction { emoji: "❤️".into(), sender_id: "you".into(), sender: "You".into(), outgoing: true }])
+                    .collect(),
+                ..message("rust", "Carol", "Slint, if you want it to look native.", ago(118), false)
+            },
             ChatMessage {
                 attachments: vec![attachment("long", AttachmentKind::LongText, "text/x-signal-plain", None, (0, 0))],
                 ..message("rust", "Ferris", "A long message A long message A long…", ago(117), false)

@@ -33,6 +33,13 @@ export struct AttachmentItem {
     can-save: bool,
 }
 
+export struct ReactionItem {
+    emoji: string,
+    count: int,
+    // One of them is ours; clicking takes it back.
+    mine: bool,
+}
+
 export struct MessageItem {
     sender: string,
     body: string,
@@ -44,6 +51,7 @@ export struct MessageItem {
     quote-author: string,
     quote-text: string,
     attachments: [AttachmentItem],
+    reactions: [ReactionItem],
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -202,8 +210,9 @@ component AttachmentView inherits VerticalLayout {
     }
 }
 
-component ReplyButton inherits Rectangle {
+component HoverButton inherits Rectangle {
     in property <bool> shown;
+    in property <string> symbol;
     callback clicked;
     width: 28px;
     height: 28px;
@@ -215,9 +224,37 @@ component ReplyButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
     Text {
-        text: "↩";
+        text: root.symbol;
         font-size: 1.1rem;
         color: Palette.foreground.with-alpha(0.6);
+    }
+}
+
+// Quick reactions, as in Signal's own apps.
+component ReactionPicker inherits PopupWindow {
+    callback picked(string);
+    Rectangle {
+        border-radius: 18px;
+        background: Palette.alternate-background;
+        border-width: 1px;
+        border-color: Palette.border;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #0003;
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 2px;
+            for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 16px;
+                background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+                touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.picked(emoji); }
+                }
+                Text { text: emoji; font-size: 1.2rem; }
+            }
+        }
     }
 }
 
@@ -227,9 +264,16 @@ component Bubble inherits Rectangle {
     callback fetch-attachment(string);
     callback save-attachment(string);
     callback reply;
+    callback react(string);
 
     // Under the content, so buttons inside the bubble still get their clicks.
     hover := TouchArea {}
+
+    picker := ReactionPicker {
+        x: item.outgoing ? root.width - 230px : 16px;
+        y: -36px;
+        picked(emoji) => { root.react(emoji); }
+    }
 
     HorizontalLayout {
         alignment: item.outgoing ? end : start;
@@ -242,9 +286,17 @@ component Bubble inherits Rectangle {
         // Beside the bubble on the side facing the middle, shown on hover.
         if item.outgoing: VerticalLayout {
             alignment: center;
-            ReplyButton {
-                shown: hover.has-hover;
-                clicked => { root.reply(); }
+            HorizontalLayout {
+                HoverButton {
+                    symbol: "☺";
+                    shown: hover.has-hover;
+                    clicked => { picker.show(); }
+                }
+                HoverButton {
+                    symbol: "↩";
+                    shown: hover.has-hover;
+                    clicked => { root.reply(); }
+                }
             }
         }
         VerticalLayout {
@@ -319,13 +371,44 @@ component Bubble inherits Rectangle {
                     }
                 }
             }
+            if item.reactions.length > 0: HorizontalLayout {
+                alignment: item.outgoing ? end : start;
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 4px;
+                for reaction in item.reactions: Rectangle {
+                    height: 24px;
+                    width: chip.preferred-width + 14px;
+                    border-radius: 12px;
+                    background: reaction.mine ? Palette.accent-background.with-alpha(0.25) : Palette.alternate-background;
+                    border-width: 1px;
+                    border-color: reaction.mine ? Palette.accent-background : Palette.border;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.react(reaction.emoji); }
+                    }
+                    chip := Text {
+                        text: reaction.count > 1 ? reaction.emoji + " " + reaction.count : reaction.emoji;
+                        font-size: 0.85rem;
+                        color: Palette.foreground;
+                    }
+                }
+            }
         }
 
         if !item.outgoing: VerticalLayout {
             alignment: center;
-            ReplyButton {
-                shown: hover.has-hover;
-                clicked => { root.reply(); }
+            HorizontalLayout {
+                HoverButton {
+                    symbol: "☺";
+                    shown: hover.has-hover;
+                    clicked => { picker.show(); }
+                }
+                HoverButton {
+                    symbol: "↩";
+                    shown: hover.has-hover;
+                    clicked => { root.reply(); }
+                }
             }
         }
     }
@@ -644,6 +727,7 @@ export component AppWindow inherits Window {
     callback skip-history;
     callback search(string);
     callback reply(int);
+    callback react(int, string);
     callback cancel-reply;
     // The message the composer answers; both empty when not replying.
     in property <string> reply-author;
@@ -877,6 +961,7 @@ export component AppWindow inherits Window {
                         max-bubble-width: message-list.visible-width * 0.7;
                         fetch-attachment(id) => { root.fetch-attachment(id); }
                         save-attachment(id) => { root.save-attachment(id); }
+                        react(emoji) => { root.react(index, emoji); }
                     }
                 }
 

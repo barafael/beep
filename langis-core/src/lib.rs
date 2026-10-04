@@ -52,6 +52,52 @@ pub struct ChatMessage {
     /// The message this one replies to.
     pub quote: Option<Quote>,
     pub attachments: Vec<Attachment>,
+    /// At most one per person, in the order they came.
+    pub reactions: Vec<Reaction>,
+}
+
+impl ChatMessage {
+    /// How Signal refers to this message, e.g. from reactions.
+    pub fn reference(&self) -> MessageRef {
+        MessageRef { author_id: self.sender_id.clone(), timestamp: self.timestamp }
+    }
+}
+
+/// Identifies a message the way Signal does: its author and sent time.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MessageRef {
+    pub author_id: String,
+    pub timestamp: u64,
+}
+
+/// Someone's emoji reaction to a message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reaction {
+    pub emoji: String,
+    pub sender_id: String,
+    /// Display name.
+    pub sender: String,
+    /// Ours.
+    pub outgoing: bool,
+}
+
+/// Puts a reaction on, or takes it off, the message it targets among `messages`. Each person
+/// has at most one reaction per message; a new one replaces theirs. Returns whether a message
+/// changed.
+pub(crate) fn apply_reaction(messages: &mut [ChatMessage], target: &MessageRef, reaction: Reaction, remove: bool) -> bool {
+    let Some(message) =
+        messages.iter_mut().rev().find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+    else {
+        return false;
+    };
+    let before = message.reactions.len();
+    message.reactions.retain(|r| r.sender_id != reaction.sender_id);
+    if remove {
+        message.reactions.len() != before
+    } else {
+        message.reactions.push(reaction);
+        true
+    }
 }
 
 /// What a reply shows of the message it answers, and which one that is.
@@ -188,6 +234,8 @@ pub enum Event {
     Conversations(Vec<Conversation>),
     /// Profile or group picture of a conversation, replacing any earlier one.
     Avatar { conversation: ConversationId, avatar: Arc<Picture> },
+    /// Someone reacted to a message, or took their reaction back.
+    Reaction { conversation: ConversationId, target: MessageRef, reaction: Reaction, remove: bool },
     /// Answer to [`Command::FetchAttachment`].
     Attachment { id: AttachmentId, content: Result<AttachmentContent, String> },
     /// Answer to [`Command::SaveAttachment`]: where the file was written.
@@ -214,6 +262,8 @@ pub enum Command {
     SaveAttachment(Attachment),
     /// `quote` makes it a reply to that message.
     Send { conversation: ConversationId, body: String, quote: Option<Quote> },
+    /// Reacts to a message with `emoji`, or takes our reaction back.
+    React { conversation: ConversationId, target: MessageRef, emoji: String, remove: bool },
 }
 
 pub struct Config {

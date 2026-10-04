@@ -26,7 +26,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     Picture, attachments, transfer,
-    ChatMessage, Command, Config, Quote, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
+    ChatMessage, Command, Config, MessageRef, Quote, Reaction, apply_reaction, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
     QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
@@ -591,6 +591,25 @@ fn decode_avatar(bytes: &[u8]) -> Option<Picture> {
     Some(Picture { width: AVATAR_SIDE, height: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
 }
 
+/// Sends a data message to a 1:1 chat or a group. presage fills in the message's timestamp
+/// from `timestamp`.
+async fn send_data(manager: &mut Mgr, thread: &Thread, mut message: DataMessage, timestamp: u64) -> Result<(), String> {
+    let sent = match thread {
+        Thread::Contact(recipient) => manager.send_message(*recipient, message, timestamp).await,
+        Thread::Group(key) => {
+            // Recipients compare this with their group state to spot stale context.
+            let revision = match manager.store().group(*key).await {
+                Ok(Some(group)) => group.revision,
+                _ => 0,
+            };
+            message.group_v2 =
+                Some(GroupContextV2 { master_key: Some(key.to_vec()), revision: Some(revision), ..Default::default() });
+            manager.send_message_to_group(key, message, timestamp).await
+        }
+    };
+    sent.map_err(|e| format!("failed to send: {e}"))
+}
+
 fn own_id(manager: &Mgr) -> ServiceId {
     ServiceId::Aci(manager.registration_data().service_ids.aci())
 }
@@ -699,6 +718,9 @@ async fn handle_received(
         Received::Content(content) => {
             let Ok(thread) = Thread::try_from(&*content) else { return true };
             let id = ensure_conversation(manager, threads, events, thread).await;
+            if let Some((target, reaction, remove)) = to_reaction(manager, names, &content).await {
+                return events.send(Event::Reaction { conversation: id, target, reaction, remove });
+            }
             match to_chat_message(manager, names, id, &content).await {
                 Some(message) => events.send(Event::Message(message)),
                 None => true,
@@ -720,6 +742,31 @@ async fn ensure_conversation(manager: &Mgr, threads: &Threads, events: &Events, 
 }
 
 /// Extracts displayable text; returns `None` for receipts, typing indicators, etc.
+/// A reaction, from someone else or (synced from the phone) from us.
+async fn to_reaction(manager: &Mgr, names: &mut Names, content: &Content) -> Option<(MessageRef, Reaction, bool)> {
+    let (data, outgoing) = match &content.body {
+        ContentBody::DataMessage(data) => (data, false),
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Sent(Sent { message: Some(data), .. })),
+            ..
+        }) => (data, true),
+        _ => return None,
+    };
+    let reaction = data.reaction.as_ref()?;
+    let target = MessageRef {
+        author_id: reaction.target_author_aci.clone()?,
+        timestamp: reaction.target_sent_timestamp?,
+    };
+    let sender = if outgoing { "You".to_string() } else { sender_name(manager, names, content.metadata.sender).await };
+    let reaction_view = Reaction {
+        emoji: reaction.emoji.clone().unwrap_or_default(),
+        sender_id: content.metadata.sender.service_id_string(),
+        sender,
+        outgoing,
+    };
+    Some((target, reaction_view, reaction.remove()))
+}
+
 async fn to_chat_message(
     manager: &Mgr,
     names: &mut Names,
@@ -769,6 +816,7 @@ async fn to_chat_message(
         outgoing,
         quote,
         attachments,
+        reactions: Vec::new(),
     })
 }
 
@@ -803,10 +851,12 @@ async fn handle(
                 .map_err(|e| format!("failed to load history: {e}"))?;
             let mut names = Names::new();
             let mut messages = Vec::new();
-            for content in contents.flatten() {
-                if let Some(message) =
-                    to_chat_message(manager, &mut names, id.clone(), &content).await
-                {
+            // Oldest first, so reactions find their message and later ones win.
+            let contents: Vec<_> = contents.flatten().collect();
+            for content in contents.iter().rev() {
+                if let Some((target, reaction, remove)) = to_reaction(manager, &mut names, content).await {
+                    apply_reaction(&mut messages, &target, reaction, remove);
+                } else if let Some(message) = to_chat_message(manager, &mut names, id.clone(), content).await {
                     messages.push(message);
                 }
             }
@@ -815,13 +865,32 @@ async fn handle(
                 messages,
             });
         }
+        Command::React { conversation, target, emoji, remove } => {
+            let Some(thread) = threads.borrow().get(&conversation).cloned() else {
+                return Err("unknown conversation".into());
+            };
+            let message = DataMessage {
+                reaction: Some(presage::proto::data_message::Reaction {
+                    emoji: Some(emoji.clone()),
+                    remove: Some(remove),
+                    target_author_aci: Some(target.author_id.clone()),
+                    target_sent_timestamp: Some(target.timestamp),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            send_data(manager, &thread, message, now_millis()).await?;
+            let reaction =
+                Reaction { emoji, sender_id: own_id(manager).service_id_string(), sender: "You".into(), outgoing: true };
+            let _ = events.send(Event::Reaction { conversation, target, reaction, remove });
+        }
         Command::Send { conversation, body, quote } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {
                 return Err("unknown conversation".into());
             };
             // presage fills in the data message's timestamp from the one passed here.
             let timestamp = now_millis();
-            let mut message = DataMessage {
+            let message = DataMessage {
                 body: Some(body.clone()),
                 quote: quote.as_ref().map(|quote| presage::proto::data_message::Quote {
                     id: Some(quote.timestamp),
@@ -831,25 +900,7 @@ async fn handle(
                 }),
                 ..Default::default()
             };
-            let sent = match &thread {
-                Thread::Contact(recipient) => {
-                    manager.send_message(*recipient, message, timestamp).await
-                }
-                Thread::Group(key) => {
-                    // Recipients compare this with their group state to spot stale context.
-                    let revision = match manager.store().group(*key).await {
-                        Ok(Some(group)) => group.revision,
-                        _ => 0,
-                    };
-                    message.group_v2 = Some(GroupContextV2 {
-                        master_key: Some(key.to_vec()),
-                        revision: Some(revision),
-                        ..Default::default()
-                    });
-                    manager.send_message_to_group(key, message, timestamp).await
-                }
-            };
-            sent.map_err(|e| format!("failed to send: {e}"))?;
+            send_data(manager, &thread, message, timestamp).await?;
             let _ = events.send(Event::Message(ChatMessage {
                 conversation,
                 sender_id: manager

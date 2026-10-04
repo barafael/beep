@@ -95,14 +95,18 @@ fn main() -> Result<(), slint::PlatformError> {
     window.on_fetch_attachment({
         let app = app.clone();
         move |id| {
-            app.act(|chat, _| (chat.fetch_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
+            app.act(|chat, _| (chat.fetch_attachment(&AttachmentId(id.into())), Update { rows: true, ..Update::default() }))
         }
     });
     window.on_save_attachment({
         let app = app.clone();
         move |id| {
-            app.act(|chat, _| (chat.save_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
+            app.act(|chat, _| (chat.save_attachment(&AttachmentId(id.into())), Update { rows: true, ..Update::default() }))
         }
+    });
+    window.on_react({
+        let app = app.clone();
+        move |index, emoji| app.act(|chat, _| (chat.react(index as usize, &emoji), Update::default()))
     });
     window.on_reply({
         let app = app.clone();
@@ -380,12 +384,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             messages.set_vec(chat.messages().map(|m| message_item(&m, chat, images)).collect::<Vec<_>>())
         }
     }
-    // Downloads finishing redraw only the messages that show attachments.
-    if update.attachments && update.messages != MessagesUpdate::Reset {
+    // Messages changed in place (downloads, reactions): redraw only rows that differ.
+    if update.rows && update.messages != MessagesUpdate::Reset {
         for (row, message) in chat.messages().enumerate() {
-            if message.message.attachments.is_empty() {
-                continue;
-            }
             let item = message_item(&message, chat, images);
             if !messages.row_data(row).is_some_and(|old| same_message(&old, &item)) {
                 messages.set_row_data(row, item);
@@ -450,15 +451,34 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
         attachments: ModelRc::new(VecModel::from(attachments)),
+        reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
     }
+}
+
+/// One chip per emoji, in the order they first came, counting everyone who chose it.
+fn reaction_items(reactions: &[langis_core::Reaction]) -> Vec<ReactionItem> {
+    let mut items: Vec<ReactionItem> = Vec::new();
+    for reaction in reactions {
+        match items.iter_mut().find(|item| item.emoji.as_str() == reaction.emoji) {
+            Some(item) => {
+                item.count += 1;
+                item.mine |= reaction.outgoing;
+            }
+            None => items.push(ReactionItem { emoji: reaction.emoji.as_str().into(), count: 1, mine: reaction.outgoing }),
+        }
+    }
+    items
 }
 
 /// Like `==`, but comparing attachment lists by content: each item gets a new model, which
 /// would never compare equal and so redraw every row with an attachment.
 fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
-    let same_attachments = a.attachments.row_count() == b.attachments.row_count()
-        && a.attachments.iter().zip(b.attachments.iter()).all(|(x, y)| x == y);
-    same_attachments && MessageItem { attachments: b.attachments.clone(), ..a.clone() } == *b
+    fn same<T: PartialEq>(a: &ModelRc<T>, b: &ModelRc<T>) -> bool {
+        a.row_count() == b.row_count() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+    }
+    same(&a.attachments, &b.attachments)
+        && same(&a.reactions, &b.reactions)
+        && MessageItem { attachments: b.attachments.clone(), reactions: b.reactions.clone(), ..a.clone() } == *b
 }
 
 fn attachment_item(
