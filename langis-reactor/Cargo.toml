@@ -1,0 +1,22 @@
+[package]
+name = "langis-reactor"
+description = "Native WinUI 3 Signal client built with windows-reactor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "langis-win"
+path = "src/main.rs"
+
+[features]
+default = ["signal"]
+signal = ["langis-core/signal"]
+
+[target.'cfg(windows)'.dependencies]
+langis-core.workspace = true
+async-channel = "2"
+zeroize = "1"
+png = "0.18"
+# 0.100.0 on crates.io predates the current component API; pinned to a master commit.
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "af92a168e17085b4b3fd4e88f9f2cb83893b8563" }
