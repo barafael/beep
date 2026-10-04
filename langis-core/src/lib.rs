@@ -69,6 +69,9 @@ impl Password {
         Self(zeroize::Zeroizing::new(password.into()))
     }
 
+    /// The password in plaintext. Named for what it does: the returned borrow cannot be wiped,
+    /// so callers should use it only to derive a key and hold it for as short a time as
+    /// possible.
     pub fn expose(&self) -> &str {
         &self.0
     }

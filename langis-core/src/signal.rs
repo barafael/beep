@@ -646,7 +646,8 @@ async fn ensure_conversation(manager: &Mgr, threads: &Threads, events: &Events, 
     if !threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
         let conversation = register(threads, thread, title);
-        info!(title = conversation.title, "new conversation");
+        // `debug`, not `info`: a contact or group name is metadata that doesn't belong in a log file.
+    debug!(title = conversation.title, "new conversation");
         events.send(Event::Conversations(vec![conversation]));
     }
     id
