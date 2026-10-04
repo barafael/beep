@@ -17,7 +17,8 @@ use keyring_core::{CredentialStore, Entry, Error as KeyringError};
 use zeroize::Zeroizing;
 
 const SERVICE: &str = "langis";
-const ACCOUNT: &str = "database-key";
+/// Keyring entry of the default data directory.
+pub const DEFAULT_ACCOUNT: &str = "database-key";
 
 pub type Key = Zeroizing<[u8; 32]>;
 
@@ -63,8 +64,9 @@ pub enum KeyringKey {
     Unavailable(String),
 }
 
-pub fn keyring_key() -> KeyringKey {
-    match entry().and_then(|entry| entry.get_secret()) {
+/// `account` names the keyring entry; each data directory needs its own.
+pub fn keyring_key(account: &str) -> KeyringKey {
+    match entry(account).and_then(|entry| entry.get_secret()) {
         Ok(secret) => match <[u8; 32]>::try_from(&secret[..]) {
             Ok(key) => KeyringKey::Found(Zeroizing::new(key)),
             Err(_) => KeyringKey::Unavailable("the stored key has the wrong length".into()),
@@ -75,9 +77,9 @@ pub fn keyring_key() -> KeyringKey {
 }
 
 /// Generates a key and stores it in the OS credential store; `Err` if there is no usable store.
-pub fn create_keyring_key() -> Result<Key, String> {
+pub fn create_keyring_key(account: &str) -> Result<Key, String> {
     let key = random_key();
-    let entry = entry().map_err(|e| e.to_string())?;
+    let entry = entry(account).map_err(|e| e.to_string())?;
     entry.set_secret(&key[..]).map_err(|e| e.to_string())?;
     // Read it back: a store that accepted the write but can't return it is no store at all.
     match entry.get_secret() {
@@ -113,8 +115,8 @@ pub fn sqlcipher_pragma(key: &Key) -> Zeroizing<String> {
     Zeroizing::new(format!("\"x'{}'\"", hex::encode_upper(&key[..])))
 }
 
-fn entry() -> keyring_core::Result<Entry> {
-    platform_store()?.build(SERVICE, ACCOUNT, None)
+fn entry(account: &str) -> keyring_core::Result<Entry> {
+    platform_store()?.build(SERVICE, account, None)
 }
 
 fn platform_store() -> keyring_core::Result<Arc<CredentialStore>> {
@@ -158,7 +160,7 @@ mod tests {
     #[test]
     #[ignore]
     fn keyring_is_reachable() {
-        match keyring_key() {
+        match keyring_key(DEFAULT_ACCOUNT) {
             KeyringKey::Found(_) | KeyringKey::Missing => {}
             KeyringKey::Unavailable(reason) => panic!("keyring unavailable: {reason}"),
         }

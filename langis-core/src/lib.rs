@@ -11,6 +11,8 @@ pub mod state;
 #[cfg(feature = "signal")]
 mod signal;
 #[cfg(feature = "signal")]
+mod transfer;
+#[cfg(feature = "signal")]
 mod vault;
 
 pub use qr::QrMatrix;

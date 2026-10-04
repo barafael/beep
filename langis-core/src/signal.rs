@@ -24,12 +24,13 @@ use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{info, warn};
 
 use crate::{
+    transfer,
     ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Inbox, Password, QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
 };
 
-type Mgr = Manager<SqliteStore, Registered>;
+pub(crate) type Mgr = Manager<SqliteStore, Registered>;
 
 /// Maps the opaque ids handed to the UI back to presage threads.
 type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
@@ -67,15 +68,30 @@ struct Paths {
     dir: PathBuf,
     db: PathBuf,
     key_source: PathBuf,
+    /// Keyring entry holding the database key.
+    keyring_account: String,
 }
 
 impl Paths {
     fn new() -> Result<Self, String> {
-        let dirs = directories::ProjectDirs::from("org", "langis", "langis")
-            .ok_or("could not determine a data directory")?;
-        let dir = dirs.data_dir().to_path_buf();
+        // `LANGIS_DATA_DIR` keeps a separate account, e.g. to link a second device for testing.
+        // Its database key gets its own keyring entry, so it never replaces the default one.
+        let (dir, keyring_account) = match std::env::var_os("LANGIS_DATA_DIR") {
+            Some(dir) => {
+                let dir = PathBuf::from(dir);
+                let account = format!("{}:{}", vault::DEFAULT_ACCOUNT, dir.display());
+                (dir, account)
+            }
+            None => (
+                directories::ProjectDirs::from("org", "langis", "langis")
+                    .ok_or("could not determine a data directory")?
+                    .data_dir()
+                    .to_path_buf(),
+                vault::DEFAULT_ACCOUNT.to_owned(),
+            ),
+        };
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
-        Ok(Self { db: dir.join("langis.db3"), key_source: dir.join("langis.key"), dir })
+        Ok(Self { db: dir.join("langis.db3"), key_source: dir.join("langis.key"), dir, keyring_account })
     }
 }
 
@@ -91,7 +107,7 @@ fn unlock(
     let paths = Paths::new()?;
     let salt = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
         Some(KeySource::Keyring) => {
-            let key = match vault::keyring_key() {
+            let key = match vault::keyring_key(&paths.keyring_account) {
                 KeyringKey::Found(key) => key,
                 KeyringKey::Missing => {
                     return Err(format!(
@@ -115,7 +131,7 @@ fn unlock(
                 paths.db.display()
             ));
         }
-        None => match vault::create_keyring_key() {
+        None => match vault::create_keyring_key(&paths.keyring_account) {
             Ok(key) => {
                 write_source(&paths, &KeySource::Keyring)?;
                 return open_store(runtime, local, &paths, &key).map(Some);
@@ -207,13 +223,13 @@ async fn session(
         }
     });
 
-    let mut manager = match Manager::load_registered(store.clone()).await {
-        Ok(manager) => manager,
+    let (mut manager, history_key) = match Manager::load_registered(store.clone()).await {
+        Ok(manager) => (manager, None),
         Err(PresageError::NotYetRegisteredError) => {
             // Nothing can be done before linking, so commands are dropped until then.
             let ui_closed = async { while command_rx.recv().await.is_some() {} };
             tokio::select! {
-                manager = link(store, &config, &events) => manager?,
+                linked = link(store, &config, &events) => linked?,
                 () = ui_closed => return Ok(()),
             }
         }
@@ -226,6 +242,28 @@ async fn session(
         .aci()
         .service_id_string();
     let _ = events.send(Event::Linked { account });
+
+    // The history has to be in place before live messages arrive, so this comes first.
+    // Commands that arrive meanwhile are handled afterwards.
+    let mut pending = Vec::new();
+    if let Some(key) = history_key {
+        let dir = Paths::new()?.dir;
+        let transfer = transfer::receive_history(&manager, key, &dir);
+        pin_mut!(transfer);
+        let result = loop {
+            tokio::select! {
+                result = &mut transfer => break result,
+                command = command_rx.recv() => match command {
+                    Some(command) => pending.push(command),
+                    None => return Ok(()),
+                },
+            }
+        };
+        if let Err(error) = result {
+            warn!(%error, "message history transfer failed");
+            let _ = events.send(Event::Error(error));
+        }
+    }
 
     let threads: Threads = Rc::default();
     if send_conversations(&manager, &threads, &events).await == 0 {
@@ -241,6 +279,11 @@ async fn session(
 
     tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone()));
 
+    for command in pending {
+        if let Err(error) = handle(&mut manager, &threads, &events, command).await {
+            let _ = events.send(Event::Error(error));
+        }
+    }
     while let Some(command) = command_rx.recv().await {
         if let Err(error) = handle(&mut manager, &threads, &events, command).await {
             let _ = events.send(Event::Error(error));
@@ -249,25 +292,29 @@ async fn session(
     Ok(())
 }
 
-async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<Mgr, String> {
+/// Links this device; also returns the one-time key for the history transfer if the user
+/// chose to transfer it.
+async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<(Mgr, Option<[u8; 32]>), String> {
     let (url_tx, url_rx) = oneshot::channel();
-    let (manager, _) = future::join(
-        Manager::link_secondary_device(
+    let (linked, _) = future::join(
+        Manager::link_secondary_device_with_history(
             store,
             SignalServers::Production,
             config.device_name.clone(),
             url_tx,
         ),
         async {
-            if let Ok(url) = url_rx.await
-                && let Some(qr) = QrMatrix::encode(url.as_str())
+            if let Ok(mut url) = url_rx.await
+                && let Some(qr) = QrMatrix::encode(
+                    url.query_pairs_mut().append_pair("capabilities", transfer::LINK_CAPABILITY).finish().as_str(),
+                )
             {
                 let _ = events.send(Event::LinkQr(qr));
             }
         },
     )
     .await;
-    manager.map_err(|e| format!("linking failed: {e}"))
+    linked.map_err(|e| format!("linking failed: {e}"))
 }
 
 fn conversation_id(thread: &Thread) -> ConversationId {
@@ -558,7 +605,12 @@ mod tests {
     fn database_opens_only_with_its_key() {
         let dir = std::env::temp_dir().join(format!("langis-db-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let paths = Paths { db: dir.join("test.db3"), key_source: dir.join("test.key"), dir: dir.clone() };
+        let paths = Paths {
+            db: dir.join("test.db3"),
+            key_source: dir.join("test.key"),
+            dir: dir.clone(),
+            keyring_account: "unused".into(),
+        };
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let local = LocalSet::new();
 

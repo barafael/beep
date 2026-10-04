@@ -13,9 +13,15 @@ langis-core = { path = "langis-core", default-features = false }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Not on crates.io; pinned to a known-good commit.
-presage = { git = "https://github.com/whisperfish/presage", rev = "33dd1491130793390e356e15a5711f1e6ca14fdb" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "33dd1491130793390e356e15a5711f1e6ca14fdb" }
+# Not on crates.io. Our fork adds the link-time history transfer on top of upstream 33dd149
+# (branch langis/link-history-key); drop it once that lands upstream (whisperfish/presage#430).
+presage = { git = "https://github.com/barafael/presage", rev = "ef790ad4b6cad70ac96abdea699081396d8d5cc4" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ef790ad4b6cad70ac96abdea699081396d8d5cc4" }
+
+# Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
+# that presage pins (see Cargo.lock), so the key and ID types are shared.
+libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
+libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch.
