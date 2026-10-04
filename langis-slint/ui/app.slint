@@ -1,0 +1,428 @@
+import { Button, LineEdit, ListView, Palette, Spinner } from "std-widgets.slint";
+
+export struct ConversationItem {
+    id: string,
+    title: string,
+    initials: string,
+    avatar-color: color,
+    preview: string,
+    unread: int,
+}
+
+export struct MessageItem {
+    sender: string,
+    body: string,
+    time: string,
+    outgoing: bool,
+    // Show the sender above the bubble (groups, first of a run).
+    show-sender: bool,
+}
+
+export enum Screen { connecting, password, link, chats }
+
+component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <color> tint;
+    width: 40px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: tint;
+    Text {
+        text: initials;
+        color: white;
+        font-size: root.width * 0.4;
+        font-weight: 600;
+    }
+}
+
+component ConversationRow inherits Rectangle {
+    in property <ConversationItem> item;
+    in property <bool> selected;
+    callback clicked;
+
+    height: 64px;
+    border-radius: 6px;
+    background: selected ? Palette.accent-background.with-alpha(0.18)
+        : touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 12px;
+        Avatar {
+            initials: item.initials;
+            tint: item.avatar-color;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: item.title;
+                font-weight: item.unread > 0 ? 700 : 600;
+                overflow: elide;
+                color: Palette.foreground;
+            }
+            Text {
+                text: item.preview;
+                overflow: elide;
+                color: Palette.foreground.with-alpha(0.65);
+                font-size: 0.9rem;
+            }
+        }
+        if item.unread > 0: Rectangle {
+            width: max(20px, badge.preferred-width + 10px);
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 10px;
+            background: Palette.accent-background;
+            badge := Text {
+                text: item.unread;
+                color: Palette.accent-foreground;
+                font-size: 0.8rem;
+                font-weight: 700;
+            }
+        }
+    }
+}
+
+component Bubble inherits HorizontalLayout {
+    in property <MessageItem> item;
+    in property <length> max-bubble-width;
+
+    alignment: item.outgoing ? end : start;
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: item.show-sender ? 8px : 2px;
+    padding-bottom: 2px;
+
+    VerticalLayout {
+        spacing: 2px;
+        if item.show-sender: Text {
+            text: item.sender;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: Palette.foreground.with-alpha(0.7);
+            horizontal-alignment: item.outgoing ? right : left;
+        }
+        Rectangle {
+            max-width: root.max-bubble-width;
+            border-radius: 14px;
+            background: item.outgoing ? Palette.accent-background : Palette.alternate-background;
+            border-width: item.outgoing ? 0 : 1px;
+            border-color: Palette.border;
+            VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 7px;
+                padding-bottom: 6px;
+                spacing: 2px;
+                Text {
+                    text: item.body;
+                    wrap: word-wrap;
+                    color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+                }
+                Text {
+                    text: item.time;
+                    font-size: 0.72rem;
+                    horizontal-alignment: right;
+                    color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.65);
+                }
+            }
+        }
+    }
+}
+
+component PasswordScreen inherits Rectangle {
+    // Choosing a password for a new database, rather than unlocking an existing one.
+    in property <bool> new;
+    in property <string> error;
+    property <string> confirmation;
+    callback unlock(string, string);
+
+    background: Palette.background;
+    forward-focus: password-field;
+
+    function submit() {
+        root.unlock(password-field.text, root.confirmation);
+        password-field.text = "";
+        root.confirmation = "";
+        password-field.focus();
+    }
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: 360px;
+                spacing: 12px;
+                Text {
+                    text: root.new ? "Choose a password" : "Unlock langis";
+                    font-size: 1.6rem;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    color: Palette.foreground;
+                }
+                Text {
+                    text: root.new
+                        ? "No system keyring was found, so langis will encrypt your messages with this password. It can't be recovered if you forget it."
+                        : "Enter the password that protects your messages on this computer.";
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                password-field := LineEdit {
+                    input-type: password;
+                    placeholder-text: "Password";
+                    // When choosing a password, Tab leads on to the confirmation field.
+                    accepted => {
+                        if !root.new { root.submit(); }
+                    }
+                }
+                if root.new: LineEdit {
+                    text <=> root.confirmation;
+                    input-type: password;
+                    placeholder-text: "Repeat password";
+                    accepted => { root.submit(); }
+                }
+                if root.error != "": Text {
+                    text: root.error;
+                    color: #c4314b;
+                    horizontal-alignment: center;
+                }
+                Button {
+                    text: root.new ? "Continue" : "Unlock";
+                    primary: true;
+                    clicked => { root.submit(); }
+                }
+            }
+        }
+    }
+}
+
+component LinkScreen inherits Rectangle {
+    in property <image> qr;
+    background: Palette.background;
+    VerticalLayout {
+        alignment: center;
+        spacing: 20px;
+        Text {
+            text: "Link langis to your phone";
+            font-size: 1.6rem;
+            font-weight: 600;
+            horizontal-alignment: center;
+            color: Palette.foreground;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 280px;
+                height: 280px;
+                border-radius: 12px;
+                background: white;
+                drop-shadow-blur: 12px;
+                drop-shadow-color: #0003;
+                Image {
+                    width: parent.width - 24px;
+                    height: self.width;
+                    source: qr;
+                    image-rendering: pixelated;
+                }
+            }
+        }
+        Text {
+            text: "On your phone, open Signal → Settings → Linked devices → Link new device,\nthen scan this code.";
+            horizontal-alignment: center;
+            color: Palette.foreground.with-alpha(0.7);
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "langis";
+    icon: @image-url("../assets/langis.svg");
+    min-width: 720px;
+    min-height: 480px;
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    background: Palette.background;
+
+    in property <Screen> screen: Screen.connecting;
+    in property <image> link-qr;
+    in property <bool> password-new;
+    in property <string> password-error;
+    in property <string> account;
+    in property <string> error;
+    in property <bool> synced;
+    in property <[ConversationItem]> conversations;
+    in property <[MessageItem]> messages;
+    in property <int> selected: -1;
+    in property <bool> can-send;
+    in-out property <string> draft;
+
+    callback select(string);
+    callback draft-edited(string);
+    callback send(string);
+    callback dismiss-error;
+    callback unlock(string, string);
+
+    VerticalLayout {
+        if root.error != "": Rectangle {
+            height: 36px;
+            background: #c4314b;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                Text {
+                    text: root.error;
+                    color: white;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                TouchArea {
+                    width: 28px;
+                    clicked => { root.dismiss-error(); }
+                    Text { text: "✕"; color: white; }
+                }
+            }
+        }
+
+        if root.screen == Screen.connecting: Rectangle {
+            VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+                HorizontalLayout { alignment: center; Spinner { indeterminate: true; } }
+                Text {
+                    text: "Connecting to Signal…";
+                    horizontal-alignment: center;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+            }
+        }
+
+        if root.screen == Screen.password: PasswordScreen {
+            new: root.password-new;
+            error: root.password-error;
+            unlock(password, confirmation) => { root.unlock(password, confirmation); }
+        }
+
+        if root.screen == Screen.link: LinkScreen { qr: root.link-qr; }
+
+        if root.screen == Screen.chats: HorizontalLayout {
+            // Sidebar
+            Rectangle {
+                width: 300px;
+                background: Palette.alternate-background;
+                VerticalLayout {
+                    HorizontalLayout {
+                        padding: 16px;
+                        padding-bottom: 8px;
+                        Text {
+                            text: "Chats";
+                            font-size: 1.3rem;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+                        if !root.synced: Spinner {
+                            indeterminate: true;
+                            width: 18px;
+                            height: 18px;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    ListView {
+                        for item[index] in root.conversations: HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            ConversationRow {
+                                item: item;
+                                selected: index == root.selected;
+                                clicked => { root.select(item.id); }
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.account;
+                        font-size: 0.75rem;
+                        overflow: elide;
+                        color: Palette.foreground.with-alpha(0.5);
+                        horizontal-alignment: center;
+                        height: 28px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Rectangle { width: 1px; background: Palette.border; }
+
+            // Conversation
+            if root.selected < 0: Rectangle {
+                horizontal-stretch: 1;
+                Text {
+                    text: "Select a chat to start messaging";
+                    color: Palette.foreground.with-alpha(0.5);
+                }
+            }
+            if root.selected >= 0: VerticalLayout {
+                horizontal-stretch: 1;
+                Rectangle {
+                    height: 60px;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        spacing: 12px;
+                        Avatar {
+                            width: 36px;
+                            initials: root.conversations[root.selected].initials;
+                            tint: root.conversations[root.selected].avatar-color;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: root.conversations[root.selected].title;
+                            font-size: 1.1rem;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            color: Palette.foreground;
+                        }
+                    }
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+                }
+
+                message-list := ListView {
+                    vertical-stretch: 1;
+                    // Stick to the newest message whenever content grows.
+                    changed content-height => {
+                        self.content-y = min(0px, self.visible-height - self.content-height);
+                    }
+                    for item in root.messages: Bubble {
+                        item: item;
+                        max-bubble-width: message-list.visible-width * 0.7;
+                    }
+                }
+
+                HorizontalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    composer := LineEdit {
+                        placeholder-text: root.synced ? "Message" : "Syncing…";
+                        text <=> root.draft;
+                        enabled: root.synced;
+                        edited(text) => { root.draft-edited(text); }
+                        accepted(text) => {
+                            if root.can-send { root.send(text); }
+                        }
+                    }
+                    Button {
+                        text: "Send";
+                        primary: true;
+                        enabled: root.can-send;
+                        clicked => { root.send(root.draft); composer.focus(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,27 @@
+[workspace]
+members = ["langis-core", "langis-slint"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# libsignal and presage are AGPL-3.0-only, so anything linking them must be too.
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+langis-core = { path = "langis-core", default-features = false }
+crossbeam-channel = "0.5"
+qrcode = { version = "0.14", default-features = false }
+
+# Not on crates.io; pinned to a known-good commit.
+presage = { git = "https://github.com/whisperfish/presage", rev = "33dd1491130793390e356e15a5711f1e6ca14fdb" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "33dd1491130793390e356e15a5711f1e6ca14fdb" }
+
+[patch.crates-io]
+# Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch.
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
