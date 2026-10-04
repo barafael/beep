@@ -15,7 +15,11 @@ signal = ["langis-core/signal"]
 
 [dependencies]
 langis-core.workspace = true
+langis-notify = { path = "../langis-notify" }
 slint = "1.18"
+# Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
+# Pinned to the version slint itself pins.
+i-slint-core = "=1.18.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

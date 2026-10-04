@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::settings::NotificationContent;
 use crate::{Avatar, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
@@ -88,6 +89,16 @@ impl ConversationView<'_> {
     }
 }
 
+/// A desktop notification to show or take back; see [`ChatState::take_notices`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// `conversation` is `None` for a summary, which just opens the app. A newer notice for
+    /// the same conversation replaces the older one.
+    Show { conversation: Option<ConversationId>, title: String, body: String },
+    /// The conversation was read; its notification is stale.
+    Withdraw(ConversationId),
+}
+
 pub struct MessageView<'a> {
     pub message: &'a ChatMessage,
     /// Show the sender's name above the message (incoming group messages, first of a run).
@@ -110,6 +121,19 @@ pub struct ChatState {
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
+    notifications: Notifications,
+}
+
+/// Inputs and output of the notification policy.
+#[derive(Default)]
+struct Notifications {
+    enabled: bool,
+    content: NotificationContent,
+    window_focused: bool,
+    /// Incoming messages that arrived while catching up (not synced), by conversation;
+    /// announced as one summary once synced.
+    caught_up: HashMap<ConversationId, usize>,
+    pending: Vec<Notice>,
 }
 
 impl ChatState {
@@ -129,7 +153,10 @@ impl ChatState {
                 self.screen = Screen::Chats;
                 update.screen = true;
             }
-            Event::Synced => self.synced = true,
+            Event::Synced => {
+                self.synced = true;
+                self.announce_caught_up();
+            }
             Event::Reconnecting => self.synced = false,
             Event::HistoryTransfer(HistoryTransfer::Finished) => self.transfer = None,
             Event::HistoryTransfer(stage) => self.transfer = Some(stage),
@@ -188,6 +215,11 @@ impl ChatState {
                     return update;
                 };
                 let appended = pos + 1 == history.len();
+                if !outgoing {
+                    let message = &history[pos];
+                    let (sender, body) = (message.sender.clone(), message.body.clone());
+                    self.notify_message(&id, sender, body);
+                }
                 if self.selected.as_ref() == Some(&id) {
                     update.messages = if appended {
                         MessagesUpdate::Appended(1)
@@ -214,7 +246,80 @@ impl ChatState {
         }
         self.unread.remove(id);
         self.selected = Some(id.clone());
+        self.notifications.pending.push(Notice::Withdraw(id.clone()));
         (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
+    }
+
+    /// Answers a conversation that needn't be the selected one, e.g. from a notification.
+    /// Counts as reading it.
+    pub fn reply(&mut self, id: &ConversationId, text: &str) -> Option<Command> {
+        let body = text.trim();
+        if body.is_empty() || self.conversation(id).is_none() {
+            return None;
+        }
+        self.unread.remove(id);
+        self.notifications.pending.push(Notice::Withdraw(id.clone()));
+        Some(Command::Send { conversation: id.clone(), body: body.to_string() })
+    }
+
+    pub fn set_notifications(&mut self, enabled: bool, content: NotificationContent) {
+        self.notifications.enabled = enabled;
+        self.notifications.content = content;
+    }
+
+    /// Whether the window has the user's attention; messages for the open conversation of a
+    /// focused window don't notify.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.notifications.window_focused = focused;
+        if let (true, Some(id)) = (focused, &self.selected) {
+            self.notifications.pending.push(Notice::Withdraw(id.clone()));
+        }
+    }
+
+    /// Notifications to show or withdraw since the last call.
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notifications.pending)
+    }
+
+    pub fn conversation(&self, id: &ConversationId) -> Option<&Conversation> {
+        self.conversations.iter().find(|c| &c.id == id)
+    }
+
+    fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
+        let n = &mut self.notifications;
+        if !n.enabled || (n.window_focused && self.selected.as_ref() == Some(id)) {
+            return;
+        }
+        if !self.synced {
+            *n.caught_up.entry(id.clone()).or_default() += 1;
+            return;
+        }
+        let group = self.conversations.iter().find(|c| &c.id == id).filter(|c| c.is_group);
+        let name = match group {
+            Some(group) => format!("{sender} in {}", group.title),
+            None => sender,
+        };
+        let (title, body) = match n.content {
+            NotificationContent::NameAndMessage => (name, body),
+            NotificationContent::NameOnly => (name, "New message".into()),
+            NotificationContent::Nothing => ("langis".into(), "New message".into()),
+        };
+        n.pending.push(Notice::Show { conversation: Some(id.clone()), title, body });
+    }
+
+    fn announce_caught_up(&mut self) {
+        let n = &mut self.notifications;
+        let chats = n.caught_up.len();
+        let messages: usize = n.caught_up.drain().map(|(_, count)| count).sum();
+        if messages == 0 || n.window_focused {
+            return;
+        }
+        let body = match (messages, chats) {
+            (1, _) => "1 new message".to_string(),
+            (_, 1) => format!("{messages} new messages"),
+            _ => format!("{messages} new messages in {chats} chats"),
+        };
+        n.pending.push(Notice::Show { conversation: None, title: "langis".into(), body });
     }
 
     /// Validates the password form. On success returns the unlock command and shows the
@@ -426,6 +531,99 @@ mod tests {
             conversation("g", true),
         ]));
         state
+    }
+
+    fn notifying() -> ChatState {
+        let mut state = state();
+        state.set_notifications(true, NotificationContent::NameAndMessage);
+        state.take_notices();
+        state
+    }
+
+    fn shown(notices: &[Notice]) -> Vec<(Option<&str>, &str, &str)> {
+        notices
+            .iter()
+            .filter_map(|n| match n {
+                Notice::Show { conversation, title, body } => {
+                    Some((conversation.as_ref().map(|c| c.0.as_str()), title.as_str(), body.as_str()))
+                }
+                Notice::Withdraw(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn incoming_messages_notify_unless_their_chat_is_in_front() {
+        let mut state = notifying();
+        state.apply(Event::Message(message("a", "Alice", 1, false)));
+        assert_eq!(shown(&state.take_notices()), [(Some("a"), "Alice", "Alice at 1\nsecond line")]);
+
+        state.select(&ConversationId("a".into()));
+        state.set_window_focused(true);
+        state.take_notices();
+        state.apply(Event::Message(message("a", "Alice", 2, false)));
+        assert!(shown(&state.take_notices()).is_empty(), "open chat in a focused window");
+        state.apply(Event::Message(message("g", "Carol", 3, false)));
+        assert_eq!(shown(&state.take_notices()), [(Some("g"), "Carol in g", "Carol at 3\nsecond line")]);
+
+        state.set_window_focused(false);
+        state.apply(Event::Message(message("a", "Alice", 4, false)));
+        assert_eq!(shown(&state.take_notices()).len(), 1, "open chat, but window in the background");
+    }
+
+    #[test]
+    fn outgoing_duplicate_and_disabled_dont_notify() {
+        let mut state = notifying();
+        state.apply(Event::Message(message("a", "You", 1, true)));
+        state.apply(Event::Message(message("a", "Alice", 2, false)));
+        state.take_notices();
+        state.apply(Event::Message(message("a", "Alice", 2, false)));
+        state.apply(Event::Latest(message("a", "Alice", 3, false)));
+        assert!(state.take_notices().is_empty());
+        state.set_notifications(false, NotificationContent::NameAndMessage);
+        state.apply(Event::Message(message("a", "Alice", 4, false)));
+        assert!(state.take_notices().is_empty());
+    }
+
+    #[test]
+    fn catching_up_is_summarized_once_synced() {
+        let mut state = notifying();
+        state.apply(Event::Reconnecting);
+        for (chat, ts) in [("a", 1), ("a", 2), ("g", 3)] {
+            state.apply(Event::Message(message(chat, "Alice", ts, false)));
+        }
+        assert!(state.take_notices().is_empty());
+        state.apply(Event::Synced);
+        assert_eq!(shown(&state.take_notices()), [(None, "langis", "3 new messages in 2 chats")]);
+        state.apply(Event::Synced);
+        assert!(state.take_notices().is_empty());
+    }
+
+    #[test]
+    fn content_setting_controls_what_is_revealed() {
+        let mut state = notifying();
+        state.set_notifications(true, NotificationContent::NameOnly);
+        state.apply(Event::Message(message("a", "Alice", 1, false)));
+        assert_eq!(shown(&state.take_notices()), [(Some("a"), "Alice", "New message")]);
+        state.set_notifications(true, NotificationContent::Nothing);
+        state.apply(Event::Message(message("a", "Alice", 2, false)));
+        assert_eq!(shown(&state.take_notices()), [(Some("a"), "langis", "New message")]);
+    }
+
+    #[test]
+    fn reading_or_replying_withdraws_the_notification() {
+        let mut state = notifying();
+        let a = ConversationId("a".into());
+        state.apply(Event::Message(message("a", "Alice", 1, false)));
+        state.take_notices();
+        let reply = state.reply(&a, " thanks ");
+        assert!(matches!(reply, Some(Command::Send { conversation, body }) if conversation == a && body == "thanks"));
+        assert_eq!(state.take_notices(), [Notice::Withdraw(a.clone())]);
+        assert_eq!(state.conversations().find(|c| c.conversation.id == a).unwrap().unread, 0);
+        assert!(state.reply(&a, "  ").is_none());
+        assert!(state.reply(&ConversationId("nope".into()), "hi").is_none());
+        state.select(&a);
+        assert_eq!(state.take_notices(), [Notice::Withdraw(a)]);
     }
 
     #[test]

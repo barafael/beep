@@ -1,0 +1,13 @@
+# Install to ~/.local/share/applications/ (and langis-slint/assets/langis.svg as
+# ~/.local/share/icons/hicolor/scalable/apps/org.langis.Langis.svg). Notifications name this
+# file in their `desktop-entry` hint, so the desktop shows langis' name and icon and groups them.
+[Desktop Entry]
+Type=Application
+Name=langis
+Comment=Signal messenger client
+Exec=langis
+Icon=org.langis.Langis
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupNotify=true
+X-KDE-FormFactor=desktop
