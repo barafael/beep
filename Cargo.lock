@@ -3568,6 +3568,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "image",
  "jiff",
  "keyring-core",
  "libsignal-account-keys",

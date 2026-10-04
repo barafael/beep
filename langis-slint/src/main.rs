@@ -2,10 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use langis_core::state::{self, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
-use langis_core::{Backend, Command, Commands, Config, ConversationId, Event, QrMatrix};
+use langis_core::{Avatar, Backend, Command, Commands, Config, ConversationId, Event, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
@@ -23,7 +25,8 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
 
-    let app = App { window: window.as_weak(), chat: chat.clone(), commands: backend.commands() };
+    let avatars = Rc::new(AvatarImages::default());
+    let app = App { window: window.as_weak(), chat: chat.clone(), avatars: avatars.clone(), commands: backend.commands() };
     window.on_select({
         let app = app.clone();
         move |id| {
@@ -77,14 +80,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 update.merge(chat.apply(event))
             });
-            render(&window, &chat, update);
+            render(&window, &chat, &avatars, update);
         }
         // The channel only closes early if the backend thread died without reporting why
         // (a panic); say so instead of leaving a frozen window.
         if let Some(window) = weak.upgrade() {
             let mut chat = chat.borrow_mut();
             let update = chat.apply(Event::Error("The Signal backend stopped unexpectedly.".into()));
-            render(&window, &chat, update);
+            render(&window, &chat, &avatars, update);
         }
     })
     .expect("the event loop is set up");
@@ -101,6 +104,7 @@ fn main() -> Result<(), slint::PlatformError> {
 struct App {
     window: slint::Weak<AppWindow>,
     chat: Rc<RefCell<ChatState>>,
+    avatars: Rc<AvatarImages>,
     commands: Commands,
 }
 
@@ -112,13 +116,33 @@ impl App {
         if let Some(command) = command {
             self.commands.send(command);
         }
-        render(&window, &chat, update);
+        render(&window, &chat, &self.avatars, update);
+    }
+}
+
+/// Avatars converted to Slint images, so re-rendering the list neither copies pixels again
+/// nor makes unchanged rows look changed.
+#[derive(Default)]
+struct AvatarImages(RefCell<HashMap<ConversationId, (Arc<Avatar>, Image)>>);
+
+impl AvatarImages {
+    fn get(&self, id: &ConversationId, avatar: &Arc<Avatar>) -> Image {
+        let mut images = self.0.borrow_mut();
+        if let Some((cached, image)) = images.get(id)
+            && Arc::ptr_eq(cached, avatar)
+        {
+            return image.clone();
+        }
+        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&avatar.rgba, avatar.side, avatar.side);
+        let image = Image::from_rgba8(buffer);
+        images.insert(id.clone(), (avatar.clone(), image.clone()));
+        image
     }
 }
 
 /// Brings the window in line with `chat`, touching only what `update` says changed (plus the
 /// cheap status properties).
-fn render(window: &AppWindow, chat: &ChatState, update: Update) {
+fn render(window: &AppWindow, chat: &ChatState, avatars: &AvatarImages, update: Update) {
     if update.screen {
         match chat.screen() {
             state::Screen::Connecting => window.set_screen(Screen::Connecting),
@@ -152,7 +176,7 @@ fn render(window: &AppWindow, chat: &ChatState, update: Update) {
     }
 
     if update.conversations {
-        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c)).collect();
+        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, avatars)).collect();
         let conversations = window.get_conversations();
         let conversations = vec_model(&conversations);
         // Update in place where possible so the list keeps its scroll position.
@@ -174,7 +198,7 @@ fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
     model.as_any().downcast_ref().expect("models are VecModels, set up in main")
 }
 
-fn conversation_item(view: &ConversationView) -> ConversationItem {
+fn conversation_item(view: &ConversationView, avatars: &AvatarImages) -> ConversationItem {
     // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
     const PALETTE: [u32; 8] = [
         0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0,
@@ -186,6 +210,7 @@ fn conversation_item(view: &ConversationView) -> ConversationItem {
         title: c.title.as_str().into(),
         initials: state::initials(&c.title).into(),
         avatar_color: Color::from_argb_encoded(0xff00_0000 | rgb),
+        avatar: view.avatar.map(|avatar| avatars.get(&c.id, avatar)).unwrap_or_default(),
         preview: view.preview().into(),
         unread: view.unread as i32,
     }

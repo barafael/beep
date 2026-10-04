@@ -5,6 +5,8 @@ export struct ConversationItem {
     title: string,
     initials: string,
     avatar-color: color,
+    // Profile or group picture; empty (zero width) if there is none.
+    avatar: image,
     preview: string,
     unread: int,
 }
@@ -23,15 +25,24 @@ export enum Screen { connecting, password, link, chats }
 component Avatar inherits Rectangle {
     in property <string> initials;
     in property <color> tint;
+    // Shown instead of the initials when set.
+    in property <image> picture;
     width: 40px;
     height: self.width;
     border-radius: self.width / 2;
+    clip: true;
     background: tint;
-    Text {
+    if root.picture.width == 0: Text {
         text: initials;
         color: white;
         font-size: root.width * 0.4;
         font-weight: 600;
+    }
+    if root.picture.width > 0: Image {
+        width: root.width;
+        height: root.height;
+        source: root.picture;
+        image-fit: cover;
     }
 }
 
@@ -55,6 +66,7 @@ component ConversationRow inherits Rectangle {
         Avatar {
             initials: item.initials;
             tint: item.avatar-color;
+            picture: item.avatar;
             y: (parent.height - self.height) / 2;
         }
         VerticalLayout {
@@ -378,6 +390,7 @@ export component AppWindow inherits Window {
                             width: 36px;
                             initials: root.conversations[root.selected].initials;
                             tint: root.conversations[root.selected].avatar-color;
+                            picture: root.conversations[root.selected].avatar;
                             y: (parent.height - self.height) / 2;
                         }
                         Text {

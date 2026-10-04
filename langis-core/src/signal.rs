@@ -1,6 +1,6 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::mpsc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
@@ -9,6 +9,7 @@ use presage::{
         configuration::SignalServers,
         content::{Content, ContentBody, DataMessage, GroupContextV2},
         protocol::ServiceId,
+        push_service::ServiceError,
     },
     manager::Registered,
     model::{identity::OnNewIdentity, messages::Received},
@@ -21,10 +22,10 @@ use presage::{
 use presage_store_sqlite::SqliteStore;
 use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
 use tokio::{runtime::Runtime, task::LocalSet};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
-    transfer,
+    Avatar, transfer,
     ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Inbox, Password, QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
@@ -278,6 +279,7 @@ async fn session(
     send_latest_messages(&manager, &threads, &events).await;
 
     tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone()));
+    tokio::task::spawn_local(fetch_avatars(manager.clone(), threads.clone(), events.clone()));
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &threads, &events, command).await {
@@ -383,6 +385,77 @@ async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events)
     }
 }
 
+/// Side of decoded avatars: a 40 px circle at up to 3x scaling.
+const AVATAR_SIDE: u32 = 128;
+
+/// Sends each conversation's profile or group picture. presage caches them in the store, so
+/// only the first run downloads them, one at a time to stay clear of rate limits.
+///
+/// A profile picture needs the contact's profile key, which only arrives with their messages
+/// (the contact sync no longer carries it). Until then the picture from the contact sync, i.e.
+/// what the phone shows, stands in.
+async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
+    let threads: Vec<_> = threads.borrow().iter().map(|(id, thread)| (id.clone(), thread.clone())).collect();
+    let (mut found, mut none, mut failed) = (0, 0, 0);
+    for (id, thread) in threads {
+        let picture = match thread {
+            Thread::Contact(ServiceId::Aci(aci)) => {
+                let id = ServiceId::Aci(aci);
+                let profile = match manager.store().profile_key(&id).await {
+                    Ok(Some(key)) => manager.retrieve_profile_avatar_by_uuid(aci.into(), key).await,
+                    _ => Ok(None),
+                };
+                match profile {
+                    Ok(None) => {
+                        let contact = manager.store().contact_by_id(&id).await.ok().flatten();
+                        Ok(contact.and_then(|c| c.avatar).map(|avatar| avatar.reader.to_vec()))
+                    }
+                    profile => profile,
+                }
+            }
+            Thread::Contact(_) => continue,
+            Thread::Group(key) => {
+                // presage only refetches the group if this revision is newer than the cached one.
+                let revision = manager.store().group(key).await.ok().flatten().map_or(0, |group| group.revision);
+                let context =
+                    GroupContextV2 { master_key: Some(key.to_vec()), revision: Some(revision), ..Default::default() };
+                manager.retrieve_group_avatar(context).await
+            }
+        };
+        match picture {
+            Ok(Some(bytes)) => match decode_avatar(&bytes) {
+                Some(avatar) => {
+                    found += 1;
+                    if !events.send(Event::Avatar { conversation: id, avatar: Arc::new(avatar) }) {
+                        return;
+                    }
+                }
+                None => {
+                    failed += 1;
+                    debug!(conversation = id.0, "could not decode avatar");
+                }
+            },
+            Ok(None) => none += 1,
+            Err(PresageError::ServiceError(ServiceError::RateLimitExceeded { .. })) => {
+                warn!("rate limited while fetching avatars; the rest are fetched next time");
+                return;
+            }
+            Err(error) => {
+                failed += 1;
+                debug!(conversation = id.0, %error, "failed to fetch avatar");
+            }
+        }
+    }
+    debug!(found, none, failed, "fetched avatars");
+}
+
+/// Crops to a square and scales to [`AVATAR_SIDE`].
+fn decode_avatar(bytes: &[u8]) -> Option<Avatar> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let square = image.resize_to_fill(AVATAR_SIDE, AVATAR_SIDE, image::imageops::FilterType::Lanczos3);
+    Some(Avatar { side: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
+}
+
 /// Display names by sender service ID, so each sender is looked up in the store only once.
 type Names = HashMap<String, String>;
 
@@ -441,6 +514,8 @@ async fn handle_received(
         Received::Contacts => {
             names.clear();
             send_conversations(manager, threads, events).await;
+            // A newly linked device first learns its contacts here.
+            tokio::task::spawn_local(fetch_avatars(manager.clone(), threads.clone(), events.clone()));
             true
         }
         Received::DecryptionError(sender) => {

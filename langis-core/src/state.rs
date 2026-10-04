@@ -4,9 +4,10 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    sync::Arc,
 };
 
-use crate::{ChatMessage, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{Avatar, ChatMessage, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -65,6 +66,8 @@ impl MessagesUpdate {
 
 pub struct ConversationView<'a> {
     pub conversation: &'a Conversation,
+    /// Shared, so UIs can cache what they convert it into and tell when it changed.
+    pub avatar: Option<&'a Arc<Avatar>>,
     pub last_message: Option<&'a ChatMessage>,
     pub unread: u32,
     pub selected: bool,
@@ -102,6 +105,7 @@ pub struct ChatState {
     unread: HashMap<ConversationId, u32>,
     /// Per conversation, sorted and unique by [`message_key`].
     history: HashMap<ConversationId, Vec<ChatMessage>>,
+    avatars: HashMap<ConversationId, Arc<Avatar>>,
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
@@ -138,6 +142,10 @@ impl ChatState {
                     }
                 }
                 self.sort_conversations();
+                update.conversations = true;
+            }
+            Event::Avatar { conversation, avatar } => {
+                self.avatars.insert(conversation, avatar);
                 update.conversations = true;
             }
             Event::History {
@@ -256,6 +264,7 @@ impl ChatState {
     pub fn conversations(&self) -> impl Iterator<Item = ConversationView<'_>> {
         self.conversations.iter().map(|c| ConversationView {
             conversation: c,
+            avatar: self.avatars.get(&c.id),
             last_message: self.last_of(&c.id),
             unread: self.unread.get(&c.id).copied().unwrap_or_default(),
             selected: self.selected.as_ref() == Some(&c.id),

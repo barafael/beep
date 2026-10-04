@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use crate::{ChatMessage, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
+use crate::{Avatar, ChatMessage, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -35,6 +35,7 @@ pub fn run(commands: Inbox, events: Events) {
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
+    let _ = events.send(Event::Avatar { conversation: ConversationId("alice".into()), avatar: Arc::new(gradient(96)) });
     let _ = events.send(Event::Synced);
 
     let message = |conversation: &str, sender: &str, body: &str, timestamp, outgoing| ChatMessage {
@@ -79,4 +80,16 @@ pub fn run(commands: Inbox, events: Events) {
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
         }
     }
+}
+
+/// A diagonal gradient, standing in for a profile picture.
+fn gradient(side: u32) -> Avatar {
+    let rgba = (0..side * side)
+        .flat_map(|i| {
+            let (x, y) = (i % side, i / side);
+            let t = ((x + y) * 255 / (2 * side - 2)) as u8;
+            [255 - t / 2, 120 + t / 3, t, 255]
+        })
+        .collect();
+    Avatar { side, rgba }
 }

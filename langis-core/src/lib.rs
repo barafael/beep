@@ -17,6 +17,7 @@ mod vault;
 
 pub use qr::QrMatrix;
 
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -43,6 +44,19 @@ pub struct ChatMessage {
     /// Milliseconds since the Unix epoch, as used by Signal.
     pub timestamp: u64,
     pub outgoing: bool,
+}
+
+/// A square profile or group picture, decoded to RGBA (row-major, 4 bytes per pixel).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Avatar {
+    pub side: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for Avatar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Avatar({0}x{0})", self.side)
+    }
 }
 
 /// A user-entered password. Wiped from memory on drop and never printed.
@@ -80,6 +94,8 @@ pub enum Event {
     Synced,
     /// New or changed conversations, merged by id.
     Conversations(Vec<Conversation>),
+    /// Profile or group picture of a conversation, replacing any earlier one.
+    Avatar { conversation: ConversationId, avatar: Arc<Avatar> },
     History { conversation: ConversationId, messages: Vec<ChatMessage> },
     Message(ChatMessage),
     Error(String),
