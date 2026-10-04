@@ -12,6 +12,10 @@ use crate::{Avatar, ChatMessage, Command, Conversation, ConversationId, Event, P
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
 
+/// Messages kept in memory per conversation. Anything older is dropped and can be fetched again
+/// from the encrypted store through [`ChatState::load_older`].
+pub const HISTORY_KEPT: usize = 500;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Screen {
     #[default]
@@ -108,6 +112,9 @@ pub struct ChatState {
     avatars: HashMap<ConversationId, Arc<Avatar>>,
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
+    /// Conversations with older messages still in the store, reachable through
+    /// [`ChatState::load_older`].
+    paged_out: HashSet<ConversationId>,
     selected: Option<ConversationId>,
 }
 
@@ -148,10 +155,12 @@ impl ChatState {
                 self.avatars.insert(conversation, avatar);
                 update.conversations = true;
             }
-            Event::History {
-                conversation,
-                messages,
-            } => {
+            Event::History { conversation, messages, more } => {
+                // A full page means the store had more to give, so this conversation can be
+                // paged further back.
+                if more {
+                    self.paged_out.insert(conversation.clone());
+                }
                 self.loaded.insert(conversation.clone());
                 let history = self.history.entry(conversation.clone()).or_default();
                 let mut added = false;
@@ -173,6 +182,12 @@ impl ChatState {
                 let Some(pos) = insert(history, message) else {
                     return update;
                 };
+                // Bound what stays in memory. A busy group would otherwise grow without limit,
+                // holding plaintext the user has scrolled past. Older messages are still in the
+                // encrypted store and `load_older` can fetch them again.
+                if history.len() > HISTORY_KEPT {
+                    history.drain(..history.len() - HISTORY_KEPT);
+                }
                 let appended = pos + 1 == history.len();
                 if self.selected.as_ref() == Some(&id) {
                     update.messages = if appended {
@@ -200,7 +215,18 @@ impl ChatState {
         }
         self.unread.remove(id);
         self.selected = Some(id.clone());
-        (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
+        (!self.loaded.contains(id))
+            .then(|| Command::LoadHistory { conversation: id.clone(), before: None })
+    }
+
+    /// Asks for the page of stored messages before the oldest one held, for a conversation that
+    /// [`ChatState::select`] already opened. `None` once everything is in memory.
+    pub fn load_older(&self) -> Option<Command> {
+        let id = self.selected.as_ref()?;
+        let oldest = self.history.get(id)?.first()?.timestamp;
+        self.paged_out
+            .contains(id)
+            .then(|| Command::LoadHistory { conversation: id.clone(), before: Some(oldest) })
     }
 
     /// Validates the password form. On success returns the unlock command and shows the
@@ -431,14 +457,17 @@ mod tests {
         let mut state = state();
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         let id = ConversationId("a".into());
-        assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
+        assert!(matches!(
+            state.select(&id),
+            Some(Command::LoadHistory { conversation: i, before: None }) if i == id
+        ));
         assert_eq!(
             state.conversations().find(|c| c.selected).unwrap().unread,
             0
         );
         // Not loaded yet (in flight, or the load failed): asking again retries.
         assert!(state.select(&id).is_some());
-        state.apply(Event::History { conversation: id.clone(), messages: Vec::new() });
+        state.apply(Event::History { conversation: id.clone(), messages: Vec::new(), more: false });
         assert!(state.select(&id).is_none());
         assert!(state.select(&ConversationId("nope".into())).is_none());
     }
@@ -455,6 +484,7 @@ mod tests {
                 message("a", "Alice", 3, false),
                 message("a", "You", 1, true),
             ],
+            more: false,
         });
         assert_eq!(update.messages, MessagesUpdate::Reset);
         let stamps: Vec<_> = state.messages().map(|m| m.message.timestamp).collect();
@@ -473,12 +503,14 @@ mod tests {
         state.apply(Event::History {
             conversation: id.clone(),
             messages: vec![message("a", "Alice", 5, false)],
+            more: false,
         });
         assert_eq!(state.messages().count(), 1);
         // Same timestamp from a different author is a different message.
         state.apply(Event::History {
             conversation: id,
             messages: vec![message("a", "Bob", 5, false)],
+            more: false,
         });
         assert_eq!(state.messages().count(), 2);
     }

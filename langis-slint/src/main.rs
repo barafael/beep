@@ -132,6 +132,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let app = app.clone();
         move |_| app.act(|_, _| (None, Update::default()))
     });
+    window.on_load_older({
+        let app = app.clone();
+        move || app.act(|chat, _| (chat.load_older(), Update::default()))
+    });
     window.on_settings_changed({
         let app = app.clone();
         move || {

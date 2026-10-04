@@ -410,6 +410,10 @@ async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<(M
     linked.map_err(|e| format!("linking failed: {e}"))
 }
 
+/// Rows fetched per `Command::LoadHistory` call. A busy group's whole history is unbounded:
+/// loading it all would fill memory with messages the user cannot see anyway.
+const HISTORY_PAGE: usize = 200;
+
 fn conversation_id(thread: &Thread) -> ConversationId {
     ConversationId(match thread {
         Thread::Contact(id) => format!("c:{}", id.service_id_string()),
@@ -469,7 +473,7 @@ async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events)
         // Newest first; skip receipts and the like.
         for content in contents.flatten() {
             if let Some(message) = to_chat_message(manager, &mut names, id.clone(), &content).await {
-                let _ = events.send(Event::History { conversation: id, messages: vec![message] });
+                let _ = events.send(Event::History { conversation: id, messages: vec![message], more: false });
                 break;
             }
         }
@@ -540,9 +544,29 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
     debug!(found, none, failed, "fetched avatars");
 }
 
+/// Upper bounds on a profile or group picture, applied before decoding.
+///
+/// These bytes come from the network and belong to whoever set the picture, so a crafted image
+/// must not be able to make the client allocate without limit. Real Signal pictures are far
+/// smaller than this; the decoded result is scaled to [`AVATAR_SIDE`] either way.
+const AVATAR_MAX_BYTES: usize = 2 * 1024 * 1024;
+const AVATAR_MAX_PIXELS: u32 = 16 * 1024 * 1024;
+
 /// Crops to a square and scales to [`AVATAR_SIDE`].
 fn decode_avatar(bytes: &[u8]) -> Option<Avatar> {
-    let image = image::load_from_memory(bytes).ok()?;
+    if bytes.len() > AVATAR_MAX_BYTES {
+        warn!(bytes = bytes.len(), "ignoring an oversized profile picture");
+        return None;
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(AVATAR_MAX_PIXELS);
+    limits.max_image_height = Some(AVATAR_MAX_PIXELS);
+    // `max_alloc` counts decoded pixels; 4 bytes per RGBA pixel plus whatever the decoder
+    // needs in the meantime.
+    limits.max_alloc = Some(AVATAR_MAX_BYTES as u64 * 8);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
+    reader.limits(limits);
+    let image = reader.decode().ok()?;
     let square = image.resize_to_fill(AVATAR_SIDE, AVATAR_SIDE, image::imageops::FilterType::Lanczos3);
     Some(Avatar { side: AVATAR_SIDE, rgba: square.into_rgba8().into_raw() })
 }
@@ -701,28 +725,37 @@ async fn handle(
     match command {
         // Already unlocked.
         Command::Unlock(_) => {}
-        Command::LoadHistory(id) => {
+        Command::LoadHistory { conversation: id, before } => {
             let Some(thread) = threads.borrow().get(&id).cloned() else {
                 return Ok(());
             };
+            // The store sorts newest-first, so walking backwards from `before` keeps only one
+            // bounded page in memory. `..` with no upper bound is "everything", which the
+            // `take` below cuts short; there is no way to spell "unbounded" in `RangeTo`.
+            let range = match before {
+                Some(before) => ..before,
+                None => ..u64::MAX,
+            };
             let contents = manager
                 .store()
-                .messages(&thread, ..)
+                .messages(&thread, range)
                 .await
                 .map_err(|e| format!("failed to load history: {e}"))?;
             let mut names = Names::new();
-            let mut messages = Vec::new();
-            for content in contents.flatten() {
+            let mut messages: Vec<ChatMessage> = Vec::new();
+            for content in contents.flatten().take(HISTORY_PAGE) {
                 if let Some(message) =
                     to_chat_message(manager, &mut names, id.clone(), &content).await
                 {
                     messages.push(message);
                 }
             }
-            let _ = events.send(Event::History {
-                conversation: id,
-                messages,
-            });
+            // The store yields newest-first; the UI shows oldest-first.
+            messages.reverse();
+            // A full page suggests there is more to fetch, so let the UI ask again. It cannot be
+            // exact: a page can come back full with nothing older behind it.
+            let more = messages.len() == HISTORY_PAGE;
+            let _ = events.send(Event::History { conversation: id, messages, more });
         }
         Command::Send { conversation, body } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {

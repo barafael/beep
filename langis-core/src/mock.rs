@@ -53,8 +53,8 @@ pub fn run(commands: Inbox, events: Events) {
     loop {
         match commands.recv_timeout(Duration::from_secs(20)) {
             Ok(Command::Unlock(_)) => {}
-            Ok(Command::LoadHistory(id)) => {
-                let messages = match id.0.as_str() {
+            Ok(Command::LoadHistory { conversation: id, before }) => {
+                let all = match id.0.as_str() {
                     "alice" => vec![
                         message("alice", "Alice", "Hey! Did you try the new client?", ago(42), false),
                         message("alice", "You", "Building it right now, in Rust.", ago(40), true),
@@ -66,7 +66,12 @@ pub fn run(commands: Inbox, events: Events) {
                     ],
                     _ => Vec::new(),
                 };
-                let _ = events.send(Event::History { conversation: id, messages });
+                // The real backend pages newest-first and reports whether more exist.
+                let messages: Vec<_> = match before {
+                    Some(before) => all.into_iter().filter(|m| m.timestamp < before).collect(),
+                    None => all,
+                };
+                let _ = events.send(Event::History { conversation: id, messages, more: false });
             }
             Ok(Command::Send { conversation, body }) => {
                 let echo = format!("You said: {body}");

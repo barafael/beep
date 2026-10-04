@@ -430,6 +430,7 @@ export component AppWindow inherits Window {
     callback dismiss-error;
     callback unlock(string, string);
     callback settings-changed;
+    callback load-older;
 
     VerticalLayout {
         if root.error != "": Rectangle {
@@ -590,17 +591,40 @@ export component AppWindow inherits Window {
                     // older messages isn't interrupted. Opening a chat starts at the bottom.
                     property <bool> follow: true;
                     property <int> conversation: root.selected;
+                    // Only one page request may be in flight, or reaching the top would ask for
+                    // the same page again on every repaint until the answer arrives.
+                    property <bool> older-requested: false;
                     vertical-stretch: 1;
-                    changed conversation => { self.follow = true; }
+                    changed conversation => {
+                        self.follow = true;
+                        self.older-requested = false;
+                    }
+                    // `changed` needs a plain property name, so the model is aliased to watch it.
+                    out property <[MessageItem]> items <=> root.messages;
+                    // Reset once the answer lands, whether it brought messages or not.
+                    changed items => { self.older-requested = false; }
                     changed content-y => {
                         self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
+                        // Reaching the top means the user is reading older messages.
+                        if self.content-y <= 0px {
+                            self.at-top();
+                        }
                     }
                     changed content-height => {
                         if self.follow {
                             self.content-y = min(0px, self.visible-height - self.content-height);
                         }
                     }
-                    for item in root.messages: Bubble {
+                    // Older messages are fetched a page at a time, so the list grows upwards.
+                    // `content-y` is 0 at the top, which is where older pages come from.
+                    callback at-top;
+                    at-top => {
+                        if !self.older-requested && self.items.length > 0 {
+                            self.older-requested = true;
+                            root.load-older();
+                        }
+                    }
+                    for item in message-list.items: Bubble {
                         item: item;
                         max-bubble-width: message-list.visible-width * 0.7;
                     }

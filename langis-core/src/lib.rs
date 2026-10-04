@@ -100,7 +100,9 @@ pub enum Event {
     Conversations(Vec<Conversation>),
     /// Profile or group picture of a conversation, replacing any earlier one.
     Avatar { conversation: ConversationId, avatar: Arc<Avatar> },
-    History { conversation: ConversationId, messages: Vec<ChatMessage> },
+    /// Stored messages for a conversation, oldest first. `more` says the page was full, so older
+    /// messages exist and the UI can ask for them with [`Command::LoadHistory`].
+    History { conversation: ConversationId, messages: Vec<ChatMessage>, more: bool },
     Message(ChatMessage),
     Error(String),
 }
@@ -109,7 +111,10 @@ pub enum Event {
 pub enum Command {
     /// Answer to [`Event::PasswordRequired`].
     Unlock(Password),
-    LoadHistory(ConversationId),
+    /// Loads stored messages, newest first. `before` is an exclusive upper bound on the
+    /// timestamp, so a UI walks backwards by passing the oldest timestamp it holds; `None`
+    /// asks for the newest messages.
+    LoadHistory { conversation: ConversationId, before: Option<u64> },
     Send { conversation: ConversationId, body: String },
 }
 
