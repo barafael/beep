@@ -35,20 +35,32 @@ impl Update {
         Self {
             screen: self.screen || other.screen,
             conversations: self.conversations || other.conversations,
-            messages: self.messages.max(other.messages),
+            messages: self.messages.merge(other.messages),
         }
     }
 }
 
-/// Ordered by how much work the UI has to do, so merging takes the maximum.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessagesUpdate {
     #[default]
     Unchanged,
-    /// One message was appended to the selected conversation.
-    Appended,
+    /// This many messages were appended to the selected conversation; see
+    /// [`ChatState::last_messages`].
+    Appended(usize),
     /// The selected conversation's messages must be re-read.
     Reset,
+}
+
+impl MessagesUpdate {
+    fn merge(self, other: Self) -> Self {
+        use MessagesUpdate::*;
+        match (self, other) {
+            (Reset, _) | (_, Reset) => Reset,
+            (Appended(a), Appended(b)) => Appended(a + b),
+            (Appended(n), Unchanged) | (Unchanged, Appended(n)) => Appended(n),
+            (Unchanged, Unchanged) => Unchanged,
+        }
+    }
 }
 
 pub struct ConversationView<'a> {
@@ -90,7 +102,7 @@ pub struct ChatState {
     unread: HashMap<ConversationId, u32>,
     /// Per conversation, sorted and unique by [`message_key`].
     history: HashMap<ConversationId, Vec<ChatMessage>>,
-    /// Conversations whose stored history has been requested already.
+    /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
 }
@@ -113,6 +125,7 @@ impl ChatState {
                 update.screen = true;
             }
             Event::Synced => self.synced = true,
+            Event::Reconnecting => self.synced = false,
             Event::Conversations(list) => {
                 for conversation in list {
                     match self
@@ -131,6 +144,7 @@ impl ChatState {
                 conversation,
                 messages,
             } => {
+                self.loaded.insert(conversation.clone());
                 let history = self.history.entry(conversation.clone()).or_default();
                 let mut added = false;
                 for message in messages {
@@ -154,7 +168,7 @@ impl ChatState {
                 let appended = pos + 1 == history.len();
                 if self.selected.as_ref() == Some(&id) {
                     update.messages = if appended {
-                        MessagesUpdate::Appended
+                        MessagesUpdate::Appended(1)
                     } else {
                         MessagesUpdate::Reset
                     };
@@ -169,17 +183,16 @@ impl ChatState {
         update
     }
 
-    /// Selects a conversation; the first time, returns the command that fetches its
-    /// stored history (afterwards live events keep it current).
+    /// Selects a conversation; until its stored history has arrived, returns the command
+    /// that fetches it (afterwards live events keep it current). Asking again after a failed
+    /// load retries it; a duplicate answer is harmless because inserts are deduplicated.
     pub fn select(&mut self, id: &ConversationId) -> Option<Command> {
         if !self.conversations.iter().any(|c| &c.id == id) {
             return None;
         }
         self.unread.remove(id);
         self.selected = Some(id.clone());
-        self.loaded
-            .insert(id.clone())
-            .then(|| Command::LoadHistory(id.clone()))
+        (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
     }
 
     /// Validates the password form. On success returns the unlock command and shows the
@@ -259,7 +272,7 @@ impl ChatState {
     }
 
     /// Messages of the selected conversation, oldest first.
-    pub fn messages(&self) -> impl DoubleEndedIterator<Item = MessageView<'_>> {
+    pub fn messages(&self) -> impl ExactSizeIterator<Item = MessageView<'_>> {
         let group = self.selected().is_some_and(|c| c.is_group);
         let history = self
             .selected
@@ -277,21 +290,26 @@ impl ChatState {
             })
     }
 
-    /// The most recent message of the selected conversation, for incremental appends.
-    pub fn last_message(&self) -> Option<MessageView<'_>> {
-        self.messages().next_back()
+    /// The `n` most recent messages of the selected conversation, oldest first, for
+    /// [`MessagesUpdate::Appended`].
+    pub fn last_messages(&self, n: usize) -> impl Iterator<Item = MessageView<'_>> {
+        let messages = self.messages();
+        let skip = messages.len().saturating_sub(n);
+        messages.skip(skip)
     }
 
     fn last_of(&self, id: &ConversationId) -> Option<&ChatMessage> {
         self.history.get(id).and_then(|h| h.last())
     }
 
-    /// Newest activity first; conversations without messages alphabetically after those.
+    /// Newest activity first; conversations without messages alphabetically after those,
+    /// names before bare phone numbers.
     fn sort_conversations(&mut self) {
         let mut conversations = std::mem::take(&mut self.conversations);
         conversations.sort_by_cached_key(|c| {
             (
                 Reverse(self.last_of(&c.id).map(|m| m.timestamp)),
+                !c.title.starts_with(char::is_alphabetic),
                 c.title.to_lowercase(),
             )
         });
@@ -400,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_clears_unread_and_requests_history_once() {
+    fn selecting_requests_history_until_it_arrives() {
         let mut state = state();
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         let id = ConversationId("a".into());
@@ -409,6 +427,9 @@ mod tests {
             state.conversations().find(|c| c.selected).unwrap().unread,
             0
         );
+        // Not loaded yet (in flight, or the load failed): asking again retries.
+        assert!(state.select(&id).is_some());
+        state.apply(Event::History { conversation: id.clone(), messages: Vec::new() });
         assert!(state.select(&id).is_none());
         assert!(state.select(&ConversationId("nope".into())).is_none());
     }
@@ -472,6 +493,44 @@ mod tests {
     }
 
     #[test]
+    fn inactive_conversations_list_names_before_numbers() {
+        let mut state = ChatState::default();
+        let titled = |id: &str, title: &str| Conversation { title: title.into(), ..conversation(id, false) };
+        state.apply(Event::Conversations(vec![
+            titled("1", "+49 151 1234567"),
+            titled("2", "bob"),
+            titled("3", "Alice"),
+        ]));
+        let titles: Vec<_> = state.conversations().map(|c| c.conversation.title.as_str()).collect();
+        assert_eq!(titles, ["Alice", "bob", "+49 151 1234567"]);
+    }
+
+    #[test]
+    fn appends_in_one_batch_are_all_reported() {
+        let mut state = state();
+        state.select(&ConversationId("a".into()));
+        let update = [1, 2, 3].into_iter().fold(Update::default(), |update, ts| {
+            update.merge(state.apply(Event::Message(message("a", "Alice", ts, false))))
+        });
+        assert_eq!(update.messages, MessagesUpdate::Appended(3));
+        let stamps: Vec<_> = state.last_messages(2).map(|m| m.message.timestamp).collect();
+        assert_eq!(stamps, [2, 3]);
+        // An out-of-order message in the same batch forces a full re-read.
+        let update = update.merge(state.apply(Event::Message(message("a", "Bob", 0, false))));
+        assert_eq!(update.messages, MessagesUpdate::Reset);
+    }
+
+    #[test]
+    fn reconnecting_disables_sending_until_synced() {
+        let mut state = state();
+        state.select(&ConversationId("a".into()));
+        state.apply(Event::Reconnecting);
+        assert!(!state.can_compose("hi"));
+        state.apply(Event::Synced);
+        assert!(state.can_compose("hi"));
+    }
+
+    #[test]
     fn live_messages_dedupe_and_insert_in_order() {
         let mut state = state();
         state.select(&ConversationId("a".into()));
@@ -479,7 +538,7 @@ mod tests {
             state
                 .apply(Event::Message(message("a", "Alice", 5, false)))
                 .messages,
-            MessagesUpdate::Appended
+            MessagesUpdate::Appended(1)
         );
         assert_eq!(
             state.apply(Event::Message(message("a", "Alice", 5, false))),
@@ -505,7 +564,7 @@ mod tests {
         state.apply(Event::Message(message("g", "You", 4, true)));
         let shown: Vec<_> = state.messages().map(|m| m.show_sender).collect();
         assert_eq!(shown, [true, false, true, false]);
-        assert!(state.last_message().unwrap().message.outgoing);
+        assert!(state.last_messages(1).next().unwrap().message.outgoing);
     }
 
     #[test]

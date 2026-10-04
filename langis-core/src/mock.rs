@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use crossbeam_channel::Receiver;
-
-use crate::{ChatMessage, Command, Conversation, ConversationId, Event, Events, QrMatrix, now_millis};
+use crate::{ChatMessage, Command, Conversation, ConversationId, Event, Events, Inbox, QrMatrix, now_millis};
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
@@ -10,7 +8,7 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("bob", "Bob", false),
 ];
 
-pub fn run(commands: Receiver<Command>, events: Events) {
+pub fn run(commands: Inbox, events: Events) {
     // `LANGIS_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
     if std::env::var_os("LANGIS_MOCK_PASSWORD").is_some() {
         let mut request = Event::PasswordRequired { new: false, error: None };

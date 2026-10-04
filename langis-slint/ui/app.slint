@@ -392,10 +392,19 @@ export component AppWindow inherits Window {
                 }
 
                 message-list := ListView {
+                    // Follow new messages only while the newest one is in view, so reading
+                    // older messages isn't interrupted. Opening a chat starts at the bottom.
+                    property <bool> follow: true;
+                    property <int> conversation: root.selected;
                     vertical-stretch: 1;
-                    // Stick to the newest message whenever content grows.
+                    changed conversation => { self.follow = true; }
+                    changed content-y => {
+                        self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
+                    }
                     changed content-height => {
-                        self.content-y = min(0px, self.visible-height - self.content-height);
+                        if self.follow {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
                     }
                     for item in root.messages: Bubble {
                         item: item;

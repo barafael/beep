@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use langis_core::state::{self, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
-use langis_core::{Backend, Command, Config, ConversationId, Event, QrMatrix};
+use langis_core::{Backend, Command, Commands, Config, ConversationId, Event, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
@@ -16,14 +16,14 @@ fn main() -> Result<(), slint::PlatformError> {
         .init();
 
     let window = AppWindow::new()?;
-    let backend = Rc::new(Backend::from_env(Config::default()));
+    let backend = Backend::from_env(Config::default());
     let chat = Rc::new(RefCell::new(ChatState::default()));
 
     // The window owns the models; `vec_model` gets them back for updates.
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
 
-    let app = App { window: window.as_weak(), chat: chat.clone(), backend: backend.clone() };
+    let app = App { window: window.as_weak(), chat: chat.clone(), commands: backend.commands() };
     window.on_select({
         let app = app.clone();
         move |id| {
@@ -79,10 +79,20 @@ fn main() -> Result<(), slint::PlatformError> {
             });
             render(&window, &chat, update);
         }
+        // The channel only closes early if the backend thread died without reporting why
+        // (a panic); say so instead of leaving a frozen window.
+        if let Some(window) = weak.upgrade() {
+            let mut chat = chat.borrow_mut();
+            let update = chat.apply(Event::Error("The Signal backend stopped unexpectedly.".into()));
+            render(&window, &chat, update);
+        }
     })
     .expect("the event loop is set up");
 
-    window.run()
+    let result = window.run();
+    // Waits for the backend to close the database, which must happen before the process exits.
+    drop(backend);
+    result
 }
 
 /// What UI callbacks need: they ask `ChatState` what to do, send the resulting command and
@@ -91,7 +101,7 @@ fn main() -> Result<(), slint::PlatformError> {
 struct App {
     window: slint::Weak<AppWindow>,
     chat: Rc<RefCell<ChatState>>,
-    backend: Rc<Backend>,
+    commands: Commands,
 }
 
 impl App {
@@ -100,7 +110,7 @@ impl App {
         let mut chat = self.chat.borrow_mut();
         let (command, update) = action(&mut chat, &window);
         if let Some(command) = command {
-            self.backend.send(command);
+            self.commands.send(command);
         }
         render(&window, &chat, update);
     }
@@ -133,9 +143,9 @@ fn render(window: &AppWindow, chat: &ChatState, update: Update) {
     let messages = vec_model(&messages);
     match update.messages {
         MessagesUpdate::Unchanged => {}
-        MessagesUpdate::Appended => {
-            if let Some(last) = chat.last_message() {
-                messages.push(message_item(&last));
+        MessagesUpdate::Appended(n) => {
+            for message in chat.last_messages(n) {
+                messages.push(message_item(&message));
             }
         }
         MessagesUpdate::Reset => messages.set_vec(chat.messages().map(|m| message_item(&m)).collect::<Vec<_>>()),

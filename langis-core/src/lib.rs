@@ -15,7 +15,10 @@ mod vault;
 
 pub use qr::QrMatrix;
 
-use crossbeam_channel::{Receiver, Sender};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 /// Opaque, stable identifier of a 1:1 chat or group.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -69,6 +72,8 @@ pub enum Event {
     LinkQr(QrMatrix),
     /// Linked (or loaded an existing registration) as `account`.
     Linked { account: String },
+    /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
+    Reconnecting,
     /// Initial message queue drained; it is now safe to send.
     Synced,
     /// New or changed conversations, merged by id.
@@ -108,17 +113,65 @@ impl Events {
     }
 }
 
-/// Handle to a running backend. Dropping it shuts the backend down.
+/// What travels to the backend: UI commands, then possibly the order to stop.
+enum Request {
+    Command(Command),
+    Shutdown,
+}
+
+/// Backend side of the command channel.
+pub(crate) struct Inbox(Receiver<Request>);
+
+impl Inbox {
+    /// The next command; `None` once the backend should stop.
+    pub(crate) fn recv(&self) -> Option<Command> {
+        match self.0.recv() {
+            Ok(Request::Command(command)) => Some(command),
+            Ok(Request::Shutdown) | Err(_) => None,
+        }
+    }
+
+    /// Like [`Inbox::recv`], but gives up after `timeout`.
+    pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<Command, RecvTimeoutError> {
+        match self.0.recv_timeout(timeout)? {
+            Request::Command(command) => Ok(command),
+            Request::Shutdown => Err(RecvTimeoutError::Disconnected),
+        }
+    }
+
+    /// Commands until the backend should stop.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Command> + '_ {
+        std::iter::from_fn(|| self.recv())
+    }
+}
+
+/// Cheap, cloneable handle for sending commands, e.g. from UI callbacks. It doesn't keep the
+/// backend alive; the [`Backend`] does.
+#[derive(Clone)]
+pub struct Commands(Sender<Request>);
+
+impl Commands {
+    pub fn send(&self, command: Command) {
+        // The backend only goes away when it has failed fatally, which it reports as an event,
+        // or when it was shut down.
+        let _ = self.0.send(Request::Command(command));
+    }
+}
+
+/// Owner of a running backend. Dropping it stops the backend and waits until it has closed its
+/// database, so drop it before the process exits: library teardown in `exit()` crashes threads
+/// still using the database.
 pub struct Backend {
-    commands: Sender<Command>,
+    commands: Commands,
     events: async_channel::Receiver<Event>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Backend {
     /// Starts the real Signal backend.
     #[cfg(feature = "signal")]
     pub fn start(config: Config) -> Self {
-        Self::spawn(move |commands, events| signal::run(config, commands, events))
+        Self::spawn(move |inbox, events| signal::run(config, inbox, events))
     }
 
     /// Starts an offline backend with canned data, for UI work.
@@ -137,25 +190,40 @@ impl Backend {
         Self::mock()
     }
 
-    fn spawn(run: impl FnOnce(Receiver<Command>, Events) + Send + 'static) -> Self {
+    fn spawn(run: impl FnOnce(Inbox, Events) + Send + 'static) -> Self {
         let (command_tx, command_rx) = crossbeam_channel::unbounded();
         let (event_tx, event_rx) = async_channel::unbounded();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("langis-backend".into())
-            .spawn(move || run(command_rx, Events(event_tx)))
+            // presage/libsignal futures are huge and the runtime is current-thread, so they all
+            // live on this stack; the 2 MiB default overflows in debug builds.
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || run(Inbox(command_rx), Events(event_tx)))
             .expect("failed to spawn backend thread");
-        Self { commands: command_tx, events: event_rx }
+        Self { commands: Commands(command_tx), events: event_rx, thread: Some(thread) }
     }
 
     pub fn send(&self, command: Command) {
-        // The backend only goes away when it has failed fatally, which it reports as an event.
-        let _ = self.commands.send(command);
+        self.commands.send(command);
+    }
+
+    pub fn commands(&self) -> Commands {
+        self.commands.clone()
     }
 
     /// Cloneable receiver: `.recv().await` it from an async event loop, or `.recv_blocking()`
     /// on a worker thread.
     pub fn events(&self) -> async_channel::Receiver<Event> {
         self.events.clone()
+    }
+}
+
+impl Drop for Backend {
+    fn drop(&mut self) {
+        let _ = self.commands.0.send(Request::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 

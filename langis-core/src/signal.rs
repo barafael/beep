@@ -1,8 +1,7 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::mpsc, time::Duration};
 
-use crossbeam_channel::Receiver;
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
     Error as PresageError, Manager,
@@ -20,12 +19,12 @@ use presage::{
     store::{ContentExt, ContentsStore, Thread},
 };
 use presage_store_sqlite::SqliteStore;
-use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
 use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{info, warn};
 
 use crate::{
-    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Password, QrMatrix,
+    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Inbox, Password, QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
 };
@@ -35,22 +34,34 @@ type Mgr = Manager<SqliteStore, Registered>;
 /// Maps the opaque ids handed to the UI back to presage threads.
 type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
-pub fn run(config: Config, commands: Receiver<Command>, events: Events) {
+pub fn run(config: Config, commands: Inbox, events: Events) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let result = match unlock(&runtime, &local, &commands, &events) {
-        Ok(Some(store)) => local.block_on(&runtime, session(config, store, commands, events.clone())),
+    let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
+        Ok(Some((store, closed))) => {
+            (local.block_on(&runtime, session(config, store, commands, events.clone())), Some(closed))
+        }
         // The UI went away while we were waiting for a password.
-        Ok(None) => Ok(()),
-        Err(error) => Err(error),
+        Ok(None) => (Ok(()), None),
+        Err(error) => (Err(error), None),
     };
     if let Err(error) = result {
         let _ = events.send(Event::Error(error));
     }
+    // Drop the tasks still holding the store, then wait for its connections to close, so
+    // `Backend::shutdown` returns only once the database is no longer in use.
+    drop(local);
+    drop(runtime);
+    if let Some(closed) = closed {
+        let _ = closed.recv_timeout(Duration::from_secs(5));
+    }
 }
+
+/// Disconnects once every connection to a store has been closed.
+type Closed = mpsc::Receiver<()>;
 
 struct Paths {
     dir: PathBuf,
@@ -74,9 +85,9 @@ impl Paths {
 fn unlock(
     runtime: &Runtime,
     local: &LocalSet,
-    commands: &Receiver<Command>,
+    commands: &Inbox,
     events: &Events,
-) -> Result<Option<SqliteStore>, String> {
+) -> Result<Option<(SqliteStore, Closed)>, String> {
     let paths = Paths::new()?;
     let salt = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
         Some(KeySource::Keyring) => {
@@ -142,7 +153,7 @@ fn write_source(paths: &Paths, source: &KeySource) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", paths.key_source.display()))
 }
 
-fn wait_for_password(commands: &Receiver<Command>) -> Option<Password> {
+fn wait_for_password(commands: &Inbox) -> Option<Password> {
     // Nothing else can be done before the database is open, so other commands are dropped.
     commands.iter().find_map(|command| match command {
         Command::Unlock(password) => Some(password),
@@ -150,27 +161,62 @@ fn wait_for_password(commands: &Receiver<Command>) -> Option<Password> {
     })
 }
 
-fn open_store(runtime: &Runtime, local: &LocalSet, paths: &Paths, key: &vault::Key) -> Result<SqliteStore, String> {
+fn open_store(
+    runtime: &Runtime,
+    local: &LocalSet,
+    paths: &Paths,
+    key: &vault::Key,
+) -> Result<(SqliteStore, Closed), String> {
+    // The store doesn't expose its connection pool, so it can't be closed and awaited. Instead,
+    // a never-used collation holds `open`: SQLite destroys a collation when its connection
+    // closes (after closing the database file), and the pool's options hold the last copy.
+    let (open, closed) = mpsc::channel::<()>();
     let options = SqliteConnectOptions::new()
         .filename(&paths.db)
         .create_if_missing(true)
         .foreign_keys(true)
         // sqlx keeps its own copy of this string; it can't be wiped.
-        .pragma("key", vault::sqlcipher_pragma(key).to_string());
+        .pragma("key", vault::sqlcipher_pragma(key).to_string())
+        // The key is part of the SQL text (pragmas take no parameters), so statements must
+        // never reach the log, whatever RUST_LOG says.
+        .disable_statement_logging()
+        .collation("langis_close_guard", move |a, b| {
+            let _ = &open;
+            a.cmp(b)
+        });
     local
         .block_on(runtime, SqliteStore::open_with_options(options, OnNewIdentity::Trust))
+        .map(|store| (store, closed))
         .map_err(|e| format!("failed to open the database: {e}"))
 }
 
 async fn session(
     config: Config,
     store: SqliteStore,
-    commands: Receiver<Command>,
+    commands: Inbox,
     events: Events,
 ) -> Result<(), String> {
-    let manager = match Manager::load_registered(store.clone()).await {
+    // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
+    // shutdown, which closes `command_rx`.
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Some(command) = commands.recv() {
+            if command_tx.send(command).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut manager = match Manager::load_registered(store.clone()).await {
         Ok(manager) => manager,
-        Err(PresageError::NotYetRegisteredError) => link(store, &config, &events).await?,
+        Err(PresageError::NotYetRegisteredError) => {
+            // Nothing can be done before linking, so commands are dropped until then.
+            let ui_closed = async { while command_rx.recv().await.is_some() {} };
+            tokio::select! {
+                manager = link(store, &config, &events) => manager?,
+                () = ui_closed => return Ok(()),
+            }
+        }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
 
@@ -182,21 +228,19 @@ async fn session(
     let _ = events.send(Event::Linked { account });
 
     let threads: Threads = Rc::default();
-    send_conversations(&manager, &threads, &events).await;
+    if send_conversations(&manager, &threads, &events).await == 0 {
+        // Phones don't push their contacts to a newly linked device; they have to be asked.
+        // The answer arrives through `receive` as `Received::Contacts`.
+        info!("no contacts yet; requesting them from the primary device");
+        if let Err(error) = manager.request_contacts().await {
+            warn!(%error, "failed to request contacts");
+        }
+    }
+
+    send_latest_messages(&manager, &threads, &events).await;
 
     tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone()));
 
-    // crossbeam -> tokio bridge, so the UI side can use plain blocking channels.
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(command) = commands.recv() {
-            if command_tx.send(command).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut manager = manager;
     while let Some(command) = command_rx.recv().await {
         if let Err(error) = handle(&mut manager, &threads, &events, command).await {
             let _ = events.send(Event::Error(error));
@@ -251,7 +295,8 @@ fn register(threads: &Threads, thread: Thread, title: String) -> Conversation {
 }
 
 /// Sends all synced contacts and groups; the UI merges them with what it already knows.
-async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) {
+/// Returns the number of contacts.
+async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -> usize {
     let store = manager.store();
     let mut all = Vec::new();
     if let Ok(contacts) = store.contacts().await {
@@ -264,12 +309,31 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) {
             all.push(register(threads, thread, title));
         }
     }
+    let contacts = all.len();
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
             all.push(register(threads, Thread::Group(key), group.title));
         }
     }
     let _ = events.send(Event::Conversations(all));
+    contacts
+}
+
+/// Sends each conversation's newest stored message, so the UI can order conversations by
+/// activity and show previews before any history is opened.
+async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events) {
+    let threads: Vec<_> = threads.borrow().iter().map(|(id, thread)| (id.clone(), thread.clone())).collect();
+    let mut names = Names::new();
+    for (id, thread) in threads {
+        let Ok(contents) = manager.store().messages(&thread, ..).await else { continue };
+        // Newest first; skip receipts and the like.
+        for content in contents.flatten() {
+            if let Some(message) = to_chat_message(manager, &mut names, id.clone(), &content).await {
+                let _ = events.send(Event::History { conversation: id, messages: vec![message] });
+                break;
+            }
+        }
+    }
 }
 
 /// Display names by sender service ID, so each sender is looked up in the store only once.
@@ -288,47 +352,85 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
     name
 }
 
+/// Receives messages for the rest of the session, reconnecting with exponential backoff
+/// whenever the connection drops (sleep, network changes, server timeouts).
 async fn receive(mut manager: Mgr, threads: Threads, events: Events) {
-    let messages = match manager.receive_messages().await {
-        Ok(messages) => messages,
-        Err(error) => {
-            let _ = events.send(Event::Error(format!("failed to start receiving: {error}")));
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+    let mut names = Names::new();
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match manager.receive_messages().await {
+            Ok(messages) => {
+                pin_mut!(messages);
+                while let Some(received) = messages.next().await {
+                    // Something came through, so the connection works again.
+                    backoff = Duration::from_secs(1);
+                    if !handle_received(&manager, &threads, &events, &mut names, received).await {
+                        return;
+                    }
+                }
+                info!("connection to Signal closed");
+            }
+            Err(error) => warn!(%error, "failed to connect to Signal"),
+        }
+        if !events.send(Event::Reconnecting) {
             return;
         }
-    };
-    pin_mut!(messages);
-    let mut names = Names::new();
-    while let Some(received) = messages.next().await {
-        match received {
-            Received::QueueEmpty => {
-                let _ = events.send(Event::Synced);
-            }
-            Received::Contacts => {
-                names.clear();
-                send_conversations(&manager, &threads, &events).await;
-            }
-            Received::DecryptionError(sender) => {
-                warn!(sender = %sender.service_id_string(), "decryption error")
-            }
-            Received::Content(content) => {
-                let Ok(thread) = Thread::try_from(&*content) else {
-                    continue;
-                };
-                let id = conversation_id(&thread);
-                if !threads.borrow().contains_key(&id) {
-                    // First message in a conversation we didn't know about yet.
-                    let title = manager.thread_title(&thread).await.unwrap_or_default();
-                    let conversation = register(&threads, thread, title);
-                    info!(title = conversation.title, "new conversation");
-                    let _ = events.send(Event::Conversations(vec![conversation]));
-                }
-                if let Some(message) = to_chat_message(&manager, &mut names, id, &content).await {
-                    let _ = events.send(Event::Message(message));
-                }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// Returns `false` once the UI has gone away.
+async fn handle_received(
+    manager: &Mgr,
+    threads: &Threads,
+    events: &Events,
+    names: &mut Names,
+    received: Received,
+) -> bool {
+    match received {
+        Received::QueueEmpty => events.send(Event::Synced),
+        Received::Contacts => {
+            names.clear();
+            send_conversations(manager, threads, events).await;
+            true
+        }
+        Received::DecryptionError(sender) => {
+            warn!(sender = %sender.service_id_string(), "decryption error");
+            // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
+            let conversation = ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
+            let name = sender_name(manager, names, sender).await;
+            events.send(Event::Message(ChatMessage {
+                conversation,
+                sender_id: sender.service_id_string(),
+                body: format!("⚠ A message from {name} couldn't be decrypted."),
+                sender: name,
+                timestamp: now_millis(),
+                outgoing: false,
+            }))
+        }
+        Received::Content(content) => {
+            let Ok(thread) = Thread::try_from(&*content) else { return true };
+            let id = ensure_conversation(manager, threads, events, thread).await;
+            match to_chat_message(manager, names, id, &content).await {
+                Some(message) => events.send(Event::Message(message)),
+                None => true,
             }
         }
     }
-    let _ = events.send(Event::Error("connection to Signal closed".into()));
+}
+
+/// Registers `thread` and announces it to the UI if it's the first we hear of it.
+async fn ensure_conversation(manager: &Mgr, threads: &Threads, events: &Events, thread: Thread) -> ConversationId {
+    let id = conversation_id(&thread);
+    if !threads.borrow().contains_key(&id) {
+        let title = manager.thread_title(&thread).await.unwrap_or_default();
+        let conversation = register(threads, thread, title);
+        info!(title = conversation.title, "new conversation");
+        events.send(Event::Conversations(vec![conversation]));
+    }
+    id
 }
 
 /// Extracts displayable text; returns `None` for receipts, typing indicators, etc.
@@ -417,9 +519,14 @@ async fn handle(
                     manager.send_message(*recipient, message, timestamp).await
                 }
                 Thread::Group(key) => {
+                    // Recipients compare this with their group state to spot stale context.
+                    let revision = match manager.store().group(*key).await {
+                        Ok(Some(group)) => group.revision,
+                        _ => 0,
+                    };
                     message.group_v2 = Some(GroupContextV2 {
                         master_key: Some(key.to_vec()),
-                        revision: Some(0),
+                        revision: Some(revision),
                         ..Default::default()
                     });
                     manager.send_message_to_group(key, message, timestamp).await
