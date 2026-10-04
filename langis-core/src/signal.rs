@@ -401,12 +401,19 @@ async fn link(store: SqliteStore, config: &Config, events: &Events) -> Result<(M
             url_tx,
         ),
         async {
-            if let Ok(mut url) = url_rx.await
-                && let Some(qr) = QrMatrix::encode(
-                    url.query_pairs_mut().append_pair("capabilities", transfer::LINK_CAPABILITY).finish().as_str(),
-                )
-            {
-                let _ = events.send(Event::LinkQr(qr));
+            if let Ok(mut url) = url_rx.await {
+                let qr = url.query_pairs_mut()
+                    .append_pair("capabilities", transfer::LINK_CAPABILITY)
+                    .finish();
+                // Reported rather than swallowed: without a code on screen the user is looking
+                // at a blank panel with no idea why linking never finishes.
+                if let Some(qr) = QrMatrix::encode(qr.as_str()) {
+                    let _ = events.send(Event::LinkQr(qr));
+                } else {
+                    let _ = events.send(Event::Error(
+                        "The linking code is too large to display. Try again.".into(),
+                    ));
+                }
             }
         },
     )
