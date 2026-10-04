@@ -102,9 +102,9 @@ pub fn run(commands: Inbox, events: Events) {
                 let messages = history(&id, started);
                 let _ = events.send(Event::History { conversation: id, messages });
             }
-            Ok(Command::Send { conversation, body }) => {
+            Ok(Command::Send { conversation, body, quote }) => {
                 let echo = format!("You said: {body}");
-                let _ = events.send(Event::Message(message(&conversation.0, "You", &body, now_millis(), true)));
+                let _ = events.send(Event::Message(ChatMessage { quote, ..message(&conversation.0, "You", &body, now_millis(), true) }));
                 std::thread::sleep(Duration::from_millis(600));
                 let _ = events.send(Event::Message(message(&conversation.0, "Echo", &echo, now_millis(), false)));
             }
@@ -148,7 +148,7 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             message("alice", "Alice", "Hey! Did you try the new client?", ago(42), false),
             message("alice", "You", "Building it right now, in Rust.", ago(40), true),
             ChatMessage {
-                quote: Some(Quote { author: "You".into(), text: "Building it right now, in Rust.".into() }),
+                quote: Some(Quote { author: "You".into(), text: "Building it right now, in Rust.".into(), ..Default::default() }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
             },
             ChatMessage {

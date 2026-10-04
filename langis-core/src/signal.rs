@@ -751,7 +751,12 @@ async fn to_chat_message(
                 Some(author) => sender_name(manager, names, author).await,
                 None => String::new(),
             };
-            Some(Quote { author, text: quote.text.clone().unwrap_or_default() })
+            Some(Quote {
+                author,
+                text: quote.text.clone().unwrap_or_default(),
+                author_id: quote.author_aci.clone().unwrap_or_default(),
+                timestamp: quote.id.unwrap_or_default(),
+            })
         }
         None => None,
     };
@@ -810,7 +815,7 @@ async fn handle(
                 messages,
             });
         }
-        Command::Send { conversation, body } => {
+        Command::Send { conversation, body, quote } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {
                 return Err("unknown conversation".into());
             };
@@ -818,6 +823,12 @@ async fn handle(
             let timestamp = now_millis();
             let mut message = DataMessage {
                 body: Some(body.clone()),
+                quote: quote.as_ref().map(|quote| presage::proto::data_message::Quote {
+                    id: Some(quote.timestamp),
+                    author_aci: Some(quote.author_id.clone()),
+                    text: Some(quote.text.clone()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             };
             let sent = match &thread {
@@ -850,6 +861,7 @@ async fn handle(
                 body,
                 timestamp,
                 outgoing: true,
+                quote,
                 ..Default::default()
             }));
         }

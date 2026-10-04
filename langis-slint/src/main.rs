@@ -104,6 +104,19 @@ fn main() -> Result<(), slint::PlatformError> {
             app.act(|chat, _| (chat.save_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
         }
     });
+    window.on_reply({
+        let app = app.clone();
+        move |index| app.act(|chat, _| (None, chat.reply_to(index as usize)))
+    });
+    window.on_cancel_reply({
+        let app = app.clone();
+        move || {
+            app.act(|chat, _| {
+                chat.cancel_reply();
+                (None, Update::default())
+            })
+        }
+    });
     window.on_search({
         let app = app.clone();
         move |text| app.act(|chat, _| (None, chat.search(&text)))
@@ -350,6 +363,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
     window.set_can_send(chat.can_compose(&window.get_draft()));
+    let replying = chat.replying();
+    window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
+    window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
 
     let messages = window.get_messages();
     let messages = vec_model(&messages);

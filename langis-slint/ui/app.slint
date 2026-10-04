@@ -202,88 +202,130 @@ component AttachmentView inherits VerticalLayout {
     }
 }
 
-component Bubble inherits HorizontalLayout {
+component ReplyButton inherits Rectangle {
+    in property <bool> shown;
+    callback clicked;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    opacity: root.shown || touch.has-hover ? 1 : 0;
+    background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: "↩";
+        font-size: 1.1rem;
+        color: Palette.foreground.with-alpha(0.6);
+    }
+}
+
+component Bubble inherits Rectangle {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
     callback fetch-attachment(string);
     callback save-attachment(string);
+    callback reply;
 
-    alignment: item.outgoing ? end : start;
-    padding-left: 16px;
-    padding-right: 16px;
-    padding-top: item.show-sender ? 8px : 2px;
-    padding-bottom: 2px;
+    // Under the content, so buttons inside the bubble still get their clicks.
+    hover := TouchArea {}
 
-    VerticalLayout {
-        spacing: 2px;
-        if item.show-sender: Text {
-            text: item.sender;
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: Palette.foreground.with-alpha(0.7);
-            horizontal-alignment: item.outgoing ? right : left;
+    HorizontalLayout {
+        alignment: item.outgoing ? end : start;
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: item.show-sender ? 8px : 2px;
+        padding-bottom: 2px;
+        spacing: 4px;
+
+        // Beside the bubble on the side facing the middle, shown on hover.
+        if item.outgoing: VerticalLayout {
+            alignment: center;
+            ReplyButton {
+                shown: hover.has-hover;
+                clicked => { root.reply(); }
+            }
         }
-        Rectangle {
-            max-width: root.max-bubble-width;
-            border-radius: 14px;
-            background: item.outgoing ? Palette.accent-background : Palette.alternate-background;
-            border-width: item.outgoing ? 0 : 1px;
-            border-color: Palette.border;
-            VerticalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 7px;
-                padding-bottom: 6px;
-                spacing: 2px;
-                if item.quote-author != "" || item.quote-text != "": Rectangle {
-                    border-radius: 6px;
-                    background: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.12);
-                    HorizontalLayout {
-                        Rectangle {
-                            width: 3px;
-                            border-radius: 1.5px;
-                            background: item.outgoing ? Palette.accent-foreground : Palette.accent-background;
-                        }
-                        VerticalLayout {
-                            padding: 6px;
-                            spacing: 1px;
-                            Text {
-                                text: item.quote-author;
-                                font-size: 0.8rem;
-                                font-weight: 600;
-                                color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+        VerticalLayout {
+            spacing: 2px;
+            if item.show-sender: Text {
+                text: item.sender;
+                font-size: 0.8rem;
+                font-weight: 600;
+                color: Palette.foreground.with-alpha(0.7);
+                horizontal-alignment: item.outgoing ? right : left;
+            }
+            Rectangle {
+                max-width: root.max-bubble-width;
+                border-radius: 14px;
+                background: item.outgoing ? Palette.accent-background : Palette.alternate-background;
+                border-width: item.outgoing ? 0 : 1px;
+                border-color: Palette.border;
+                VerticalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 7px;
+                    padding-bottom: 6px;
+                    spacing: 2px;
+                    if item.quote-author != "" || item.quote-text != "": Rectangle {
+                        border-radius: 6px;
+                        background: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.12);
+                        HorizontalLayout {
+                            Rectangle {
+                                width: 3px;
+                                border-radius: 1.5px;
+                                background: item.outgoing ? Palette.accent-foreground : Palette.accent-background;
                             }
-                            Text {
-                                text: item.quote-text;
-                                font-size: 0.85rem;
-                                wrap: word-wrap;
-                                overflow: elide;
-                                max-height: 2.6rem;
-                                color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.8);
+                            VerticalLayout {
+                                padding: 6px;
+                                spacing: 1px;
+                                Text {
+                                    text: item.quote-author;
+                                    font-size: 0.8rem;
+                                    font-weight: 600;
+                                    color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+                                }
+                                Text {
+                                    text: item.quote-text;
+                                    font-size: 0.85rem;
+                                    wrap: word-wrap;
+                                    overflow: elide;
+                                    max-height: 2.6rem;
+                                    color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.8);
+                                }
                             }
                         }
                     }
+                    for attachment in item.attachments: AttachmentView {
+                        // A long message's full text replaces the body; it isn't shown itself.
+                        visible: !attachment.hidden;
+                        height: attachment.hidden ? 0 : self.preferred-height;
+                        item: attachment;
+                        outgoing: item.outgoing;
+                        fetch(id) => { root.fetch-attachment(id); }
+                        save(id) => { root.save-attachment(id); }
+                    }
+                    if item.body != "": Text {
+                        text: item.body;
+                        wrap: word-wrap;
+                        color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+                    }
+                    Text {
+                        text: item.time;
+                        font-size: 0.72rem;
+                        horizontal-alignment: right;
+                        color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.65);
+                    }
                 }
-                for attachment in item.attachments: AttachmentView {
-                    // A long message's full text replaces the body; it isn't shown itself.
-                    visible: !attachment.hidden;
-                    height: attachment.hidden ? 0 : self.preferred-height;
-                    item: attachment;
-                    outgoing: item.outgoing;
-                    fetch(id) => { root.fetch-attachment(id); }
-                    save(id) => { root.save-attachment(id); }
-                }
-                if item.body != "": Text {
-                    text: item.body;
-                    wrap: word-wrap;
-                    color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
-                }
-                Text {
-                    text: item.time;
-                    font-size: 0.72rem;
-                    horizontal-alignment: right;
-                    color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.65);
-                }
+            }
+        }
+
+        if !item.outgoing: VerticalLayout {
+            alignment: center;
+            ReplyButton {
+                shown: hover.has-hover;
+                clicked => { root.reply(); }
             }
         }
     }
@@ -601,6 +643,11 @@ export component AppWindow inherits Window {
     callback settings-changed;
     callback skip-history;
     callback search(string);
+    callback reply(int);
+    callback cancel-reply;
+    // The message the composer answers; both empty when not replying.
+    in property <string> reply-author;
+    in property <string> reply-text;
     in-out property <string> search-text;
     callback fetch-attachment(string);
     callback save-attachment(string);
@@ -815,14 +862,59 @@ export component AppWindow inherits Window {
                             self.content-y = min(0px, self.visible-height - self.content-height);
                         }
                     }
-                    for item in root.messages: Bubble {
+                    // E.g. the reply bar opening below.
+                    changed visible-height => {
+                        if self.follow {
+                            self.content-y = min(0px, self.visible-height - self.content-height);
+                        }
+                    }
+                    for item[index] in root.messages: Bubble {
                         item: item;
+                        reply => {
+                            root.reply(index);
+                            composer.focus();
+                        }
                         max-bubble-width: message-list.visible-width * 0.7;
                         fetch-attachment(id) => { root.fetch-attachment(id); }
                         save-attachment(id) => { root.save-attachment(id); }
                     }
                 }
 
+                if root.reply-author != "" || root.reply-text != "": Rectangle {
+                    background: Palette.alternate-background;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 3px;
+                            border-radius: 1.5px;
+                            background: Palette.accent-background;
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: "Replying to " + root.reply-author;
+                                font-size: 0.8rem;
+                                font-weight: 600;
+                                color: Palette.foreground;
+                            }
+                            Text {
+                                text: root.reply-text;
+                                font-size: 0.85rem;
+                                overflow: elide;
+                                color: Palette.foreground.with-alpha(0.7);
+                            }
+                        }
+                        TouchArea {
+                            width: 28px;
+                            mouse-cursor: pointer;
+                            clicked => { root.cancel-reply(); }
+                            Text { text: "✕"; color: Palette.foreground.with-alpha(0.6); }
+                        }
+                    }
+                }
                 HorizontalLayout {
                     padding: 12px;
                     spacing: 8px;

@@ -54,12 +54,16 @@ pub struct ChatMessage {
     pub attachments: Vec<Attachment>,
 }
 
-/// What a reply shows of the message it answers.
-#[derive(Clone, Debug, PartialEq)]
+/// What a reply shows of the message it answers, and which one that is.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Quote {
     /// Display name of the quoted message's author.
     pub author: String,
     pub text: String,
+    /// The quoted message, as Signal identifies it: author and sent time. Empty and 0 if the
+    /// sender didn't say.
+    pub author_id: String,
+    pub timestamp: u64,
 }
 
 /// A decoded image: an avatar, an attached picture or a sticker. RGBA, row-major, 4 bytes
@@ -208,7 +212,8 @@ pub enum Command {
     FetchAttachment(Attachment),
     /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
     SaveAttachment(Attachment),
-    Send { conversation: ConversationId, body: String },
+    /// `quote` makes it a reply to that message.
+    Send { conversation: ConversationId, body: String, quote: Option<Quote> },
 }
 
 pub struct Config {

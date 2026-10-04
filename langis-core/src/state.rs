@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::settings::NotificationContent;
-use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
+use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, ChatMessage, Quote, HistoryTransfer, Command, Conversation, ConversationId, Event, Password, QrMatrix};
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -168,6 +168,8 @@ pub struct ChatState {
     saves: HashMap<AttachmentId, SaveState>,
     /// Search text; while set, the chat list holds every matching conversation.
     filter: String,
+    /// What the composer replies to; belongs to the selected conversation.
+    replying: Option<Quote>,
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
@@ -316,6 +318,9 @@ impl ChatState {
             return None;
         }
         self.unread.remove(id);
+        if self.selected.as_ref() != Some(id) {
+            self.replying = None;
+        }
         self.selected = Some(id.clone());
         // Picking a search result ends the search; the chosen chat stays on the list.
         self.filter.clear();
@@ -332,7 +337,7 @@ impl ChatState {
         }
         self.unread.remove(id);
         self.notifications.pending.push(Notice::Withdraw(id.clone()));
-        Some(Command::Send { conversation: id.clone(), body: body.to_string() })
+        Some(Command::Send { conversation: id.clone(), body: body.to_string(), quote: None })
     }
 
     pub fn set_notifications(&mut self, enabled: bool, content: NotificationContent) {
@@ -422,15 +427,34 @@ impl ChatState {
     }
 
     /// Turns composer text into a send command for the selected conversation.
-    pub fn compose(&self, text: &str) -> Option<Command> {
+    /// Sends `text` to the selected conversation, as a reply if one is being written.
+    pub fn compose(&mut self, text: &str) -> Option<Command> {
         if !self.can_compose(text) {
             return None;
         }
         let conversation = self.selected.clone()?;
-        Some(Command::Send {
-            conversation,
-            body: text.trim().to_string(),
-        })
+        Some(Command::Send { conversation, body: text.trim().to_string(), quote: self.replying.take() })
+    }
+
+    /// Starts a reply to the `index`th message of [`ChatState::messages`].
+    pub fn reply_to(&mut self, index: usize) -> Update {
+        let quote = self.messages().nth(index).map(|view| Quote {
+            author: view.message.sender.clone(),
+            text: view.body.lines().next().unwrap_or_default().to_owned(),
+            author_id: view.message.sender_id.clone(),
+            timestamp: view.message.timestamp,
+        });
+        self.replying = quote;
+        Update::default()
+    }
+
+    pub fn cancel_reply(&mut self) {
+        self.replying = None;
+    }
+
+    /// The message the composer answers, if any.
+    pub fn replying(&self) -> Option<&Quote> {
+        self.replying.as_ref()
     }
 
     pub fn dismiss_error(&mut self) {
@@ -784,7 +808,7 @@ mod tests {
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         state.take_notices();
         let reply = state.reply(&a, " thanks ");
-        assert!(matches!(reply, Some(Command::Send { conversation, body }) if conversation == a && body == "thanks"));
+        assert!(matches!(reply, Some(Command::Send { conversation, body, quote: None }) if conversation == a && body == "thanks"));
         assert_eq!(state.take_notices(), [Notice::Withdraw(a.clone())]);
         assert_eq!(state.conversations().find(|c| c.conversation.id == a).unwrap().unread, 0);
         assert!(state.reply(&a, "  ").is_none());
@@ -917,6 +941,24 @@ mod tests {
         state.select(&ConversationId("a".into()));
         assert!(!state.searching());
         assert!(state.conversations().any(|c| c.conversation.id.0 == "a"), "selected stays listed");
+    }
+
+    #[test]
+    fn replies_quote_the_chosen_message_and_reset_with_the_chat() {
+        let mut state = state();
+        state.apply(Event::Synced);
+        state.apply(Event::Message(message("a", "Alice", 7, false)));
+        state.select(&ConversationId("a".into()));
+        state.reply_to(0);
+        let quote = state.replying().unwrap().clone();
+        assert_eq!((quote.author.as_str(), quote.author_id.as_str(), quote.timestamp), ("Alice", "alice", 7));
+        let sent = state.compose("sure");
+        assert!(matches!(sent, Some(Command::Send { quote: Some(q), .. }) if q == quote));
+        assert!(state.replying().is_none(), "sending uses it up");
+
+        state.reply_to(0);
+        state.select(&ConversationId("g".into()));
+        assert!(state.replying().is_none(), "another chat drops it");
     }
 
     #[test]
