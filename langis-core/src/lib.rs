@@ -32,11 +32,47 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ConversationId(pub String);
 
-#[derive(Clone, Debug, PartialEq)]
+impl ConversationId {
+    /// The 1:1 conversation with the person whose service ID is `service_id`, e.g. a message's
+    /// `sender_id`.
+    pub fn contact(service_id: &str) -> Self {
+        Self(format!("c:{service_id}"))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Conversation {
     pub id: ConversationId,
     pub title: String,
     pub is_group: bool,
+    /// A line under the title: a phone number, a group's size, "Messages to yourself".
+    pub subtitle: String,
+}
+
+/// Replaces the placeholders Signal puts where a mention goes (U+FFFC) with "@Name".
+/// `mentions` are `(start, length, name)` in UTF-16 code units, as Signal counts them. A
+/// placeholder without one (e.g. from history imported before mentions were) reads "@…".
+pub fn resolve_mentions(body: &str, mentions: &[(u32, u32, String)]) -> String {
+    if mentions.is_empty() {
+        return body.replace('\u{FFFC}', "@…");
+    }
+    let mut out = String::with_capacity(body.len());
+    let mut position = 0u32;
+    let mut skip_until = 0u32;
+    for c in body.chars() {
+        if let Some((start, length, name)) =
+            mentions.iter().find(|(start, _, _)| *start == position)
+        {
+            out.push('@');
+            out.push_str(name);
+            skip_until = start + length;
+        }
+        if position >= skip_until {
+            out.push(c);
+        }
+        position += c.len_utf16() as u32;
+    }
+    out.replace('\u{FFFC}', "@…")
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -296,12 +332,16 @@ pub enum Command {
     FetchAttachment(Attachment),
     /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
     SaveAttachment(Attachment),
-    /// `quote` makes it a reply to that message.
+    /// `quote` makes it a reply to that message; `files` are attached (the body may then be
+    /// empty).
     Send {
         conversation: ConversationId,
         body: String,
         quote: Option<Quote>,
+        files: Vec<std::path::PathBuf>,
     },
+    /// Downloads an attachment and opens it with the desktop's default app for its type.
+    OpenAttachment(Attachment),
     /// Reacts to a message with `emoji`, or takes our reaction back.
     React {
         conversation: ConversationId,

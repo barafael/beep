@@ -1,4 +1,4 @@
-import { Button, ComboBox, LineEdit, ListView, Palette, Spinner, Switch } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, ProgressIndicator, Spinner, Switch, TextEdit } from "std-widgets.slint";
 
 export struct ConversationItem {
     id: string,
@@ -8,6 +8,10 @@ export struct ConversationItem {
     // Profile or group picture; empty (zero width) if there is none.
     avatar: image,
     preview: string,
+    // When the newest message came: "14:05", "Mon", "Oct 2".
+    time: string,
+    // Under the title in the chat header: a phone number, "4 members", …
+    subtitle: string,
     unread: int,
 }
 
@@ -42,11 +46,23 @@ export struct ReactionItem {
 
 export struct MessageItem {
     sender: string,
-    body: string,
+    // With links made clickable.
+    body: styled-text,
+    has-body: bool,
     time: string,
     outgoing: bool,
     // Show the sender above the bubble (groups, first of a run).
     show-sender: bool,
+    // "Today", "Monday", "Oct 2" on the first message of a day; empty otherwise.
+    day: string,
+    // Messages by the same person within a few minutes are drawn as a run.
+    first: bool,
+    last: bool,
+    // Incoming group messages leave room for the sender's avatar, shown at the end of a run.
+    avatar-column: bool,
+    sender-avatar: image,
+    sender-initials: string,
+    sender-color: color,
     // The message this one replies to; both empty if it isn't a reply.
     quote-author: string,
     quote-text: string,
@@ -106,30 +122,44 @@ component ConversationRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             spacing: 2px;
-            Text {
-                text: item.title;
-                font-weight: item.unread > 0 ? 700 : 600;
-                overflow: elide;
-                color: Palette.foreground;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: item.title;
+                    font-weight: item.unread > 0 ? 700 : 600;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    color: Palette.foreground;
+                }
+                Text {
+                    text: item.time;
+                    font-size: 0.75rem;
+                    vertical-alignment: center;
+                    color: item.unread > 0 ? Palette.accent-background : Palette.foreground.with-alpha(0.55);
+                }
             }
-            Text {
-                text: item.preview;
-                overflow: elide;
-                color: Palette.foreground.with-alpha(0.65);
-                font-size: 0.9rem;
-            }
-        }
-        if item.unread > 0: Rectangle {
-            width: max(20px, badge.preferred-width + 10px);
-            height: 20px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 10px;
-            background: Palette.accent-background;
-            badge := Text {
-                text: item.unread;
-                color: Palette.accent-foreground;
-                font-size: 0.8rem;
-                font-weight: 700;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: item.preview;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    color: Palette.foreground.with-alpha(0.65);
+                    font-size: 0.9rem;
+                }
+                if item.unread > 0: Rectangle {
+                    width: max(18px, badge.preferred-width + 10px);
+                    height: 18px;
+                    border-radius: 9px;
+                    background: Palette.accent-background;
+                    badge := Text {
+                        text: item.unread;
+                        // White on the accent, whatever the style's accent text colour is.
+                        color: white;
+                        font-size: 0.75rem;
+                        font-weight: 700;
+                    }
+                }
             }
         }
     }
@@ -140,8 +170,10 @@ component AttachmentView inherits VerticalLayout {
     in property <bool> outgoing;
     callback fetch(string);
     callback save(string);
+    callback open(string);
 
-    property <color> ink: outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+    // Outgoing bubbles use the accent colour, so their text is white for contrast with any.
+    property <color> ink: outgoing ? white : Palette.alternate-foreground;
     spacing: 4px;
     // The list only creates rows that are on screen, so this downloads only what is seen.
     init => {
@@ -159,6 +191,11 @@ component AttachmentView inherits VerticalLayout {
             height: parent.height;
             source: root.item.picture;
             image-fit: contain;
+        }
+        // Full size in the desktop's image viewer.
+        if root.item.picture.width > 0: TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(root.item.id); }
         }
         if root.item.picture.width == 0 && root.item.status == "": Spinner {
             indeterminate: true;
@@ -186,6 +223,18 @@ component AttachmentView inherits VerticalLayout {
             overflow: elide;
             horizontal-stretch: 1;
             color: root.ink;
+        }
+        if !root.item.inline && root.item.can-save: open-touch := TouchArea {
+            width: open-label.preferred-width;
+            mouse-cursor: pointer;
+            clicked => { root.open(root.item.id); }
+            open-label := Text {
+                text: "Open";
+                font-size: 0.85rem;
+                font-weight: 600;
+                vertical-alignment: center;
+                color: open-touch.has-hover ? root.ink : root.ink.with-alpha(0.75);
+            }
         }
         if root.item.inline || root.item.status != "": Text {
             text: root.item.inline && root.item.picture.width == 0 ? "" : root.item.status;
@@ -258,13 +307,37 @@ component ReactionPicker inherits PopupWindow {
     }
 }
 
+component HoverButtons inherits HorizontalLayout {
+    in property <bool> shown;
+    callback react;
+    callback reply;
+    HoverButton {
+        symbol: "☺";
+        shown: root.shown;
+        clicked => { root.react(); }
+    }
+    HoverButton {
+        symbol: "↩";
+        shown: root.shown;
+        clicked => { root.reply(); }
+    }
+}
+
 component Bubble inherits Rectangle {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
     callback fetch-attachment(string);
     callback save-attachment(string);
+    callback open-attachment(string);
+    callback open-link(string);
     callback reply;
     callback react(string);
+
+    // Outgoing bubbles use the accent colour: white text reads on any style's accent.
+    property <color> ink: item.outgoing ? white : Palette.alternate-foreground;
+    // Within a run, the corners facing the neighbouring bubbles are tighter.
+    property <length> round: 16px;
+    property <length> tight: 5px;
 
     // Under the content, so buttons inside the bubble still get their clicks.
     hover := TouchArea {}
@@ -275,139 +348,163 @@ component Bubble inherits Rectangle {
         picked(emoji) => { root.react(emoji); }
     }
 
-    HorizontalLayout {
-        alignment: item.outgoing ? end : start;
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: item.show-sender ? 8px : 2px;
-        padding-bottom: 2px;
-        spacing: 4px;
-
-        // Beside the bubble on the side facing the middle, shown on hover.
-        if item.outgoing: VerticalLayout {
+    VerticalLayout {
+        if item.day != "": HorizontalLayout {
             alignment: center;
-            HorizontalLayout {
-                HoverButton {
-                    symbol: "☺";
-                    shown: hover.has-hover;
-                    clicked => { picker.show(); }
-                }
-                HoverButton {
-                    symbol: "↩";
-                    shown: hover.has-hover;
-                    clicked => { root.reply(); }
+            padding-top: 14px;
+            padding-bottom: 6px;
+            Rectangle {
+                width: day-label.preferred-width + 20px;
+                height: 22px;
+                border-radius: 11px;
+                background: Palette.alternate-background;
+                border-width: 1px;
+                border-color: Palette.border;
+                day-label := Text {
+                    text: item.day;
+                    font-size: 0.8rem;
+                    font-weight: 600;
+                    color: Palette.foreground.with-alpha(0.7);
                 }
             }
         }
-        VerticalLayout {
-            spacing: 2px;
-            if item.show-sender: Text {
-                text: item.sender;
-                font-size: 0.8rem;
-                font-weight: 600;
-                color: Palette.foreground.with-alpha(0.7);
-                horizontal-alignment: item.outgoing ? right : left;
+
+        HorizontalLayout {
+            alignment: item.outgoing ? end : start;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: item.first ? 6px : 1px;
+            padding-bottom: 1px;
+            spacing: 4px;
+
+            // The sender's picture, at the end of their run.
+            if item.avatar-column: VerticalLayout {
+                alignment: end;
+                width: 28px;
+                if item.last: Avatar {
+                    width: 28px;
+                    initials: item.sender-initials;
+                    tint: item.sender-color;
+                    picture: item.sender-avatar;
+                }
             }
-            Rectangle {
-                max-width: root.max-bubble-width;
-                border-radius: 14px;
-                background: item.outgoing ? Palette.accent-background : Palette.alternate-background;
-                border-width: item.outgoing ? 0 : 1px;
-                border-color: Palette.border;
-                VerticalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    padding-top: 7px;
-                    padding-bottom: 6px;
-                    spacing: 2px;
-                    if item.quote-author != "" || item.quote-text != "": Rectangle {
-                        border-radius: 6px;
-                        background: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.12);
-                        HorizontalLayout {
-                            Rectangle {
-                                width: 3px;
-                                border-radius: 1.5px;
-                                background: item.outgoing ? Palette.accent-foreground : Palette.accent-background;
-                            }
-                            VerticalLayout {
-                                padding: 6px;
-                                spacing: 1px;
-                                Text {
-                                    text: item.quote-author;
-                                    font-size: 0.8rem;
-                                    font-weight: 600;
-                                    color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
+            // Beside the bubble on the side facing the middle, shown on hover.
+            if item.outgoing: VerticalLayout {
+                alignment: center;
+                HoverButtons {
+                    shown: hover.has-hover;
+                    react => { picker.show(); }
+                    reply => { root.reply(); }
+                }
+            }
+            VerticalLayout {
+                spacing: 2px;
+                if item.show-sender: Text {
+                    text: item.sender;
+                    font-size: 0.8rem;
+                    font-weight: 600;
+                    color: item.sender-color;
+                }
+                Rectangle {
+                    max-width: root.max-bubble-width;
+                    border-top-left-radius: !item.outgoing && !item.first ? root.tight : root.round;
+                    border-bottom-left-radius: !item.outgoing && !item.last ? root.tight : root.round;
+                    border-top-right-radius: item.outgoing && !item.first ? root.tight : root.round;
+                    border-bottom-right-radius: item.outgoing && !item.last ? root.tight : root.round;
+                    // Darkened, so white text reads even on a light accent (Breeze's dark scheme).
+                    background: item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background;
+                    border-width: item.outgoing ? 0 : 1px;
+                    border-color: Palette.border;
+                    VerticalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 7px;
+                        padding-bottom: 6px;
+                        spacing: 2px;
+                        if item.quote-author != "" || item.quote-text != "": Rectangle {
+                            border-radius: 6px;
+                            background: root.ink.with-alpha(0.12);
+                            HorizontalLayout {
+                                Rectangle {
+                                    width: 3px;
+                                    border-radius: 1.5px;
+                                    background: item.outgoing ? white : Palette.accent-background;
                                 }
-                                Text {
-                                    text: item.quote-text;
-                                    font-size: 0.85rem;
-                                    wrap: word-wrap;
-                                    overflow: elide;
-                                    max-height: 2.6rem;
-                                    color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.8);
+                                VerticalLayout {
+                                    padding: 6px;
+                                    spacing: 1px;
+                                    Text {
+                                        text: item.quote-author;
+                                        font-size: 0.8rem;
+                                        font-weight: 600;
+                                        color: root.ink;
+                                    }
+                                    Text {
+                                        text: item.quote-text;
+                                        font-size: 0.85rem;
+                                        wrap: word-wrap;
+                                        overflow: elide;
+                                        max-height: 2.6rem;
+                                        color: root.ink.with-alpha(0.8);
+                                    }
                                 }
                             }
                         }
+                        for attachment in item.attachments: AttachmentView {
+                            // A long message's full text replaces the body; it isn't shown itself.
+                            visible: !attachment.hidden;
+                            height: attachment.hidden ? 0 : self.preferred-height;
+                            item: attachment;
+                            outgoing: item.outgoing;
+                            fetch(id) => { root.fetch-attachment(id); }
+                            save(id) => { root.save-attachment(id); }
+                            open(id) => { root.open-attachment(id); }
+                        }
+                        if item.has-body: StyledText {
+                            text: item.body;
+                            default-color: root.ink;
+                            link-color: item.outgoing ? white : Palette.accent-background;
+                            link-clicked(link) => { root.open-link(link); }
+                        }
+                        // Once per run, on its last message.
+                        if item.last: Text {
+                            text: item.time;
+                            font-size: 0.72rem;
+                            horizontal-alignment: right;
+                            color: root.ink.with-alpha(0.65);
+                        }
                     }
-                    for attachment in item.attachments: AttachmentView {
-                        // A long message's full text replaces the body; it isn't shown itself.
-                        visible: !attachment.hidden;
-                        height: attachment.hidden ? 0 : self.preferred-height;
-                        item: attachment;
-                        outgoing: item.outgoing;
-                        fetch(id) => { root.fetch-attachment(id); }
-                        save(id) => { root.save-attachment(id); }
-                    }
-                    if item.body != "": Text {
-                        text: item.body;
-                        wrap: word-wrap;
-                        color: item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground;
-                    }
-                    Text {
-                        text: item.time;
-                        font-size: 0.72rem;
-                        horizontal-alignment: right;
-                        color: (item.outgoing ? Palette.accent-foreground : Palette.alternate-foreground).with-alpha(0.65);
+                }
+                if item.reactions.length > 0: HorizontalLayout {
+                    alignment: item.outgoing ? end : start;
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    spacing: 4px;
+                    for reaction in item.reactions: Rectangle {
+                        height: 24px;
+                        width: chip.preferred-width + 14px;
+                        border-radius: 12px;
+                        background: reaction.mine ? Palette.accent-background.with-alpha(0.25) : Palette.alternate-background;
+                        border-width: 1px;
+                        border-color: reaction.mine ? Palette.accent-background : Palette.border;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.react(reaction.emoji); }
+                        }
+                        chip := Text {
+                            text: reaction.count > 1 ? reaction.emoji + " " + reaction.count : reaction.emoji;
+                            font-size: 0.85rem;
+                            color: Palette.foreground;
+                        }
                     }
                 }
             }
-            if item.reactions.length > 0: HorizontalLayout {
-                alignment: item.outgoing ? end : start;
-                padding-left: 6px;
-                padding-right: 6px;
-                spacing: 4px;
-                for reaction in item.reactions: Rectangle {
-                    height: 24px;
-                    width: chip.preferred-width + 14px;
-                    border-radius: 12px;
-                    background: reaction.mine ? Palette.accent-background.with-alpha(0.25) : Palette.alternate-background;
-                    border-width: 1px;
-                    border-color: reaction.mine ? Palette.accent-background : Palette.border;
-                    TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.react(reaction.emoji); }
-                    }
-                    chip := Text {
-                        text: reaction.count > 1 ? reaction.emoji + " " + reaction.count : reaction.emoji;
-                        font-size: 0.85rem;
-                        color: Palette.foreground;
-                    }
-                }
-            }
-        }
-
-        if !item.outgoing: VerticalLayout {
-            alignment: center;
-            HorizontalLayout {
-                HoverButton {
-                    symbol: "☺";
+            if !item.outgoing: VerticalLayout {
+                alignment: center;
+                HoverButtons {
                     shown: hover.has-hover;
-                    clicked => { picker.show(); }
-                }
-                HoverButton {
-                    symbol: "↩";
-                    shown: hover.has-hover;
-                    clicked => { root.reply(); }
+                    react => { picker.show(); }
+                    reply => { root.reply(); }
                 }
             }
         }
@@ -688,7 +785,7 @@ export component AppWindow inherits Window {
     in property <string> window-title: "langis";
     title: root.window-title;
     icon: @image-url("../assets/langis.svg");
-    min-width: 720px;
+    min-width: 360px;
     min-height: 480px;
     preferred-width: 1000px;
     preferred-height: 680px;
@@ -747,6 +844,20 @@ export component AppWindow inherits Window {
     callback settings-changed;
     callback skip-history;
     callback search(string);
+    callback open-attachment(string);
+    callback open-link(string);
+    callback attach;
+    // From Rust, once the file picker is done.
+    callback stage-files([string]);
+    callback unstage(int);
+    callback back;
+    // Names of files waiting to go out with the next message.
+    in property <[string]> staged;
+    in-out property <length> sidebar-width: 300px;
+    // One pane at a time: the list, or the open chat with a way back. Kept up to date when
+    // the width changes rather than bound to it, since the layout depends on it in turn.
+    out property <bool> narrow;
+    changed width => { root.narrow = root.width < 640px; }
     callback reply(int);
     callback react(int, string);
     callback cancel-reply;
@@ -801,9 +912,12 @@ export component AppWindow inherits Window {
         if root.screen == Screen.link: LinkScreen { qr: root.link-qr; }
 
         if root.screen == Screen.chats: HorizontalLayout {
-            // Sidebar
-            Rectangle {
-                width: 300px;
+            // Sidebar: the whole window when narrow and nothing is open.
+            if !root.narrow || (root.selected < 0 && !root.settings-open): Rectangle {
+                // Fixed (but draggable) beside a chat; the whole window when narrow.
+                horizontal-stretch: root.narrow ? 1 : 0;
+                min-width: root.narrow ? 0px : root.sidebar-width;
+                max-width: root.narrow ? 100000px : root.sidebar-width;
                 background: Palette.alternate-background;
                 VerticalLayout {
                     HorizontalLayout {
@@ -815,13 +929,6 @@ export component AppWindow inherits Window {
                             font-size: 1.3rem;
                             font-weight: 700;
                             color: Palette.foreground;
-                        }
-                        // The transfer status below has its own.
-                        if !root.synced && root.history-status == "": Spinner {
-                            indeterminate: true;
-                            width: 18px;
-                            height: 18px;
-                            y: (parent.height - self.height) / 2;
                         }
                         Rectangle { horizontal-stretch: 1; }
                         settings-button := Rectangle {
@@ -891,18 +998,21 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    Text {
-                        text: root.account;
-                        font-size: 0.75rem;
-                        overflow: elide;
-                        color: Palette.foreground.with-alpha(0.5);
-                        horizontal-alignment: center;
-                        height: 28px;
-                        vertical-alignment: center;
+                }
+            }
+            // The divider; drag it to resize the sidebar.
+            if !root.narrow: Rectangle {
+                width: 1px;
+                background: Palette.border;
+                TouchArea {
+                    x: -3px;
+                    width: 7px;
+                    mouse-cursor: col-resize;
+                    moved => {
+                        root.sidebar-width = clamp(root.sidebar-width + self.mouse-x - self.pressed-x, 220px, 480px);
                     }
                 }
             }
-            Rectangle { width: 1px; background: Palette.border; }
 
             if root.settings-open: SettingsPage {
                 horizontal-stretch: 1;
@@ -920,11 +1030,25 @@ export component AppWindow inherits Window {
             }
 
             // Conversation
-            if !root.settings-open && root.selected < 0: Rectangle {
+            if !root.settings-open && root.selected < 0 && !root.narrow: Rectangle {
                 horizontal-stretch: 1;
-                Text {
-                    text: "Select a chat to start messaging";
-                    color: Palette.foreground.with-alpha(0.5);
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 14px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../assets/langis.svg");
+                            width: 88px;
+                            height: 88px;
+                            opacity: 0.55;
+                        }
+                    }
+                    Text {
+                        text: "Pick a chat on the left,\nor search for someone to start a new one.";
+                        horizontal-alignment: center;
+                        color: Palette.foreground.with-alpha(0.55);
+                    }
                 }
             }
             if !root.settings-open && root.selected >= 0: VerticalLayout {
@@ -932,8 +1056,19 @@ export component AppWindow inherits Window {
                 Rectangle {
                     height: 60px;
                     HorizontalLayout {
-                        padding-left: 16px;
+                        padding-left: root.narrow ? 4px : 16px;
+                        padding-right: 16px;
                         spacing: 12px;
+                        if root.narrow: TouchArea {
+                            width: 36px;
+                            mouse-cursor: pointer;
+                            clicked => { root.back(); }
+                            Text {
+                                text: "←";
+                                font-size: 1.3rem;
+                                color: Palette.foreground.with-alpha(0.8);
+                            }
+                        }
                         Avatar {
                             width: 36px;
                             initials: root.conversations[root.selected].initials;
@@ -941,15 +1076,30 @@ export component AppWindow inherits Window {
                             picture: root.conversations[root.selected].avatar;
                             y: (parent.height - self.height) / 2;
                         }
-                        Text {
-                            text: root.conversations[root.selected].title;
-                            font-size: 1.1rem;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                            color: Palette.foreground;
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.conversations[root.selected].title;
+                                font-size: 1.1rem;
+                                font-weight: 600;
+                                overflow: elide;
+                                color: Palette.foreground;
+                            }
+                            if root.conversations[root.selected].subtitle != "": Text {
+                                text: root.conversations[root.selected].subtitle;
+                                font-size: 0.8rem;
+                                overflow: elide;
+                                color: Palette.foreground.with-alpha(0.6);
+                            }
                         }
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+                }
+                // While catching up with what arrived meanwhile; sending waits for it.
+                if !root.synced: ProgressIndicator {
+                    indeterminate: true;
+                    height: 3px;
                 }
 
                 message-list := ListView {
@@ -984,6 +1134,8 @@ export component AppWindow inherits Window {
                         max-bubble-width: message-list.visible-width * 0.7;
                         fetch-attachment(id) => { root.fetch-attachment(id); }
                         save-attachment(id) => { root.save-attachment(id); }
+                        open-attachment(id) => { root.open-attachment(id); }
+                        open-link(link) => { root.open-link(link); }
                         react(emoji) => { root.react(index, emoji); }
                     }
                 }
@@ -1023,23 +1175,130 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                HorizontalLayout {
-                    padding: 12px;
-                    spacing: 8px;
-                    composer := LineEdit {
-                        placeholder-text: root.synced ? "Message" : "Syncing…";
-                        text <=> root.draft;
-                        enabled: root.synced;
-                        edited(text) => { root.draft-edited(text); }
-                        accepted(text) => {
-                            if root.can-send { root.send(text); }
+                // Files waiting to go out with the next message.
+                if root.staged.length > 0: HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 8px;
+                    spacing: 6px;
+                    alignment: start;
+                    for name[index] in root.staged: Rectangle {
+                        height: 26px;
+                        width: staged-row.preferred-width + 16px;
+                        border-radius: 13px;
+                        background: Palette.alternate-background;
+                        border-width: 1px;
+                        border-color: Palette.border;
+                        staged-row := HorizontalLayout {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            spacing: 6px;
+                            Text {
+                                text: "📎 " + name;
+                                font-size: 0.85rem;
+                                vertical-alignment: center;
+                                color: Palette.foreground;
+                            }
+                            TouchArea {
+                                width: 14px;
+                                mouse-cursor: pointer;
+                                clicked => { root.unstage(index); }
+                                Text { text: "✕"; font-size: 0.8rem; color: Palette.foreground.with-alpha(0.6); }
+                            }
                         }
                     }
-                    Button {
-                        text: "Send";
-                        primary: true;
-                        enabled: root.can-send;
-                        clicked => { root.send(root.draft); composer.focus(); }
+                }
+                HorizontalLayout {
+                    padding: 12px;
+                    spacing: 6px;
+                    alignment: stretch;
+                    VerticalLayout {
+                        alignment: end;
+                        HoverButton {
+                            symbol: "📎";
+                            shown: true;
+                            clicked => { root.attach(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        HoverButton {
+                            symbol: "☺";
+                            shown: true;
+                            clicked => { emoji-picker.show(); }
+                        }
+                        emoji-picker := PopupWindow {
+                            x: 0;
+                            y: -190px;
+                            Rectangle {
+                                width: 8 * 34px + 12px;
+                                height: 4 * 34px + 12px;
+                                border-radius: 10px;
+                                background: Palette.alternate-background;
+                                border-width: 1px;
+                                border-color: Palette.border;
+                                drop-shadow-blur: 8px;
+                                drop-shadow-color: #0003;
+                                for emoji[i] in ["😀", "😂", "🥲", "😊", "😍", "😘", "😎", "🤔",
+                                                 "😮", "😢", "😭", "😡", "🙄", "😴", "🤯", "🥳",
+                                                 "👍", "👎", "👏", "🙏", "💪", "👋", "🤝", "✌️",
+                                                 "❤️", "🔥", "🎉", "✨", "💯", "✅", "❌", "👀"]: Rectangle {
+                                    x: 6px + mod(i, 8) * 34px;
+                                    y: 6px + floor(i / 8) * 34px;
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 6px;
+                                    background: emoji-touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+                                    emoji-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.draft = root.draft + emoji;
+                                            root.draft-edited(root.draft);
+                                            composer.focus();
+                                        }
+                                    }
+                                    Text { text: emoji; font-size: 1.2rem; }
+                                }
+                            }
+                        }
+                    }
+                    // Grows with the draft, up to a few lines. The draft is measured by an invisible
+                    // copy, since the editor's own content height depends on its height.
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        // Room for the style's frame and padding, so no scroll bar shows for a line.
+                        height: clamp(measure.preferred-height + 30px, 50px, 150px);
+                        measure := Text {
+                            visible: false;
+                            width: parent.width - 20px;
+                            text: root.draft + " ";
+                            wrap: word-wrap;
+                        }
+                        composer := TextEdit {
+                            width: parent.width;
+                            height: parent.height;
+                            text <=> root.draft;
+                            placeholder-text: "Message";
+                            wrap: word-wrap;
+                            edited(text) => { root.draft-edited(text); }
+                            // Enter sends; Shift+Enter starts a new line.
+                            key-pressed(event) => {
+                                if event.text == Key.Return && !event.modifiers.shift {
+                                    if root.can-send { root.send(root.draft); }
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        Button {
+                            text: "Send";
+                            primary: true;
+                            enabled: root.can-send;
+                            clicked => { root.send(root.draft); composer.focus(); }
+                        }
                     }
                 }
             }

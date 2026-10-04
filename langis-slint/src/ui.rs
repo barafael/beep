@@ -104,6 +104,51 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     });
+    window.on_open_attachment({
+        let shared = shared.clone();
+        move |id| {
+            shared.act(|chat| (chat.open_attachment(&AttachmentId(id.into())), Update::default()));
+        }
+    });
+    window.on_open_link(|link| crate::open_link(&link));
+    window.on_attach({
+        let window = window.as_weak();
+        move || {
+            // The dialog blocks until the user is done, so it gets its own thread.
+            let window = window.clone();
+            std::thread::spawn(move || {
+                let files = rfd::FileDialog::new().set_title("Attach files").pick_files().unwrap_or_default();
+                let files: Vec<SharedString> = files.iter().map(|f| f.to_string_lossy().as_ref().into()).collect();
+                let _ = window.upgrade_in_event_loop(move |window| {
+                    window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                });
+            });
+        }
+    });
+    window.on_stage_files({
+        let shared = shared.clone();
+        move |files| {
+            shared.act(|chat| {
+                chat.stage_files(files.iter().map(|f| std::path::PathBuf::from(f.as_str())));
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_unstage({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| {
+                chat.unstage(index as usize);
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_back({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (None, chat.deselect()));
+        }
+    });
     window.on_search({
         let shared = shared.clone();
         move |text| {
@@ -257,6 +302,12 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
     window.set_can_send(chat.can_compose(&window.get_draft()));
+    let staged: Vec<SharedString> = chat
+        .staged()
+        .iter()
+        .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
+        .collect();
+    window.set_staged(ModelRc::new(VecModel::from(staged)));
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
     window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
@@ -311,31 +362,47 @@ fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
 }
 
 fn conversation_item(view: &ConversationView, images: &Images) -> ConversationItem {
-    // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
-    const PALETTE: [u32; 8] = [0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0];
     let c = view.conversation;
-    let rgb = PALETTE[state::avatar_index(&c.id, PALETTE.len())];
     ConversationItem {
         id: c.id.0.as_str().into(),
         title: c.title.as_str().into(),
         initials: state::initials(&c.title).into(),
-        avatar_color: Color::from_argb_encoded(0xff00_0000 | rgb),
+        avatar_color: avatar_color(&c.id),
         avatar: view.avatar.map(|avatar| images.avatar(&c.id, avatar)).unwrap_or_default(),
         preview: view.preview().into(),
+        time: view.last_message.map(|m| state::format_list_time(m.timestamp)).unwrap_or_default().into(),
+        subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
     }
+}
+
+/// A stable colour per person or group, for avatars without a picture and group senders' names.
+fn avatar_color(id: &ConversationId) -> Color {
+    // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
+    const PALETTE: [u32; 8] = [0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0];
+    Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
 }
 
 fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> MessageItem {
     let m = view.message;
     let attachments: Vec<_> =
         m.attachments.iter().map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)).collect();
+    let in_group = chat.selected().is_some_and(|c| c.is_group) && !m.outgoing;
+    let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
         sender: m.sender.as_str().into(),
-        body: view.body.into(),
-        time: state::format_time(m.timestamp).into(),
+        body: crate::rich_text(view.body),
+        has_body: !view.body.is_empty(),
+        time: state::format_clock(m.timestamp).into(),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
+        day: view.day.as_deref().unwrap_or_default().into(),
+        first: view.first_of_run,
+        last: view.last_of_run,
+        avatar_column: in_group,
+        sender_avatar: view.sender_avatar.map(|picture| images.avatar(&sender, picture)).unwrap_or_default(),
+        sender_initials: state::initials(&m.sender).into(),
+        sender_color: avatar_color(&sender),
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
         attachments: ModelRc::new(VecModel::from(attachments)),

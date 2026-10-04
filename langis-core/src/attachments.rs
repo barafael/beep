@@ -93,7 +93,7 @@ fn id(pointer: &AttachmentPointer) -> AttachmentId {
     })
 }
 
-/// Downloads and decrypts an attachment; see [`open`].
+/// Downloads and decrypts an attachment; see [`decrypt`].
 async fn download(servers: SignalServers, attachment: &Attachment) -> Result<Vec<u8>, String> {
     let pointer = AttachmentPointer::decode(&*attachment.pointer)
         .map_err(|e| format!("invalid attachment: {e}"))?;
@@ -112,7 +112,7 @@ async fn download(servers: SignalServers, attachment: &Attachment) -> Result<Vec
         .read_to_end(&mut data)
         .await
         .map_err(|e| format!("failed to download the attachment: {e}"))?;
-    tokio::task::spawn_blocking(move || open(&pointer, data))
+    tokio::task::spawn_blocking(move || decrypt(&pointer, data))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -120,7 +120,7 @@ async fn download(servers: SignalServers, attachment: &Attachment) -> Result<Vec
 /// Checks and decrypts a downloaded attachment. The HMAC under the attachment's own key always
 /// authenticates it; the digest of the encrypted file is checked too when the pointer has one
 /// (pointers from the history archive for media the phone already downloaded don't).
-fn open(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, String> {
+fn decrypt(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, String> {
     let key: [u8; 64] = pointer
         .key()
         .try_into()
@@ -203,6 +203,114 @@ pub(crate) async fn save(
     });
 }
 
+/// Signal's limit for a single attachment.
+const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Uploads `files` for sending, as the pointers to put in the message.
+pub(crate) async fn upload(
+    manager: &crate::signal::Mgr,
+    files: &[PathBuf],
+) -> Result<Vec<AttachmentPointer>, String> {
+    let mut uploads = Vec::new();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_owned();
+        let size = std::fs::metadata(path)
+            .map_err(|e| format!("can't read {name}: {e}"))?
+            .len();
+        if size > MAX_UPLOAD_BYTES {
+            return Err(format!("{name} is larger than Signal's limit of 100 MB."));
+        }
+        let data = std::fs::read(path).map_err(|e| format!("can't read {name}: {e}"))?;
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_owned();
+        // Receivers lay out pictures before downloading them, so they want the size.
+        let (width, height) = if content_type.starts_with("image/") {
+            image::ImageReader::new(std::io::Cursor::new(&data))
+                .with_guessed_format()
+                .ok()
+                .and_then(|reader| reader.into_dimensions().ok())
+                .map_or((None, None), |(w, h)| (Some(w), Some(h)))
+        } else {
+            (None, None)
+        };
+        let spec = presage::libsignal_service::sender::AttachmentSpec {
+            content_type,
+            length: data.len(),
+            file_name: Some(name),
+            preview: None,
+            voice_note: None,
+            borderless: None,
+            width,
+            height,
+            caption: None,
+            blur_hash: None,
+        };
+        uploads.push((spec, data));
+    }
+    let results = manager
+        .upload_attachments(uploads)
+        .await
+        .map_err(|e| format!("failed to upload: {e}"))?;
+    results
+        .into_iter()
+        .map(|result| result.map_err(|e| format!("failed to upload: {e}")))
+        .collect()
+}
+
+/// Where opened attachments are put for the default app to read: private to the user, and on
+/// Linux in the per-session runtime directory, which is memory-backed and cleared at logout.
+fn open_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) => PathBuf::from(dir).join("langis"),
+        None => std::env::temp_dir().join(format!("langis-{}", whoami())),
+    }
+}
+
+fn whoami() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "user".into())
+}
+
+/// Removes attachments opened in an earlier run; by now their apps have read them.
+pub(crate) fn clean_opened() {
+    let _ = std::fs::remove_dir_all(open_dir());
+}
+
+/// Downloads an attachment and opens it with the desktop's default app. Errors are reported
+/// as [`Event::Error`].
+pub(crate) async fn open(
+    servers: SignalServers,
+    attachment: Attachment,
+    events: Events,
+    limit: Rc<Semaphore>,
+) {
+    let opened = async {
+        let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
+        let data = download(servers, &attachment).await?;
+        // One directory per attachment, so two files with the same name don't collide.
+        let dir = open_dir().join(hex::encode(
+            &Sha256::digest(attachment.id.0.as_bytes())[..8],
+        ));
+        crate::vault::restrict_dir(&open_dir()).map_err(|e| e.to_string())?;
+        crate::vault::restrict_dir(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(safe_name(&attachment));
+        crate::vault::write_private(&path, &data)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
+    }
+    .await;
+    if let Err(error) = opened {
+        let _ = events.send(Event::Error(error));
+    }
+}
+
 pub(crate) fn download_limit() -> Rc<Semaphore> {
     Rc::new(Semaphore::new(PARALLEL_DOWNLOADS))
 }
@@ -243,17 +351,23 @@ pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
 
 /// A file name in the downloads folder that isn't taken yet: the sender's name for the file
 /// if it is safe, otherwise one made up from the type.
-fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
-    let dirs = directories::UserDirs::new().ok_or("could not determine the downloads folder")?;
-    let dir = dirs.download_dir().unwrap_or(dirs.home_dir()).to_path_buf();
-    let name = attachment
+/// The sender's name for the file if it is safe to use (no directories, not hidden),
+/// otherwise one made up from the type.
+fn safe_name(attachment: &Attachment) -> String {
+    attachment
         .file_name
         .as_deref()
         .and_then(|name| std::path::Path::new(name).file_name())
         .and_then(|name| name.to_str())
         .filter(|name| !name.starts_with('.'))
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("signal-attachment.{}", extension(&attachment.content_type)));
+        .unwrap_or_else(|| format!("signal-attachment.{}", extension(&attachment.content_type)))
+}
+
+fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
+    let dirs = directories::UserDirs::new().ok_or("could not determine the downloads folder")?;
+    let dir = dirs.download_dir().unwrap_or(dirs.home_dir()).to_path_buf();
+    let name = safe_name(attachment);
     let path = std::path::Path::new(&name);
     let stem = path
         .file_stem()
@@ -369,21 +483,21 @@ mod tests {
     #[test]
     fn opens_what_was_uploaded() {
         let (pointer, data) = upload(b"route notes", 21);
-        assert_eq!(open(&pointer, data).unwrap(), b"route notes");
+        assert_eq!(decrypt(&pointer, data).unwrap(), b"route notes");
     }
 
     #[test]
     fn rejects_tampering_with_or_without_digest() {
         let (pointer, mut data) = upload(b"route notes", 0);
         data[20] ^= 1;
-        assert!(open(&pointer, data.clone()).is_err());
+        assert!(decrypt(&pointer, data.clone()).is_err());
         // Without a digest (archive pointers), the HMAC still catches it.
         let pointer = AttachmentPointer {
             digest: None,
             ..pointer
         };
-        assert!(open(&pointer, data).unwrap_err().contains("decrypt"));
-        assert!(open(&pointer, vec![0; 10]).is_err());
+        assert!(decrypt(&pointer, data).unwrap_err().contains("decrypt"));
+        assert!(decrypt(&pointer, vec![0; 10]).is_err());
     }
 
     #[test]

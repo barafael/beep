@@ -21,6 +21,10 @@ slint = "1.18"
 # Pinned to the version slint itself pins.
 i-slint-core = "=1.18.1"
 tracing = "0.1"
+# Opens links in the browser.
+open = "5"
+# The file picker for attachments (the desktop's own, through its portal on Linux).
+rfd = "0.15"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]

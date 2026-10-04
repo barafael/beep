@@ -126,7 +126,17 @@ pub struct MessageView<'a> {
     pub show_sender: bool,
     /// The message text: its full text if it is long and that has been fetched.
     pub body: &'a str,
+    /// "Today", "Yesterday", "Monday", "Oct 2": set on the first message of each day.
+    pub day: Option<String>,
+    /// Messages by the same person within a few minutes form a run, drawn close together.
+    pub first_of_run: bool,
+    pub last_of_run: bool,
+    /// The sender's picture, if known (for incoming group messages).
+    pub sender_avatar: Option<&'a Arc<Picture>>,
 }
+
+/// Messages further apart than this start a new run, even from the same person.
+const RUN_GAP_MS: u64 = 5 * 60 * 1000;
 
 /// Where a download for display stands; see [`ChatState::attachment`].
 #[derive(Clone, Debug, PartialEq)]
@@ -185,6 +195,8 @@ pub struct ChatState {
     saves: HashMap<AttachmentId, SaveState>,
     /// Search text; while set, the chat list holds every matching conversation.
     filter: String,
+    /// Files to send with the next message.
+    staged: Vec<std::path::PathBuf>,
     /// What the composer replies to; belongs to the selected conversation.
     replying: Option<Quote>,
     /// Conversations whose stored history has arrived.
@@ -354,6 +366,7 @@ impl ChatState {
         self.unread.remove(id);
         if self.selected.as_ref() != Some(id) {
             self.replying = None;
+            self.staged.clear();
         }
         self.selected = Some(id.clone());
         // Picking a search result ends the search; the chosen chat stays on the list.
@@ -376,6 +389,7 @@ impl ChatState {
             .pending
             .push(Notice::Withdraw(id.clone()));
         Some(Command::Send {
+            files: Vec::new(),
             conversation: id.clone(),
             body: body.to_string(),
             quote: None,
@@ -481,7 +495,45 @@ impl ChatState {
 
     /// Whether [`ChatState::compose`] would send `text`.
     pub fn can_compose(&self, text: &str) -> bool {
-        self.synced && self.selected.is_some() && !text.trim().is_empty()
+        self.synced
+            && self.selected.is_some()
+            && (!text.trim().is_empty() || !self.staged.is_empty())
+    }
+
+    /// Adds files to send with the next message.
+    pub fn stage_files(&mut self, files: impl IntoIterator<Item = std::path::PathBuf>) {
+        self.staged.extend(files);
+    }
+
+    pub fn unstage(&mut self, index: usize) {
+        if index < self.staged.len() {
+            self.staged.remove(index);
+        }
+    }
+
+    /// Files waiting to go out with the next message.
+    pub fn staged(&self) -> &[std::path::PathBuf] {
+        &self.staged
+    }
+
+    /// Opens an attachment of the selected conversation in the desktop's default app.
+    pub fn open_attachment(&self, id: &AttachmentId) -> Option<Command> {
+        let attachment = self
+            .find_attachment(id)
+            .filter(|a| a.kind != AttachmentKind::ViewOnce)?;
+        Some(Command::OpenAttachment(attachment.clone()))
+    }
+
+    /// Back to the chat list, e.g. on a narrow window that shows one or the other.
+    pub fn deselect(&mut self) -> Update {
+        self.selected = None;
+        self.replying = None;
+        self.staged.clear();
+        Update {
+            conversations: true,
+            messages: MessagesUpdate::Reset,
+            ..Update::default()
+        }
     }
 
     /// Turns composer text into a send command for the selected conversation.
@@ -495,6 +547,7 @@ impl ChatState {
             conversation,
             body: text.trim().to_string(),
             quote: self.replying.take(),
+            files: std::mem::take(&mut self.staged),
         })
     }
 
@@ -669,16 +722,33 @@ impl ChatState {
             .as_ref()
             .and_then(|id| self.history.get(id))
             .map_or(&[][..], Vec::as_slice);
-        history
-            .iter()
-            .enumerate()
-            .map(move |(i, message)| MessageView {
+        let now = jiff::Zoned::now();
+        let same_run = |a: &ChatMessage, b: &ChatMessage| {
+            a.sender_id == b.sender_id
+                && b.timestamp.saturating_sub(a.timestamp) <= RUN_GAP_MS
+                && local_date(a.timestamp) == local_date(b.timestamp)
+        };
+        history.iter().enumerate().map(move |(i, message)| {
+            let previous = i.checked_sub(1).map(|i| &history[i]);
+            let next = history.get(i + 1);
+            let new_day =
+                previous.is_none_or(|p| local_date(p.timestamp) != local_date(message.timestamp));
+            let first_of_run = previous.is_none_or(|p| !same_run(p, message));
+            MessageView {
                 message,
-                show_sender: group
-                    && !message.outgoing
-                    && (i == 0 || history[i - 1].sender_id != message.sender_id),
+                show_sender: group && !message.outgoing && first_of_run,
                 body: self.full_text(message).unwrap_or(&message.body),
-            })
+                day: new_day.then(|| day_label(message.timestamp, &now)),
+                first_of_run,
+                last_of_run: next.is_none_or(|n| !same_run(message, n)),
+                sender_avatar: if group && !message.outgoing {
+                    self.avatars
+                        .get(&ConversationId::contact(&message.sender_id))
+                } else {
+                    None
+                },
+            }
+        })
     }
 
     /// The `n` most recent messages of the selected conversation, oldest first, for
@@ -767,6 +837,53 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
+fn zoned(timestamp: u64) -> Option<jiff::Zoned> {
+    let time = jiff::Timestamp::from_millisecond(timestamp as i64).ok()?;
+    Some(time.to_zoned(jiff::tz::TimeZone::system()))
+}
+
+fn local_date(timestamp: u64) -> Option<jiff::civil::Date> {
+    zoned(timestamp).map(|time| time.date())
+}
+
+/// "14:05": the time of day, for message bubbles (days have their own separators).
+pub fn format_clock(timestamp: u64) -> String {
+    zoned(timestamp).map_or_else(String::new, |time| time.strftime("%H:%M").to_string())
+}
+
+/// For the chat list: "14:05" today, "Mon" this week, "Oct 2" this year, "Oct 2, 2024" before.
+pub fn format_list_time(timestamp: u64) -> String {
+    format_list_time_at(timestamp, &jiff::Zoned::now())
+}
+
+fn format_list_time_at(timestamp: u64, now: &jiff::Zoned) -> String {
+    let Some(time) = zoned(timestamp) else {
+        return String::new();
+    };
+    let days = (now.date() - time.date()).get_days();
+    let format = match days {
+        0 => "%H:%M",
+        1..=6 => "%a",
+        _ if time.year() == now.year() => "%b %-d",
+        _ => "%b %-d, %Y",
+    };
+    time.strftime(format).to_string()
+}
+
+/// For day separators: "Today", "Yesterday", "Monday", "Oct 2", "Oct 2, 2024".
+fn day_label(timestamp: u64, now: &jiff::Zoned) -> String {
+    let Some(time) = zoned(timestamp) else {
+        return String::new();
+    };
+    match (now.date() - time.date()).get_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => time.strftime("%A").to_string(),
+        _ if time.year() == now.year() => time.strftime("%B %-d").to_string(),
+        _ => time.strftime("%B %-d, %Y").to_string(),
+    }
+}
+
 pub fn format_time(timestamp: u64) -> String {
     let Ok(time) = jiff::Timestamp::from_millisecond(timestamp as i64) else {
         return String::new();
@@ -789,6 +906,7 @@ mod tests {
             id: ConversationId(id.into()),
             title: id.into(),
             is_group,
+            ..Conversation::default()
         }
     }
 
@@ -943,7 +1061,7 @@ mod tests {
         state.take_notices();
         let reply = state.reply(&a, " thanks ");
         assert!(
-            matches!(reply, Some(Command::Send { conversation, body, quote: None }) if conversation == a && body == "thanks")
+            matches!(reply, Some(Command::Send { conversation, body, quote: None, .. }) if conversation == a && body == "thanks")
         );
         assert_eq!(state.take_notices(), [Notice::Withdraw(a.clone())]);
         assert_eq!(
@@ -1254,6 +1372,100 @@ mod tests {
         ));
         react(&mut state, reaction("😂", "me", true), true);
         assert_eq!(state.messages().next().unwrap().message.reactions.len(), 1);
+    }
+
+    #[test]
+    fn mentions_become_names_counting_utf16() {
+        let body = "Hi \u{FFFC}, see you";
+        assert_eq!(
+            crate::resolve_mentions(body, &[(3, 1, "Alice".into())]),
+            "Hi @Alice, see you"
+        );
+        // An emoji before the mention takes two UTF-16 units.
+        let body = "🎉 \u{FFFC}!";
+        assert_eq!(
+            crate::resolve_mentions(body, &[(3, 1, "Bob".into())]),
+            "🎉 @Bob!"
+        );
+        assert_eq!(crate::resolve_mentions("plain", &[]), "plain");
+        assert_eq!(crate::resolve_mentions("hi \u{FFFC}", &[]), "hi @…");
+    }
+
+    #[test]
+    fn list_times_and_day_labels_get_coarser_with_age() {
+        let now: jiff::Zoned = "2026-10-05T12:00:00[Europe/Berlin]".parse().unwrap();
+        let at = |s: &str| {
+            let t: jiff::Zoned = format!("{s}[Europe/Berlin]").parse().unwrap();
+            t.timestamp().as_millisecond() as u64
+        };
+        // Formatting uses the system time zone; compare against what it says for the same instant.
+        let local = |s: &str, f: &str| zoned(at(s)).unwrap().strftime(f).to_string();
+        assert_eq!(
+            format_list_time_at(at("2026-10-05T09:30:00"), &now),
+            local("2026-10-05T09:30:00", "%H:%M")
+        );
+        assert_eq!(
+            format_list_time_at(at("2026-10-01T09:30:00"), &now),
+            local("2026-10-01T09:30:00", "%a")
+        );
+        assert_eq!(
+            format_list_time_at(at("2026-03-02T09:30:00"), &now),
+            local("2026-03-02T09:30:00", "%b %-d")
+        );
+        assert!(format_list_time_at(at("2024-03-02T09:30:00"), &now).ends_with("2024"));
+        assert_eq!(day_label(at("2026-10-05T09:30:00"), &now), "Today");
+        assert_eq!(day_label(at("2026-10-04T09:30:00"), &now), "Yesterday");
+        assert_eq!(
+            day_label(at("2026-03-02T09:30:00"), &now),
+            local("2026-03-02T09:30:00", "%B %-d")
+        );
+    }
+
+    #[test]
+    fn runs_break_on_author_gap_and_day() {
+        let mut state = state();
+        let minute = 60_000;
+        let base = 1_790_000_000_000; // some afternoon
+        for (sender, t) in [("Alice", 0), ("Alice", 1), ("Bob", 2), ("Bob", 20)] {
+            state.apply(Event::Message(message(
+                "g",
+                sender,
+                base + t * minute,
+                false,
+            )));
+        }
+        state.select(&ConversationId("g".into()));
+        let runs: Vec<_> = state
+            .messages()
+            .map(|m| (m.first_of_run, m.last_of_run, m.show_sender))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                (true, false, true),
+                (false, true, false),
+                (true, true, true),
+                (true, true, true)
+            ]
+        );
+        assert!(state.messages().next().unwrap().day.is_some());
+        assert!(state.messages().nth(1).unwrap().day.is_none());
+    }
+
+    #[test]
+    fn staged_files_go_with_the_next_message() {
+        let mut state = state();
+        state.apply(Event::Synced);
+        state.select(&ConversationId("a".into()));
+        assert!(!state.can_compose(""));
+        state.stage_files(["/tmp/a.pdf".into(), "/tmp/b.png".into()]);
+        state.unstage(0);
+        assert!(state.can_compose(""), "files alone can be sent");
+        let sent = state.compose("");
+        assert!(
+            matches!(sent, Some(Command::Send { files, .. }) if files == [std::path::PathBuf::from("/tmp/b.png")])
+        );
+        assert!(state.staged().is_empty());
     }
 
     #[test]

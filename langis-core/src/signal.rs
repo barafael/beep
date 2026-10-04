@@ -47,6 +47,7 @@ pub(crate) type Mgr = Manager<SqliteStore, Registered>;
 type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
 pub fn run(config: Config, commands: Inbox, events: Events) {
+    attachments::clean_opened();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -315,11 +316,7 @@ async fn session(
     let paths = Paths::new()?;
     let linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) if !paths.transfer_marker().exists() => {
-            let account = manager
-                .registration_data()
-                .service_ids
-                .aci()
-                .service_id_string();
+            let account = display_number(&manager.registration_data().phone_number);
             let _ = events.send(Event::Linked { account });
             Some((manager, Vec::new()))
         }
@@ -403,11 +400,7 @@ async fn link_with_history(
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),
         };
-        let account = manager
-            .registration_data()
-            .service_ids
-            .aci()
-            .service_id_string();
+        let account = display_number(&manager.registration_data().phone_number);
         let _ = events.send(Event::Linked { account });
         let Some(key) = key else {
             return Ok(Some((manager, Vec::new())));
@@ -533,7 +526,7 @@ fn conversation_id(thread: &Thread) -> ConversationId {
 }
 
 /// Remembers how to reach a conversation and describes it for the UI.
-fn register(threads: &Threads, thread: Thread, title: String) -> Conversation {
+fn register(threads: &Threads, thread: Thread, title: String, subtitle: String) -> Conversation {
     let id = conversation_id(&thread);
     let is_group = matches!(thread, Thread::Group(_));
     threads.borrow_mut().insert(id.clone(), thread);
@@ -546,6 +539,41 @@ fn register(threads: &Threads, thread: Thread, title: String) -> Conversation {
         id,
         title,
         is_group,
+        subtitle,
+    }
+}
+
+/// A phone number as people write it: "+49 151 23456789".
+fn display_number(
+    number: &presage::libsignal_service::prelude::phonenumber::PhoneNumber,
+) -> String {
+    use presage::libsignal_service::prelude::phonenumber::Mode;
+    number.format().mode(Mode::International).to_string()
+}
+
+fn members(count: usize) -> String {
+    match count {
+        1 => "1 member".into(),
+        n => format!("{n} members"),
+    }
+}
+
+/// The line under a conversation's title; see [`Conversation::subtitle`].
+async fn subtitle(manager: &Mgr, thread: &Thread) -> String {
+    match thread {
+        Thread::Contact(id) if *id == own_id(manager) => "Messages to yourself".into(),
+        Thread::Contact(id) => match manager.store().contact_by_id(id).await {
+            Ok(Some(contact)) => contact
+                .phone_number
+                .as_ref()
+                .map(display_number)
+                .unwrap_or_default(),
+            _ => String::new(),
+        },
+        Thread::Group(key) => match manager.store().group(*key).await {
+            Ok(Some(group)) => members(group.members.len()),
+            _ => String::new(),
+        },
     }
 }
 
@@ -557,11 +585,17 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             let thread = Thread::Contact(ServiceId::Aci(contact.uuid.into()));
-            let title = match (contact.name.is_empty(), &contact.phone_number) {
-                (true, Some(number)) => number.to_string(),
-                _ => contact.name,
+            let number = contact
+                .phone_number
+                .as_ref()
+                .map(display_number)
+                .unwrap_or_default();
+            let title = if contact.name.is_empty() {
+                number.clone()
+            } else {
+                contact.name
             };
-            all.push(register(threads, thread, title));
+            all.push(register(threads, thread, title, number));
         }
     }
     let contacts = all.len();
@@ -570,10 +604,12 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
         threads,
         Thread::Contact(own_id(manager)),
         "Note to Self".into(),
+        "Messages to yourself".into(),
     ));
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
-            all.push(register(threads, Thread::Group(key), group.title));
+            let count = members(group.members.len());
+            all.push(register(threads, Thread::Group(key), group.title, count));
         }
     }
     let _ = events.send(Event::Conversations(all));
@@ -956,7 +992,8 @@ async fn ensure_conversation(
     let id = conversation_id(&thread);
     if !threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
-        let conversation = register(threads, thread, title);
+        let subtitle = subtitle(manager, &thread).await;
+        let conversation = register(threads, thread, title, subtitle);
         info!(title = conversation.title, "new conversation");
         events.send(Event::Conversations(vec![conversation]));
     }
@@ -964,6 +1001,35 @@ async fn ensure_conversation(
 }
 
 /// Extracts displayable text; returns `None` for receipts, typing indicators, etc.
+/// `text` with Signal's mention placeholders replaced by "@Name".
+async fn with_mentions(
+    manager: &Mgr,
+    names: &mut Names,
+    text: &str,
+    ranges: &[presage::proto::BodyRange],
+) -> String {
+    use presage::proto::body_range::AssociatedValue;
+    let mut mentions = Vec::new();
+    for range in ranges {
+        let who = match &range.associated_value {
+            Some(AssociatedValue::MentionAci(aci)) => ServiceId::parse_from_service_id_string(aci),
+            Some(AssociatedValue::MentionAciBinary(bytes)) => {
+                ServiceId::parse_from_service_id_binary(bytes)
+            }
+            _ => None,
+        };
+        if let Some(who) = who {
+            let name = if who == own_id(manager) {
+                "You".to_string()
+            } else {
+                sender_name(manager, names, who).await
+            };
+            mentions.push((range.start(), range.length(), name));
+        }
+    }
+    crate::resolve_mentions(text, &mentions)
+}
+
 /// A reaction, from someone else or (synced from the phone) from us.
 async fn to_reaction(
     manager: &Mgr,
@@ -1019,7 +1085,13 @@ async fn to_chat_message(
         }) => (data, true),
         _ => return None,
     };
-    let body = data.body.clone().unwrap_or_default();
+    let body = with_mentions(
+        manager,
+        names,
+        data.body.as_deref().unwrap_or_default(),
+        &data.body_ranges,
+    )
+    .await;
     let attachments = attachments::of_message(data);
     if body.is_empty() && attachments.is_empty() {
         return None;
@@ -1042,7 +1114,13 @@ async fn to_chat_message(
             };
             Some(Quote {
                 author,
-                text: quote.text.clone().unwrap_or_default(),
+                text: with_mentions(
+                    manager,
+                    names,
+                    quote.text.as_deref().unwrap_or_default(),
+                    &quote.body_ranges,
+                )
+                .await,
                 author_id: quote.author_aci.clone().unwrap_or_default(),
                 timestamp: quote.id.unwrap_or_default(),
             })
@@ -1154,18 +1232,29 @@ async fn handle(
                 remove,
             });
         }
+        Command::OpenAttachment(attachment) => {
+            tokio::task::spawn_local(attachments::open(
+                servers,
+                attachment,
+                events.clone(),
+                downloads.clone(),
+            ));
+        }
         Command::Send {
             conversation,
             body,
             quote,
+            files,
         } => {
             let Some(thread) = threads.borrow().get(&conversation).cloned() else {
                 return Err("unknown conversation".into());
             };
+            let pointers = attachments::upload(manager, &files).await?;
             // presage fills in the data message's timestamp from the one passed here.
             let timestamp = now_millis();
             let message = DataMessage {
-                body: Some(body.clone()),
+                body: (!body.is_empty()).then(|| body.clone()),
+                attachments: pointers.clone(),
                 quote: quote
                     .as_ref()
                     .map(|quote| presage::proto::data_message::Quote {
@@ -1189,6 +1278,10 @@ async fn handle(
                 timestamp,
                 outgoing: true,
                 quote,
+                attachments: pointers
+                    .iter()
+                    .map(|pointer| attachments::describe(pointer, false))
+                    .collect(),
                 ..Default::default()
             }));
         }

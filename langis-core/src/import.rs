@@ -332,11 +332,17 @@ impl Importer {
                 id: quote.targetSentTimestamp,
                 author_aci: Some(ServiceId::Aci(author).service_id_string()),
                 text: quote.text.as_ref().map(|text| text.body.clone()),
+                body_ranges: quote
+                    .text
+                    .as_ref()
+                    .map(|text| self.mentions(&text.bodyRanges))
+                    .unwrap_or_default(),
                 ..Default::default()
             })
         });
         let data = DataMessage {
             body: (!body.is_empty()).then_some(body),
+            body_ranges: self.mentions(&message.text.bodyRanges),
             timestamp: Some(item.dateSent),
             group_v2,
             quote,
@@ -409,6 +415,29 @@ impl Importer {
                 Some(Record::Message {
                     thread: thread.clone(),
                     content,
+                })
+            })
+            .collect()
+    }
+
+    /// The mentions among a text's ranges, as live messages carry them (formatting is dropped).
+    fn mentions(&self, ranges: &[proto::BodyRange]) -> Vec<presage::proto::BodyRange> {
+        use proto::body_range::AssociatedValue;
+        ranges
+            .iter()
+            .filter_map(|range| {
+                let Some(AssociatedValue::MentionAci(aci)) = &range.associatedValue else {
+                    return None;
+                };
+                let aci = Aci::from_uuid_bytes(aci.as_slice().try_into().ok()?);
+                Some(presage::proto::BodyRange {
+                    start: Some(range.start),
+                    length: Some(range.length),
+                    associated_value: Some(
+                        presage::proto::body_range::AssociatedValue::MentionAci(
+                            ServiceId::Aci(aci).service_id_string(),
+                        ),
+                    ),
                 })
             })
             .collect()

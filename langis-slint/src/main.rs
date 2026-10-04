@@ -391,10 +391,114 @@ impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
     }
 }
 
+/// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
+/// formatting, except web addresses, which become links.
+fn rich_text(body: &str) -> slint::StyledText {
+    fn escape(text: &str, out: &mut String) {
+        for c in text.chars() {
+            if c.is_ascii_punctuation() {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+    }
+    let mut markdown = String::with_capacity(body.len() + 16);
+    for (i, line) in body.split('\n').enumerate() {
+        if i > 0 {
+            // A hard line break, as the sender typed it.
+            markdown.push_str("\\\n");
+        }
+        // Leading spaces would start a code block; keep them as non-breaking spaces.
+        let text = line.trim_start_matches(' ');
+        markdown.extend(std::iter::repeat_n('\u{a0}', line.len() - text.len()));
+        let mut rest = text;
+        while let Some((start, end)) = find_url(rest) {
+            escape(&rest[..start], &mut markdown);
+            let url = &rest[start..end];
+            markdown.push('[');
+            escape(url, &mut markdown);
+            markdown.push_str("](<");
+            markdown.push_str(url);
+            markdown.push_str(">)");
+            rest = &rest[end..];
+        }
+        escape(rest, &mut markdown);
+    }
+    slint::StyledText::from_markdown(&markdown)
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(body))
+}
+
+/// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
+fn find_url(text: &str) -> Option<(usize, usize)> {
+    let start = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| text.find(scheme))
+        .min()?;
+    let tail = &text[start..];
+    let length = tail
+        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+        .unwrap_or(tail.len());
+    let url =
+        tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
+    // Just a scheme is no address.
+    (url.len() > "https://".len()).then_some((start, start + url.len()))
+}
+
+/// Opens a link from a message in the browser. Only web addresses: links come from message
+/// text, so nothing else (files, other apps' schemes) is opened.
+fn open_link(link: &str) {
+    if !(link.starts_with("https://") || link.starts_with("http://")) {
+        return;
+    }
+    if let Err(error) = open::that_detached(link) {
+        tracing::warn!(%error, "couldn't open a link");
+    }
+}
+
 fn qr_image(qr: &QrMatrix) -> Image {
     // One pixel per module; the UI scales it up with `image-rendering: pixelated`.
     let (side, pixels) = qr.to_rgba(1);
     let buffer =
         SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels, side as u32, side as u32);
     Image::from_rgba8(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(text: &slint::StyledText) -> String {
+        i_slint_core::styled_text::get_raw_text(text).into_owned()
+    }
+
+    #[test]
+    fn finds_web_addresses_without_trailing_punctuation() {
+        let text = "see https://example.org/a?b=1. and (http://x.y/z)";
+        let (start, end) = find_url(text).unwrap();
+        assert_eq!(&text[start..end], "https://example.org/a?b=1");
+        let rest = &text[end..];
+        let (start, end) = find_url(rest).unwrap();
+        assert_eq!(&rest[start..end], "http://x.y/z");
+        assert_eq!(find_url("no links here, nor in https:// alone"), None);
+    }
+
+    /// What people type is shown as typed: no markdown, no HTML, line breaks kept.
+    #[test]
+    fn message_text_is_never_formatting() {
+        for text in [
+            "*not bold* _nor this_ `code` <b>tag</b> # heading",
+            "1. not a list",
+            "    indented",
+            "two\nlines",
+        ] {
+            let shown = raw(&rich_text(text));
+            assert_eq!(shown.replace('\u{a0}', " "), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn links_keep_their_text() {
+        let shown = raw(&rich_text("look: https://example.org/x_y*z ok"));
+        assert_eq!(shown, "look: https://example.org/x_y*z ok");
+    }
 }

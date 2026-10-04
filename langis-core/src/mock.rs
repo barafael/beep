@@ -83,6 +83,11 @@ pub fn run(commands: Inbox, events: Events) {
             id: ConversationId(id.into()),
             title: title.into(),
             is_group,
+            subtitle: if is_group {
+                "4 members".into()
+            } else {
+                "+49 151 23456789".into()
+            },
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
@@ -157,14 +162,31 @@ pub fn run(commands: Inbox, events: Events) {
                     messages,
                 });
             }
+            // Nothing to open: mock attachments have no content.
+            Ok(Command::OpenAttachment(_)) => {}
             Ok(Command::Send {
                 conversation,
                 body,
                 quote,
+                files,
             }) => {
+                let attachments = files
+                    .iter()
+                    .map(|path| {
+                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                        attachment(
+                            name,
+                            AttachmentKind::File,
+                            "application/octet-stream",
+                            Some(name),
+                            (0, 0),
+                        )
+                    })
+                    .collect();
                 let echo = format!("You said: {body}");
                 let _ = events.send(Event::Message(ChatMessage {
                     quote,
+                    attachments,
                     ..message(&conversation.0, "You", &body, now_millis(), true)
                 }));
                 std::thread::sleep(Duration::from_millis(600));
