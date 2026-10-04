@@ -61,7 +61,12 @@ impl Notifier {
     /// channel, from whichever thread the service calls back on.
     pub fn new(app: &AppInfo) -> (Self, async_channel::Receiver<Action>) {
         let (actions, receiver) = async_channel::unbounded();
-        (Self { backend: backend(app, actions) }, receiver)
+        (
+            Self {
+                backend: backend(app, actions),
+            },
+            receiver,
+        )
     }
 
     pub fn show(&self, notification: Notification) {

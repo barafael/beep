@@ -23,13 +23,20 @@ pub struct Toasts {
 }
 
 impl Toasts {
-    pub fn new(app: &AppInfo, actions: async_channel::Sender<Action>) -> windows::core::Result<Self> {
+    pub fn new(
+        app: &AppInfo,
+        actions: async_channel::Sender<Action>,
+    ) -> windows::core::Result<Self> {
         register(app)?;
         let app_id = HSTRING::from(app.id);
         // Attributes our windows and toasts to the registered id.
         unsafe { SetCurrentProcessExplicitAppUserModelID(&app_id)? };
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&app_id)?;
-        Ok(Self { app_id, notifier, actions })
+        Ok(Self {
+            app_id,
+            notifier,
+            actions,
+        })
     }
 
     fn try_show(&self, notification: Notification) -> windows::core::Result<()> {
@@ -41,12 +48,17 @@ impl Toasts {
             toast.SetGroup(&HSTRING::from(GROUP))?;
         }
         let actions = self.actions.clone();
-        toast.Activated(&TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, args| {
-            if let Some(action) = args.as_ref().and_then(|args| activation(args).ok().flatten()) {
-                let _ = actions.try_send(action);
-            }
-            Ok(())
-        }))?;
+        toast.Activated(&TypedEventHandler::<ToastNotification, IInspectable>::new(
+            move |_, args| {
+                if let Some(action) = args
+                    .as_ref()
+                    .and_then(|args| activation(args).ok().flatten())
+                {
+                    let _ = actions.try_send(action);
+                }
+                Ok(())
+            },
+        ))?;
         self.notifier.Show(&toast)
     }
 }
@@ -59,8 +71,9 @@ impl Backend for Toasts {
     }
 
     fn withdraw(&self, key: &str) {
-        let removed = ToastNotificationManager::History()
-            .and_then(|history| history.RemoveGroupedTagWithId(&tag(key), &HSTRING::from(GROUP), &self.app_id));
+        let removed = ToastNotificationManager::History().and_then(|history| {
+            history.RemoveGroupedTagWithId(&tag(key), &HSTRING::from(GROUP), &self.app_id)
+        });
         if let Err(error) = removed {
             tracing::debug!(%error, "failed to withdraw a notification");
         }
@@ -70,7 +83,8 @@ impl Backend for Toasts {
 /// Unpackaged apps must register their AppUserModelID (with a display name) before Windows
 /// shows their toasts.
 fn register(app: &AppInfo) -> windows::core::Result<()> {
-    let key = windows_registry::CURRENT_USER.create(format!(r"Software\Classes\AppUserModelId\{}", app.id))?;
+    let key = windows_registry::CURRENT_USER
+        .create(format!(r"Software\Classes\AppUserModelId\{}", app.id))?;
     key.set_string("DisplayName", app.name)?;
     Ok(())
 }
@@ -80,11 +94,20 @@ fn activation(args: &IInspectable) -> windows::core::Result<Option<Action>> {
     let args: ToastActivatedEventArgs = args.cast()?;
     let arguments = args.Arguments()?.to_string();
     Ok(match arguments.split_once(':') {
-        Some(("open", key)) => Some(Action::Open { key: (!key.is_empty()).then(|| key.to_string()) }),
+        Some(("open", key)) => Some(Action::Open {
+            key: (!key.is_empty()).then(|| key.to_string()),
+        }),
         Some(("reply", key)) => {
             // Text inputs come back as boxed strings.
-            let text = args.UserInput()?.Lookup(&HSTRING::from("reply"))?.cast::<IReference<HSTRING>>()?.Value()?;
-            Some(Action::Reply { key: key.to_string(), text: text.to_string() })
+            let text = args
+                .UserInput()?
+                .Lookup(&HSTRING::from("reply"))?
+                .cast::<IReference<HSTRING>>()?
+                .Value()?;
+            Some(Action::Reply {
+                key: key.to_string(),
+                text: text.to_string(),
+            })
         }
         _ => None,
     })
@@ -112,10 +135,15 @@ fn tag(key: &str) -> HSTRING {
     if key.chars().count() <= 64 {
         return HSTRING::from(key);
     }
-    let hash = key.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let hash = key.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    });
     HSTRING::from(format!("{hash:016x}"))
 }
 
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

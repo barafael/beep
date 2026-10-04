@@ -58,11 +58,15 @@ impl Freedesktop {
         let (id, name) = (app.id, app.name);
         // zbus on async-io needs no particular runtime. A small thread drives it, so the UI
         // never waits on D-Bus; it ends when the `Notifier` is dropped.
-        let spawned = std::thread::Builder::new().name("langis-notify".into()).spawn(move || {
-            if let Err(error) = futures_lite::future::block_on(serve(id, name, receiver, actions)) {
-                tracing::warn!(%error, "desktop notifications unavailable");
-            }
-        });
+        let spawned = std::thread::Builder::new()
+            .name("langis-notify".into())
+            .spawn(move || {
+                if let Err(error) =
+                    futures_lite::future::block_on(serve(id, name, receiver, actions))
+                {
+                    tracing::warn!(%error, "desktop notifications unavailable");
+                }
+            });
         if let Err(error) = spawned {
             tracing::warn!(%error, "desktop notifications unavailable");
         }
@@ -84,9 +88,17 @@ enum Input {
     Request(Request),
     /// The `Notifier` is gone.
     Quit,
-    Invoked { id: u32, action: String },
-    Replied { id: u32, text: String },
-    Closed { id: u32 },
+    Invoked {
+        id: u32,
+        action: String,
+    },
+    Replied {
+        id: u32,
+        text: String,
+    },
+    Closed {
+        id: u32,
+    },
 }
 
 async fn serve(
@@ -102,26 +114,49 @@ async fn serve(
     let (clickable, replies, markup) = (has("actions"), has("inline-reply"), has("body-markup"));
 
     // Signals cover every app's notifications; only ids in `shown` are ours.
-    let invoked = proxy.receive_action_invoked().await?.filter_map(|signal| async move {
-        let args = signal.args().ok()?;
-        Some(Input::Invoked { id: args.id, action: args.action_key.to_string() })
-    });
-    let replied = proxy.receive_notification_replied().await?.filter_map(|signal| async move {
-        let args = signal.args().ok()?;
-        Some(Input::Replied { id: args.id, text: args.text.to_string() })
-    });
+    let invoked = proxy
+        .receive_action_invoked()
+        .await?
+        .filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            Some(Input::Invoked {
+                id: args.id,
+                action: args.action_key.to_string(),
+            })
+        });
+    let replied = proxy
+        .receive_notification_replied()
+        .await?
+        .filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            Some(Input::Replied {
+                id: args.id,
+                text: args.text.to_string(),
+            })
+        });
     let closed = proxy
         .receive_notification_closed()
         .await?
-        .filter_map(|signal| async move { Some(Input::Closed { id: signal.args().ok()?.id }) });
-    let requests = requests.map(Input::Request).chain(stream::once(async { Input::Quit }));
-    let mut inputs =
-        std::pin::pin!(stream::select(stream::select(requests, invoked), stream::select(replied, closed)));
+        .filter_map(|signal| async move {
+            Some(Input::Closed {
+                id: signal.args().ok()?.id,
+            })
+        });
+    let requests = requests
+        .map(Input::Request)
+        .chain(stream::once(async { Input::Quit }));
+    let mut inputs = std::pin::pin!(stream::select(
+        stream::select(requests, invoked),
+        stream::select(replied, closed)
+    ));
 
     // Our notifications on screen, by key.
     let mut shown: HashMap<Option<String>, u32> = HashMap::new();
     let key_of = |shown: &HashMap<Option<String>, u32>, id: u32| {
-        shown.iter().find(|(_, shown_id)| **shown_id == id).map(|(key, _)| key.clone())
+        shown
+            .iter()
+            .find(|(_, shown_id)| **shown_id == id)
+            .map(|(key, _)| key.clone())
     };
     while let Some(input) = inputs.next().await {
         match input {
@@ -141,10 +176,23 @@ async fn serve(
                 if replies {
                     hints.insert("x-kde-reply-placeholder-text", Value::from("Reply…"));
                 }
-                let body = if markup { escape_markup(&notification.body) } else { notification.body };
+                let body = if markup {
+                    escape_markup(&notification.body)
+                } else {
+                    notification.body
+                };
                 let replaces = shown.get(&notification.key).copied().unwrap_or(0);
                 let result = proxy
-                    .notify(app_name, replaces, app_id, &notification.title, &body, &buttons, hints, -1)
+                    .notify(
+                        app_name,
+                        replaces,
+                        app_id,
+                        &notification.title,
+                        &body,
+                        &buttons,
+                        hints,
+                        -1,
+                    )
                     .await;
                 match result {
                     Ok(id) => {
@@ -177,7 +225,9 @@ async fn serve(
 
 /// Servers with `body-markup` interpret a subset of HTML in the body.
 fn escape_markup(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -186,6 +236,9 @@ mod tests {
 
     #[test]
     fn markup_is_escaped() {
-        assert_eq!(escape_markup("<b>a & b</b>"), "&lt;b&gt;a &amp; b&lt;/b&gt;");
+        assert_eq!(
+            escape_markup("<b>a & b</b>"),
+            "&lt;b&gt;a &amp; b&lt;/b&gt;"
+        );
     }
 }

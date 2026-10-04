@@ -72,7 +72,8 @@ impl Component for Langis {
                 self.listen(context);
             }
             Message::BackendGone => {
-                self.chat.apply(Event::Error("The Signal backend stopped.".into()));
+                self.chat
+                    .apply(Event::Error("The Signal backend stopped.".into()));
             }
             Message::Select(id) => {
                 if let Some(command) = self.chat.select(&id) {
@@ -178,11 +179,20 @@ impl Langis {
                 PasswordBox::new()
                     .password(self.confirmation.as_str())
                     .placeholder_text("Repeat password")
-                    .on_password_changed(context.callback(|text: Rc<str>| Message::ConfirmationChanged(text.to_string()))),
+                    .on_password_changed(
+                        context.callback(|text: Rc<str>| {
+                            Message::ConfirmationChanged(text.to_string())
+                        }),
+                    ),
             ));
         }
         if let Some(error) = error {
-            fields.push(KeyedView::new("error", TextBlock::new().text(error).foreground(ThemeBrush::SystemCritical)));
+            fields.push(KeyedView::new(
+                "error",
+                TextBlock::new()
+                    .text(error)
+                    .foreground(ThemeBrush::SystemCritical),
+            ));
         }
         fields.push(KeyedView::new(
             "unlock",
@@ -290,10 +300,12 @@ impl Langis {
             ));
         }
 
-        let rows = self
-            .chat
-            .conversations()
-            .map(|view| KeyedView::new(view.conversation.id.0.clone(), conversation_row(&view, context)));
+        let rows = self.chat.conversations().map(|view| {
+            KeyedView::new(
+                view.conversation.id.0.clone(),
+                conversation_row(&view, context),
+            )
+        });
 
         Grid::new()
             .rows([GridLength::Auto, GridLength::STAR, GridLength::Auto])
@@ -303,9 +315,12 @@ impl Langis {
                     .spacing(10.0)
                     .margin(Thickness::new(16.0, 16.0, 16.0, 8.0))
                     .keyed_children(header),
-                ScrollViewer::new()
-                    .grid_row(1)
-                    .content(StackPanel::new().spacing(2.0).margin(Thickness::xy(6.0, 0.0)).keyed_children(rows)),
+                ScrollViewer::new().grid_row(1).content(
+                    StackPanel::new()
+                        .spacing(2.0)
+                        .margin(Thickness::xy(6.0, 0.0))
+                        .keyed_children(rows),
+                ),
                 TextBlock::new()
                     .grid_row(2)
                     .text(self.chat.account())
@@ -339,7 +354,10 @@ impl Langis {
                     .spacing(12.0)
                     .margin(Thickness::xy(16.0, 12.0))
                     .children((
-                        PersonPicture::new().display_name(title).width(36.0).height(36.0),
+                        PersonPicture::new()
+                            .display_name(title)
+                            .width(36.0)
+                            .height(36.0),
                         TextBlock::new()
                             .text(title)
                             .font_size(16.0)
@@ -347,9 +365,12 @@ impl Langis {
                             .vertical_alignment(VerticalAlignment::Center),
                     )),
                 // TODO: reactor 0.100 exposes no scroll-to API, so new messages don't auto-scroll yet.
-                ScrollViewer::new()
-                    .grid_row(1)
-                    .content(StackPanel::new().spacing(4.0).margin(Thickness::xy(16.0, 8.0)).keyed_children(bubbles)),
+                ScrollViewer::new().grid_row(1).content(
+                    StackPanel::new()
+                        .spacing(4.0)
+                        .margin(Thickness::xy(16.0, 8.0))
+                        .keyed_children(bubbles),
+                ),
                 Grid::new()
                     .grid_row(2)
                     .columns([GridLength::STAR, GridLength::Auto])
@@ -359,9 +380,17 @@ impl Langis {
                     .children((
                         TextBox::new(&self.draft)
                             .element_ref(&self.composer)
-                            .placeholder_text(if self.chat.synced() { "Message" } else { "Syncing…" })
+                            .placeholder_text(if self.chat.synced() {
+                                "Message"
+                            } else {
+                                "Syncing…"
+                            })
                             .is_enabled(self.chat.synced())
-                            .on_text_changed(context.callback(|text: Rc<str>| Message::DraftChanged(text.to_string()))),
+                            .on_text_changed(
+                                context.callback(|text: Rc<str>| {
+                                    Message::DraftChanged(text.to_string())
+                                }),
+                            ),
                         Button::new()
                             .grid_column(1)
                             .style(ButtonStyle::Accent)
@@ -394,7 +423,11 @@ fn conversation_row(view: &ConversationView, context: &ViewContext<Langis>) -> B
                 .children((
                     TextBlock::new()
                         .text(&conversation.title)
-                        .font_weight(if view.unread > 0 { FontWeight::BOLD } else { FontWeight::SEMI_BOLD })
+                        .font_weight(if view.unread > 0 {
+                            FontWeight::BOLD
+                        } else {
+                            FontWeight::SEMI_BOLD
+                        })
                         .text_trimming(TextTrimming::CharacterEllipsis),
                     TextBlock::new()
                         .text(view.preview())
@@ -444,28 +477,40 @@ fn conversation_row(view: &ConversationView, context: &ViewContext<Langis>) -> B
 fn bubble(view: &MessageView) -> View {
     let message = view.message;
     let outgoing = message.outgoing;
-    let text = |t: TextBlock| if outgoing { t.foreground(Color::rgb(255, 255, 255)) } else { t };
+    let text = |t: TextBlock| {
+        if outgoing {
+            t.foreground(Color::rgb(255, 255, 255))
+        } else {
+            t
+        }
+    };
 
     let mut bubble = Border::new()
         .corner_radius(14.0)
         .padding(Thickness::new(12.0, 7.0, 12.0, 6.0))
         .max_width(520.0)
-        .horizontal_alignment(if outgoing { HorizontalAlignment::Right } else { HorizontalAlignment::Left })
-        .content(StackPanel::new().spacing(2.0).children((
-            text(
-                TextBlock::new()
-                    .text(&message.body)
-                    .text_wrapping(TextWrapping::Wrap)
-                    .is_text_selection_enabled(true),
-            ),
-            text(
-                TextBlock::new()
-                    .text(state::format_time(message.timestamp))
-                    .font_size(10.0)
-                    .opacity(0.7)
-                    .horizontal_alignment(HorizontalAlignment::Right),
-            ),
-        )));
+        .horizontal_alignment(if outgoing {
+            HorizontalAlignment::Right
+        } else {
+            HorizontalAlignment::Left
+        })
+        .content(
+            StackPanel::new().spacing(2.0).children((
+                text(
+                    TextBlock::new()
+                        .text(&message.body)
+                        .text_wrapping(TextWrapping::Wrap)
+                        .is_text_selection_enabled(true),
+                ),
+                text(
+                    TextBlock::new()
+                        .text(state::format_time(message.timestamp))
+                        .font_size(10.0)
+                        .opacity(0.7)
+                        .horizontal_alignment(HorizontalAlignment::Right),
+                ),
+            )),
+        );
     bubble = if outgoing {
         bubble.background(ThemeBrush::Accent)
     } else {
