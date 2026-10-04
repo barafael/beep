@@ -10,7 +10,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -42,6 +42,12 @@ pub(crate) const LINK_CAPABILITY: &str = "backup5";
 const MAX_WAIT: Duration = Duration::from_secs(60 * 60);
 /// Per request; the HTTP client gives up after 65 seconds.
 const POLL: Duration = Duration::from_secs(55);
+
+/// Ceiling on the downloaded archive. Signal's own clients cap a device transfer at 500 MB;
+/// going over that means something other than a phone answered, and an unbounded download
+/// would let a hostile server fill the disk. The real size is checked against the length the
+/// phone reports, so a legitimately large backup still works.
+const MAX_ARCHIVE_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Waits for the archive the phone uploads after linking, downloads it to `dir` and
 /// decrypts it. Returns `Ok(())` without doing anything if the user chose to continue
@@ -88,9 +94,7 @@ async fn wait_for_archive(manager: &Mgr) -> Result<Option<(u32, String)>, String
 }
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
-async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), String> {
-    use std::io::Write as _;
-
+async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result<(), String> {
     let servers = manager.registration_data().signal_servers;
     let mut response = PushService::new(servers, None, "langis")
         .request(
@@ -103,15 +107,37 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Res
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("failed to download the message history: {e}"))?;
-    let mut file = std::fs::File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
-    let mut size = 0usize;
+    // The length, when the CDN sends one, is checked before a single byte is written rather
+    // than discovered after the disk is already full.
+    if let Some(length) = response.content_length()
+        && length > MAX_ARCHIVE_BYTES
+    {
+        return Err(format!(
+            "the message history is {length} bytes, which is over the {} MiB limit",
+            MAX_ARCHIVE_BYTES / 1024 / 1024
+        ));
+    }
+    // 0600: the archive is encrypted, but it is still the user's own history in transit, and the
+    // decrypted messages are about to be derived from it.
+    let mut file = crate::vault::write_private_file(path)
+        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+    let mut size = 0u64;
     while let Some(chunk) =
         response.chunk().await.map_err(|e| format!("failed to download the message history: {e}"))?
     {
-        size += chunk.len();
+        size += chunk.len() as u64;
+        if size > MAX_ARCHIVE_BYTES {
+            return Err(format!(
+                "the message history is larger than the {} MiB limit",
+                MAX_ARCHIVE_BYTES / 1024 / 1024
+            ));
+        }
         file.write_all(&chunk).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     }
     file.sync_all().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    // Moves the temporary into place; until this the file is still incomplete, and dropping
+    // instead would leave the user with no archive at all.
+    file.persist().map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     info!(bytes = size, "history archive downloaded");
     Ok(())
 }
@@ -184,27 +210,34 @@ mod tests {
         BackupKey::derive_from_account_entropy_pool(&pool).0
     }
 
-    fn archive_file(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("langis-{name}-{}", std::process::id()));
+    /// Writes the fixture into a private temporary directory that cleans itself up.
+    fn archive_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("archive.bin");
         std::fs::write(&path, ARCHIVE).unwrap();
         path
     }
 
     #[test]
     fn decrypts_a_legacy_archive() {
-        let path = archive_file("archive");
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(&dir);
         let aci = Aci::from_uuid_bytes([0x11; 16]);
         let counts = futures::executor::block_on(summarize(fixture_key(), &aci, &path));
-        std::fs::remove_file(&path).unwrap();
         assert_eq!(counts.unwrap(), BTreeMap::from([("account", 1), ("chat", 1), ("recipient", 1)]));
     }
 
     #[test]
     fn rejects_the_wrong_account() {
-        let path = archive_file("wrong-account");
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(&dir);
         let aci = Aci::from_uuid_bytes([0x22; 16]);
         let counts = futures::executor::block_on(summarize(fixture_key(), &aci, &path));
-        std::fs::remove_file(&path).unwrap();
         assert!(counts.is_err());
+    }
+
+    #[test]
+    fn the_size_limit_is_far_above_a_real_backup() {
+        // The limit must not get in the way of a legitimate large backup.
+        assert!(MAX_ARCHIVE_BYTES >= 100 * 1024 * 1024);
     }
 }

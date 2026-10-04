@@ -15,6 +15,7 @@ signal = [
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
     "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image",
+    "dep:tempfile",
 ]
 
 [dependencies]
@@ -42,6 +43,8 @@ libsignal-account-keys = { workspace = true, optional = true }
 reqwest = { version = "0.13", default-features = false, optional = true }
 jiff = "0.2"
 async-channel = "2"
+# Creates the key-source file atomically and 0600, and gives tests a private directory.
+tempfile = { version = "3", optional = true }
 
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.

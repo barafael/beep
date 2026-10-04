@@ -1,6 +1,6 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
+use std::{cell::RefCell, collections::HashMap, io, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
@@ -20,7 +20,10 @@ use presage::{
     store::{ContentExt, ContentsStore, Thread},
 };
 use presage_store_sqlite::SqliteStore;
-use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
+use sqlx::{
+    ConnectOptions,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+};
 use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{debug, info, warn};
 
@@ -91,7 +94,8 @@ impl Paths {
                 vault::DEFAULT_ACCOUNT.to_owned(),
             ),
         };
-        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        // 0700: the database inside is only as private as the directory holding it.
+        vault::restrict_dir(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
         Ok(Self { db: dir.join("langis.db3"), key_source: dir.join("langis.key"), dir, keyring_account })
     }
 }
@@ -192,6 +196,12 @@ fn open_store(
         .filename(&paths.db)
         .create_if_missing(true)
         .foreign_keys(true)
+        // The receive task and the command loop both use the pool, so a write can briefly
+        // overlap a read; without these, SQLite answers SQLITE_BUSY instead of waiting. WAL
+        // also keeps long readers from blocking the sending task.
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(10))
         // sqlx keeps its own copy of this string; it can't be wiped.
         .pragma("key", vault::sqlcipher_pragma(key).to_string())
         // The key is part of the SQL text (pragmas take no parameters), so statements must
@@ -201,10 +211,26 @@ fn open_store(
             let _ = &open;
             a.cmp(b)
         });
-    local
-        .block_on(runtime, SqliteStore::open_with_options(options, OnNewIdentity::Trust))
-        .map(|store| (store, closed))
-        .map_err(|e| format!("failed to open the database: {e}"))
+    let store = local
+        // `Reject`, not `Trust`: presage trusts an identity it has never seen before (that is ordinary
+        // trust-on-first-use), but `Trust` would also silently accept a *changed* key for a
+        // known contact, which is exactly the impersonation case safety numbers exist to catch.
+        // A legitimate re-key — new phone, reinstall — then stops delivering until the user
+        // re-links, which is the safe direction to fail.
+        .block_on(runtime, SqliteStore::open_with_options(options, OnNewIdentity::Reject))
+        .map_err(|e| format!("failed to open the database: {e}"))?;
+    // SQLite creates the database (and its write-ahead log and shared memory files) with the
+    // process umask, which is typically world-readable. On a shared machine that would let any
+    // other user copy the database and attack the password offline.
+    let files = [paths.db.clone(), paths.db.with_extension("db3-wal"), paths.db.with_extension("db3-shm")];
+    for path in files {
+        if let Err(error) = vault::restrict_file(&path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            warn!(path = %path.display(), %error, "could not restrict the database's permissions");
+        }
+    }
+    Ok((store, closed))
 }
 
 async fn session(
@@ -519,14 +545,20 @@ async fn handle_received(
             true
         }
         Received::DecryptionError(sender) => {
-            warn!(sender = %sender.service_id_string(), "decryption error");
-            // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
+            // With `OnNewIdentity::Reject` this is also what an identity *change* looks like: a
+            // message from a contact whose identity key changed fails to decrypt and arrives
+            // here. The envelope doesn't say which, so the user is told both are possible and
+            // given the way to check.
+            warn!(sender = %sender.service_id_string(), "decryption error (possibly an identity change)");
             let conversation = ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
             let name = sender_name(manager, names, sender).await;
             events.send(Event::Message(ChatMessage {
                 conversation,
                 sender_id: sender.service_id_string(),
-                body: format!("⚠ A message from {name} couldn't be decrypted."),
+                body: format!(
+                    "⚠ A message from {name} couldn't be decrypted. It may be corrupt, or {name}'s \
+                     safety number may have changed — compare it in Signal on your phone."
+                ),
                 sender: name,
                 timestamp: now_millis(),
                 outgoing: false,
@@ -676,18 +708,26 @@ async fn handle(
 mod tests {
     use super::*;
 
-    #[test]
-    fn database_opens_only_with_its_key() {
-        let dir = std::env::temp_dir().join(format!("langis-db-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let paths = Paths {
+    fn paths(dir: &std::path::Path) -> Paths {
+        Paths {
             db: dir.join("test.db3"),
             key_source: dir.join("test.key"),
-            dir: dir.clone(),
+            dir: dir.to_path_buf(),
             keyring_account: "unused".into(),
-        };
+        }
+    }
+
+    fn runtime() -> (tokio::runtime::Runtime, LocalSet) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let local = LocalSet::new();
+        (runtime, local)
+    }
+
+    #[test]
+    fn database_opens_only_with_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let (runtime, local) = runtime();
 
         let key = vault::password_key("correct horse", &[3; 16]);
         drop(open_store(&runtime, &local, &paths, &key).expect("creates the database"));
@@ -697,7 +737,77 @@ mod tests {
         // Encrypted: no plaintext SQLite header.
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
+    }
 
-        std::fs::remove_dir_all(&dir).unwrap();
+    /// Only the owner may read the database, or another user on a shared machine could copy
+    /// it and attack the password offline.
+    #[cfg(unix)]
+    #[test]
+    fn the_database_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let (runtime, local) = runtime();
+        let key = vault::password_key("correct horse", &[3; 16]);
+        drop(open_store(&runtime, &local, &paths, &key).expect("creates the database"));
+
+        assert_eq!(std::fs::metadata(&paths.db).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    /// The directory is created 0700, so the database is private before it even exists.
+    #[cfg(unix)]
+    #[test]
+    fn the_data_directory_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("langis");
+        vault::restrict_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    /// An existing directory left world-readable by an older version gets tightened.
+    #[cfg(unix)]
+    #[test]
+    fn restrict_dir_tightens_an_existing_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("langis");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        vault::restrict_dir(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    /// A half-written key source would lock the user out of their own history, so the file is
+    /// renamed into place instead of being written in situ.
+    #[test]
+    fn the_key_source_is_replaced_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("langis.key");
+        KeySource::Password { salt: [1; 16] }.write(&path).unwrap();
+        KeySource::Keyring.write(&path).unwrap();
+        assert_eq!(KeySource::read(&path).unwrap(), Some(KeySource::Keyring));
+        // No temporary file is left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".langis-"))
+            .collect();
+        assert!(leftovers.is_empty(), "left temporary files behind: {leftovers:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_key_source_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("langis.key");
+        KeySource::Keyring.write(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

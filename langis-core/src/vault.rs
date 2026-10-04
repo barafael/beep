@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use keyring_core::{CredentialStore, Entry, Error as KeyringError};
@@ -48,12 +48,105 @@ impl KeySource {
         }
     }
 
+    /// Writes the source atomically; see [`write_private`] for why that matters here.
     pub fn write(&self, path: &Path) -> io::Result<()> {
         let text = match self {
             Self::Keyring => "keyring\n".to_string(),
             Self::Password { salt } => format!("password {}\n", hex::encode(salt)),
         };
-        fs::write(path, text)
+        write_private(path, text.as_bytes())
+    }
+}
+
+/// Writes `bytes` to `path` so that no other user can read them, and never leaves a partially
+/// written file behind. This file records how to derive the database key, so a truncated one
+/// would lock the user out of their own message history instead of merely failing to open.
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let dir = parent_of(path);
+    let mut temp = tempfile::Builder::new().prefix(".langis-").tempfile_in(dir)?;
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    // `tempfile` creates files as 0600, so the contents are never briefly readable by another
+    // user, and `persist` renames over `path` in one step, which a reader never sees half-written.
+    // Dropping without it deletes the temporary and leaves any previous file untouched.
+    let _ = temp.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+/// Creates `dir` if it is missing and restricts it to its owner, so that on a shared machine
+/// no other user can read the database kept inside it.
+pub fn restrict_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    // `DirBuilder::mode` would only apply to a directory it creates, and tightening an existing
+    // one is the point: a directory left world-readable by an older version is what this fixes.
+    restrict(dir, 0o700)
+}
+
+/// Restricts `path` to its owner. Best effort: Windows has no equivalent of unix modes and the
+/// user's profile directory already limits access, so there is nothing to do there.
+pub fn restrict_file(path: &Path) -> io::Result<()> {
+    restrict(path, 0o600)
+}
+
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = fs::Permissions::from_mode(mode);
+    // Setting the mode is a second write; skip it when it is already right.
+    if fs::metadata(path)?.permissions() != permissions {
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict(path: &Path, _mode: u32) -> io::Result<()> {
+    let _ = path;
+    Ok(())
+}
+
+/// Creates an empty file that only its owner can read, replacing whatever was at `path`.
+///
+/// For contents that arrive in pieces: [`write_private`] covers writing a buffer in one go. The
+/// file is built under a temporary name and moved into place by [`PendingFile::persist`], so a
+/// reader never sees a half-written file and the contents are never briefly readable by another
+/// user. Dropping it instead leaves any previous file untouched.
+pub fn write_private_file(path: &Path) -> io::Result<PendingFile> {
+    let temp = tempfile::Builder::new().prefix(".langis-").tempfile_in(parent_of(path))?;
+    Ok(PendingFile { temp, path: path.to_path_buf() })
+}
+
+/// The directory a file lives in, for writing a temporary beside it.
+fn parent_of(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+/// A file that replaces its destination when it is closed. Dropping it discards the contents
+/// instead, so a failed write leaves the previous file untouched.
+pub struct PendingFile {
+    temp: tempfile::NamedTempFile,
+    path: PathBuf,
+}
+
+impl PendingFile {
+    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        std::io::Write::write_all(&mut self.temp, bytes)
+    }
+
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        self.temp.as_file().sync_all()
+    }
+
+    /// Renames the file into place. Dropping without calling this deletes the temporary, leaving
+    /// any previous file untouched.
+    pub fn persist(self) -> io::Result<()> {
+        let _ = self.temp.persist(&self.path).map_err(|error| error.error)?;
+        Ok(())
     }
 }
 
@@ -89,10 +182,22 @@ pub fn create_keyring_key(account: &str) -> Result<Key, String> {
     }
 }
 
+/// Argon2id cost. The key is handed to SQLCipher as a raw key, so no second KDF stands between
+/// the password and the database: this is the only thing making a guessed password expensive.
+/// `argon2::Params::DEFAULT` is 19 MiB and 2 passes, which OWASP calls the bare minimum; 64 MiB
+/// and 3 passes costs about 60 ms on a current laptop, which is a large gain for an offline
+/// attacker copying the database while the per-attempt cost stays unnoticeable here.
+fn password_params() -> argon2::Params {
+    const MEMORY_KIB: u32 = 64 * 1024;
+    const PASSES: u32 = 3;
+    const PARALLELISM: u32 = 1;
+    argon2::Params::new(MEMORY_KIB, PASSES, PARALLELISM, None).expect("valid Argon2 parameters")
+}
+
 /// Derives the key for a password-protected database.
 pub fn password_key(password: &str, salt: &[u8; 16]) -> Key {
     let mut key = Zeroizing::new([0; 32]);
-    argon2::Argon2::default()
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, password_params())
         .hash_password_into(password.as_bytes(), salt, &mut key[..])
         .expect("argon2 accepts a 16-byte salt and 32-byte output");
     key
@@ -135,9 +240,8 @@ mod tests {
 
     #[test]
     fn key_source_round_trips() {
-        let dir = std::env::temp_dir().join(format!("langis-vault-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("key");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
         assert_eq!(KeySource::read(&path).unwrap(), None);
         for source in [KeySource::Keyring, KeySource::Password { salt: [7; 16] }] {
             source.write(&path).unwrap();
@@ -145,7 +249,25 @@ mod tests {
         }
         fs::write(&path, "garbage").unwrap();
         assert!(KeySource::read(&path).is_err());
-        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The streaming writer replaces the destination only when the caller persists. Giving up
+    /// part-way must leave the previous file alone rather than a half-written one.
+    #[test]
+    fn a_pending_file_is_written_only_when_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive");
+        fs::write(&path, "old").unwrap();
+
+        let mut file = write_private_file(&path).unwrap();
+        file.write_all(b"new").unwrap();
+        drop(file);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old", "wrote a partial file");
+
+        let mut file = write_private_file(&path).unwrap();
+        file.write_all(b"new").unwrap();
+        file.persist().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
     }
 
     #[test]

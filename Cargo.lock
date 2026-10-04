@@ -3578,6 +3578,7 @@ dependencies = [
  "qrcode",
  "reqwest",
  "sqlx",
+ "tempfile",
  "tokio",
  "tracing",
  "windows-native-keyring-store",
