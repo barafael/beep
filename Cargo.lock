@@ -3607,6 +3607,7 @@ name = "langis-slint"
 version = "0.1.0"
 dependencies = [
  "langis-core",
+ "png",
  "slint",
  "slint-build",
  "tracing",
@@ -5275,7 +5276,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=ef790ad4b6cad70ac96abdea699081396d8d5cc4#ef790ad4b6cad70ac96abdea699081396d8d5cc4"
+source = "git+https://github.com/barafael/presage?rev=b4d2fea7e6122f616f73dae36b36732eb39d6b0a#b4d2fea7e6122f616f73dae36b36732eb39d6b0a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5298,7 +5299,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=ef790ad4b6cad70ac96abdea699081396d8d5cc4#ef790ad4b6cad70ac96abdea699081396d8d5cc4"
+source = "git+https://github.com/barafael/presage?rev=b4d2fea7e6122f616f73dae36b36732eb39d6b0a#b4d2fea7e6122f616f73dae36b36732eb39d6b0a"
 dependencies = [
  "async-trait",
  "bytes",

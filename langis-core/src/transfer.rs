@@ -29,7 +29,8 @@ use presage::{
     manager::TransferArchive,
     store::ContentsStore,
 };
-use tracing::info;
+use presage::{Error as PresageError, libsignal_service::push_service::ServiceError};
+use tracing::{info, warn};
 
 use crate::{
     Event, Events, HistoryTransfer,
@@ -59,7 +60,9 @@ pub(crate) enum Outcome {
 /// it into the manager's store. On `Err`, part of the history may have been stored.
 pub(crate) async fn receive_history(manager: &Mgr, key: [u8; 32], dir: &Path, events: &Events) -> Result<Outcome, String> {
     let path = dir.join("history-transfer.bin");
-    let result = async {
+    // However this ends, even if the caller drops it midway (skip, quit), the archive goes.
+    let _cleanup = RemoveOnDrop(path.clone());
+    async {
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
         let (cdn, cdn_key) = match wait_for_archive(manager).await? {
             TransferArchive::Uploaded { cdn, key } => (cdn, key),
@@ -73,15 +76,22 @@ pub(crate) async fn receive_history(manager: &Mgr, key: [u8; 32], dir: &Path, ev
         info!(?stats, "message history imported");
         Ok(Outcome::Imported)
     }
-    .await;
-    // The archive is encrypted, but there is no reason to keep it around.
-    let _ = std::fs::remove_file(&path);
-    result
+    .await
+}
+
+/// The archive is encrypted, but there is no reason to keep it around.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
     let started = Instant::now();
     info!("waiting for the primary device to upload the message history");
+    let mut backoff = Duration::from_secs(1);
     while started.elapsed() < MAX_WAIT {
         match manager.transfer_archive(POLL).await {
             Ok(None) => continue,
@@ -89,7 +99,16 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
                 info!(waited_secs = started.elapsed().as_secs(), "the primary device answered");
                 return Ok(archive);
             }
-            Err(error) => return Err(format!("failed to wait for the message history: {error}")),
+            // The link itself is no good; waiting longer won't help.
+            Err(PresageError::ServiceError(ServiceError::Unauthorized)) => {
+                return Err("Signal no longer accepts this device.".into());
+            }
+            // A network hiccup shouldn't throw away the link: the archive may still come.
+            Err(error) => {
+                warn!(%error, "failed to ask for the message history; retrying");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
         }
     }
     Err("The phone did not send the message history within an hour.".into())
@@ -144,6 +163,7 @@ where
     let mut importer = Importer::new(*aci, crate::now_millis());
     // The first frame is a `BackupInfo` (version and time), which we don't need.
     let mut info_frame = true;
+    let mut reported = 0;
     while let Some(frame) = reader.read_next().await.map_err(|e| format!("failed to read the message history: {e}"))? {
         if std::mem::take(&mut info_frame) {
             continue;
@@ -152,7 +172,8 @@ where
             import::store(store, record).await?;
         }
         let messages = importer.stats().messages;
-        if messages > 0 && messages % 500 == 0 {
+        if messages >= reported + 500 {
+            reported = messages;
             let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Importing { messages }));
         }
     }

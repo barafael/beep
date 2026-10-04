@@ -103,11 +103,19 @@ pub struct MessageView<'a> {
     pub body: &'a str,
 }
 
-/// Where a download for display or saving stands; see [`ChatState::attachment`].
+/// Where a download for display stands; see [`ChatState::attachment`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttachmentState {
     Loading,
     Ready(AttachmentContent),
+    /// Can be asked for again; see [`ChatState::fetch_attachment`].
+    Failed(String),
+}
+
+/// Where saving an attachment stands; see [`ChatState::saved`]. Independent of
+/// [`AttachmentState`], so a shown picture stays shown while and after it is saved.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SaveState {
     Saving,
     Saved(std::path::PathBuf),
     Failed(String),
@@ -146,6 +154,9 @@ pub struct ChatState {
     history: HashMap<ConversationId, Vec<ChatMessage>>,
     avatars: HashMap<ConversationId, Arc<Picture>>,
     attachments: HashMap<AttachmentId, AttachmentState>,
+    saves: HashMap<AttachmentId, SaveState>,
+    /// Search text; while set, the chat list holds every matching conversation.
+    filter: String,
     /// Conversations whose stored history has arrived.
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
@@ -195,15 +206,11 @@ impl ChatState {
                 update.attachments = true;
             }
             Event::AttachmentSaved { id, path } => {
-                // A failed save leaves what was there for display.
                 let state = match path {
-                    Ok(path) => AttachmentState::Saved(path),
-                    Err(error) => {
-                        self.error = Some(error);
-                        AttachmentState::Failed("Couldn't save it.".into())
-                    }
+                    Ok(path) => SaveState::Saved(path),
+                    Err(error) => SaveState::Failed(error),
                 };
-                self.attachments.insert(id, state);
+                self.saves.insert(id, state);
                 update.attachments = true;
             }
             Event::Avatar { conversation, avatar } => {
@@ -273,6 +280,8 @@ impl ChatState {
         }
         self.unread.remove(id);
         self.selected = Some(id.clone());
+        // Picking a search result ends the search; the chosen chat stays on the list.
+        self.filter.clear();
         (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
     }
 
@@ -331,9 +340,15 @@ impl ChatState {
         self.attachments.get(id)
     }
 
-    /// Asks for an inline attachment of a message being shown, unless that happened already.
+    /// Saving an attachment, if it was asked for.
+    pub fn saved(&self, id: &AttachmentId) -> Option<&SaveState> {
+        self.saves.get(id)
+    }
+
+    /// Asks for an inline attachment of a message being shown, unless it is already there or
+    /// on its way. After a failure, asking again retries.
     pub fn fetch_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
-        if self.attachments.contains_key(id) {
+        if matches!(self.attachments.get(id), Some(AttachmentState::Loading | AttachmentState::Ready(_))) {
             return None;
         }
         let attachment = self.find_attachment(id).filter(|a| shown_inline(a.kind))?.clone();
@@ -343,11 +358,11 @@ impl ChatState {
 
     /// Saves an attachment of the selected conversation to the downloads folder.
     pub fn save_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
-        if matches!(self.attachments.get(id), Some(AttachmentState::Saving)) {
+        if matches!(self.saves.get(id), Some(SaveState::Saving)) {
             return None;
         }
         let attachment = self.find_attachment(id).filter(|a| a.kind != AttachmentKind::ViewOnce)?.clone();
-        self.attachments.insert(id.clone(), AttachmentState::Saving);
+        self.saves.insert(id.clone(), SaveState::Saving);
         Some(Command::SaveAttachment(attachment))
     }
 
@@ -398,9 +413,25 @@ impl ChatState {
     }
 
     fn listed(&self) -> impl Iterator<Item = &Conversation> {
-        self.conversations.iter().filter(|c| {
-            c.is_group || self.last_of(&c.id).is_some() || self.selected.as_ref() == Some(&c.id)
+        let filter = self.filter.to_lowercase();
+        self.conversations.iter().filter(move |c| {
+            if filter.is_empty() {
+                c.is_group || self.last_of(&c.id).is_some() || self.selected.as_ref() == Some(&c.id)
+            } else {
+                c.title.to_lowercase().contains(&filter)
+            }
         })
+    }
+
+    /// Narrows the chat list to conversations whose title contains `text`, including contacts
+    /// never written to, so a new chat can be started. Empty shows the usual list again.
+    pub fn search(&mut self, text: &str) -> Update {
+        self.filter = text.trim().to_owned();
+        Update { conversations: true, ..Update::default() }
+    }
+
+    pub fn searching(&self) -> bool {
+        !self.filter.is_empty()
     }
 
     /// Messages of the selected conversation, oldest first.
@@ -496,7 +527,6 @@ pub fn avatar_index(id: &ConversationId, len: usize) -> usize {
     hash as usize % len.max(1)
 }
 
-/// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
 /// "240 KB", "1.2 MB": sizes as people read them.
 pub fn format_size(bytes: u64) -> String {
     match bytes {
@@ -506,6 +536,7 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
 pub fn format_time(timestamp: u64) -> String {
     let Ok(time) = jiff::Timestamp::from_millisecond(timestamp as i64) else {
         return String::new();
@@ -645,6 +676,37 @@ mod tests {
         assert!(state.save_attachment(&AttachmentId("once".into())).is_none());
         assert!(state.save_attachment(&AttachmentId("file".into())).is_some());
         assert!(state.save_attachment(&AttachmentId("file".into())).is_none(), "already saving");
+    }
+
+    #[test]
+    fn saving_keeps_the_shown_picture_and_failures_can_be_retried() {
+        let mut state = state();
+        let photo = AttachmentId("photo".into());
+        state.apply(Event::Message(with_attachment("a", 1, "photo", AttachmentKind::Image)));
+        state.select(&ConversationId("a".into()));
+        assert!(state.fetch_attachment(&photo).is_some());
+        state.apply(Event::Attachment { id: photo.clone(), content: Err("offline".into()) });
+        assert!(state.fetch_attachment(&photo).is_some(), "retry after failure");
+        let picture = AttachmentContent::Picture(Arc::new(Picture { width: 1, height: 1, rgba: vec![0; 4] }));
+        state.apply(Event::Attachment { id: photo.clone(), content: Ok(picture.clone()) });
+        assert!(state.save_attachment(&photo).is_some());
+        state.apply(Event::AttachmentSaved { id: photo.clone(), path: Ok("/tmp/photo.jpg".into()) });
+        assert_eq!(state.attachment(&photo), Some(&AttachmentState::Ready(picture)));
+        assert_eq!(state.saved(&photo), Some(&SaveState::Saved("/tmp/photo.jpg".into())));
+        assert!(state.fetch_attachment(&photo).is_none(), "already shown");
+    }
+
+    #[test]
+    fn search_finds_contacts_never_written_to() {
+        let mut state = state();
+        // "a" is a contact without messages, so it isn't listed until searched for.
+        assert!(state.conversations().all(|c| c.conversation.id.0 != "a"));
+        state.search("A");
+        let found: Vec<_> = state.conversations().map(|c| c.conversation.id.0.clone()).collect();
+        assert_eq!(found, ["a"]);
+        state.select(&ConversationId("a".into()));
+        assert!(!state.searching());
+        assert!(state.conversations().any(|c| c.conversation.id.0 == "a"), "selected stays listed");
     }
 
     #[test]

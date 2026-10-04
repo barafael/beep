@@ -28,9 +28,23 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::Linked { account: "+49 151 0000000 (mock)".into() });
     // `LANGIS_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
     // phone takes 6 seconds and can be skipped.
+    // Commands that arrive meanwhile are handled afterwards, as in the real backend.
+    let mut queued = std::collections::VecDeque::new();
     if std::env::var_os("LANGIS_MOCK_TRANSFER").is_some() {
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
-        let skipped = matches!(commands.recv_timeout(Duration::from_secs(6)), Ok(Command::SkipHistory));
+        let until = std::time::Instant::now() + Duration::from_secs(6);
+        let mut skipped = false;
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match commands.recv_timeout(left) {
+                Ok(Command::SkipHistory) => {
+                    skipped = true;
+                    break;
+                }
+                Ok(command) => queued.push_back(command),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+            }
+        }
         if !skipped {
             for stage in [
                 HistoryTransfer::Downloading,
@@ -65,7 +79,11 @@ pub fn run(commands: Inbox, events: Events) {
     }
 
     loop {
-        match commands.recv_timeout(Duration::from_secs(20)) {
+        let next = match queued.pop_front() {
+            Some(command) => Ok(command),
+            None => commands.recv_timeout(Duration::from_secs(20)),
+        };
+        match next {
             Ok(Command::Unlock(_) | Command::SkipHistory) => {}
             // Every mock attachment is the same picture; saving pretends to succeed.
             Ok(Command::FetchAttachment(attachment)) => {

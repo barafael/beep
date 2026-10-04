@@ -28,6 +28,8 @@ export struct AttachmentItem {
     label: string,
     // "Saved to Downloads", an error, or empty.
     status: string,
+    // The download failed; clicking the picture's place asks again.
+    can-retry: bool,
     can-save: bool,
 }
 
@@ -154,6 +156,10 @@ component AttachmentView inherits VerticalLayout {
             indeterminate: true;
             width: 24px;
             height: 24px;
+        }
+        if root.item.picture.width == 0 && root.item.can-retry: TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.fetch(root.item.id); }
         }
         if root.item.picture.width == 0 && root.item.status != "": Text {
             text: root.item.status;
@@ -569,6 +575,8 @@ export component AppWindow inherits Window {
     callback unlock(string, string);
     callback settings-changed;
     callback skip-history;
+    callback search(string);
+    in-out property <string> search-text;
     callback fetch-attachment(string);
     callback save-attachment(string);
 
@@ -680,6 +688,16 @@ export component AppWindow inherits Window {
                                 text: "Skip";
                                 clicked => { root.skip-history(); }
                             }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-bottom: 8px;
+                        LineEdit {
+                            placeholder-text: "Search or start a chat";
+                            text <=> root.search-text;
+                            edited(text) => { root.search(text); }
                         }
                     }
                     ListView {

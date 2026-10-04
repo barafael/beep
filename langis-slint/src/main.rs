@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use langis_core::settings::{Settings, TextSize, Theme};
-use langis_core::state::{self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
+use langis_core::state::{self, AttachmentState, ChatState, SaveState, ConversationView, MessageView, MessagesUpdate, Update};
 use langis_core::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, Backend, Command, Commands, Config, ConversationId, Event, HistoryTransfer, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
@@ -90,6 +90,10 @@ fn main() -> Result<(), slint::PlatformError> {
         move |id| {
             app.act(|chat, _| (chat.save_attachment(&AttachmentId(id.into())), Update { attachments: true, ..Update::default() }))
         }
+    });
+    window.on_search({
+        let app = app.clone();
+        move |text| app.act(|chat, _| (None, chat.search(&text)))
     });
     window.on_skip_history({
         let app = app.clone();
@@ -285,7 +289,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
                 continue;
             }
             let item = message_item(&message, chat, images);
-            if messages.row_data(row).as_ref() != Some(&item) {
+            if !messages.row_data(row).is_some_and(|old| same_message(&old, &item)) {
                 messages.set_row_data(row, item);
             }
         }
@@ -306,6 +310,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             conversations.set_vec(items);
         }
         window.set_selected(chat.selected_index().map_or(-1, |i| i as i32));
+        if !chat.searching() {
+            window.set_search_text(SharedString::new());
+        }
     }
 }
 
@@ -334,7 +341,8 @@ fn conversation_item(view: &ConversationView, images: &Images) -> ConversationIt
 
 fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> MessageItem {
     let m = view.message;
-    let attachments: Vec<_> = m.attachments.iter().map(|a| attachment_item(a, chat.attachment(&a.id), images)).collect();
+    let attachments: Vec<_> =
+        m.attachments.iter().map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)).collect();
     MessageItem {
         sender: m.sender.as_str().into(),
         body: view.body.into(),
@@ -347,7 +355,20 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
     }
 }
 
-fn attachment_item(attachment: &Attachment, download: Option<&AttachmentState>, images: &Images) -> AttachmentItem {
+/// Like `==`, but comparing attachment lists by content: each item gets a new model, which
+/// would never compare equal and so redraw every row with an attachment.
+fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
+    let same_attachments = a.attachments.row_count() == b.attachments.row_count()
+        && a.attachments.iter().zip(b.attachments.iter()).all(|(x, y)| x == y);
+    same_attachments && MessageItem { attachments: b.attachments.clone(), ..a.clone() } == *b
+}
+
+fn attachment_item(
+    attachment: &Attachment,
+    download: Option<&AttachmentState>,
+    save: Option<&SaveState>,
+    images: &Images,
+) -> AttachmentItem {
     let kind = attachment.kind;
     let inline = matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker);
     let picture = match download {
@@ -362,20 +383,24 @@ fn attachment_item(attachment: &Attachment, download: Option<&AttachmentState>, 
         None => fallback,
     };
     let scale = (max / w.max(h)).min(1.0);
-    let name = match kind {
-        AttachmentKind::File => attachment.file_name.as_deref().unwrap_or(state::describe_kind(kind)),
-        _ => state::describe_kind(kind),
+    let size = state::format_size(attachment.size);
+    let label = match (kind, &attachment.file_name) {
+        (AttachmentKind::ViewOnce, _) => "View-once media: open it on your phone".to_string(),
+        (AttachmentKind::File, Some(name)) => format!("📎 {name} · {size}"),
+        _ => format!("{} · {size}", state::describe_kind(kind)),
     };
-    let label = match kind {
-        AttachmentKind::ViewOnce => "View-once media: open it on your phone".to_string(),
-        AttachmentKind::File => format!("📎 {name} · {}", state::format_size(attachment.size)),
-        _ => format!("{name} · {}", state::format_size(attachment.size)),
+    let failed = match download {
+        Some(AttachmentState::Failed(error)) => Some(error.clone()),
+        _ => None,
     };
-    let status = match download {
-        None | Some(AttachmentState::Loading | AttachmentState::Ready(_)) => String::new(),
-        Some(AttachmentState::Saving) => "Saving…".into(),
-        Some(AttachmentState::Saved(path)) => format!("Saved to {}", path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("disk")),
-        Some(AttachmentState::Failed(error)) => error.clone(),
+    // Saving says how it went; otherwise a failed download says why (click to retry).
+    let status = match save {
+        Some(SaveState::Saving) => "Saving…".into(),
+        Some(SaveState::Saved(path)) => {
+            format!("Saved to {}", path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("disk"))
+        }
+        Some(SaveState::Failed(error)) => format!("Couldn't save: {error}"),
+        None => failed.clone().map(|error| format!("{error} Click to retry.")).unwrap_or_default(),
     };
     AttachmentItem {
         id: attachment.id.0.as_str().into(),
@@ -387,6 +412,7 @@ fn attachment_item(attachment: &Attachment, download: Option<&AttachmentState>, 
         height: h * scale,
         label: label.into(),
         status: status.into(),
+        can_retry: failed.is_some() && state::shown_inline(kind),
         can_save: !matches!(kind, AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker),
     }
 }

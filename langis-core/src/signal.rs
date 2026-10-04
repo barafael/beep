@@ -1,6 +1,6 @@
 //! Real backend: presage on a single-threaded tokio runtime (presage's futures are `!Send`).
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
+use std::{cell::{Cell, RefCell}, collections::HashMap, path::PathBuf, rc::Rc, sync::{Arc, mpsc}, time::Duration};
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
@@ -233,9 +233,13 @@ async fn session(
 
     let paths = Paths::new()?;
     let linked = match Manager::load_registered(store.clone()).await {
-        Ok(manager) if !paths.transfer_marker().exists() => Some((manager, Vec::new())),
+        Ok(manager) if !paths.transfer_marker().exists() => {
+            let account = manager.registration_data().service_ids.aci().service_id_string();
+            let _ = events.send(Event::Linked { account });
+            Some((manager, Vec::new()))
+        }
         Ok(manager) => {
-            drop(manager);
+            unlink(manager).await;
             let _ = events.send(Event::Error(
                 "The message history transfer was interrupted. Link this device again to retry.".into(),
             ));
@@ -250,9 +254,6 @@ async fn session(
     // `None`: the UI went away while linking.
     let Some((mut manager, pending)) = linked else { return Ok(()) };
 
-    let account = manager.registration_data().service_ids.aci().service_id_string();
-    let _ = events.send(Event::Linked { account });
-
     let threads: Threads = Rc::default();
     if send_conversations(&manager, &threads, &events).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
@@ -263,11 +264,13 @@ async fn session(
         }
     }
 
-    send_latest_messages(&manager, &threads, &events).await;
+    // In the background, so receiving starts right away.
+    tokio::task::spawn_local(send_latest_messages(manager.clone(), threads.clone(), events.clone()));
 
     let downloads = attachments::download_limit();
-    tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone()));
-    tokio::task::spawn_local(fetch_avatars(manager.clone(), threads.clone(), events.clone()));
+    let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
+    avatars.request();
+    tokio::task::spawn_local(receive(manager.clone(), threads.clone(), events.clone(), avatars));
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
@@ -303,11 +306,11 @@ async fn link_with_history(
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),
         };
+        let account = manager.registration_data().service_ids.aci().service_id_string();
+        let _ = events.send(Event::Linked { account });
         let Some(key) = key else { return Ok(Some((manager, Vec::new()))) };
 
         write_marker(paths)?;
-        let account = manager.registration_data().service_ids.aci().service_id_string();
-        let _ = events.send(Event::Linked { account });
         let mut pending = Vec::new();
         let result = {
             let transfer = transfer::receive_history(&manager, key, &paths.dir, events);
@@ -340,8 +343,16 @@ async fn link_with_history(
                 let _ = events.send(Event::Error(format!("{error} Link this device again to retry.")));
             }
         }
-        drop(manager);
+        unlink(manager).await;
         reset(store.clone(), paths).await?;
+    }
+}
+
+/// Removes this device from the account before linking again, so the phone's list of linked
+/// devices doesn't fill up with dead entries. Best effort: linking again works regardless.
+async fn unlink(manager: Mgr) {
+    if let Err(error) = manager.unlink_self().await {
+        warn!(%error, "failed to remove this device from the account");
     }
 }
 
@@ -440,16 +451,25 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
 /// activity and show previews before any history is opened.
-async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events) {
+///
+/// The store can only return whole time ranges, so this looks at the last week first and only
+/// reaches further back for quiet conversations, instead of reading every chat's full history.
+async fn send_latest_messages(manager: Mgr, threads: Threads, events: Events) {
+    const DAY: u64 = 24 * 60 * 60 * 1000;
     let threads: Vec<_> = threads.borrow().iter().map(|(id, thread)| (id.clone(), thread.clone())).collect();
     let mut names = Names::new();
-    for (id, thread) in threads {
-        let Ok(contents) = manager.store().messages(&thread, ..).await else { continue };
-        // Newest first; skip receipts and the like.
-        for content in contents.flatten() {
-            if let Some(message) = to_chat_message(manager, &mut names, id.clone(), &content).await {
-                let _ = events.send(Event::Latest(message));
-                break;
+    let now = now_millis();
+    'threads: for (id, thread) in threads {
+        for since in [now.saturating_sub(7 * DAY), now.saturating_sub(180 * DAY), 0] {
+            let Ok(contents) = manager.store().messages(&thread, since..).await else { continue 'threads };
+            // Newest first; skip receipts and the like.
+            for content in contents.flatten() {
+                if let Some(message) = to_chat_message(&manager, &mut names, id.clone(), &content).await {
+                    if !events.send(Event::Latest(message)) {
+                        return;
+                    }
+                    continue 'threads;
+                }
             }
         }
     }
@@ -457,6 +477,51 @@ async fn send_latest_messages(manager: &Mgr, threads: &Threads, events: &Events)
 
 /// Side of decoded avatars: a 40 px circle at up to 3x scaling.
 const AVATAR_SIDE: u32 = 128;
+
+/// Runs [`fetch_avatars`] one pass at a time: asking during a pass schedules one more after it,
+/// instead of a second pass sending the same requests alongside.
+#[derive(Clone)]
+struct AvatarFetcher {
+    run: Rc<Cell<AvatarRun>>,
+    manager: Mgr,
+    threads: Threads,
+    events: Events,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AvatarRun {
+    Idle,
+    Running,
+    Again,
+}
+
+impl AvatarFetcher {
+    fn new(manager: Mgr, threads: Threads, events: Events) -> Self {
+        Self { run: Rc::new(Cell::new(AvatarRun::Idle)), manager, threads, events }
+    }
+
+    fn request(&self) {
+        match self.run.get() {
+            AvatarRun::Idle => {
+                self.run.set(AvatarRun::Running);
+                let this = self.clone();
+                tokio::task::spawn_local(async move {
+                    loop {
+                        fetch_avatars(this.manager.clone(), this.threads.clone(), this.events.clone()).await;
+                        if this.run.get() == AvatarRun::Again {
+                            this.run.set(AvatarRun::Running);
+                        } else {
+                            this.run.set(AvatarRun::Idle);
+                            break;
+                        }
+                    }
+                });
+            }
+            AvatarRun::Running => self.run.set(AvatarRun::Again),
+            AvatarRun::Again => {}
+        }
+    }
+}
 
 /// Sends each conversation's profile or group picture. presage caches them in the store, so
 /// only the first run downloads them, one at a time to stay clear of rate limits.
@@ -548,7 +613,7 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
 
 /// Receives messages for the rest of the session, reconnecting with exponential backoff
 /// whenever the connection drops (sleep, network changes, server timeouts).
-async fn receive(mut manager: Mgr, threads: Threads, events: Events) {
+async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: AvatarFetcher) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
     let mut backoff = Duration::from_secs(1);
@@ -559,7 +624,7 @@ async fn receive(mut manager: Mgr, threads: Threads, events: Events) {
                 while let Some(received) = messages.next().await {
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &threads, &events, &mut names, received).await {
+                    if !handle_received(&manager, &threads, &events, &avatars, &mut names, received).await {
                         return;
                     }
                 }
@@ -580,6 +645,7 @@ async fn handle_received(
     manager: &Mgr,
     threads: &Threads,
     events: &Events,
+    avatars: &AvatarFetcher,
     names: &mut Names,
     received: Received,
 ) -> bool {
@@ -589,7 +655,7 @@ async fn handle_received(
             names.clear();
             send_conversations(manager, threads, events).await;
             // A newly linked device first learns its contacts here.
-            tokio::task::spawn_local(fetch_avatars(manager.clone(), threads.clone(), events.clone()));
+            avatars.request();
             true
         }
         Received::DecryptionError(sender) => {
