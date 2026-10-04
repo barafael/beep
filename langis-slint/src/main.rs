@@ -79,6 +79,10 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
     });
+    window.on_skip_history({
+        let app = app.clone();
+        move || app.act(|chat, _| (chat.skip_history(), Update::default()))
+    });
     window.on_dismiss_error(move || {
         app.act(|chat, _| {
             chat.dismiss_error();
@@ -230,6 +234,7 @@ fn render(window: &AppWindow, chat: &ChatState, avatars: &AvatarImages, update: 
         }
         .into(),
     );
+    window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
     window.set_can_send(chat.can_compose(&window.get_draft()));
 

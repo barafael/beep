@@ -127,6 +127,8 @@ pub enum Command {
     /// Answer to [`Event::PasswordRequired`].
     Unlock(Password),
     LoadHistory(ConversationId),
+    /// Stop waiting for the phone to send the message history, and continue without it.
+    SkipHistory,
     Send { conversation: ConversationId, body: String },
 }
 

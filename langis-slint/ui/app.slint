@@ -396,6 +396,7 @@ export component AppWindow inherits Window {
     in property <bool> synced;
     // Progress of the message history transfer after linking; empty when there is none.
     in property <string> history-status;
+    in property <bool> history-skippable;
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
     in property <int> selected: -1;
@@ -432,6 +433,7 @@ export component AppWindow inherits Window {
     callback dismiss-error;
     callback unlock(string, string);
     callback settings-changed;
+    callback skip-history;
 
     VerticalLayout {
         if root.error != "": Rectangle {
@@ -492,7 +494,8 @@ export component AppWindow inherits Window {
                             font-weight: 700;
                             color: Palette.foreground;
                         }
-                        if !root.synced: Spinner {
+                        // The transfer status below has its own.
+                        if !root.synced && root.history-status == "": Spinner {
                             indeterminate: true;
                             width: 18px;
                             height: 18px;
@@ -531,7 +534,15 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                             font-size: 0.85rem;
                             horizontal-stretch: 1;
+                            vertical-alignment: center;
                             color: Palette.foreground.with-alpha(0.7);
+                        }
+                        if root.history-skippable: VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Skip";
+                                clicked => { root.skip-history(); }
+                            }
                         }
                     }
                     ListView {

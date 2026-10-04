@@ -45,46 +45,49 @@ const MAX_WAIT: Duration = Duration::from_secs(60 * 60);
 /// Per request; the HTTP client gives up after 65 seconds.
 const POLL: Duration = Duration::from_secs(55);
 
+/// How a transfer ended, short of failing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Imported,
+    /// The phone's upload failed and the user chose to continue without history.
+    WithoutHistory,
+    /// The user asked on the phone to link again.
+    Relink,
+}
+
 /// Waits for the archive the phone uploads after linking, downloads it to `dir` and imports
-/// it into the manager's store. Returns `Ok(())` without doing anything if the user chose to
-/// continue without history.
-pub(crate) async fn receive_history(manager: &Mgr, key: [u8; 32], dir: &Path, events: &Events) -> Result<(), String> {
+/// it into the manager's store. On `Err`, part of the history may have been stored.
+pub(crate) async fn receive_history(manager: &Mgr, key: [u8; 32], dir: &Path, events: &Events) -> Result<Outcome, String> {
     let path = dir.join("history-transfer.bin");
     let result = async {
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
-        let Some((cdn, cdn_key)) = wait_for_archive(manager).await? else {
-            return Ok(());
+        let (cdn, cdn_key) = match wait_for_archive(manager).await? {
+            TransferArchive::Uploaded { cdn, key } => (cdn, key),
+            TransferArchive::ContinueWithoutUpload => return Ok(Outcome::WithoutHistory),
+            TransferArchive::RelinkRequested => return Ok(Outcome::Relink),
         };
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Downloading));
         download(manager, cdn, &cdn_key, &path).await?;
         let aci = manager.registration_data().service_ids.aci();
         let stats = import_archive(key, &aci, &path, &mut manager.store().clone(), events).await?;
         info!(?stats, "message history imported");
-        Ok(())
+        Ok(Outcome::Imported)
     }
     .await;
-    let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
     // The archive is encrypted, but there is no reason to keep it around.
     let _ = std::fs::remove_file(&path);
     result
 }
 
-async fn wait_for_archive(manager: &Mgr) -> Result<Option<(u32, String)>, String> {
+async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
     let started = Instant::now();
     info!("waiting for the primary device to upload the message history");
     while started.elapsed() < MAX_WAIT {
         match manager.transfer_archive(POLL).await {
             Ok(None) => continue,
-            Ok(Some(TransferArchive::Uploaded { cdn, key })) => {
-                info!(cdn, waited_secs = started.elapsed().as_secs(), "history archive uploaded");
-                return Ok(Some((cdn, key)));
-            }
-            Ok(Some(TransferArchive::ContinueWithoutUpload)) => {
-                info!("the primary device continues without transferring history");
-                return Ok(None);
-            }
-            Ok(Some(TransferArchive::RelinkRequested)) => {
-                return Err("The phone asked to link this device again.".into());
+            Ok(Some(archive)) => {
+                info!(waited_secs = started.elapsed().as_secs(), "the primary device answered");
+                return Ok(archive);
             }
             Err(error) => return Err(format!("failed to wait for the message history: {error}")),
         }

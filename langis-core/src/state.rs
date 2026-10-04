@@ -267,6 +267,11 @@ impl ChatState {
         &self.account
     }
 
+    /// While waiting for the phone, gives up on the history transfer.
+    pub fn skip_history(&mut self) -> Option<Command> {
+        (self.transfer == Some(HistoryTransfer::Waiting)).then_some(Command::SkipHistory)
+    }
+
     /// The message history transfer in progress, if any.
     pub fn transfer(&self) -> Option<HistoryTransfer> {
         self.transfer
@@ -472,6 +477,18 @@ mod tests {
         assert_eq!(view.unread, 0);
         // Opening it still fetches the full history.
         assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
+    }
+
+    #[test]
+    fn history_can_be_skipped_only_while_waiting() {
+        let mut state = state();
+        assert!(state.skip_history().is_none());
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Waiting));
+        assert!(matches!(state.skip_history(), Some(Command::SkipHistory)));
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Importing { messages: 3 }));
+        assert!(state.skip_history().is_none());
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Finished));
+        assert_eq!(state.transfer(), None);
     }
 
     #[test]

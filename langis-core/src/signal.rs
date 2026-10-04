@@ -17,7 +17,7 @@ use presage::{
         SyncMessage,
         sync_message::{Content as SyncContent, Sent},
     },
-    store::{ContentExt, ContentsStore, Thread},
+    store::{ContentExt, ContentsStore, StateStore, Thread},
 };
 use presage_store_sqlite::SqliteStore;
 use sqlx::{ConnectOptions, sqlite::SqliteConnectOptions};
@@ -26,7 +26,8 @@ use tracing::{debug, info, warn};
 
 use crate::{
     Avatar, transfer,
-    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, Inbox, Password, QrMatrix,
+    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Password,
+    QrMatrix,
     now_millis,
     vault::{self, KeySource, KeyringKey},
 };
@@ -93,6 +94,12 @@ impl Paths {
         };
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
         Ok(Self { db: dir.join("langis.db3"), key_source: dir.join("langis.key"), dir, keyring_account })
+    }
+
+    /// Exists while a message history transfer is unfinished. Its one-time key lives only in
+    /// memory, so if the app quits meanwhile the link is redone on the next start.
+    fn transfer_marker(&self) -> PathBuf {
+        self.dir.join("history-transfer.pending")
     }
 }
 
@@ -224,47 +231,27 @@ async fn session(
         }
     });
 
-    let (mut manager, history_key) = match Manager::load_registered(store.clone()).await {
-        Ok(manager) => (manager, None),
+    let paths = Paths::new()?;
+    let linked = match Manager::load_registered(store.clone()).await {
+        Ok(manager) if !paths.transfer_marker().exists() => Some((manager, Vec::new())),
+        Ok(manager) => {
+            drop(manager);
+            let _ = events.send(Event::Error(
+                "The message history transfer was interrupted. Link this device again to retry.".into(),
+            ));
+            reset(store.clone(), &paths).await?;
+            link_with_history(store, &config, &events, &mut command_rx, &paths).await?
+        }
         Err(PresageError::NotYetRegisteredError) => {
-            // Nothing can be done before linking, so commands are dropped until then.
-            let ui_closed = async { while command_rx.recv().await.is_some() {} };
-            tokio::select! {
-                linked = link(store, &config, &events) => linked?,
-                () = ui_closed => return Ok(()),
-            }
+            link_with_history(store, &config, &events, &mut command_rx, &paths).await?
         }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
+    // `None`: the UI went away while linking.
+    let Some((mut manager, pending)) = linked else { return Ok(()) };
 
-    let account = manager
-        .registration_data()
-        .service_ids
-        .aci()
-        .service_id_string();
+    let account = manager.registration_data().service_ids.aci().service_id_string();
     let _ = events.send(Event::Linked { account });
-
-    // The history has to be in place before live messages arrive, so this comes first.
-    // Commands that arrive meanwhile are handled afterwards.
-    let mut pending = Vec::new();
-    if let Some(key) = history_key {
-        let dir = Paths::new()?.dir;
-        let transfer = transfer::receive_history(&manager, key, &dir, &events);
-        pin_mut!(transfer);
-        let result = loop {
-            tokio::select! {
-                result = &mut transfer => break result,
-                command = command_rx.recv() => match command {
-                    Some(command) => pending.push(command),
-                    None => return Ok(()),
-                },
-            }
-        };
-        if let Err(error) = result {
-            warn!(%error, "message history transfer failed");
-            let _ = events.send(Event::Error(error));
-        }
-    }
 
     let threads: Threads = Rc::default();
     if send_conversations(&manager, &threads, &events).await == 0 {
@@ -292,6 +279,86 @@ async fn session(
         }
     }
     Ok(())
+}
+
+/// Links this device and, if the user chose so on the phone, transfers the message history.
+/// The history has to be in place before live messages arrive, so this happens before
+/// anything else. A failed transfer, or the phone asking for it, starts over with a new QR
+/// code, so the user can simply try again; the database is wiped in between so nothing of a
+/// half-done import remains.
+///
+/// Returns the commands that arrived during the transfer, or `None` if the UI went away.
+async fn link_with_history(
+    store: SqliteStore,
+    config: &Config,
+    events: &Events,
+    commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    paths: &Paths,
+) -> Result<Option<(Mgr, Vec<Command>)>, String> {
+    loop {
+        // Nothing can be done before linking, so commands are dropped until then.
+        let ui_closed = async { while commands.recv().await.is_some() {} };
+        let (manager, key) = tokio::select! {
+            linked = link(store.clone(), config, events) => linked?,
+            () = ui_closed => return Ok(None),
+        };
+        let Some(key) = key else { return Ok(Some((manager, Vec::new()))) };
+
+        write_marker(paths)?;
+        let account = manager.registration_data().service_ids.aci().service_id_string();
+        let _ = events.send(Event::Linked { account });
+        let mut pending = Vec::new();
+        let result = {
+            let transfer = transfer::receive_history(&manager, key, &paths.dir, events);
+            pin_mut!(transfer);
+            loop {
+                tokio::select! {
+                    result = &mut transfer => break result,
+                    command = commands.recv() => match command {
+                        Some(Command::SkipHistory) => {
+                            info!("skipping the message history transfer");
+                            break Ok(transfer::Outcome::WithoutHistory);
+                        }
+                        Some(command) => pending.push(command),
+                        // The marker makes the next start redo the link.
+                        None => return Ok(None),
+                    },
+                }
+            }
+        };
+        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
+        match result {
+            Ok(transfer::Outcome::Imported | transfer::Outcome::WithoutHistory) => {
+                std::fs::remove_file(paths.transfer_marker())
+                    .map_err(|e| format!("failed to remove {}: {e}", paths.transfer_marker().display()))?;
+                return Ok(Some((manager, pending)));
+            }
+            Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
+            Err(error) => {
+                warn!(%error, "message history transfer failed");
+                let _ = events.send(Event::Error(format!("{error} Link this device again to retry.")));
+            }
+        }
+        drop(manager);
+        reset(store.clone(), paths).await?;
+    }
+}
+
+fn write_marker(paths: &Paths) -> Result<(), String> {
+    std::fs::write(paths.transfer_marker(), b"")
+        .map_err(|e| format!("failed to write {}: {e}", paths.transfer_marker().display()))
+}
+
+/// Forgets the registration and everything stored with it, ready to link again.
+async fn reset(mut store: SqliteStore, paths: &Paths) -> Result<(), String> {
+    store.clear_registration().await.map_err(|e| format!("failed to reset the database: {e}"))?;
+    store.clear_contents().await.map_err(|e| format!("failed to reset the database: {e}"))?;
+    match std::fs::remove_file(paths.transfer_marker()) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("failed to remove {}: {error}", paths.transfer_marker().display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Links this device; also returns the one-time key for the history transfer if the user
@@ -603,6 +670,8 @@ async fn handle(
     match command {
         // Already unlocked.
         Command::Unlock(_) => {}
+        // Only meaningful during the transfer; see `link_with_history`.
+        Command::SkipHistory => {}
         Command::LoadHistory(id) => {
             let Some(thread) = threads.borrow().get(&id).cloned() else {
                 return Ok(());

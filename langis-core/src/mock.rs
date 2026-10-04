@@ -26,18 +26,22 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::LinkQr(QrMatrix::encode(url).unwrap()));
     std::thread::sleep(Duration::from_secs(2));
     let _ = events.send(Event::Linked { account: "+49 151 0000000 (mock)".into() });
-    // `LANGIS_MOCK_TRANSFER=1` walks through a message history transfer.
+    // `LANGIS_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
+    // phone takes 6 seconds and can be skipped.
     if std::env::var_os("LANGIS_MOCK_TRANSFER").is_some() {
-        for stage in [
-            HistoryTransfer::Waiting,
-            HistoryTransfer::Downloading,
-            HistoryTransfer::Importing { messages: 500 },
-            HistoryTransfer::Importing { messages: 1000 },
-            HistoryTransfer::Finished,
-        ] {
-            let _ = events.send(Event::HistoryTransfer(stage));
-            std::thread::sleep(Duration::from_secs(2));
+        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
+        let skipped = matches!(commands.recv_timeout(Duration::from_secs(6)), Ok(Command::SkipHistory));
+        if !skipped {
+            for stage in [
+                HistoryTransfer::Downloading,
+                HistoryTransfer::Importing { messages: 500 },
+                HistoryTransfer::Importing { messages: 1000 },
+            ] {
+                let _ = events.send(Event::HistoryTransfer(stage));
+                std::thread::sleep(Duration::from_secs(2));
+            }
         }
+        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
     }
     let conversations = CONVERSATIONS
         .iter()
@@ -65,7 +69,7 @@ pub fn run(commands: Inbox, events: Events) {
 
     loop {
         match commands.recv_timeout(Duration::from_secs(20)) {
-            Ok(Command::Unlock(_)) => {}
+            Ok(Command::Unlock(_) | Command::SkipHistory) => {}
             Ok(Command::LoadHistory(id)) => {
                 let messages = match id.0.as_str() {
                     "alice" => vec![
