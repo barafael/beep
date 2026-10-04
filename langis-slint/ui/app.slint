@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView, Palette, Spinner } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, Spinner, Switch } from "std-widgets.slint";
 
 export struct ConversationItem {
     id: string,
@@ -254,6 +254,130 @@ component LinkScreen inherits Rectangle {
     }
 }
 
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: 16px;
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        Text { text: root.label; color: Palette.foreground; }
+        if root.hint != "": Text {
+            text: root.hint;
+            font-size: 0.85rem;
+            wrap: word-wrap;
+            color: Palette.foreground.with-alpha(0.6);
+        }
+    }
+    @children
+}
+
+component SectionTitle inherits Text {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: Palette.accent-background;
+}
+
+component SettingsPage inherits Rectangle {
+    in-out property <int> theme;
+    in-out property <int> text-size;
+    in-out property <bool> show-avatars;
+    in property <string> account;
+    in property <string> device-name;
+    callback changed-settings;
+    callback close;
+
+    VerticalLayout {
+        Rectangle {
+            height: 60px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+                Text {
+                    text: "Settings";
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    color: Palette.foreground;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Button {
+                        text: "Back";
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
+        }
+        HorizontalLayout {
+            alignment: center;
+            vertical-stretch: 1;
+            padding-left: 24px;
+            padding-right: 24px;
+            VerticalLayout {
+                preferred-width: 520px;
+                max-width: 520px;
+                padding-top: 24px;
+                spacing: 14px;
+                alignment: start;
+
+                SectionTitle { text: "Appearance"; }
+                SettingRow {
+                    label: "Theme";
+                    ComboBox {
+                        width: 160px;
+                        model: ["System", "Light", "Dark"];
+                        current-index <=> root.theme;
+                        selected => { root.changed-settings(); }
+                    }
+                }
+                SettingRow {
+                    label: "Text size";
+                    ComboBox {
+                        width: 160px;
+                        model: ["Small", "Default", "Large"];
+                        current-index <=> root.text-size;
+                        selected => { root.changed-settings(); }
+                    }
+                }
+                SettingRow {
+                    label: "Profile pictures";
+                    hint: "Show contacts' and groups' pictures instead of initials.";
+                    Switch {
+                        checked <=> root.show-avatars;
+                        toggled => { root.changed-settings(); }
+                    }
+                }
+
+                Rectangle { height: 8px; }
+                SectionTitle { text: "Account"; }
+                SettingRow {
+                    label: "Account";
+                    Text {
+                        text: root.account;
+                        overflow: elide;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+                SettingRow {
+                    label: "Device name";
+                    hint: "How this computer appears under Linked devices on your phone.";
+                    Text {
+                        text: root.device-name;
+                        vertical-alignment: center;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "langis";
     icon: @image-url("../assets/langis.svg");
@@ -276,11 +400,36 @@ export component AppWindow inherits Window {
     in property <bool> can-send;
     in-out property <string> draft;
 
+    // Settings: indexes into the choices shown on the settings page.
+    in-out property <int> theme;
+    in-out property <int> text-size: 1;
+    in-out property <bool> show-avatars: true;
+    in property <string> device-name;
+    in-out property <bool> settings-open;
+    // Factor for the chosen text size, applied to the platform's font size, which is captured
+    // before it is changed.
+    in property <float> font-scale: 1.0;
+    property <length> platform-font-size;
+
+    function apply-settings() {
+        Palette.color-scheme = root.theme == 1 ? ColorScheme.light
+            : root.theme == 2 ? ColorScheme.dark : ColorScheme.unknown;
+        root.default-font-size = root.platform-font-size * root.font-scale;
+    }
+    init => {
+        // `default-font-size` reads 0 while unset; `1rem` resolves it to the platform's size.
+        root.platform-font-size = 1rem;
+        root.apply-settings();
+    }
+    changed theme => { root.apply-settings(); }
+    changed font-scale => { root.apply-settings(); }
+
     callback select(string);
     callback draft-edited(string);
     callback send(string);
     callback dismiss-error;
     callback unlock(string, string);
+    callback settings-changed;
 
     VerticalLayout {
         if root.error != "": Rectangle {
@@ -334,6 +483,7 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         padding: 16px;
                         padding-bottom: 8px;
+                        spacing: 8px;
                         Text {
                             text: "Chats";
                             font-size: 1.3rem;
@@ -346,6 +496,23 @@ export component AppWindow inherits Window {
                             height: 18px;
                             y: (parent.height - self.height) / 2;
                         }
+                        Rectangle { horizontal-stretch: 1; }
+                        settings-button := Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 6px;
+                            background: root.settings-open ? Palette.accent-background.with-alpha(0.18)
+                                : settings-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                            settings-touch := TouchArea {
+                                clicked => { root.settings-open = !root.settings-open; }
+                            }
+                            Text {
+                                text: "⚙";
+                                font-size: 1.2rem;
+                                color: Palette.foreground.with-alpha(0.75);
+                            }
+                        }
                     }
                     ListView {
                         for item[index] in root.conversations: HorizontalLayout {
@@ -354,7 +521,10 @@ export component AppWindow inherits Window {
                             ConversationRow {
                                 item: item;
                                 selected: index == root.selected;
-                                clicked => { root.select(item.id); }
+                                clicked => {
+                                    root.settings-open = false;
+                                    root.select(item.id);
+                                }
                             }
                         }
                     }
@@ -371,15 +541,26 @@ export component AppWindow inherits Window {
             }
             Rectangle { width: 1px; background: Palette.border; }
 
+            if root.settings-open: SettingsPage {
+                horizontal-stretch: 1;
+                theme <=> root.theme;
+                text-size <=> root.text-size;
+                show-avatars <=> root.show-avatars;
+                account: root.account;
+                device-name: root.device-name;
+                changed-settings => { root.settings-changed(); }
+                close => { root.settings-open = false; }
+            }
+
             // Conversation
-            if root.selected < 0: Rectangle {
+            if !root.settings-open && root.selected < 0: Rectangle {
                 horizontal-stretch: 1;
                 Text {
                     text: "Select a chat to start messaging";
                     color: Palette.foreground.with-alpha(0.5);
                 }
             }
-            if root.selected >= 0: VerticalLayout {
+            if !root.settings-open && root.selected >= 0: VerticalLayout {
                 horizontal-stretch: 1;
                 Rectangle {
                     height: 60px;

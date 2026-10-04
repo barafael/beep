@@ -7,6 +7,7 @@
 
 mod mock;
 mod qr;
+pub mod settings;
 pub mod state;
 #[cfg(feature = "signal")]
 mod signal;

@@ -1,11 +1,12 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use langis_core::settings::{Settings, TextSize, Theme};
 use langis_core::state::{self, ChatState, ConversationView, MessageView, MessagesUpdate, Update};
 use langis_core::{Avatar, Backend, Command, Commands, Config, ConversationId, Event, QrMatrix};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -18,7 +19,11 @@ fn main() -> Result<(), slint::PlatformError> {
         .init();
 
     let window = AppWindow::new()?;
-    let backend = Backend::from_env(Config::default());
+    let settings = Settings::load();
+    show_settings(&window, &settings);
+    let config = Config::default();
+    window.set_device_name(config.device_name.as_str().into());
+    let backend = Backend::from_env(config);
     let chat = Rc::new(RefCell::new(ChatState::default()));
 
     // The window owns the models; `vec_model` gets them back for updates.
@@ -26,6 +31,7 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
 
     let avatars = Rc::new(AvatarImages::default());
+    avatars.enabled.set(settings.show_avatars);
     let app = App { window: window.as_weak(), chat: chat.clone(), avatars: avatars.clone(), commands: backend.commands() };
     window.on_select({
         let app = app.clone();
@@ -57,6 +63,21 @@ fn main() -> Result<(), slint::PlatformError> {
     window.on_draft_edited({
         let app = app.clone();
         move |_| app.act(|_, _| (None, Update::default()))
+    });
+    window.on_settings_changed({
+        let app = app.clone();
+        move || {
+            let Some(window) = app.window.upgrade() else { return };
+            let settings = read_settings(&window);
+            window.set_font_scale(settings.text_size.scale());
+            if let Err(error) = settings.save() {
+                tracing::warn!(%error, "failed to save settings");
+            }
+            // The theme applies in the UI itself; pictures need the list rebuilt.
+            if app.avatars.enabled.replace(settings.show_avatars) != settings.show_avatars {
+                app.act(|_, _| (None, Update { conversations: true, ..Update::default() }));
+            }
+        }
     });
     window.on_dismiss_error(move || {
         app.act(|chat, _| {
@@ -123,11 +144,19 @@ impl App {
 /// Avatars converted to Slint images, so re-rendering the list neither copies pixels again
 /// nor makes unchanged rows look changed.
 #[derive(Default)]
-struct AvatarImages(RefCell<HashMap<ConversationId, (Arc<Avatar>, Image)>>);
+struct AvatarImages {
+    images: RefCell<HashMap<ConversationId, (Arc<Avatar>, Image)>>,
+    /// The "Profile pictures" setting.
+    enabled: Cell<bool>,
+}
 
 impl AvatarImages {
+    /// Empty when pictures are turned off.
     fn get(&self, id: &ConversationId, avatar: &Arc<Avatar>) -> Image {
-        let mut images = self.0.borrow_mut();
+        if !self.enabled.get() {
+            return Image::default();
+        }
+        let mut images = self.images.borrow_mut();
         if let Some((cached, image)) = images.get(id)
             && Arc::ptr_eq(cached, avatar)
         {
@@ -137,6 +166,38 @@ impl AvatarImages {
         let image = Image::from_rgba8(buffer);
         images.insert(id.clone(), (avatar.clone(), image.clone()));
         image
+    }
+}
+
+/// The settings page shows choices by index, in the order of these enums.
+fn show_settings(window: &AppWindow, settings: &Settings) {
+    window.set_theme(match settings.theme {
+        Theme::System => 0,
+        Theme::Light => 1,
+        Theme::Dark => 2,
+    });
+    window.set_text_size(match settings.text_size {
+        TextSize::Small => 0,
+        TextSize::Default => 1,
+        TextSize::Large => 2,
+    });
+    window.set_show_avatars(settings.show_avatars);
+    window.set_font_scale(settings.text_size.scale());
+}
+
+fn read_settings(window: &AppWindow) -> Settings {
+    Settings {
+        theme: match window.get_theme() {
+            1 => Theme::Light,
+            2 => Theme::Dark,
+            _ => Theme::System,
+        },
+        text_size: match window.get_text_size() {
+            0 => TextSize::Small,
+            2 => TextSize::Large,
+            _ => TextSize::Default,
+        },
+        show_avatars: window.get_show_avatars(),
     }
 }
 

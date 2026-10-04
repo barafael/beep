@@ -1,0 +1,118 @@
+//! User preferences, kept in a small text file in the config directory. They live outside the
+//! encrypted database because some (like the theme) apply before it is unlocked.
+
+use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    /// Follow the desktop.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextSize {
+    Small,
+    #[default]
+    Default,
+    Large,
+}
+
+impl TextSize {
+    /// Factor applied to the platform's default font size.
+    pub fn scale(self) -> f32 {
+        match self {
+            TextSize::Small => 0.875,
+            TextSize::Default => 1.0,
+            TextSize::Large => 1.2,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub theme: Theme,
+    pub text_size: TextSize,
+    /// Show profile and group pictures rather than only initials.
+    pub show_avatars: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { theme: Theme::default(), text_size: TextSize::default(), show_avatars: true }
+    }
+}
+
+impl Settings {
+    /// The saved settings; defaults for anything missing or unreadable.
+    pub fn load() -> Self {
+        path().and_then(|path| std::fs::read_to_string(path).ok()).map_or_else(Self::default, |text| Self::parse(&text))
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = path().ok_or_else(|| std::io::Error::other("could not determine a config directory"))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, self.to_text())
+    }
+
+    /// `key = value` lines. Unknown keys and values are ignored, so older and newer versions
+    /// can share the file.
+    fn parse(text: &str) -> Self {
+        let mut settings = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else { continue };
+            match (key.trim(), value.trim()) {
+                ("theme", "system") => settings.theme = Theme::System,
+                ("theme", "light") => settings.theme = Theme::Light,
+                ("theme", "dark") => settings.theme = Theme::Dark,
+                ("text_size", "small") => settings.text_size = TextSize::Small,
+                ("text_size", "default") => settings.text_size = TextSize::Default,
+                ("text_size", "large") => settings.text_size = TextSize::Large,
+                ("show_avatars", "true") => settings.show_avatars = true,
+                ("show_avatars", "false") => settings.show_avatars = false,
+                _ => {}
+            }
+        }
+        settings
+    }
+
+    fn to_text(&self) -> String {
+        let theme = match self.theme {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        };
+        let text_size = match self.text_size {
+            TextSize::Small => "small",
+            TextSize::Default => "default",
+            TextSize::Large => "large",
+        };
+        format!("theme = {theme}\ntext_size = {text_size}\nshow_avatars = {}\n", self.show_avatars)
+    }
+}
+
+fn path() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("org", "langis", "langis")?;
+    Some(dirs.config_dir().join("settings.conf"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips() {
+        let settings = Settings { theme: Theme::Dark, text_size: TextSize::Large, show_avatars: false };
+        assert_eq!(Settings::parse(&settings.to_text()), settings);
+    }
+
+    #[test]
+    fn ignores_what_it_does_not_know() {
+        let settings = Settings::parse("theme = sepia\nfuture_option = 3\ngarbage\ntext_size=small\n");
+        assert_eq!(settings, Settings { text_size: TextSize::Small, ..Settings::default() });
+    }
+}
