@@ -31,17 +31,36 @@ impl TextSize {
     }
 }
 
+/// How much of a message a desktop notification reveals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NotificationContent {
+    #[default]
+    NameAndMessage,
+    NameOnly,
+    /// Only that there is a new message.
+    Nothing,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
     pub text_size: TextSize,
     /// Show profile and group pictures rather than only initials.
     pub show_avatars: bool,
+    /// Desktop notifications for incoming messages.
+    pub notifications: bool,
+    pub notification_content: NotificationContent,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: Theme::default(), text_size: TextSize::default(), show_avatars: true }
+        Self {
+            theme: Theme::default(),
+            text_size: TextSize::default(),
+            show_avatars: true,
+            notifications: true,
+            notification_content: NotificationContent::default(),
+        }
     }
 }
 
@@ -74,6 +93,13 @@ impl Settings {
                 ("text_size", "large") => settings.text_size = TextSize::Large,
                 ("show_avatars", "true") => settings.show_avatars = true,
                 ("show_avatars", "false") => settings.show_avatars = false,
+                ("notifications", "true") => settings.notifications = true,
+                ("notifications", "false") => settings.notifications = false,
+                ("notification_content", "name_and_message") => {
+                    settings.notification_content = NotificationContent::NameAndMessage
+                }
+                ("notification_content", "name_only") => settings.notification_content = NotificationContent::NameOnly,
+                ("notification_content", "nothing") => settings.notification_content = NotificationContent::Nothing,
                 _ => {}
             }
         }
@@ -91,7 +117,16 @@ impl Settings {
             TextSize::Default => "default",
             TextSize::Large => "large",
         };
-        format!("theme = {theme}\ntext_size = {text_size}\nshow_avatars = {}\n", self.show_avatars)
+        let notification_content = match self.notification_content {
+            NotificationContent::NameAndMessage => "name_and_message",
+            NotificationContent::NameOnly => "name_only",
+            NotificationContent::Nothing => "nothing",
+        };
+        format!(
+            "theme = {theme}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
+             notification_content = {notification_content}\n",
+            self.show_avatars, self.notifications
+        )
     }
 }
 
@@ -106,7 +141,13 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let settings = Settings { theme: Theme::Dark, text_size: TextSize::Large, show_avatars: false };
+        let settings = Settings {
+            theme: Theme::Dark,
+            text_size: TextSize::Large,
+            show_avatars: false,
+            notifications: false,
+            notification_content: NotificationContent::NameOnly,
+        };
         assert_eq!(Settings::parse(&settings.to_text()), settings);
     }
 

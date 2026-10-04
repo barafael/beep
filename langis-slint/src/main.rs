@@ -6,12 +6,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use langis_core::settings::{Settings, TextSize, Theme};
-use langis_core::state::{self, AttachmentState, ChatState, SaveState, ConversationView, MessageView, MessagesUpdate, Update};
+use langis_core::settings::{NotificationContent, Settings, TextSize, Theme};
+use langis_core::state::{self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, Notice, SaveState, Update};
 use langis_core::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Picture, Backend, Command, Commands, Config, ConversationId, Event, HistoryTransfer, QrMatrix};
+use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Color, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 slint::include_modules!();
+
+const APP: AppInfo = AppInfo { id: "org.langis.Langis", name: "langis" };
 
 fn main() -> Result<(), slint::PlatformError> {
     tracing_subscriber::fmt()
@@ -25,6 +28,8 @@ fn main() -> Result<(), slint::PlatformError> {
     window.set_device_name(config.device_name.as_str().into());
     let backend = Backend::from_env(config);
     let chat = Rc::new(RefCell::new(ChatState::default()));
+    chat.borrow_mut().set_notifications(settings.notifications, settings.notification_content);
+    let (notifier, notifier_actions) = Notifier::new(&APP);
 
     // The window owns the models; `vec_model` gets them back for updates.
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
@@ -32,7 +37,13 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let images = Rc::new(Images::default());
     images.avatars_enabled.set(settings.show_avatars);
-    let app = App { window: window.as_weak(), chat: chat.clone(), images: images.clone(), commands: backend.commands() };
+    let app = App {
+        window: window.as_weak(),
+        chat: chat.clone(),
+        images: images.clone(),
+        notifier: Rc::new(notifier),
+        commands: backend.commands(),
+    };
     window.on_select({
         let app = app.clone();
         move |id| {
@@ -74,9 +85,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 tracing::warn!(%error, "failed to save settings");
             }
             // The theme applies in the UI itself; pictures need the list rebuilt.
-            if app.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars {
-                app.act(|_, _| (None, Update { conversations: true, ..Update::default() }));
-            }
+            let rebuild = app.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars;
+            app.act(|chat, _| {
+                chat.set_notifications(settings.notifications, settings.notification_content);
+                (None, Update { conversations: rebuild, ..Update::default() })
+            });
         }
     });
     window.on_fetch_attachment({
@@ -99,12 +112,37 @@ fn main() -> Result<(), slint::PlatformError> {
         let app = app.clone();
         move || app.act(|chat, _| (chat.skip_history(), Update::default()))
     });
-    window.on_dismiss_error(move || {
+    window.on_dismiss_error({
+        let app = app.clone();
+        move || {
         app.act(|chat, _| {
             chat.dismiss_error();
             (None, Update::default())
         })
+        }
     });
+
+    // What the user did with a notification: open its chat, or send the answer typed into it.
+    let notifier = app.notifier.clone();
+    slint::spawn_local(async move {
+        while let Ok(action) = notifier_actions.recv().await {
+            match action {
+                Action::Open { key } => {
+                    if let Some(key) = key {
+                        app.act(|chat, _| {
+                            let command = chat.select(&ConversationId(key));
+                            (command, Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() })
+                        });
+                    }
+                    app.raise();
+                }
+                Action::Reply { key, text } => app.act(|chat, _| {
+                    (chat.reply(&ConversationId(key), &text), Update { conversations: true, ..Update::default() })
+                }),
+            }
+        }
+    })
+    .expect("the event loop is set up");
 
     // Await backend events on the UI thread and apply each burst (e.g. the initial sync) as
     // one batch, so the UI refreshes once per batch. Nothing polls: idle means idle.
@@ -115,6 +153,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let batch = std::iter::once(first).chain(std::iter::from_fn(|| events.try_recv().ok()));
             let Some(window) = weak.upgrade() else { break };
             let mut chat = chat.borrow_mut();
+            chat.set_window_focused(window_active(&window));
             let update = batch.fold(Update::default(), |update, event| {
                 if let Event::Error(error) = &event {
                     tracing::error!("{error}");
@@ -122,6 +161,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 update.merge(chat.apply(event))
             });
             render(&window, &chat, &images, update);
+            deliver_notices(&notifier, &mut chat);
         }
         // The channel only closes early if the backend thread died without reporting why
         // (a panic); say so instead of leaving a frozen window.
@@ -146,6 +186,7 @@ struct App {
     window: slint::Weak<AppWindow>,
     chat: Rc<RefCell<ChatState>>,
     images: Rc<Images>,
+    notifier: Rc<Notifier>,
     commands: Commands,
 }
 
@@ -158,7 +199,36 @@ impl App {
             self.commands.send(command);
         }
         render(&window, &chat, &self.images, update);
+        deliver_notices(&self.notifier, &mut chat);
     }
+
+    /// Brings the window to the front, e.g. after a notification was clicked. (On Wayland the
+    /// compositor may only highlight it: raising needs an activation token Slint can't take yet.)
+    fn raise(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window.window().set_minimized(false);
+            if let Err(error) = window.show() {
+                tracing::warn!(%error, "failed to show the window");
+            }
+        }
+    }
+}
+
+fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
+    for notice in chat.take_notices() {
+        match notice {
+            Notice::Show { conversation, title, body } => {
+                notifier.show(Notification { key: conversation.map(|id| id.0), title, body })
+            }
+            Notice::Withdraw(id) => notifier.withdraw(&id.0),
+        }
+    }
+}
+
+/// Whether the window is the active one. Slint's public API doesn't offer this yet, but both
+/// the Qt and the winit backend keep it up to date internally.
+fn window_active(window: &AppWindow) -> bool {
+    i_slint_core::window::WindowInner::from_pub(window.window()).active()
 }
 
 /// Pictures converted to Slint images once, so re-rendering lists neither copies pixels again
@@ -217,6 +287,12 @@ fn show_settings(window: &AppWindow, settings: &Settings) {
         TextSize::Large => 2,
     });
     window.set_show_avatars(settings.show_avatars);
+    window.set_notifications(settings.notifications);
+    window.set_notification_content(match settings.notification_content {
+        NotificationContent::NameAndMessage => 0,
+        NotificationContent::NameOnly => 1,
+        NotificationContent::Nothing => 2,
+    });
     window.set_font_scale(settings.text_size.scale());
 }
 
@@ -233,6 +309,12 @@ fn read_settings(window: &AppWindow) -> Settings {
             _ => TextSize::Default,
         },
         show_avatars: window.get_show_avatars(),
+        notifications: window.get_notifications(),
+        notification_content: match window.get_notification_content() {
+            1 => NotificationContent::NameOnly,
+            2 => NotificationContent::Nothing,
+            _ => NotificationContent::NameAndMessage,
+        },
     }
 }
 

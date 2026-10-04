@@ -423,6 +423,8 @@ component SettingsPage inherits Rectangle {
     in-out property <int> theme;
     in-out property <int> text-size;
     in-out property <bool> show-avatars;
+    in-out property <bool> notifications;
+    in-out property <int> notification-content;
     in property <string> account;
     in property <string> device-name;
     callback changed-settings;
@@ -494,6 +496,27 @@ component SettingsPage inherits Rectangle {
                 }
 
                 Rectangle { height: 8px; }
+                SectionTitle { text: "Notifications"; }
+                SettingRow {
+                    label: "New messages";
+                    hint: "Notify about messages unless their chat is open in front.";
+                    Switch {
+                        checked <=> root.notifications;
+                        toggled => { root.changed-settings(); }
+                    }
+                }
+                SettingRow {
+                    label: "Show";
+                    ComboBox {
+                        width: 160px;
+                        enabled: root.notifications;
+                        model: ["Name and message", "Name only", "Nothing"];
+                        current-index <=> root.notification-content;
+                        selected => { root.changed-settings(); }
+                    }
+                }
+
+                Rectangle { height: 8px; }
                 SectionTitle { text: "Account"; }
                 SettingRow {
                     label: "Account";
@@ -548,6 +571,8 @@ export component AppWindow inherits Window {
     in-out property <int> theme;
     in-out property <int> text-size: 1;
     in-out property <bool> show-avatars: true;
+    in-out property <bool> notifications: true;
+    in-out property <int> notification-content;
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -732,6 +757,8 @@ export component AppWindow inherits Window {
                 theme <=> root.theme;
                 text-size <=> root.text-size;
                 show-avatars <=> root.show-avatars;
+                notifications <=> root.notifications;
+                notification-content <=> root.notification-content;
                 account: root.account;
                 device-name: root.device-name;
                 changed-settings => { root.settings-changed(); }
