@@ -17,6 +17,7 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 mod autostart;
 mod instance;
 mod logging;
+mod shutdown;
 mod tray;
 
 /// The UI, compiled once per Slint widget style (see `build.rs`). Slint fixes the style when it
@@ -279,6 +280,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         instance::Claim::Unchecked => None,
     };
+    let shutdown = shutdown::watch();
 
     let config = Config::default();
     let device_name = config.device_name.clone();
@@ -401,6 +403,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let result = slint::run_event_loop();
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
+    shutdown.closed();
     // Only now may another langis start.
     drop(instance);
     result

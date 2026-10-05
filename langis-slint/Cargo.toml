@@ -43,10 +43,17 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 # Where the autostart entry goes (`autostart.rs`).
 directories = "6"
 
-# The single-instance pipe (see `instance.rs`).
+# Quitting cleanly when the system ends langis (`shutdown.rs`).
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
+# The single-instance pipe (`instance.rs`) and the window that hears the session end
+# (`shutdown.rs`).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
