@@ -12,6 +12,8 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("bob", "Bob", false),
     ("dana", "Dana", false),
     ("me", "Note to Self", false),
+    // Not accepted: a message request.
+    ("stranger", "+44 7700 900123", false),
 ];
 
 pub fn run(commands: Inbox, events: Events) {
@@ -96,6 +98,7 @@ pub fn run(commands: Inbox, events: Events) {
                 pinned: (id == "rust").then_some(0),
                 archived: id == "dana",
                 muted_until: (id == "bob").then_some(u64::MAX),
+                accepted: id != "stranger",
                 ..ChatSettings::default()
             },
             expire_timer: if id == "alice" { 3600 } else { 0 },
@@ -118,6 +121,7 @@ pub fn run(commands: Inbox, events: Events) {
         avatar: Arc::new(gradient(96)),
     });
     let _ = events.send(Event::Synced);
+    let _ = events.send(Event::StorageRead);
 
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();
@@ -240,6 +244,15 @@ pub fn run(commands: Inbox, events: Events) {
             }
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
+            Ok(Command::Block { .. }) => {}
+            Ok(Command::Respond {
+                conversation,
+                response,
+            }) => {
+                if response == crate::RequestResponse::Delete {
+                    let _ = events.send(Event::Cleared(conversation));
+                }
+            }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match conversation.0.as_str() {
                     "rust" => crate::Details {
@@ -522,6 +535,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 )
             })
             .collect(),
+        "stranger" => vec![message(
+            "stranger",
+            "+44 7700 900123",
+            "Hi! Is this still the number for the flat viewing?",
+            ago(15),
+            false,
+        )],
         "dana" => vec![message(
             "dana",
             "Dana",

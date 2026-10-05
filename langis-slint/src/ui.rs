@@ -102,6 +102,22 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         };
         chat.mute(id, until)
     }));
+    window.on_block(chat_action(shared, |chat, id, blocked| chat.block(id, blocked)));
+    window.on_respond({
+        let shared = shared.clone();
+        move |answer| {
+            use langis_core::RequestResponse;
+            let response = match answer {
+                0 => RequestResponse::Accept,
+                1 => RequestResponse::Delete,
+                _ => RequestResponse::Block,
+            };
+            shared.act(|chat| {
+                let id = chat.selected().map(|c| c.id.clone());
+                (id.and_then(|id| chat.respond(&id, response)), Update::reset())
+            });
+        }
+    });
     window.on_archive(chat_action(shared, |chat, id, archived| chat.archive(id, archived)));
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
@@ -749,7 +765,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
 
     if update.conversations {
         let pinned = chat.pinned().len();
-        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, pinned, images)).collect();
+        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, pinned, chat, images)).collect();
         let conversations = window.get_conversations();
         let conversations = vec_model(&conversations);
         // Update in place where possible so the list keeps its scroll position.
@@ -871,7 +887,7 @@ fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
     model.as_any().downcast_ref().expect("models are VecModels, set up in create")
 }
 
-fn conversation_item(view: &ConversationView, pinned: usize, images: &Images) -> ConversationItem {
+fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, images: &Images) -> ConversationItem {
     let c = view.conversation;
     ConversationItem {
         id: c.id.0.as_str().into(),
@@ -884,6 +900,8 @@ fn conversation_item(view: &ConversationView, pinned: usize, images: &Images) ->
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
+        request: chat.is_request(c),
+        blocked: c.settings.blocked,
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
         can_move_down: c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned),
         muted: view.muted(),

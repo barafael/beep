@@ -39,7 +39,7 @@ fn message_at(row: &SqliteRow, first: usize) -> MessageRef {
 /// The columns [`settings_of`] reads, in its order, after the conversation id.
 macro_rules! settings {
     () => {
-        "id, pinned, muted_until, archived, last_read, marked_unread"
+        "id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted"
     };
 }
 
@@ -50,6 +50,8 @@ fn settings_of(row: &SqliteRow) -> ChatSettings {
         archived: row.get::<i64, _>(3) != 0,
         last_read: row.get::<i64, _>(4) as u64,
         marked_unread: row.get::<i64, _>(5) != 0,
+        blocked: row.get::<i64, _>(6) != 0,
+        accepted: row.get::<i64, _>(7) != 0,
     }
 }
 
@@ -92,7 +94,8 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (conversation, author, ts)
     )",
     "CREATE INDEX IF NOT EXISTS langis_expiry_at ON langis_expiry (expires_at)",
-    // What the storage service said last, per conversation; see `storage.rs`.
+    // What the storage service said last, per conversation; see `storage.rs`. `accepted` is
+    // its "whitelisted".
     "CREATE TABLE IF NOT EXISTS langis_remote (
         id TEXT PRIMARY KEY NOT NULL,
         pinned INTEGER,
@@ -106,6 +109,30 @@ const SCHEMA: &[&str] = &[
     )",
 ];
 
+/// Columns added to tables after they first shipped: table, column, and how to add it.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "langis_conversation",
+        "blocked",
+        "ALTER TABLE langis_conversation ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "langis_conversation",
+        "accepted",
+        "ALTER TABLE langis_conversation ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "langis_remote",
+        "blocked",
+        "ALTER TABLE langis_remote ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "langis_remote",
+        "accepted",
+        "ALTER TABLE langis_remote ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
+    ),
+];
+
 impl LocalStore {
     pub(crate) async fn open(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         // Little traffic: a couple of connections are plenty.
@@ -115,6 +142,18 @@ impl LocalStore {
             .await?;
         for statement in SCHEMA {
             sqlx::query(*statement).execute(&db).await?;
+        }
+        // Columns added since the tables were first made.
+        for (table, column, statement) in ADDED_COLUMNS {
+            let exists: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
+                    .bind(table)
+                    .bind(column)
+                    .fetch_optional(&db)
+                    .await?;
+            if exists.is_none() {
+                sqlx::query(*statement).execute(&db).await?;
+            }
         }
         Ok(Self { db })
     }
@@ -158,8 +197,8 @@ impl LocalStore {
         change(&mut state);
         sqlx::query(
             "INSERT OR REPLACE INTO langis_conversation
-                (id, pinned, muted_until, archived, last_read, marked_unread)
-             VALUES (?, ?, ?, ?, ?, ?)",
+                (id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id.0)
         .bind(state.pinned.map(i64::from))
@@ -167,6 +206,8 @@ impl LocalStore {
         .bind(state.archived as i64)
         .bind(state.last_read as i64)
         .bind(state.marked_unread as i64)
+        .bind(state.blocked as i64)
+        .bind(state.accepted as i64)
         .execute(&self.db)
         .await?;
         Ok(state)
@@ -221,17 +262,21 @@ impl LocalStore {
         let mut tx = self.db.begin().await?;
         for (id, s) in settings {
             sqlx::query(
-                "INSERT INTO langis_conversation (id, pinned, muted_until, archived, marked_unread)
-                 VALUES (?, ?, ?, ?, ?)
+                "INSERT INTO langis_conversation
+                    (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned,
                     muted_until = excluded.muted_until, archived = excluded.archived,
-                    marked_unread = excluded.marked_unread",
+                    marked_unread = excluded.marked_unread, blocked = excluded.blocked,
+                    accepted = excluded.accepted",
             )
             .bind(&id.0)
             .bind(s.pinned.map(i64::from))
             .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
             .bind(s.archived as i64)
             .bind(s.marked_unread as i64)
+            .bind(s.blocked as i64)
+            .bind(s.accepted as i64)
             .execute(&mut *tx)
             .await?;
         }
@@ -243,7 +288,8 @@ impl LocalStore {
         &self,
     ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, pinned, muted_until, archived, 0, marked_unread FROM langis_remote",
+            "SELECT id, pinned, muted_until, archived, 0, marked_unread, blocked, accepted
+             FROM langis_remote",
         )
         .fetch_all(&self.db)
         .await?;
@@ -265,14 +311,17 @@ impl LocalStore {
             .await?;
         for (id, s) in remote {
             sqlx::query(
-                "INSERT INTO langis_remote (id, pinned, muted_until, archived, marked_unread)
-                 VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO langis_remote
+                    (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&id.0)
             .bind(s.pinned.map(i64::from))
             .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
             .bind(s.archived as i64)
             .bind(s.marked_unread as i64)
+            .bind(s.blocked as i64)
+            .bind(s.accepted as i64)
             .execute(&mut *tx)
             .await?;
         }
@@ -648,6 +697,41 @@ mod tests {
             local.forget_expired(&due).await.unwrap();
             assert!(local.edits(&a).await.unwrap().is_empty());
             assert_eq!(local.due(150).await.unwrap().0, []);
+        });
+    }
+
+    #[test]
+    fn older_databases_gain_new_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.path().join("local.db3"))
+                .create_if_missing(true);
+            // As the table was first made.
+            let pool = SqlitePoolOptions::new()
+                .connect_with(options.clone())
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE langis_conversation (
+                    id TEXT PRIMARY KEY NOT NULL, pinned INTEGER, muted_until INTEGER,
+                    archived INTEGER NOT NULL DEFAULT 0, last_read INTEGER NOT NULL DEFAULT 0,
+                    marked_unread INTEGER NOT NULL DEFAULT 0,
+                    expire_timer INTEGER NOT NULL DEFAULT 0)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO langis_conversation (id, last_read) VALUES ('a', 5)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let local = LocalStore::open(options).await.unwrap();
+            let a = ConversationId("a".into());
+            assert_eq!(local.settings(&a).await.unwrap().unwrap().last_read, 5);
+            let blocked = local.update(&a, |s| s.blocked = true).await.unwrap();
+            assert!(blocked.blocked && !blocked.accepted);
         });
     }
 }

@@ -14,6 +14,9 @@ export struct ConversationItem {
     subtitle: string,
     unread: int,
     pinned: bool,
+    // A message request, waiting for Accept, Delete or Block.
+    request: bool,
+    blocked: bool,
     // Among the pinned ones.
     can-move-up: bool,
     can-move-down: bool,
@@ -168,6 +171,7 @@ component ConversationMenu inherits ContextMenuArea {
     callback mute(int);
     callback archive(bool);
     callback set-timer(int);
+    callback block(bool);
     // With `with-timer`: the chat's media, files and links, and its details.
     callback show-media;
     callback show-details;
@@ -226,6 +230,10 @@ component ConversationMenu inherits ContextMenuArea {
         }
         MenuSeparator {}
         MenuItem {
+            title: root.item.blocked ? "Unblock" : "Block";
+            activated => { root.block(!root.item.blocked); }
+        }
+        MenuItem {
             title: root.item.archived ? "Unarchive" : "Archive";
             activated => { root.archive(!root.item.archived); }
         }
@@ -242,6 +250,7 @@ component ConversationRow inherits Rectangle {
     callback mark-read(bool);
     callback mute(int);
     callback archive(bool);
+    callback block(bool);
 
     height: 64px;
     border-radius: 6px;
@@ -294,8 +303,14 @@ component ConversationRow inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 6px;
+                if item.request: Text {
+                    text: "Message request · ";
+                    font-size: 0.9rem;
+                    font-weight: 600;
+                    color: Palette.accent-background;
+                }
                 Text {
-                    text: item.typing != "" ? item.typing : item.preview;
+                    text: item.blocked ? "Blocked" : item.typing != "" ? item.typing : item.preview;
                     overflow: elide;
                     horizontal-stretch: 1;
                     color: item.typing != "" ? Palette.accent-background : Palette.foreground.with-alpha(0.65);
@@ -333,6 +348,7 @@ component ConversationRow inherits Rectangle {
         mark-read(read) => { root.mark-read(read); }
         mute(seconds) => { root.mute(seconds); }
         archive(archived) => { root.archive(archived); }
+        block(blocked) => { root.block(blocked); }
     }
 }
 
@@ -1226,6 +1242,9 @@ export component AppWindow inherits Window {
     callback mute(string, int);
     callback archive(string, bool);
     callback set-timer(string, int);
+    callback block(string, bool);
+    // Answers the open chat's message request: 0 accept, 1 delete, 2 block.
+    callback respond(int);
     callback show-archived(bool);
     // Scrolled near the top of the open chat: older messages, if there are any.
     callback load-older;
@@ -1498,6 +1517,7 @@ export component AppWindow inherits Window {
                                 mark-read(read) => { root.mark-read(item.id, read); }
                                 mute(seconds) => { root.mute(item.id, seconds); }
                                 archive(archived) => { root.archive(item.id, archived); }
+                                block(blocked) => { root.block(item.id, blocked); }
                             }
                         }
                     }
@@ -1648,6 +1668,7 @@ export component AppWindow inherits Window {
                         mute(seconds) => { root.mute(self.id, seconds); }
                         archive(archived) => { root.archive(self.id, archived); }
                         set-timer(seconds) => { root.set-timer(self.id, seconds); }
+                        block(blocked) => { root.block(self.id, blocked); }
                         show-media => { root.open-media(); }
                         show-details => { root.open-details(); }
                     }
@@ -2221,7 +2242,61 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                HorizontalLayout {
+                if root.conversations[root.selected].request: Rectangle {
+                    background: Palette.alternate-background;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        Text {
+                            text: root.conversations[root.selected].title + " wants to message you. They won't know you've seen their messages until you accept.";
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            color: Palette.foreground;
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            Button {
+                                text: "Block";
+                                clicked => { root.respond(2); }
+                            }
+                            Button {
+                                text: "Delete";
+                                clicked => { root.respond(1); }
+                            }
+                            Button {
+                                text: "Accept";
+                                primary: true;
+                                clicked => { root.respond(0); }
+                            }
+                        }
+                    }
+                }
+                if root.conversations[root.selected].blocked: Rectangle {
+                    background: Palette.alternate-background;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Text {
+                            text: "You blocked this chat. You won't see new messages from it.";
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground;
+                        }
+                        Button {
+                            text: "Unblock";
+                            clicked => { root.block(root.conversations[root.selected].id, false); }
+                        }
+                    }
+                }
+                // Not for requests and blocked chats: they get their bar above instead.
+                Rectangle {
+                    property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked;
+                    height: self.hidden ? 0px : composer-row.preferred-height;
+                    clip: true;
+                composer-row := HorizontalLayout {
+                    width: parent.width;
                     padding: 12px;
                     spacing: 6px;
                     alignment: stretch;
@@ -2324,6 +2399,7 @@ export component AppWindow inherits Window {
                             clicked => { root.send(root.draft); composer.focus(); }
                         }
                     }
+                }
                 }
             }
         }

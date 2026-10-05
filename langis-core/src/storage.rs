@@ -23,18 +23,20 @@ use crate::{ChatSettings, ConversationId, Event, Events, local::LocalStore, sign
 const BATCH: usize = 500;
 
 /// Takes over what changed on the phone since the last time; tells the UI what changed here.
+/// Returns whether langis knows what the phone says (it doesn't before the phone has sent the
+/// storage key).
 pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let Some(service) = manager
         .storage_service()
         .await
         .map_err(|e| format!("failed to reach the storage service: {e}"))?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
-        return Ok(());
+        return Ok(false);
     };
     let known = tables.storage_version().await.map_err(db)?;
     let Some(manifest) = service
@@ -42,7 +44,7 @@ pub(crate) async fn sync(
         .await
         .map_err(|e| format!("failed to read the storage manifest: {e}"))?
     else {
-        return Ok(());
+        return Ok(true);
     };
     let wanted: Vec<Vec<u8>> = manifest
         .identifiers
@@ -72,6 +74,8 @@ pub(crate) async fn sync(
                                 contact.archived,
                                 contact.marked_unread,
                                 contact.muted_until_timestamp,
+                                contact.blocked,
+                                contact.whitelisted,
                             ),
                         );
                     }
@@ -83,6 +87,8 @@ pub(crate) async fn sync(
                             group.archived,
                             group.marked_unread,
                             group.muted_until_timestamp,
+                            group.blocked,
+                            group.whitelisted,
                         ),
                     );
                 }
@@ -136,7 +142,7 @@ pub(crate) async fn sync(
             break;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn read(
@@ -151,11 +157,21 @@ async fn read(
     Ok(records.into_iter().filter_map(|r| r.record).collect())
 }
 
-fn settings(archived: bool, marked_unread: bool, muted_until: u64) -> ChatSettings {
+/// What a contact or group record says: archived, marked unread, muted until, blocked, and
+/// whitelisted (accepted, not a message request).
+fn settings(
+    archived: bool,
+    marked_unread: bool,
+    muted_until: u64,
+    blocked: bool,
+    whitelisted: bool,
+) -> ChatSettings {
     ChatSettings {
         archived,
         marked_unread,
         muted_until: (muted_until > 0).then_some(muted_until),
+        blocked,
+        accepted: whitelisted,
         ..ChatSettings::default()
     }
 }
@@ -185,6 +201,11 @@ fn merge(
         if old.is_none_or(|old| old.muted_until != remote.muted_until) {
             settings.muted_until = remote.muted_until;
         }
+        if old.is_none_or(|old| old.blocked != remote.blocked) {
+            settings.blocked = remote.blocked;
+        }
+        // Accepted on the phone; un-accepting isn't a thing.
+        settings.accepted |= remote.accepted;
     }
     // Pins: the phone's in its order if they changed there, then those only pinned here.
     let pinned = |map: &HashMap<ConversationId, ChatSettings>| {

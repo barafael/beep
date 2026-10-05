@@ -11,8 +11,8 @@ use crate::settings::NotificationContent;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Details, Event, HistoryTransfer, Mention, MessageRef,
-    Password, Person, Picture, QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format,
-    now_millis,
+    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange,
+    apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -299,6 +299,8 @@ pub struct ChatState {
     media: Option<(ConversationId, Option<Vec<ChatMessage>>)>,
     /// The selected conversation's details page, while shown: `None` inside while gathered.
     details: Option<(ConversationId, Option<Details>)>,
+    /// What the phone accepted is known; see [`ChatState::is_request`].
+    requests_known: bool,
 }
 
 /// What [`ChatState::media`] shows on one of its tabs.
@@ -646,6 +648,20 @@ impl ChatState {
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::StorageRead => {
+                self.requests_known = true;
+                update.conversations = true;
+            }
+            Event::Cleared(conversation) => {
+                self.history.remove(&conversation);
+                self.loaded.remove(&conversation);
+                self.older.remove(&conversation);
+                self.unread.remove(&conversation);
+                if self.selected.as_ref() == Some(&conversation) {
+                    update = update.merge(self.deselect());
+                }
+                update.conversations = true;
+            }
             Event::Details {
                 conversation,
                 details,
@@ -933,10 +949,13 @@ impl ChatState {
         Some(Command::Unlock(Password::new(password)))
     }
 
-    /// Whether [`ChatState::compose`] would send `text`.
+    /// Whether [`ChatState::compose`] would send `text`: not to blocked chats or unanswered
+    /// requests.
     pub fn can_compose(&self, text: &str) -> bool {
         self.synced
-            && self.selected.is_some()
+            && self
+                .selected()
+                .is_some_and(|c| !c.settings.blocked && !self.is_request(c))
             && (!text.trim().is_empty() || !self.staged.is_empty())
     }
 
@@ -1001,6 +1020,45 @@ impl ChatState {
             files: std::mem::take(&mut self.staged),
             styles,
             mentions,
+        })
+    }
+
+    /// A chat from someone the user hasn't accepted (here, on the phone, or by writing to
+    /// them): it waits for Accept, Delete or Block, and sends no read receipts. Unknown until
+    /// the phone's settings were read.
+    pub fn is_request(&self, conversation: &Conversation) -> bool {
+        self.requests_known
+            && !conversation.note_to_self
+            && !conversation.settings.accepted
+            && !conversation.settings.blocked
+            // Written to from another device, before langis knew.
+            && !self
+                .history
+                .get(&conversation.id)
+                .is_some_and(|history| history.iter().any(|m| m.outgoing))
+    }
+
+    /// Answers the message request in `id`.
+    pub fn respond(&mut self, id: &ConversationId, response: RequestResponse) -> Option<Command> {
+        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        match response {
+            RequestResponse::Accept => conversation.settings.accepted = true,
+            RequestResponse::Block => conversation.settings.blocked = true,
+            // When the backend confirms with `Event::Cleared`.
+            RequestResponse::Delete => {}
+        }
+        Some(Command::Respond {
+            conversation: id.clone(),
+            response,
+        })
+    }
+
+    /// Blocks or unblocks a conversation.
+    pub fn block(&mut self, id: &ConversationId, blocked: bool) -> Option<Command> {
+        self.change_settings(id, |s| s.blocked = blocked)?;
+        Some(Command::Block {
+            conversation: id.clone(),
+            blocked,
         })
     }
 
@@ -3384,5 +3442,33 @@ mod tests {
         state.select_next_unread();
         assert_eq!(state.selected().unwrap().id, id("g"));
         assert!(state.select_next_unread().is_none());
+    }
+
+    #[test]
+    fn message_requests_wait_for_an_answer() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.select(&id("a"));
+        let chat = |state: &ChatState| state.conversation(&id("a")).unwrap().clone();
+        // Unknown until the phone's settings were read.
+        assert!(!state.is_request(&chat(&state)));
+        state.apply(Event::StorageRead);
+        assert!(state.is_request(&chat(&state)));
+        assert!(!state.can_compose("hi"));
+        assert!(matches!(
+            state.respond(&id("a"), RequestResponse::Accept),
+            Some(Command::Respond {
+                response: RequestResponse::Accept,
+                ..
+            })
+        ));
+        assert!(!state.is_request(&chat(&state)));
+        assert!(state.can_compose("hi"));
+        // Blocked chats can't be written to; deleting clears the chat.
+        state.block(&id("a"), true);
+        assert!(!state.can_compose("hi"));
+        state.apply(Event::Cleared(id("a")));
+        assert!(state.selected().is_none());
+        assert_eq!(listed(&state), ["g"]);
     }
 }

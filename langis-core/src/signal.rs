@@ -952,7 +952,12 @@ async fn follow_storage(manager: Mgr, ctx: Ctx) {
     const RETRY: Duration = Duration::from_secs(5 * 60);
     loop {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
-            Ok(()) => ctx.storage_changed.notified().await,
+            Ok(known) => {
+                if known && !ctx.events.send(Event::StorageRead) {
+                    return;
+                }
+                ctx.storage_changed.notified().await;
+            }
             // E.g. offline at the start; try again later.
             Err(error) => {
                 warn!(%error, "failed to read the storage service");
@@ -1495,6 +1500,20 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             on_read_elsewhere(manager, ctx, &sync.read).await;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Blocked(blocked)),
+            ..
+        }) => {
+            on_blocked_elsewhere(ctx, blocked).await;
+            return true;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::MessageRequestResponse(answer)),
+            ..
+        }) => {
+            on_answered_elsewhere(manager, ctx, answer).await;
+            return true;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
             content: Some(SyncContent::FetchLatest(latest)),
             ..
         }) => {
@@ -1509,6 +1528,10 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         return true;
     };
     let id = ensure_conversation(manager, ctx, thread).await;
+    // Nothing new from blocked chats (what we send from another device still counts).
+    if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
+        return true;
+    }
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         return events.send(Event::Reaction {
             conversation: id,
@@ -1588,6 +1611,124 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     events.send(Event::Message(message))
 }
 
+async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
+    ctx.tables
+        .settings(id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.blocked)
+}
+
+/// The conversation a sync message names by ACI (as text or bytes) or group id.
+fn named_conversation(
+    ctx: &Ctx,
+    aci: Option<&str>,
+    aci_binary: Option<&[u8]>,
+    group_id: Option<&[u8]>,
+) -> Option<ConversationId> {
+    let who = aci
+        .and_then(ServiceId::parse_from_service_id_string)
+        .or_else(|| aci_binary.and_then(ServiceId::parse_from_service_id_binary));
+    if let Some(who) = who {
+        return Some(ConversationId::contact(&who.service_id_string()));
+    }
+    let group_id = group_id?;
+    let threads = ctx.threads.borrow();
+    threads
+        .values()
+        .find(|t| matches!(t, Thread::Group(key) if group_identifier(key)[..] == *group_id))
+        .map(conversation_id)
+}
+
+/// The phone's whole list of whom we block: everything else is unblocked.
+async fn on_blocked_elsewhere(ctx: &Ctx, blocked: &sync_message::Blocked) {
+    let mut now_blocked = std::collections::HashSet::new();
+    for aci in &blocked.acis {
+        now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
+    }
+    for aci in &blocked.acis_binary {
+        now_blocked.extend(named_conversation(ctx, None, Some(aci), None));
+    }
+    for group in &blocked.group_ids {
+        now_blocked.extend(named_conversation(ctx, None, None, Some(group)));
+    }
+    let Ok(all) = ctx.tables.conversations().await else {
+        return;
+    };
+    let mut changed = Vec::new();
+    for (id, mut settings) in all {
+        let blocked = now_blocked.remove(&id);
+        if settings.blocked != blocked {
+            settings.blocked = blocked;
+            changed.push((id, settings));
+        }
+    }
+    // Blocked, but nothing remembered about them yet.
+    changed.extend(now_blocked.into_iter().map(|id| {
+        let settings = ChatSettings {
+            blocked: true,
+            ..ChatSettings::default()
+        };
+        (id, settings)
+    }));
+    if let Err(error) = ctx.tables.save_settings(&changed).await {
+        warn!(%error, "failed to remember whom the phone blocks");
+        return;
+    }
+    for (conversation, settings) in changed {
+        let _ = ctx.events.send(Event::Settings {
+            conversation,
+            settings,
+        });
+    }
+}
+
+/// A message request was answered on another device.
+async fn on_answered_elsewhere(
+    manager: &Mgr,
+    ctx: &Ctx,
+    answer: &sync_message::MessageRequestResponse,
+) {
+    use sync_message::message_request_response::Type;
+    let Some(id) = named_conversation(
+        ctx,
+        answer.thread_aci.as_deref(),
+        answer.thread_aci_binary.as_deref(),
+        answer.group_id.as_deref(),
+    ) else {
+        return;
+    };
+    let kind = answer.r#type();
+    let block = matches!(
+        kind,
+        Type::Block | Type::BlockAndDelete | Type::BlockAndSpam
+    );
+    let delete = matches!(kind, Type::Delete | Type::BlockAndDelete | Type::Spam);
+    let settings = ctx
+        .tables
+        .update(&id, |s| {
+            s.accepted |= kind == Type::Accept;
+            s.blocked |= block;
+        })
+        .await;
+    if let Ok(settings) = settings {
+        let _ = ctx.events.send(Event::Settings {
+            conversation: id.clone(),
+            settings,
+        });
+    }
+    if delete && let Some(thread) = thread_of(&id) {
+        let mut store = manager.store().clone();
+        match store.clear_thread(&thread).await {
+            Ok(()) => {
+                let _ = ctx.events.send(Event::Cleared(id));
+            }
+            Err(error) => warn!(%error, "failed to delete a chat deleted elsewhere"),
+        }
+    }
+}
+
 /// Our messages got further: delivered to or read on someone's phone.
 async fn on_receipt(ctx: &Ctx, receipt: &ReceiptMessage) -> bool {
     use receipt_message::Type;
@@ -1648,7 +1789,7 @@ async fn on_typing(
         None => Thread::Contact(sender),
     };
     let conversation = conversation_id(&thread);
-    if !ctx.threads.borrow().contains_key(&conversation) {
+    if !ctx.threads.borrow().contains_key(&conversation) || is_blocked(ctx, &conversation).await {
         return true;
     }
     let name = sender_name(manager, names, sender).await;
@@ -2108,6 +2249,23 @@ async fn handle(
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
+        Command::Block {
+            conversation,
+            blocked,
+        } => {
+            ctx.tables
+                .update(&conversation, |s| s.blocked = blocked)
+                .await
+                .map_err(db)?;
+            send_blocked(manager.clone(), ctx).await;
+        }
+        Command::Respond {
+            conversation,
+            response,
+        } => {
+            let thread = thread(&conversation)?;
+            respond(manager, ctx, &conversation, &thread, response).await?;
+        }
         Command::LoadDetails(conversation) => {
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
@@ -2267,7 +2425,16 @@ async fn handle(
                 return Ok(());
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
-            let receipts = ctx.privacy.get().read_receipts;
+            // Not to unanswered message requests: they'd tell a stranger we read it.
+            let request = ctx.tables.storage_version().await.unwrap_or(0) > 0
+                && !ctx
+                    .tables
+                    .settings(&conversation)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| s.accepted);
+            let receipts = ctx.privacy.get().read_receipts && !request;
             tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
         }
         Command::MarkUnread(conversation) => {
@@ -2550,6 +2717,25 @@ async fn send_new(
         .set_delivery(&conversation, timestamp, Delivery::Sent)
         .await
         .map_err(|e| format!("failed to save: {e}"))?;
+    // Writing to someone accepts the chat.
+    let accepted = ctx
+        .tables
+        .settings(&conversation)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.accepted);
+    if !accepted
+        && let Ok(settings) = ctx
+            .tables
+            .update(&conversation, |s| s.accepted = true)
+            .await
+    {
+        let _ = ctx.events.send(Event::Settings {
+            conversation: conversation.clone(),
+            settings,
+        });
+    }
     let own = own_id(manager).service_id_string();
     // presage sent it with the thread's timer.
     let timer = expire_timer(manager, &thread).await;
@@ -2574,6 +2760,97 @@ async fn send_new(
         ..Default::default()
     }));
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
+    Ok(())
+}
+
+/// Tells our other devices about something done here.
+async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
+    let own = own_id(manager);
+    if let Err(error) = manager
+        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .await
+    {
+        warn!(%error, "failed to tell our other devices");
+    }
+}
+
+/// Tells our other devices whom we block now: the whole list, as Signal expects.
+async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
+    let Ok(all) = ctx.tables.conversations().await else {
+        return;
+    };
+    let mut blocked = sync_message::Blocked::default();
+    for id in all.iter().filter(|(_, s)| s.blocked).map(|(id, _)| id) {
+        match thread_of(id) {
+            Some(Thread::Contact(who)) => blocked.acis.push(who.service_id_string()),
+            Some(Thread::Group(key)) => blocked.group_ids.push(group_identifier(&key).to_vec()),
+            None => {}
+        }
+    }
+    let sync = SyncMessage {
+        content: Some(SyncContent::Blocked(blocked)),
+        ..Default::default()
+    };
+    send_sync(&mut manager, sync).await;
+}
+
+/// Answers a message request, here and on our other devices.
+async fn respond(
+    manager: &mut Mgr,
+    ctx: &Ctx,
+    conversation: &ConversationId,
+    thread: &Thread,
+    response: crate::RequestResponse,
+) -> Result<(), String> {
+    use crate::RequestResponse;
+    use sync_message::message_request_response::Type;
+    let db = |error: sqlx::Error| format!("failed to save: {error}");
+    let kind = match response {
+        RequestResponse::Accept => {
+            ctx.tables
+                .update(conversation, |s| s.accepted = true)
+                .await
+                .map_err(db)?;
+            // Accepting shares our profile (name, picture) with them: presage puts our profile
+            // key into every data message.
+            let message = DataMessage {
+                flags: Some(Flags::ProfileKeyUpdate as u32),
+                ..Default::default()
+            };
+            send_data(manager, thread, message, now_millis()).await?;
+            Type::Accept
+        }
+        RequestResponse::Delete => {
+            let mut store = manager.store().clone();
+            store
+                .clear_thread(thread)
+                .await
+                .map_err(|e| format!("failed to delete the chat: {e}"))?;
+            let _ = ctx.events.send(Event::Cleared(conversation.clone()));
+            Type::Delete
+        }
+        RequestResponse::Block => {
+            ctx.tables
+                .update(conversation, |s| s.blocked = true)
+                .await
+                .map_err(db)?;
+            send_blocked(manager.clone(), ctx).await;
+            Type::Block
+        }
+    };
+    let mut answer = sync_message::MessageRequestResponse {
+        r#type: Some(kind as i32),
+        ..Default::default()
+    };
+    match thread {
+        Thread::Contact(who) => answer.thread_aci = Some(who.service_id_string()),
+        Thread::Group(key) => answer.group_id = Some(group_identifier(key).to_vec()),
+    }
+    let sync = SyncMessage {
+        content: Some(SyncContent::MessageRequestResponse(answer)),
+        ..Default::default()
+    };
+    send_sync(manager, sync).await;
     Ok(())
 }
 

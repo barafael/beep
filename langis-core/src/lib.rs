@@ -77,6 +77,17 @@ pub struct Details {
     pub members: Vec<(Person, bool)>,
 }
 
+/// What to do with a message request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestResponse {
+    /// Accept the chat, and share our profile with them.
+    Accept,
+    /// Delete the chat and what is in it.
+    Delete,
+    /// Block them, keeping the chat.
+    Block,
+}
+
 /// Someone who can be mentioned.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Person {
@@ -96,6 +107,10 @@ pub struct ChatSettings {
     pub last_read: u64,
     /// Marked unread by hand.
     pub marked_unread: bool,
+    /// Nothing new from it is shown.
+    pub blocked: bool,
+    /// Accepted as a chat, not a message request: here, on the phone, or by writing to it.
+    pub accepted: bool,
 }
 
 impl ChatSettings {
@@ -524,6 +539,11 @@ pub enum Event {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
     },
+    /// A conversation's stored messages were deleted (here, or on another device).
+    Cleared(ConversationId),
+    /// What the phone keeps in the storage service has been read, so chats it didn't accept
+    /// can be told apart as message requests.
+    StorageRead,
     /// Unread incoming messages per conversation, counted from the store at start.
     Unread(Vec<(ConversationId, u32)>),
     /// A page of a conversation's stored history, answering [`Command::LoadHistory`]: the
@@ -575,6 +595,16 @@ pub enum Command {
     SearchChat {
         conversation: ConversationId,
         query: String,
+    },
+    /// Blocks a conversation, or unblocks it; told to our other devices.
+    Block {
+        conversation: ConversationId,
+        blocked: bool,
+    },
+    /// Answers a message request; told to our other devices.
+    Respond {
+        conversation: ConversationId,
+        response: RequestResponse,
     },
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
