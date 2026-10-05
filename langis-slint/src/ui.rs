@@ -29,6 +29,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
     window.set_media_rows(ModelRc::new(VecModel::<MediaRow>::default()));
     window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
+    window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
 
@@ -196,6 +197,77 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| {
                 chat.close_group_draft();
                 (None, Update::default())
+            });
+        }
+    });
+    window.on_open_stories({
+        let shared = shared.clone();
+        move || shared.refresh(Update::default())
+    });
+    window.on_open_story({
+        let shared = shared.clone();
+        move |id| {
+            shared.act(|chat| (chat.open_story(&ConversationId(id.into())), Update::default()));
+        }
+    });
+    window.on_step_story({
+        let shared = shared.clone();
+        move |by| {
+            shared.act(|chat| (chat.step_story(by as isize), Update::default()));
+        }
+    });
+    window.on_close_story({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_story();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_post_story_text({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            let Some(window) = window.upgrade() else { return };
+            let text = window.get_story_text().to_string();
+            let at = window.get_story_group().max(0) as usize;
+            let sent = shared.act(|chat| {
+                let group = chat.story_groups().get(at).map(|c| c.id.clone());
+                let command = group.and_then(|g| chat.send_story(&g, langis_core::NewStory::Text(text)));
+                (command, Update::default())
+            });
+            if sent {
+                window.set_story_text(SharedString::new());
+            }
+        }
+    });
+    window.on_post_story_photo({
+        let window = window.as_weak();
+        move || {
+            let window = window.clone();
+            std::thread::spawn(move || {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Post a photo as a story")
+                    .add_filter("Pictures", &["jpg", "jpeg", "png", "webp", "gif"])
+                    .pick_file();
+                if let Some(path) = picked {
+                    let path: SharedString = path.to_string_lossy().as_ref().into();
+                    let _ = window.upgrade_in_event_loop(move |window| window.invoke_story_photo_chosen(path));
+                }
+            });
+        }
+    });
+    window.on_story_photo_chosen({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move |path| {
+            let Some(window) = window.upgrade() else { return };
+            let at = window.get_story_group().max(0) as usize;
+            shared.act(|chat| {
+                let group = chat.story_groups().get(at).map(|c| c.id.clone());
+                let story = langis_core::NewStory::Picture(std::path::PathBuf::from(path.as_str()));
+                (group.and_then(|g| chat.send_story(&g, story)), Update::default())
             });
         }
     });
@@ -709,7 +781,13 @@ fn shortcut(shared: &Rc<Shared>, window: &AppWindow, key: &str, control: bool, a
 /// Esc closes what is open, the innermost first.
 fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
     let mut chat = shared.chat.borrow_mut();
-    if chat.group_draft().is_some() {
+    if window.get_stories_open() {
+        if chat.current_story().is_some() {
+            chat.close_story();
+        } else {
+            window.set_stories_open(false);
+        }
+    } else if chat.group_draft().is_some() {
         chat.close_group_draft();
     } else if chat.forwarding() {
         chat.cancel_forward();
@@ -799,6 +877,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     render_media(window, chat, images);
     render_stickers(window, chat);
     render_details(window, chat);
+    render_stories(window, chat, images);
     let search = chat.chat_search();
     window.set_chat_search_open(search.is_some());
     window.set_chat_search_busy(search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()));
@@ -987,6 +1066,68 @@ fn render_stickers(window: &AppWindow, chat: &ChatState) {
         })
         .collect();
     window.set_sticker_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+/// The stories overlay.
+fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
+    window.set_unviewed_stories(chat.unviewed_stories() as i32);
+    if !window.get_stories_open() {
+        return;
+    }
+    let rings: Vec<RingItem> = chat
+        .story_rings()
+        .iter()
+        .map(|ring| RingItem {
+            id: ring.conversation.0.as_str().into(),
+            title: ring.title.as_str().into(),
+            initials: state::initials(&ring.title).into(),
+            color: avatar_color(ring.conversation),
+            avatar: chat
+                .avatar(ring.conversation)
+                .map(|a| images.avatar(ring.conversation, a))
+                .unwrap_or_default(),
+            unviewed: ring.unviewed,
+            time: state::format_list_time(ring.latest).into(),
+        })
+        .collect();
+    update_list(&window.get_story_rings(), rings, |a, b| a == b);
+    let groups: Vec<SharedString> = chat.story_groups().iter().map(|c| c.title.as_str().into()).collect();
+    if window.get_story_groups().row_count() != groups.len() {
+        window.set_story_groups(ModelRc::new(VecModel::from(groups)));
+    }
+    let story = match chat.current_story() {
+        Some((story, at, count)) => {
+            let mut item = StoryItem {
+                shown: true,
+                author: story.author.as_str().into(),
+                time: state::format_time(story.timestamp).into(),
+                position: format!("{} / {count}", at + 1).into(),
+                ..Default::default()
+            };
+            match &story.content {
+                langis_core::StoryContent::Text { text, foreground, background } => {
+                    item.text_story = true;
+                    item.text = text.as_str().into();
+                    item.foreground = Color::from_argb_encoded(*foreground | 0xff00_0000);
+                    item.background = Color::from_argb_encoded(*background | 0xff00_0000);
+                }
+                langis_core::StoryContent::Picture(picture) => {
+                    let shown = attachment_item(picture, chat.attachment(&picture.id), chat.saved(&picture.id), images);
+                    // Phone-shaped: as tall as the window allows.
+                    let scale = (560. / shown.height.max(1.)).min(360. / shown.width.max(1.));
+                    item.picture = AttachmentItem {
+                        width: shown.width * scale,
+                        height: shown.height * scale,
+                        can_save: false,
+                        ..shown
+                    };
+                }
+            }
+            item
+        }
+        None => StoryItem::default(),
+    };
+    window.set_story(story);
 }
 
 /// The details page.

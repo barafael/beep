@@ -124,6 +124,51 @@ pub fn run(commands: Inbox, events: Events) {
     });
     let _ = events.send(Event::Synced);
     let _ = events.send(Event::StorageRead);
+    // Two stories from Alice (a picture, then text) and one in the group.
+    let mut stories = vec![
+        crate::Story {
+            author_id: "alice".into(),
+            author: "Alice".into(),
+            conversation: ConversationId("alice".into()),
+            timestamp: now_millis() - 3 * 3_600_000,
+            content: crate::StoryContent::Picture(attachment(
+                "story-hut",
+                AttachmentKind::Image,
+                "image/jpeg",
+                None,
+                (1080, 1920),
+            )),
+            viewed: false,
+            outgoing: false,
+        },
+        crate::Story {
+            author_id: "alice".into(),
+            author: "Alice".into(),
+            conversation: ConversationId("alice".into()),
+            timestamp: now_millis() - 3_600_000,
+            content: crate::StoryContent::Text {
+                text: "Summit tomorrow! ⛰".into(),
+                foreground: 0xffff_ffff,
+                background: 0xffd3_6c1c,
+            },
+            viewed: false,
+            outgoing: false,
+        },
+        crate::Story {
+            author_id: "ferris".into(),
+            author: "Ferris".into(),
+            conversation: ConversationId("rust".into()),
+            timestamp: now_millis() - 7_200_000,
+            content: crate::StoryContent::Text {
+                text: "cargo build --release 🦀".into(),
+                foreground: 0xffff_ffff,
+                background: 0xff2b_8a60,
+            },
+            viewed: true,
+            outgoing: false,
+        },
+    ];
+    let _ = events.send(Event::Stories(stories.clone()));
     let _ = events.send(Event::Folders(vec![
         crate::ChatFolder {
             name: "Friends".into(),
@@ -263,6 +308,43 @@ pub fn run(commands: Inbox, events: Events) {
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
             Ok(Command::Block { .. }) => {}
+            Ok(Command::ViewStory(story)) => {
+                for s in &mut stories {
+                    if s.author_id == story.author_id && s.timestamp == story.timestamp {
+                        s.viewed = true;
+                    }
+                }
+                let _ = events.send(Event::Stories(stories.clone()));
+            }
+            Ok(Command::SendStory {
+                conversation,
+                story,
+            }) => {
+                let content = match story {
+                    crate::NewStory::Text(text) => crate::StoryContent::Text {
+                        text,
+                        foreground: 0xffff_ffff,
+                        background: 0xff3a_76f0,
+                    },
+                    crate::NewStory::Picture(_) => crate::StoryContent::Picture(attachment(
+                        &format!("story-{}", now_millis()),
+                        AttachmentKind::Image,
+                        "image/jpeg",
+                        None,
+                        (1080, 1920),
+                    )),
+                };
+                stories.push(crate::Story {
+                    author_id: "you".into(),
+                    author: "You".into(),
+                    conversation,
+                    timestamp: now_millis(),
+                    content,
+                    viewed: true,
+                    outgoing: true,
+                });
+                let _ = events.send(Event::Stories(stories.clone()));
+            }
             Ok(Command::CreateGroup { title, members }) => {
                 let id = ConversationId(format!("group-{}", now_millis()));
                 let conversation = Conversation {

@@ -10,6 +10,7 @@ use std::{
 };
 
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
+use presage::libsignal_service::prelude::ProtobufMessage as _;
 use presage::{
     Error as PresageError, Manager,
     libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams},
@@ -396,6 +397,7 @@ async fn run_linked(
         }
     }
 
+    send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
     let sweeping = tokio::task::spawn_local(sweep_expired(manager.clone(), ctx.clone()));
@@ -806,6 +808,143 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
         .flatten()
         .unwrap_or_default();
     let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+}
+
+/// Stories last a day.
+const STORY_LIFETIME: u64 = 24 * 60 * 60 * 1000;
+/// The colours of text stories posted here: white on Signal's blue.
+const STORY_FOREGROUND: u32 = 0xffff_ffff;
+const STORY_BACKGROUND: u32 = 0xff3a_76f0;
+
+/// Keeps a story from someone (or from us, on another device) and tells the UI.
+async fn on_story(
+    manager: &Mgr,
+    ctx: &Ctx,
+    author: ServiceId,
+    timestamp: u64,
+    story: &presage::proto::StoryMessage,
+    outgoing: bool,
+) {
+    use presage::proto::{story_message::Attachment, text_attachment::Background};
+    if now_millis().saturating_sub(timestamp) > STORY_LIFETIME {
+        return;
+    }
+    // A group story, or one to the author's contacts.
+    let conversation = match story
+        .group
+        .as_ref()
+        .and_then(|g| g.master_key.clone())
+        .and_then(|key| <[u8; 32]>::try_from(key).ok())
+    {
+        Some(key) => conversation_id(&Thread::Group(key)),
+        None => ConversationId::contact(&author.service_id_string()),
+    };
+    if !outgoing && is_blocked(ctx, &conversation).await {
+        return;
+    }
+    let mut stored = crate::local::StoredStory {
+        author: author.service_id_string(),
+        timestamp,
+        conversation,
+        viewed: outgoing,
+        outgoing,
+        ..Default::default()
+    };
+    match &story.attachment {
+        Some(Attachment::FileAttachment(pointer)) => {
+            stored.pointer = Some(pointer.encode_to_vec());
+        }
+        Some(Attachment::TextAttachment(text)) => {
+            stored.text = text.text.clone().unwrap_or_default();
+            stored.foreground = text.text_foreground_color.unwrap_or(STORY_FOREGROUND);
+            stored.background = match &text.background {
+                Some(Background::Color(color)) => *color,
+                // A gradient's first colour.
+                Some(Background::Gradient(gradient)) => gradient
+                    .colors
+                    .first()
+                    .copied()
+                    .or(gradient.start_color)
+                    .unwrap_or(STORY_BACKGROUND),
+                None => STORY_BACKGROUND,
+            };
+        }
+        None => return,
+    }
+    if let Err(error) = ctx.tables.add_story(&stored).await {
+        warn!(%error, "failed to keep a story");
+        return;
+    }
+    send_stories(manager, ctx).await;
+}
+
+/// Tells the UI the stories of the last day.
+async fn send_stories(manager: &Mgr, ctx: &Ctx) {
+    let since = now_millis().saturating_sub(STORY_LIFETIME);
+    let Ok(stored) = ctx.tables.stories(since).await else {
+        return;
+    };
+    let mut names = Names::new();
+    let mut stories = Vec::new();
+    for story in stored {
+        let author = match ServiceId::parse_from_service_id_string(&story.author) {
+            Some(who) => display_name(manager, &mut names, who).await,
+            None => String::new(),
+        };
+        let content = match &story.pointer {
+            Some(pointer) => match presage::proto::AttachmentPointer::decode(&pointer[..]) {
+                Ok(pointer) => crate::StoryContent::Picture(attachments::describe(&pointer, false)),
+                Err(_) => continue,
+            },
+            None => crate::StoryContent::Text {
+                text: story.text,
+                foreground: story.foreground,
+                background: story.background,
+            },
+        };
+        stories.push(crate::Story {
+            author_id: story.author,
+            author,
+            conversation: story.conversation,
+            timestamp: story.timestamp,
+            content,
+            viewed: story.viewed,
+            outgoing: story.outgoing,
+        });
+    }
+    let _ = ctx.events.send(Event::Stories(stories));
+}
+
+/// Tells a story's author we viewed it (with `receipts`), and our other devices.
+async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
+    let timestamp = now_millis();
+    let Some(author) = ServiceId::parse_from_service_id_string(&story.author_id) else {
+        return;
+    };
+    if author == own_id(&manager) {
+        return;
+    }
+    if receipts {
+        let receipt = ReceiptMessage {
+            r#type: Some(receipt_message::Type::Viewed as i32),
+            timestamp: vec![story.timestamp],
+        };
+        if let Err(error) = manager
+            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .await
+        {
+            debug!(%error, "failed to send a viewed receipt");
+        }
+    }
+    let sync = SyncMessage {
+        viewed: vec![sync_message::Viewed {
+            sender_aci: Some(story.author_id),
+            timestamp: Some(story.timestamp),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    send_sync(&mut manager, sync).await;
 }
 
 /// A group change for presage; `None` if a member isn't an ACI.
@@ -1696,6 +1835,24 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         ContentBody::SynchronizeMessage(sync) if !sync.read.is_empty() => {
             on_read_elsewhere(manager, ctx, &sync.read).await;
         }
+        ContentBody::StoryMessage(story) => {
+            let author = content.metadata.sender;
+            on_story(manager, ctx, author, content.timestamp(), story, false).await;
+            return true;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content:
+                Some(SyncContent::Sent(Sent {
+                    story_message: Some(story),
+                    timestamp,
+                    ..
+                })),
+            ..
+        }) => {
+            let at = timestamp.unwrap_or_else(|| content.timestamp());
+            on_story(manager, ctx, own_id(manager), at, story, true).await;
+            return true;
+        }
         ContentBody::SynchronizeMessage(SyncMessage {
             content: Some(SyncContent::Blocked(blocked)),
             ..
@@ -2515,6 +2672,69 @@ async fn handle_command(
                 sticker: None,
             };
             send_new(manager, ctx, conversation, outgoing).await?;
+        }
+        Command::ViewStory(story) => {
+            ctx.tables.story_viewed(&story).await.map_err(db)?;
+            send_stories(manager, ctx).await;
+            let receipts = ctx.preferences.get().read_receipts;
+            tokio::task::spawn_local(send_viewed(manager.clone(), story, receipts));
+        }
+        Command::SendStory {
+            conversation,
+            story,
+        } => {
+            let Thread::Group(key) = thread(&conversation)? else {
+                return Err("stories go to groups here".into());
+            };
+            let timestamp = now_millis();
+            let mut stored = crate::local::StoredStory {
+                author: own_id(manager).service_id_string(),
+                timestamp,
+                conversation: conversation.clone(),
+                viewed: true,
+                outgoing: true,
+                ..Default::default()
+            };
+            let attachment = match story {
+                crate::NewStory::Text(text) => {
+                    stored.text = text.clone();
+                    stored.foreground = STORY_FOREGROUND;
+                    stored.background = STORY_BACKGROUND;
+                    presage::proto::story_message::Attachment::TextAttachment(
+                        presage::proto::TextAttachment {
+                            text: Some(text),
+                            text_style: Some(
+                                presage::proto::text_attachment::Style::Regular as i32,
+                            ),
+                            text_foreground_color: Some(STORY_FOREGROUND),
+                            background: Some(presage::proto::text_attachment::Background::Color(
+                                STORY_BACKGROUND,
+                            )),
+                            ..Default::default()
+                        },
+                    )
+                }
+                crate::NewStory::Picture(path) => {
+                    let pointer = attachments::upload(manager, &[path])
+                        .await?
+                        .pop()
+                        .ok_or("nothing uploaded")?;
+                    stored.pointer = Some(pointer.encode_to_vec());
+                    presage::proto::story_message::Attachment::FileAttachment(pointer)
+                }
+            };
+            let message = presage::proto::StoryMessage {
+                group: Some(group_context(manager, &key).await),
+                attachment: Some(attachment),
+                allows_replies: Some(true),
+                ..Default::default()
+            };
+            manager
+                .send_message_to_group(&key, ContentBody::StoryMessage(message), timestamp)
+                .await
+                .map_err(|e| format!("failed to post the story: {e}"))?;
+            ctx.tables.add_story(&stored).await.map_err(db)?;
+            send_stories(manager, ctx).await;
         }
         Command::CreateGroup { title, members } => {
             let members: Vec<_> = members

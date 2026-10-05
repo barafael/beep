@@ -135,6 +135,32 @@ export struct MessageItem {
     has-preview-image: bool,
 }
 
+// Someone (or a group) with stories.
+export struct RingItem {
+    id: string,
+    title: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    unviewed: bool,
+    // When the newest was posted.
+    time: string,
+}
+
+// The story shown.
+export struct StoryItem {
+    shown: bool,
+    author: string,
+    time: string,
+    // E.g. "1 / 3".
+    position: string,
+    text-story: bool,
+    text: string,
+    foreground: color,
+    background: color,
+    picture: AttachmentItem,
+}
+
 // Someone to choose for a group.
 export struct CandidateItem {
     id: string,
@@ -1562,6 +1588,22 @@ export component AppWindow inherits Window {
     callback open-stickers;
     callback sticker-pack-chosen;
     callback send-sticker(string, int);
+    // Stories: the overlay, who has them, the one shown, groups to post to.
+    in-out property <bool> stories-open;
+    in property <[RingItem]> story-rings;
+    in property <StoryItem> story;
+    in property <int> unviewed-stories;
+    in property <[string]> story-groups;
+    in-out property <int> story-group;
+    in-out property <string> story-text;
+    callback open-stories;
+    callback open-story(string);
+    callback step-story(int);
+    callback close-story;
+    callback post-story-text;
+    callback post-story-photo;
+    // From Rust, once the file picker is done.
+    callback story-photo-chosen(string);
     // Ctrl+V in the composer: attaches a copied picture or files; `false` if the clipboard holds
     // neither, and the text is pasted as usual.
     callback paste() -> bool;
@@ -1676,6 +1718,30 @@ export component AppWindow inherits Window {
                             color: Palette.foreground;
                         }
                         Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                HoverButton {
+                                    symbol: "◎";
+                                    label: root.unviewed-stories > 0 ? "Stories, " + root.unviewed-stories + " new" : "Stories";
+                                    shown: true;
+                                    clicked => {
+                                        root.stories-open = true;
+                                        root.open-stories();
+                                    }
+                                }
+                                if root.unviewed-stories > 0: Rectangle {
+                                    x: parent.width - 9px;
+                                    y: 1px;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: Palette.accent-background;
+                                }
+                            }
+                        }
                         VerticalLayout {
                             alignment: center;
                             HoverButton {
@@ -2993,6 +3059,212 @@ export component AppWindow inherits Window {
                 font-size: 1.3rem;
                 font-weight: 600;
                 color: Palette.accent-background;
+            }
+        }
+    }
+
+    // Stories, over everything.
+    if root.stories-open: Rectangle {
+        background: #101418f0;
+        TouchArea {}
+        HorizontalLayout {
+            // Who has stories, and posting one.
+            Rectangle {
+                width: root.narrow && root.story.shown ? 0px : min(280px, root.width);
+                visible: !(root.narrow && root.story.shown);
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        Text {
+                            text: "Stories";
+                            font-size: 1.3rem;
+                            font-weight: 700;
+                            color: white;
+                            horizontal-stretch: 1;
+                        }
+                        TouchArea {
+                            width: 28px;
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: "Close stories";
+                            accessible-action-default => { self.clicked(); }
+                            clicked => {
+                                root.close-story();
+                                root.stories-open = false;
+                            }
+                            Text { text: "✕"; color: white; font-size: 1.1rem; }
+                        }
+                    }
+                    if root.story-rings.length == 0: Text {
+                        text: "No stories from the last day.";
+                        color: #fffa;
+                        wrap: word-wrap;
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for ring in root.story-rings: Rectangle {
+                            height: 56px;
+                            border-radius: 8px;
+                            background: ring-touch.has-hover ? #ffffff18 : transparent;
+                            ring-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                accessible-role: button;
+                                accessible-label: ring.title + (ring.unviewed ? ", new" : "") + ", " + ring.time;
+                                accessible-action-default => { self.clicked(); }
+                                clicked => { root.open-story(ring.id); }
+                            }
+                            HorizontalLayout {
+                                padding: 6px;
+                                spacing: 10px;
+                                // Ringed while there is something new.
+                                Rectangle {
+                                    width: 44px;
+                                    height: 44px;
+                                    border-radius: 22px;
+                                    border-width: 2px;
+                                    border-color: ring.unviewed ? Palette.accent-background.brighter(0.3) : #fff4;
+                                    Avatar {
+                                        width: 36px;
+                                        initials: ring.initials;
+                                        tint: ring.color;
+                                        picture: ring.avatar;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: ring.title;
+                                        color: white;
+                                        font-weight: ring.unviewed ? 700 : 400;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: ring.time;
+                                        color: #fff9;
+                                        font-size: 0.8rem;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Posting, to a group.
+                    if root.story-groups.length > 0: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "New story";
+                            color: white;
+                            font-weight: 600;
+                        }
+                        ComboBox {
+                            model: root.story-groups;
+                            current-index <=> root.story-group;
+                        }
+                        LineEdit {
+                            placeholder-text: "Text";
+                            text <=> root.story-text;
+                            accepted => { root.post-story-text(); }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Button {
+                                text: "Photo…";
+                                clicked => { root.post-story-photo(); }
+                            }
+                            Button {
+                                text: "Post";
+                                primary: true;
+                                enabled: root.story-text != "";
+                                clicked => { root.post-story-text(); }
+                            }
+                        }
+                    }
+                }
+            }
+            // The story shown.
+            Rectangle {
+                horizontal-stretch: 1;
+                if !root.story.shown: Text {
+                    text: root.story-rings.length > 0 ? "Pick someone's story." : "";
+                    color: #fff8;
+                }
+                if root.story.shown: VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.story.author;
+                                color: white;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.story.time + " · " + root.story.position;
+                                color: #fff9;
+                                font-size: 0.8rem;
+                            }
+                        }
+                        TouchArea {
+                            width: 28px;
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: "Close story";
+                            accessible-action-default => { self.clicked(); }
+                            clicked => { root.close-story(); }
+                            Text { text: "✕"; color: white; }
+                        }
+                    }
+                    HorizontalLayout {
+                        vertical-stretch: 1;
+                        spacing: 8px;
+                        TouchArea {
+                            width: 40px;
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: "Previous story";
+                            accessible-action-default => { self.clicked(); }
+                            clicked => { root.step-story(-1); }
+                            Text { text: "‹"; color: white; font-size: 2rem; }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            if root.story.text-story: Rectangle {
+                                width: min(parent.width, parent.height * 9 / 16);
+                                height: min(parent.height, parent.width * 16 / 9);
+                                border-radius: 12px;
+                                background: root.story.background;
+                                Text {
+                                    width: parent.width - 32px;
+                                    text: root.story.text;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                    font-size: 1.6rem;
+                                    font-weight: 600;
+                                    color: root.story.foreground;
+                                    accessible-role: text;
+                                    accessible-label: self.text;
+                                }
+                            }
+                            if !root.story.text-story: AttachmentView {
+                                item: root.story.picture;
+                                outgoing: false;
+                                fetch(id) => { root.fetch-attachment(id); }
+                                open(id) => { root.open-attachment(id); }
+                            }
+                        }
+                        TouchArea {
+                            width: 40px;
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: "Next story";
+                            accessible-action-default => { self.clicked(); }
+                            clicked => { root.step-story(1); }
+                            Text { text: "›"; color: white; font-size: 2rem; }
+                        }
+                    }
+                }
             }
         }
     }

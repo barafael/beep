@@ -100,6 +100,17 @@ impl MessagesUpdate {
     }
 }
 
+/// Someone (or a group) with stories, for the stories list.
+pub struct StoryRing<'a> {
+    pub conversation: &'a ConversationId,
+    /// Their name, or the group's.
+    pub title: String,
+    /// When the newest was posted.
+    pub latest: u64,
+    pub count: usize,
+    pub unviewed: bool,
+}
+
 pub struct ConversationView<'a> {
     pub conversation: &'a Conversation,
     /// Shared, so UIs can cache what they convert it into and tell when it changed.
@@ -306,6 +317,10 @@ pub struct ChatState {
     folder: Option<usize>,
     /// Choosing people for a new group, or to add to one.
     group_draft: Option<GroupDraft>,
+    /// The stories of the last day, oldest first.
+    stories: Vec<crate::Story>,
+    /// The story shown: whose (a conversation) and which of theirs.
+    story_view: Option<(ConversationId, usize)>,
     /// The installed sticker packs, once asked for: `Some(None)` while they are gathered.
     sticker_packs: Option<Option<Vec<crate::StickerPack>>>,
 }
@@ -660,6 +675,20 @@ impl ChatState {
                     }
                 }
                 self.sort_conversations();
+                update.conversations = true;
+            }
+            Event::Stories(stories) => {
+                self.stories = stories;
+                if let Some((id, at)) = &self.story_view {
+                    let count = self
+                        .stories
+                        .iter()
+                        .filter(|s| &s.conversation == id)
+                        .count();
+                    if *at >= count {
+                        self.story_view = None;
+                    }
+                }
                 update.conversations = true;
             }
             Event::GroupCreated(id) => {
@@ -1288,6 +1317,126 @@ impl ChatState {
         Some(Some(overview))
     }
 
+    /// Who has stories: unseen ones first, then the newest.
+    pub fn story_rings(&self) -> Vec<StoryRing<'_>> {
+        let mut rings: Vec<StoryRing<'_>> = Vec::new();
+        for story in &self.stories {
+            match rings
+                .iter_mut()
+                .find(|r| *r.conversation == story.conversation)
+            {
+                Some(ring) => {
+                    ring.latest = ring.latest.max(story.timestamp);
+                    ring.count += 1;
+                    ring.unviewed |= !story.viewed;
+                }
+                None => rings.push(StoryRing {
+                    conversation: &story.conversation,
+                    title: self
+                        .conversation(&story.conversation)
+                        .map_or_else(|| story.author.clone(), |c| c.title.clone()),
+                    latest: story.timestamp,
+                    count: 1,
+                    unviewed: !story.viewed,
+                }),
+            }
+        }
+        rings.sort_by_key(|r| (!r.unviewed, Reverse(r.latest)));
+        rings
+    }
+
+    /// Stories not seen yet, e.g. for a dot on the stories button.
+    pub fn unviewed_stories(&self) -> usize {
+        self.stories.iter().filter(|s| !s.viewed).count()
+    }
+
+    fn stories_of<'a>(&'a self, id: &'a ConversationId) -> impl Iterator<Item = &'a crate::Story> {
+        self.stories.iter().filter(move |s| &s.conversation == id)
+    }
+
+    /// Shows a conversation's stories, from the first not seen yet.
+    pub fn open_story(&mut self, id: &ConversationId) -> Option<Command> {
+        let at = self
+            .stories_of(id)
+            .position(|s| !s.viewed)
+            .unwrap_or_default();
+        self.stories_of(id).nth(at)?;
+        self.story_view = Some((id.clone(), at));
+        self.view_current()
+    }
+
+    /// The next (`by` 1) or previous (-1) story of the same conversation; past the last, the
+    /// viewer closes.
+    pub fn step_story(&mut self, by: isize) -> Option<Command> {
+        let (id, at) = self.story_view.clone()?;
+        let count = self.stories_of(&id).count();
+        match at.checked_add_signed(by).filter(|&next| next < count) {
+            Some(next) => {
+                self.story_view = Some((id, next));
+                self.view_current()
+            }
+            None if by > 0 => {
+                self.story_view = None;
+                None
+            }
+            None => None,
+        }
+    }
+
+    pub fn close_story(&mut self) {
+        self.story_view = None;
+    }
+
+    /// The story shown, which of how many it is.
+    pub fn current_story(&self) -> Option<(&crate::Story, usize, usize)> {
+        let (id, at) = self.story_view.as_ref()?;
+        let story = self.stories_of(id).nth(*at)?;
+        Some((story, *at, self.stories_of(id).count()))
+    }
+
+    /// Marks the story shown as seen, the first time.
+    fn view_current(&mut self) -> Option<Command> {
+        let (id, at) = self.story_view.clone()?;
+        let story = self
+            .stories
+            .iter_mut()
+            .filter(|s| s.conversation == id)
+            .nth(at)?;
+        if story.viewed {
+            return None;
+        }
+        story.viewed = true;
+        Some(Command::ViewStory(MessageRef {
+            author_id: story.author_id.clone(),
+            timestamp: story.timestamp,
+        }))
+    }
+
+    /// Groups a story can be posted to, by name.
+    pub fn story_groups(&self) -> Vec<&Conversation> {
+        let mut groups: Vec<&Conversation> = self
+            .conversations
+            .iter()
+            .filter(|c| c.is_group && !c.left)
+            .collect();
+        groups.sort_by_cached_key(|c| c.title.to_lowercase());
+        groups
+    }
+
+    /// Posts a story to a group.
+    pub fn send_story(&mut self, id: &ConversationId, story: crate::NewStory) -> Option<Command> {
+        self.conversation(id).filter(|c| c.is_group && !c.left)?;
+        if let crate::NewStory::Text(text) = &story
+            && text.trim().is_empty()
+        {
+            return None;
+        }
+        Some(Command::SendStory {
+            conversation: id.clone(),
+            story,
+        })
+    }
+
     /// Opens the search in the selected conversation.
     pub fn open_chat_search(&mut self) {
         if let Some(conversation) = self.selected.clone() {
@@ -1902,6 +2051,13 @@ impl ChatState {
             .iter()
             .filter(|(of, _)| of == selected)
             .flat_map(|(_, media)| media.iter().flatten());
+        // A story's picture, while it is shown.
+        if let Some((story, _, _)) = self.current_story()
+            && let crate::StoryContent::Picture(picture) = &story.content
+            && &picture.id == id
+        {
+            return Some(picture);
+        }
         shown
             .chain(gathered)
             .flat_map(|m| {
@@ -3834,5 +3990,64 @@ mod tests {
             state.finish_group_draft(""),
             Some(Command::EditGroup { edit: crate::GroupEdit::AddMembers(m), .. }) if m == ["bob"]
         ));
+    }
+
+    #[test]
+    fn stories_are_watched_in_order() {
+        let mut state = state();
+        let story = |who: &str, chat: &str, ts: u64, viewed| crate::Story {
+            author_id: who.into(),
+            author: who.into(),
+            conversation: id(chat),
+            timestamp: ts,
+            content: crate::StoryContent::Text {
+                text: format!("{who} {ts}"),
+                foreground: 0,
+                background: 0,
+            },
+            viewed,
+            outgoing: false,
+        };
+        state.apply(Event::Stories(vec![
+            story("ann", "a", 10, true),
+            story("ann", "a", 20, false),
+            story("bob", "g", 30, true),
+        ]));
+        let rings: Vec<_> = state
+            .story_rings()
+            .iter()
+            .map(|r| (r.conversation.0.clone(), r.unviewed))
+            .collect();
+        assert_eq!(
+            rings,
+            [("a".into(), true), ("g".into(), false)],
+            "unseen first"
+        );
+        assert_eq!(state.unviewed_stories(), 1);
+        // Opens at the first unseen, and marks it seen.
+        assert!(
+            matches!(state.open_story(&id("a")), Some(Command::ViewStory(r)) if r.timestamp == 20)
+        );
+        assert_eq!(
+            state.current_story().map(|(_, at, count)| (at, count)),
+            Some((1, 2))
+        );
+        assert_eq!(state.unviewed_stories(), 0);
+        assert!(state.step_story(-1).is_none(), "already seen");
+        assert_eq!(state.current_story().unwrap().1, 0);
+        state.step_story(1);
+        state.step_story(1);
+        assert!(state.current_story().is_none(), "closes after the last");
+        assert!(
+            state
+                .send_story(&id("g"), crate::NewStory::Text("hi".into()))
+                .is_some()
+        );
+        assert!(
+            state
+                .send_story(&id("a"), crate::NewStory::Text("hi".into()))
+                .is_none(),
+            "groups only"
+        );
     }
 }

@@ -14,6 +14,20 @@ use sqlx::{
 
 use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
 
+/// A story as kept: a picture (`pointer`, an encoded attachment pointer) or text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct StoredStory {
+    pub author: String,
+    pub timestamp: u64,
+    pub conversation: ConversationId,
+    pub pointer: Option<Vec<u8>>,
+    pub text: String,
+    pub foreground: u32,
+    pub background: u32,
+    pub viewed: bool,
+    pub outgoing: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct LocalStore {
     db: SqlitePool,
@@ -113,6 +127,21 @@ const SCHEMA: &[&str] = &[
         all_groups INTEGER NOT NULL,
         included TEXT NOT NULL,
         excluded TEXT NOT NULL
+    )",
+    // Stories, kept for a day: presage doesn't keep them. `kind` 0 is a picture (`pointer` an
+    // encoded attachment pointer), 1 text.
+    "CREATE TABLE IF NOT EXISTS langis_story (
+        author TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        conversation TEXT NOT NULL,
+        kind INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        foreground INTEGER NOT NULL,
+        background INTEGER NOT NULL,
+        pointer BLOB,
+        viewed INTEGER NOT NULL DEFAULT 0,
+        outgoing INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (author, ts)
     )",
     "CREATE TABLE IF NOT EXISTS langis_meta (
         key TEXT PRIMARY KEY NOT NULL,
@@ -344,6 +373,66 @@ impl LocalStore {
         .execute(&mut *tx)
         .await?;
         tx.commit().await
+    }
+
+    /// Keeps a story (once).
+    pub(crate) async fn add_story(&self, story: &StoredStory) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO langis_story (author, ts, conversation, kind, text, foreground,
+                background, pointer, viewed, outgoing)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&story.author)
+        .bind(story.timestamp as i64)
+        .bind(&story.conversation.0)
+        .bind(i64::from(story.pointer.is_none()))
+        .bind(&story.text)
+        .bind(i64::from(story.foreground))
+        .bind(i64::from(story.background))
+        .bind(story.pointer.as_deref())
+        .bind(story.viewed as i64)
+        .bind(story.outgoing as i64)
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
+    /// The stories since `since` (ms), oldest first; older ones are forgotten.
+    pub(crate) async fn stories(&self, since: u64) -> Result<Vec<StoredStory>, sqlx::Error> {
+        sqlx::query("DELETE FROM langis_story WHERE ts < ?")
+            .bind(since as i64)
+            .execute(&self.db)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT author, ts, conversation, kind, text, foreground, background, pointer, viewed,
+                outgoing
+             FROM langis_story ORDER BY ts",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| StoredStory {
+                author: row.get(0),
+                timestamp: row.get::<i64, _>(1) as u64,
+                conversation: ConversationId(row.get(2)),
+                pointer: (row.get::<i64, _>(3) == 0).then(|| row.get(7)),
+                text: row.get(4),
+                foreground: row.get::<i64, _>(5) as u32,
+                background: row.get::<i64, _>(6) as u32,
+                viewed: row.get::<i64, _>(8) != 0,
+                outgoing: row.get::<i64, _>(9) != 0,
+            })
+            .collect())
+    }
+
+    pub(crate) async fn story_viewed(&self, story: &MessageRef) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE langis_story SET viewed = 1 WHERE author = ? AND ts = ?")
+            .bind(&story.author_id)
+            .bind(story.timestamp as i64)
+            .execute(&self.db)
+            .await
+            .map(drop)
     }
 
     /// The chat folders, in order.
@@ -830,6 +919,28 @@ mod tests {
             assert_eq!(local.folders().await.unwrap(), folders);
             local.set_folders(&folders[1..]).await.unwrap();
             assert_eq!(local.folders().await.unwrap(), folders[1..]);
+        });
+    }
+
+    #[test]
+    fn stories_last_a_day() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let story = |ts| StoredStory {
+                author: "ann".into(),
+                timestamp: ts,
+                conversation: ConversationId("c:ann".into()),
+                text: "hi".into(),
+                ..Default::default()
+            };
+            local.add_story(&story(10)).await.unwrap();
+            local.add_story(&story(20)).await.unwrap();
+            local.add_story(&story(20)).await.unwrap(); // once
+            local.story_viewed(&reference("ann", 20)).await.unwrap();
+            let kept = local.stories(15).await.unwrap();
+            assert_eq!(kept.len(), 1);
+            assert!(kept[0].viewed && kept[0].pointer.is_none());
         });
     }
 }

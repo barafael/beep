@@ -112,6 +112,37 @@ pub struct ChatFolder {
     pub excluded: Vec<ConversationId>,
 }
 
+/// A story: shown for a day to the author's contacts, or to a group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Story {
+    pub author_id: String,
+    pub author: String,
+    /// The author's chat, or the group it was posted to.
+    pub conversation: ConversationId,
+    pub timestamp: u64,
+    pub content: StoryContent,
+    pub viewed: bool,
+    pub outgoing: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoryContent {
+    Picture(Attachment),
+    /// Text on a coloured background (colours as 0xAARRGGBB).
+    Text {
+        text: String,
+        foreground: u32,
+        background: u32,
+    },
+}
+
+/// A story to post; see [`Command::SendStory`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum NewStory {
+    Text(String),
+    Picture(std::path::PathBuf),
+}
+
 /// An installed sticker pack, for the sticker picker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StickerPack {
@@ -623,6 +654,8 @@ pub enum Event {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
     },
+    /// The stories of the last day, all of them (replacing those known before).
+    Stories(Vec<Story>),
     /// A group made with [`Command::CreateGroup`] is there.
     GroupCreated(ConversationId),
     /// The chat folders, in their order (replacing those known before).
@@ -685,6 +718,13 @@ pub enum Command {
     SearchChat {
         conversation: ConversationId,
         query: String,
+    },
+    /// A story was seen: told to its author (if read receipts are on) and our other devices.
+    ViewStory(MessageRef),
+    /// Posts a story to a group.
+    SendStory {
+        conversation: ConversationId,
+        story: NewStory,
     },
     /// Makes a group with us as its administrator and these members (service IDs); see
     /// [`Event::GroupCreated`].
