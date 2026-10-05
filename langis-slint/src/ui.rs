@@ -248,6 +248,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| (chat.load_older(), Update::default()));
         }
     });
+    window.on_show_folder({
+        let shared = shared.clone();
+        move |folder| {
+            shared.act(|chat| (None, chat.show_folder(usize::try_from(folder).ok())));
+        }
+    });
     window.on_show_archived({
         let shared = shared.clone();
         move |show| {
@@ -733,6 +739,11 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_archived_count(archived as i32);
     window.set_archived_unread(archived_unread as i32);
     window.set_showing_archived(chat.showing_archived());
+    let folders: Vec<SharedString> = chat.folders().iter().map(|f| f.name.as_str().into()).collect();
+    let unread: Vec<i32> = (0..folders.len()).map(|at| chat.folder_unread(at) as i32).collect();
+    window.set_folders(ModelRc::new(VecModel::from(folders)));
+    window.set_folder_unread(ModelRc::new(VecModel::from(unread)));
+    window.set_folder(chat.folder().map_or(-1, |at| at as i32));
     window.set_typing(chat.selected().map(|c| state::typing_label(&chat.typing(&c.id))).unwrap_or_default().into());
     window.set_editing(chat.editing().is_some());
     let replying = chat.replying();

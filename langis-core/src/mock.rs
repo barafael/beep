@@ -122,6 +122,19 @@ pub fn run(commands: Inbox, events: Events) {
     });
     let _ = events.send(Event::Synced);
     let _ = events.send(Event::StorageRead);
+    let _ = events.send(Event::Folders(vec![
+        crate::ChatFolder {
+            name: "Friends".into(),
+            included: vec![ConversationId("alice".into()), ConversationId("bob".into())],
+            ..Default::default()
+        },
+        crate::ChatFolder {
+            name: "Groups".into(),
+            all_groups: true,
+            show_muted: true,
+            ..Default::default()
+        },
+    ]));
 
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();

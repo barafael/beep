@@ -103,6 +103,17 @@ const SCHEMA: &[&str] = &[
         archived INTEGER NOT NULL DEFAULT 0,
         marked_unread INTEGER NOT NULL DEFAULT 0
     )",
+    // The phone's chat folders, in order; conversation ids one per line.
+    "CREATE TABLE IF NOT EXISTS langis_folder (
+        position INTEGER PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        only_unread INTEGER NOT NULL,
+        show_muted INTEGER NOT NULL,
+        all_individual INTEGER NOT NULL,
+        all_groups INTEGER NOT NULL,
+        included TEXT NOT NULL,
+        excluded TEXT NOT NULL
+    )",
     "CREATE TABLE IF NOT EXISTS langis_meta (
         key TEXT PRIMARY KEY NOT NULL,
         value INTEGER NOT NULL
@@ -332,6 +343,68 @@ impl LocalStore {
         .bind(version.min(i64::MAX as u64) as i64)
         .execute(&mut *tx)
         .await?;
+        tx.commit().await
+    }
+
+    /// The chat folders, in order.
+    pub(crate) async fn folders(&self) -> Result<Vec<crate::ChatFolder>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT name, only_unread, show_muted, all_individual, all_groups, included, excluded
+             FROM langis_folder ORDER BY position",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let ids = |text: String| -> Vec<ConversationId> {
+            text.lines()
+                .map(|id| ConversationId(id.to_owned()))
+                .collect()
+        };
+        Ok(rows
+            .into_iter()
+            .map(|row| crate::ChatFolder {
+                name: row.get(0),
+                only_unread: row.get::<i64, _>(1) != 0,
+                show_muted: row.get::<i64, _>(2) != 0,
+                all_individual: row.get::<i64, _>(3) != 0,
+                all_groups: row.get::<i64, _>(4) != 0,
+                included: ids(row.get(5)),
+                excluded: ids(row.get(6)),
+            })
+            .collect())
+    }
+
+    /// Replaces the chat folders.
+    pub(crate) async fn set_folders(
+        &self,
+        folders: &[crate::ChatFolder],
+    ) -> Result<(), sqlx::Error> {
+        let ids = |ids: &[ConversationId]| -> String {
+            ids.iter()
+                .map(|id| id.0.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut tx = self.db.begin().await?;
+        sqlx::query("DELETE FROM langis_folder")
+            .execute(&mut *tx)
+            .await?;
+        for (position, folder) in folders.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO langis_folder (position, name, only_unread, show_muted,
+                    all_individual, all_groups, included, excluded)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(position as i64)
+            .bind(&folder.name)
+            .bind(folder.only_unread as i64)
+            .bind(folder.show_muted as i64)
+            .bind(folder.all_individual as i64)
+            .bind(folder.all_groups as i64)
+            .bind(ids(&folder.included))
+            .bind(ids(&folder.excluded))
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await
     }
 
@@ -732,6 +805,31 @@ mod tests {
             assert_eq!(local.settings(&a).await.unwrap().unwrap().last_read, 5);
             let blocked = local.update(&a, |s| s.blocked = true).await.unwrap();
             assert!(blocked.blocked && !blocked.accepted);
+        });
+    }
+
+    #[test]
+    fn folders_keep_their_order_and_members() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let folders = [
+                crate::ChatFolder {
+                    name: "Family".into(),
+                    included: vec![ConversationId("c:a".into()), ConversationId("g:b".into())],
+                    ..Default::default()
+                },
+                crate::ChatFolder {
+                    name: "Groups".into(),
+                    all_groups: true,
+                    excluded: vec![ConversationId("g:b".into())],
+                    ..Default::default()
+                },
+            ];
+            local.set_folders(&folders).await.unwrap();
+            assert_eq!(local.folders().await.unwrap(), folders);
+            local.set_folders(&folders[1..]).await.unwrap();
+            assert_eq!(local.folders().await.unwrap(), folders[1..]);
         });
     }
 }

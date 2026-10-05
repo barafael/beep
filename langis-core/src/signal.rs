@@ -762,6 +762,9 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     }
     with_settings(ctx, &mut all).await;
     let _ = ctx.events.send(Event::Conversations(all));
+    if let Ok(folders) = ctx.tables.folders().await {
+        let _ = ctx.events.send(Event::Folders(folders));
+    }
     contacts
 }
 

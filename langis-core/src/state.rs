@@ -301,6 +301,9 @@ pub struct ChatState {
     details: Option<(ConversationId, Option<Details>)>,
     /// What the phone accepted is known; see [`ChatState::is_request`].
     requests_known: bool,
+    /// The phone's chat folders, and the one shown (`None` for all chats).
+    folders: Vec<crate::ChatFolder>,
+    folder: Option<usize>,
     /// The installed sticker packs, once asked for: `Some(None)` while they are gathered.
     sticker_packs: Option<Option<Vec<crate::StickerPack>>>,
 }
@@ -648,6 +651,11 @@ impl ChatState {
                     }
                 }
                 self.sort_conversations();
+                update.conversations = true;
+            }
+            Event::Folders(folders) => {
+                self.folders = folders;
+                self.folder = self.folder.filter(|&at| at < self.folders.len());
                 update.conversations = true;
             }
             Event::StickerPacks(packs) => {
@@ -1826,10 +1834,59 @@ impl ChatState {
                         || c.settings.pinned.is_some()
                         || self.last_of(&c.id).is_some()
                         || self.selected.as_ref() == Some(&c.id))
+                    && (self.show_archived
+                        || self
+                            .folder
+                            .is_none_or(|at| self.in_folder(c, &self.folders[at])))
             } else {
                 c.title.to_lowercase().contains(&filter)
             }
         })
+    }
+
+    /// Whether a folder shows a conversation, by Signal's rules. The open one always stays.
+    fn in_folder(&self, c: &Conversation, folder: &crate::ChatFolder) -> bool {
+        if self.selected.as_ref() == Some(&c.id) {
+            return true;
+        }
+        let member = folder.included.contains(&c.id)
+            || (folder.all_individual && !c.is_group)
+            || (folder.all_groups && c.is_group);
+        member
+            && !folder.excluded.contains(&c.id)
+            && (folder.show_muted || !c.settings.muted(now_millis()))
+            && (!folder.only_unread || self.unread.contains_key(&c.id) || c.settings.marked_unread)
+    }
+
+    pub fn folders(&self) -> &[crate::ChatFolder] {
+        &self.folders
+    }
+
+    /// The folder shown, as an index into [`ChatState::folders`]; `None` for all chats.
+    pub fn folder(&self) -> Option<usize> {
+        self.folder
+    }
+
+    /// Shows a folder's chats, or all (`None`).
+    pub fn show_folder(&mut self, folder: Option<usize>) -> Update {
+        self.folder = folder.filter(|&at| at < self.folders.len());
+        self.show_archived = false;
+        Update {
+            conversations: true,
+            ..Update::default()
+        }
+    }
+
+    /// Unread messages in a folder's chats, for its tab.
+    pub fn folder_unread(&self, at: usize) -> u32 {
+        let Some(folder) = self.folders.get(at) else {
+            return 0;
+        };
+        self.conversations
+            .iter()
+            .filter(|c| !c.settings.archived && self.in_folder(c, folder))
+            .filter_map(|c| self.unread.get(&c.id))
+            .sum()
     }
 
     /// Narrows the chat list to conversations whose title contains `text`, including contacts
@@ -3508,5 +3565,44 @@ mod tests {
         state.apply(Event::Cleared(id("a")));
         assert!(state.selected().is_none());
         assert_eq!(listed(&state), ["g"]);
+    }
+
+    #[test]
+    fn folders_show_their_chats() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![conversation("b", false)]));
+        for (chat, ts) in [("a", 30), ("b", 20), ("g", 10)] {
+            state.apply(Event::Message(message(chat, "Ann", ts, false)));
+        }
+        state.apply(Event::Folders(vec![
+            crate::ChatFolder {
+                name: "Friends".into(),
+                included: vec![id("a")],
+                all_groups: true,
+                ..Default::default()
+            },
+            crate::ChatFolder {
+                name: "Unread people".into(),
+                all_individual: true,
+                excluded: vec![id("b")],
+                only_unread: true,
+                show_muted: true,
+                ..Default::default()
+            },
+        ]));
+        state.show_folder(Some(0));
+        assert_eq!(listed(&state), ["a", "g"]);
+        assert_eq!(state.folder_unread(0), 2);
+        state.show_folder(Some(1));
+        assert_eq!(listed(&state), ["a"]);
+        state.select(&id("a"));
+        // Read now, yet the open chat stays listed.
+        assert_eq!(listed(&state), ["a"]);
+        state.show_folder(None);
+        assert_eq!(listed(&state), ["a", "b", "g"]);
+        // A folder that went away on the phone isn't shown any more.
+        state.show_folder(Some(1));
+        state.apply(Event::Folders(Vec::new()));
+        assert_eq!(state.folder(), None);
     }
 }

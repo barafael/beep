@@ -79,6 +79,20 @@ pub struct Details {
     pub members: Vec<(Person, bool)>,
 }
 
+/// A chat folder, as set up on the phone: a tab of the chat list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatFolder {
+    pub name: String,
+    pub only_unread: bool,
+    pub show_muted: bool,
+    /// Every 1:1 chat, unless excluded.
+    pub all_individual: bool,
+    /// Every group, unless excluded.
+    pub all_groups: bool,
+    pub included: Vec<ConversationId>,
+    pub excluded: Vec<ConversationId>,
+}
+
 /// An installed sticker pack, for the sticker picker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StickerPack {
@@ -579,6 +593,8 @@ pub enum Event {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
     },
+    /// The chat folders, in their order (replacing those known before).
+    Folders(Vec<ChatFolder>),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
     StickerPacks(Vec<StickerPack>),
     /// A conversation's stored messages were deleted (here, or on another device).

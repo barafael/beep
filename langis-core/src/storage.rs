@@ -52,7 +52,10 @@ pub(crate) async fn sync(
         .filter(|id| {
             matches!(
                 id.r#type(),
-                identifier::Type::Contact | identifier::Type::Groupv2 | identifier::Type::Account
+                identifier::Type::Contact
+                    | identifier::Type::Groupv2
+                    | identifier::Type::Account
+                    | identifier::Type::ChatFolder
             )
         })
         .map(|id| id.raw.clone())
@@ -60,6 +63,7 @@ pub(crate) async fn sync(
     let ikm = (!manifest.record_ikm.is_empty()).then_some(&manifest.record_ikm[..]);
     let mut remote = HashMap::new();
     let mut pins = Vec::new();
+    let mut folders = Vec::new();
     for keys in wanted.chunks(BATCH) {
         let records = read(&service, keys.to_vec(), ikm).await?;
         for record in records {
@@ -114,10 +118,22 @@ pub(crate) async fn sync(
                         })
                         .collect();
                 }
+                Record::ChatFolder(folder) => {
+                    use presage::proto::chat_folder_record::FolderType;
+                    if folder.folder_type() == FolderType::Custom
+                        && folder.deleted_at_timestamp_ms == 0
+                    {
+                        folders.push((folder.position, chat_folder(folder)));
+                    }
+                }
                 _ => {}
             }
         }
     }
+    folders.sort_by_key(|(position, _)| *position);
+    let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
+    tables.set_folders(&folders).await.map_err(db)?;
+    let _ = events.send(Event::Folders(folders));
     for (position, id) in pins.iter().enumerate() {
         remote.entry(id.clone()).or_default().pinned = Some(position as u32);
     }
@@ -173,6 +189,37 @@ fn settings(
         blocked,
         accepted: whitelisted,
         ..ChatSettings::default()
+    }
+}
+
+fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
+    use presage::proto::recipient::Identifier;
+    let ids = |recipients: &[presage::proto::Recipient]| -> Vec<ConversationId> {
+        recipients
+            .iter()
+            .filter_map(|r| match r.identifier.as_ref()? {
+                Identifier::Contact(contact) => {
+                    let who = ServiceId::parse_from_service_id_string(&contact.service_id)
+                        .or_else(|| {
+                            ServiceId::parse_from_service_id_binary(&contact.service_id_binary)
+                        })?;
+                    Some(ConversationId::contact(&who.service_id_string()))
+                }
+                Identifier::GroupMasterKey(key) => {
+                    Some(ConversationId(format!("g:{}", hex::encode(key))))
+                }
+                Identifier::LegacyGroupId(_) => None,
+            })
+            .collect()
+    };
+    crate::ChatFolder {
+        name: folder.name.clone(),
+        only_unread: folder.show_only_unread,
+        show_muted: folder.show_muted_chats,
+        all_individual: folder.include_all_individual_chats,
+        all_groups: folder.include_all_group_chats,
+        included: ids(&folder.included_recipients),
+        excluded: ids(&folder.excluded_recipients),
     }
 }
 
