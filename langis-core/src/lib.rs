@@ -54,6 +54,17 @@ pub struct Conversation {
     /// Disappearing messages: seconds a message lasts once read (incoming) or sent; 0 is off.
     /// Signal keeps it with the contact or group, and every change comes as a message.
     pub expire_timer: u32,
+    /// Messages to ourselves ("Note to Self"), listed even before there are any.
+    pub note_to_self: bool,
+    /// A group's other members, who can be mentioned.
+    pub members: Vec<Person>,
+}
+
+/// Someone who can be mentioned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Person {
+    pub service_id: String,
+    pub name: String,
 }
 
 /// What langis remembers about a conversation besides its messages.
@@ -545,6 +556,7 @@ pub enum Command {
         target: MessageRef,
         body: String,
         styles: Vec<StyleRange>,
+        mentions: Vec<Mention>,
     },
     /// Deletes a message here, or for everyone (only our own, within a day).
     Delete {

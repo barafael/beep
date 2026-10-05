@@ -10,8 +10,8 @@ use std::{
 use crate::settings::NotificationContent;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Event, HistoryTransfer, MessageRef, Password, Picture,
-    QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format, now_millis,
+    Command, Conversation, ConversationId, Event, HistoryTransfer, Mention, MessageRef, Password,
+    Person, Picture, QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -278,6 +278,8 @@ pub struct ChatState {
     queued: Vec<Command>,
     /// Messages whose spoilers were clicked open.
     revealed: HashSet<MessageRef>,
+    /// People picked to mention in the draft; their "@Name" becomes a mention when sent.
+    draft_mentions: Vec<Person>,
 }
 
 struct Typist {
@@ -684,6 +686,7 @@ impl ChatState {
         if self.selected.as_ref() != Some(id) {
             self.replying = None;
             self.editing = None;
+            self.draft_mentions.clear();
             self.staged.clear();
             self.read_mark = self.conversation(id).map(|c| c.settings.last_read);
         }
@@ -888,6 +891,7 @@ impl ChatState {
         self.replying = None;
         self.editing = None;
         self.read_mark = None;
+        self.draft_mentions.clear();
         self.staged.clear();
         Update::reset()
     }
@@ -901,12 +905,14 @@ impl ChatState {
         let conversation = self.selected.clone()?;
         self.typing_sent = None;
         let (body, styles) = format::parse(text.trim());
+        let mentions = mentions_in(&body, &std::mem::take(&mut self.draft_mentions));
         if let Some(target) = self.editing.take() {
             return Some(Command::Edit {
                 conversation,
                 target,
                 body,
                 styles,
+                mentions,
             });
         }
         Some(Command::Send {
@@ -915,8 +921,44 @@ impl ChatState {
             quote: self.replying.take(),
             files: std::mem::take(&mut self.staged),
             styles,
-            mentions: Vec::new(),
+            mentions,
         })
+    }
+
+    /// Members of the selected group matching the "@…" the draft ends with, to mention.
+    pub fn mention_candidates(&self, draft: &str) -> Vec<&Person> {
+        const MAX: usize = 8;
+        let Some(query) = mention_query(draft) else {
+            return Vec::new();
+        };
+        let query = query.to_lowercase();
+        let Some(group) = self.selected().filter(|c| c.is_group) else {
+            return Vec::new();
+        };
+        group
+            .members
+            .iter()
+            .filter(|p| {
+                p.name
+                    .to_lowercase()
+                    .split_whitespace()
+                    .any(|word| word.starts_with(&query))
+            })
+            .take(MAX)
+            .collect()
+    }
+
+    /// Mentions the `index`th of [`ChatState::mention_candidates`]: returns the draft with its
+    /// "@…" completed to "@Name ".
+    pub fn pick_mention(&mut self, draft: &str, index: usize) -> Option<String> {
+        let person = (*self.mention_candidates(draft).get(index)?).clone();
+        let query = mention_query(draft)?;
+        let start = draft.len() - query.len() - 1;
+        let completed = format!("{}@{} ", &draft[..start], person.name);
+        if !self.draft_mentions.contains(&person) {
+            self.draft_mentions.push(person);
+        }
+        Some(completed)
     }
 
     /// The composer's text changed: tells the conversation we are typing, at most every few
@@ -1338,6 +1380,7 @@ impl ChatState {
             if filter.is_empty() {
                 c.settings.archived == self.show_archived
                     && (c.is_group
+                        || c.note_to_self
                         || c.settings.pinned.is_some()
                         || self.last_of(&c.id).is_some()
                         || self.selected.as_ref() == Some(&c.id))
@@ -1491,6 +1534,35 @@ fn tombstone(message: &mut ChatMessage) {
 /// Signal identifies a message by its author and sent timestamp.
 fn message_key(message: &ChatMessage) -> (u64, &str) {
     (message.timestamp, &message.sender_id)
+}
+
+/// What the draft's last word says after "@", if it starts with one.
+fn mention_query(draft: &str) -> Option<&str> {
+    let word = draft.rsplit(char::is_whitespace).next()?;
+    word.strip_prefix('@')
+}
+
+/// Where the picked people's "@Name" stands in `body`.
+fn mentions_in(body: &str, people: &[Person]) -> Vec<Mention> {
+    let mut mentions: Vec<Mention> = Vec::new();
+    // Longer names first, so "@Ann Lee" isn't taken for "@Ann".
+    let mut people: Vec<&Person> = people.iter().collect();
+    people.sort_by_key(|p| std::cmp::Reverse(p.name.len()));
+    for person in people {
+        let tag = format!("@{}", person.name);
+        for (start, _) in body.match_indices(&tag) {
+            let end = start + tag.len();
+            if !mentions.iter().any(|m| start < m.end && m.start < end) {
+                mentions.push(Mention {
+                    start,
+                    end,
+                    service_id: person.service_id.clone(),
+                });
+            }
+        }
+    }
+    mentions.sort_by_key(|m| m.start);
+    mentions
 }
 
 /// Incoming messages after `last_read`.
@@ -2652,6 +2724,50 @@ mod tests {
         ));
         // Editing ends with the edit.
         assert!(matches!(state.compose("next"), Some(Command::Send { .. })));
+    }
+
+    #[test]
+    fn mentions_are_picked_from_the_group_and_sent_where_they_stand() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![Conversation {
+            members: ["Ann Lee", "Bob"]
+                .map(|name| Person {
+                    service_id: name.to_lowercase(),
+                    name: name.into(),
+                })
+                .into(),
+            ..conversation("g", true)
+        }]));
+        state.select(&id("g"));
+        assert!(state.mention_candidates("hi").is_empty());
+        let names = |draft| -> Vec<String> {
+            state
+                .mention_candidates(draft)
+                .iter()
+                .map(|p| p.name.clone())
+                .collect()
+        };
+        assert_eq!(names("hi @"), ["Ann Lee", "Bob"]);
+        assert_eq!(names("hi @le"), ["Ann Lee"]);
+        let draft = state.pick_mention("hi @le", 0).unwrap();
+        assert_eq!(draft, "hi @Ann Lee ");
+        let Some(Command::Send { body, mentions, .. }) = state.compose(&format!("{draft}*look*"))
+        else {
+            panic!("sends");
+        };
+        assert_eq!(body, "hi @Ann Lee look");
+        assert_eq!(
+            mentions,
+            [Mention {
+                start: 3,
+                end: 11,
+                service_id: "ann lee".into()
+            }]
+        );
+        // Forgotten once sent.
+        assert!(
+            matches!(state.compose("@Ann Lee"), Some(Command::Send { mentions, .. }) if mentions.is_empty())
+        );
     }
 
     #[test]

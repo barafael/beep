@@ -1148,6 +1148,9 @@ export component AppWindow inherits Window {
     in property <string> typing;
     // The composer replaces the text of one of our messages.
     in property <bool> editing;
+    // Group members matching the "@…" the draft ends with.
+    in property <[string]> mention-candidates;
+    callback pick-mention(int);
 
     // Copies through a text input, the way Slint reaches the clipboard.
     clipboard := TextInput { visible: false; width: 0; height: 0; }
@@ -1536,6 +1539,34 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                if root.mention-candidates.length > 0: Rectangle {
+                    background: Palette.alternate-background;
+                    VerticalLayout {
+                        padding: 6px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        for name[index] in root.mention-candidates: Rectangle {
+                            height: 30px;
+                            border-radius: 6px;
+                            // The first is what Tab or Enter picks.
+                            background: mention-touch.has-hover ? Palette.foreground.with-alpha(0.1)
+                                : index == 0 ? Palette.accent-background.with-alpha(0.15) : transparent;
+                            mention-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.pick-mention(index);
+                                    composer.focus();
+                                }
+                            }
+                            Text {
+                                x: 10px;
+                                text: "@" + name;
+                                vertical-alignment: center;
+                                color: Palette.foreground;
+                            }
+                        }
+                    }
+                }
                 if root.editing: Rectangle {
                     background: Palette.alternate-background;
                     HorizontalLayout {
@@ -1710,6 +1741,10 @@ export component AppWindow inherits Window {
                             edited(text) => { root.draft-edited(text); }
                             // Enter sends; Shift+Enter starts a new line.
                             key-pressed(event) => {
+                                if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
+                                    root.pick-mention(0);
+                                    return accept;
+                                }
                                 if event.text == Key.Return && !event.modifiers.shift {
                                     if root.can-send { root.send(root.draft); }
                                     return accept;

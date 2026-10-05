@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Delivery, Event, Events, HistoryTransfer, Inbox,
+    Command, Conversation, ConversationId, Delivery, Event, Events, HistoryTransfer, Inbox, Person,
     Picture, QrMatrix, Quote, Reaction, Style, StyleRange, now_millis,
 };
 
@@ -11,6 +11,7 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
     ("dana", "Dana", false),
+    ("me", "Note to Self", false),
 ];
 
 pub fn run(commands: Inbox, events: Events) {
@@ -86,6 +87,8 @@ pub fn run(commands: Inbox, events: Events) {
             is_group,
             subtitle: if is_group {
                 "4 members".into()
+            } else if id == "me" {
+                "Messages to yourself".into()
             } else {
                 "+49 151 23456789".into()
             },
@@ -96,6 +99,17 @@ pub fn run(commands: Inbox, events: Events) {
                 ..ChatSettings::default()
             },
             expire_timer: if id == "alice" { 3600 } else { 0 },
+            note_to_self: id == "me",
+            members: if is_group {
+                ["Carol", "Dana", "Eve", "Ferris"]
+                    .map(|name| Person {
+                        service_id: name.to_lowercase(),
+                        name: name.into(),
+                    })
+                    .into()
+            } else {
+                Vec::new()
+            },
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
@@ -138,6 +152,7 @@ pub fn run(commands: Inbox, events: Events) {
                 target,
                 body,
                 styles,
+                mentions: _,
             }) => {
                 let message = ChatMessage {
                     styles,

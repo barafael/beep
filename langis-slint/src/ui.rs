@@ -102,6 +102,18 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_pick_mention({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move |index| {
+            let Some(window) = window.upgrade() else { return };
+            let draft = shared.chat.borrow_mut().pick_mention(&window.get_draft(), index as usize);
+            if let Some(draft) = draft {
+                window.set_draft(draft.into());
+                shared.refresh(Update::default());
+            }
+        }
+    });
     window.on_load_older({
         let shared = shared.clone();
         move || {
@@ -439,7 +451,11 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     );
     window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
-    window.set_can_send(chat.can_compose(&window.get_draft()));
+    let draft = window.get_draft();
+    window.set_can_send(chat.can_compose(&draft));
+    let candidates: Vec<SharedString> =
+        chat.mention_candidates(&draft).iter().map(|p| p.name.as_str().into()).collect();
+    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
     let staged: Vec<SharedString> = chat
         .staged()
         .iter()

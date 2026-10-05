@@ -619,6 +619,7 @@ fn register(
         subtitle,
         settings: ChatSettings::default(),
         expire_timer,
+        ..Conversation::default()
     }
 }
 
@@ -705,6 +706,8 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     let threads = &ctx.threads;
     let store = manager.store();
     let mut all = Vec::new();
+    // Group members are mostly contacts; others are looked up once each.
+    let mut names = Names::new();
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             let thread = Thread::Contact(ServiceId::Aci(contact.uuid.into()));
@@ -719,6 +722,10 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
                 contact.name
             };
             let timer = contact.expire_timer;
+            names.insert(
+                ServiceId::Aci(contact.uuid.into()).service_id_string(),
+                title.clone(),
+            );
             all.push(register(threads, thread, title, number, timer));
         }
     }
@@ -726,29 +733,52 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     // Messages to yourself; listed once there are some.
     let own = Thread::Contact(own_id(manager));
     let timer = expire_timer(manager, &own).await;
-    all.push(register(
+    let mut note_to_self = register(
         threads,
         own,
         "Note to Self".into(),
         "Messages to yourself".into(),
         timer,
-    ));
+    );
+    note_to_self.note_to_self = true;
+    all.push(note_to_self);
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
             let count = members(group.members.len());
-            let timer = group.disappearing_messages_timer.map_or(0, |t| t.duration);
-            all.push(register(
-                threads,
-                Thread::Group(key),
-                group.title,
-                count,
-                timer,
-            ));
+            let timer = group
+                .disappearing_messages_timer
+                .as_ref()
+                .map_or(0, |t| t.duration);
+            let people = people(manager, &mut names, &group).await;
+            let mut conversation = register(threads, Thread::Group(key), group.title, count, timer);
+            conversation.members = people;
+            all.push(conversation);
         }
     }
     with_settings(ctx, &mut all).await;
     let _ = ctx.events.send(Event::Conversations(all));
     contacts
+}
+
+/// A group's members other than us, by name.
+async fn people(
+    manager: &Mgr,
+    names: &mut Names,
+    group: &presage::model::groups::Group,
+) -> Vec<crate::Person> {
+    let own = own_id(manager);
+    let mut people = Vec::new();
+    for member in &group.members {
+        let who = ServiceId::Aci(member.aci);
+        if who != own {
+            people.push(crate::Person {
+                service_id: who.service_id_string(),
+                name: sender_name(manager, names, who).await,
+            });
+        }
+    }
+    people.sort_by_cached_key(|p| p.name.to_lowercase());
+    people
 }
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
@@ -1652,7 +1682,14 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
         let title = manager.thread_title(&thread).await.unwrap_or_default();
         let subtitle = subtitle(manager, &thread).await;
         let timer = expire_timer(manager, &thread).await;
+        let group = match &thread {
+            Thread::Group(key) => manager.store().group(*key).await.ok().flatten(),
+            Thread::Contact(_) => None,
+        };
         let mut conversation = register(&ctx.threads, thread, title, subtitle, timer);
+        if let Some(group) = group {
+            conversation.members = people(manager, &mut Names::new(), &group).await;
+        }
         conversation.settings = ctx
             .tables
             .settings(&id)
@@ -2082,6 +2119,7 @@ async fn handle(
             target,
             body,
             styles,
+            mentions,
         } => {
             let thread = thread(&conversation)?;
             // Kept as the earlier version.
@@ -2091,7 +2129,7 @@ async fn handle(
                     .unwrap_or_default(),
                 _ => String::new(),
             };
-            let (text, ranges) = format::encode(&body, &styles, &[]);
+            let (text, ranges) = format::encode(&body, &styles, &mentions);
             let timestamp = now_millis();
             let data = DataMessage {
                 body: Some(text),
