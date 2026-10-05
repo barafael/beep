@@ -21,6 +21,7 @@ slint = "1.18"
 # Pinned to the version slint itself pins.
 i-slint-core = "=1.18.1"
 tracing = "0.1"
+async-channel = "2"
 # Opens links in the browser.
 open = "5"
 # The file picker for attachments (the desktop's own, through its portal on Linux).
@@ -35,6 +36,18 @@ slint-build = "1.18"
 [target.'cfg(target_os = "linux")'.dependencies]
 slint = { version = "1.18", features = ["backend-qt"] }
 
-# Asks whether the desktop shows tray icons (see `tray::host_present`).
+# Asks whether the desktop shows tray icons (`tray::host_present`), and keeps langis to one
+# copy (`instance.rs`).
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+# The single-instance pipe (see `instance.rs`).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_UI_WindowsAndMessaging",
+] }

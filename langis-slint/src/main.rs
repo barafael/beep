@@ -14,6 +14,7 @@ use langis_core::{
 use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+mod instance;
 mod logging;
 mod tray;
 
@@ -240,6 +241,22 @@ fn main() -> Result<(), slint::PlatformError> {
         .with_env_filter(logging::from_env())
         .init();
 
+    // Before the backend opens the database. The mock touches no account, so it may run next
+    // to the real langis.
+    let instance = if Backend::mock_requested() {
+        instance::Claim::Unchecked
+    } else {
+        instance::claim()
+    };
+    let instance = match instance {
+        instance::Claim::First(primary) => Some(primary),
+        instance::Claim::Second => {
+            tracing::info!("langis is already running; showing it instead");
+            return Ok(());
+        }
+        instance::Claim::Unchecked => None,
+    };
+
     let config = Config::default();
     let device_name = config.device_name.clone();
     let backend = Backend::from_env(config);
@@ -265,6 +282,20 @@ fn main() -> Result<(), slint::PlatformError> {
     shared.tray.replace(Some(tray::create(&shared)?));
     shared.refresh(everything());
     ui.show()?;
+
+    // Starting langis again shows this one.
+    if let Some(instance) = &instance {
+        let activations = instance.activations.clone();
+        let shared = shared.clone();
+        slint::spawn_local(async move {
+            while activations.recv().await.is_ok() {
+                if let Some(ui) = shared.ui() {
+                    ui.raise();
+                }
+            }
+        })
+        .expect("the event loop is set up");
+    }
 
     // What the user did with a notification: open its chat, or send the answer typed into it.
     slint::spawn_local({
@@ -342,6 +373,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let result = slint::run_event_loop();
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
+    // Only now may another langis start.
+    drop(instance);
     result
 }
 
