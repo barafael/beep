@@ -352,13 +352,14 @@ pub(crate) fn download_limit() -> Rc<Semaphore> {
 
 /// Scales to at most [`PICTURE_EDGE`]; animated images show their first frame.
 fn decode_picture(data: &[u8]) -> Option<Picture> {
+    thumbnail(data, PICTURE_EDGE)
+}
+
+/// Decodes a picture scaled to at most `edge` pixels a side.
+pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
     let image = decode_limited(data)?;
-    let image = if image.width().max(image.height()) > PICTURE_EDGE {
-        image.resize(
-            PICTURE_EDGE,
-            PICTURE_EDGE,
-            image::imageops::FilterType::Triangle,
-        )
+    let image = if image.width().max(image.height()) > edge {
+        image.resize(edge, edge, image::imageops::FilterType::Triangle)
     } else {
         image
     };

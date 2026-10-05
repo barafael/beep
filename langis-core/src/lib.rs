@@ -79,6 +79,24 @@ pub struct Details {
     pub members: Vec<(Person, bool)>,
 }
 
+/// An installed sticker pack, for the sticker picker.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StickerPack {
+    /// Hex, as Signal shows pack ids.
+    pub id: String,
+    pub title: String,
+    pub stickers: Vec<StickerItem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StickerItem {
+    pub id: u32,
+    /// The emoji it stands for.
+    pub emoji: String,
+    /// Small, for the picker.
+    pub picture: Arc<Picture>,
+}
+
 /// What to do with a message request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestResponse {
@@ -561,6 +579,8 @@ pub enum Event {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
     },
+    /// The installed sticker packs, answering [`Command::LoadStickers`].
+    StickerPacks(Vec<StickerPack>),
     /// A conversation's stored messages were deleted (here, or on another device).
     Cleared(ConversationId),
     /// What the phone keeps in the storage service has been read, so chats it didn't accept
@@ -617,6 +637,14 @@ pub enum Command {
     SearchChat {
         conversation: ConversationId,
         query: String,
+    },
+    /// Gathers the installed sticker packs; see [`Event::StickerPacks`].
+    LoadStickers,
+    /// Sends a sticker from an installed pack.
+    SendSticker {
+        conversation: ConversationId,
+        pack: String,
+        sticker: u32,
     },
     /// Blocks a conversation, or unblocks it; told to our other devices.
     Block {

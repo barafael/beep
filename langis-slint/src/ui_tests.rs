@@ -244,3 +244,27 @@ fn shortcuts_reach_rust_from_the_composer() {
     assert!(pressed.contains(&("x".into(), false, false, false)));
     assert_eq!(window.get_draft(), "x");
 }
+
+/// Only the opening: the testing backend doesn't lay out a popup's contents (that happens when
+/// it is drawn), so the stickers in it can't be found.
+#[test]
+fn the_sticker_button_asks_for_the_packs() {
+    let (window, _messages) = window_with_messages(3);
+    let opened = Rc::new(Cell::new(false));
+    window.on_open_stickers({
+        let opened = opened.clone();
+        move || opened.set(true)
+    });
+    find(&window, "▦")
+        .expect("sticker button")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert!(opened.get());
+    assert_eq!(
+        i_slint_core::window::WindowInner::from_pub(window.window())
+            .active_popups()
+            .len(),
+        1,
+        "the picker is open"
+    );
+}

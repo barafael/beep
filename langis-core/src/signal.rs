@@ -2266,6 +2266,28 @@ async fn handle(
                 quote,
                 pointers,
                 preview,
+                sticker: None,
+            };
+            send_new(manager, ctx, conversation, outgoing).await?;
+        }
+        Command::LoadStickers => {
+            let packs = sticker_packs(manager).await;
+            let _ = events.send(Event::StickerPacks(packs));
+        }
+        Command::SendSticker {
+            conversation,
+            pack,
+            sticker,
+        } => {
+            let sticker = sticker_message(manager, &pack, sticker).await?;
+            let outgoing = Outgoing {
+                body: String::new(),
+                styles: Vec::new(),
+                mentions: Vec::new(),
+                quote: None,
+                pointers: Vec::new(),
+                preview: None,
+                sticker: Some(sticker),
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
@@ -2338,6 +2360,7 @@ async fn handle(
                 quote: None,
                 pointers,
                 preview: None,
+                sticker: None,
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
@@ -2696,6 +2719,8 @@ struct Outgoing {
     pointers: Vec<presage::proto::AttachmentPointer>,
     /// The preview of a link in it, as sent and as shown.
     preview: Option<(presage::proto::Preview, crate::LinkPreview)>,
+    /// It is this sticker.
+    sticker: Option<presage::proto::data_message::Sticker>,
 }
 
 /// Sends a new message and shows it; remembers it for receipts and starts its timer.
@@ -2712,6 +2737,7 @@ async fn send_new(
         quote,
         pointers,
         preview,
+        sticker,
     } = outgoing;
     let (sent_preview, shown_preview) = preview.unzip();
     let thread = ctx
@@ -2728,6 +2754,7 @@ async fn send_new(
         body_ranges: body_ranges(ranges),
         attachments: pointers.clone(),
         preview: sent_preview.into_iter().collect(),
+        sticker,
         quote: quote
             .as_ref()
             .map(|quote| presage::proto::data_message::Quote {
@@ -2738,6 +2765,8 @@ async fn send_new(
             }),
         ..Default::default()
     };
+    // As receivers will see them, stickers included.
+    let shown_attachments = attachments::of_message(&message);
     send_data(manager, &thread, message, timestamp).await?;
     ctx.tables
         .set_delivery(&conversation, timestamp, Delivery::Sent)
@@ -2777,10 +2806,7 @@ async fn send_new(
         timestamp,
         outgoing: true,
         quote,
-        attachments: pointers
-            .iter()
-            .map(|pointer| attachments::describe(pointer, false))
-            .collect(),
+        attachments: shown_attachments,
         styles,
         expire_timer: (timer > 0).then_some(timer),
         preview: shown_preview,
@@ -2788,6 +2814,74 @@ async fn send_new(
     }));
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
     Ok(())
+}
+
+/// Edge of the pictures in the sticker picker: 64 px at up to 2x scaling.
+const STICKER_THUMBNAIL: u32 = 128;
+
+/// The installed sticker packs with small pictures of their stickers.
+async fn sticker_packs(manager: &Mgr) -> Vec<crate::StickerPack> {
+    let Ok(packs) = manager.store().sticker_packs().await else {
+        return Vec::new();
+    };
+    packs
+        .flatten()
+        .map(|pack| crate::StickerPack {
+            id: hex::encode(&pack.id),
+            title: pack.manifest.title.clone(),
+            stickers: pack
+                .manifest
+                .stickers
+                .iter()
+                .filter_map(|sticker| {
+                    let picture =
+                        attachments::thumbnail(sticker.bytes.as_deref()?, STICKER_THUMBNAIL)?;
+                    Some(crate::StickerItem {
+                        id: sticker.id,
+                        emoji: sticker.emoji.clone().unwrap_or_default(),
+                        picture: Arc::new(picture),
+                    })
+                })
+                .collect(),
+        })
+        .filter(|pack| !pack.stickers.is_empty())
+        .collect()
+}
+
+/// A sticker of an installed pack, ready to send: its picture uploaded.
+async fn sticker_message(
+    manager: &Mgr,
+    pack: &str,
+    sticker: u32,
+) -> Result<presage::proto::data_message::Sticker, String> {
+    let pack_id = hex::decode(pack).map_err(|_| "unknown sticker pack".to_string())?;
+    let pack = manager
+        .store()
+        .sticker_pack(&pack_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or("unknown sticker pack")?;
+    let found = pack
+        .manifest
+        .stickers
+        .iter()
+        .find(|s| s.id == sticker)
+        .ok_or("unknown sticker")?;
+    let bytes = found.bytes.clone().ok_or("the sticker isn't downloaded")?;
+    let content_type = found
+        .content_type
+        .clone()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "image/webp".into());
+    let pointer = attachments::upload_bytes(manager, "sticker", &content_type, bytes).await?;
+    Ok(presage::proto::data_message::Sticker {
+        pack_id: Some(pack.id.clone()),
+        pack_key: Some(pack.key.clone()),
+        sticker_id: Some(sticker),
+        data: Some(pointer),
+        emoji: found.emoji.clone(),
+    })
 }
 
 /// A preview of the first https link in `body`, its picture uploaded; `None` if there is no

@@ -124,6 +124,19 @@ export struct MemberItem {
     admin: bool,
 }
 
+// A sticker in the picker.
+export struct StickerTile {
+    pack: string,
+    id: int,
+    picture: image,
+    emoji: string,
+}
+
+// A row of the sticker picker's grid.
+export struct StickerRow {
+    tiles: [StickerTile],
+}
+
 // A row of the media overview's grid.
 export struct MediaRow {
     tiles: [AttachmentItem],
@@ -1391,6 +1404,14 @@ export component AppWindow inherits Window {
     in property <int> focus-search-request;
     // ↑ in an empty composer: edit our last message.
     callback edit-last;
+    // The sticker picker: installed packs' titles, the chosen one's stickers by row.
+    in property <[string]> sticker-packs;
+    in property <[StickerRow]> sticker-rows;
+    in property <bool> stickers-busy;
+    in-out property <int> sticker-pack;
+    callback open-stickers;
+    callback sticker-pack-chosen;
+    callback send-sticker(string, int);
     // Ctrl+V in the composer: attaches a copied picture or files; `false` if the clipboard holds
     // neither, and the text is pasted as usual.
     callback paste() -> bool;
@@ -2410,6 +2431,100 @@ export component AppWindow inherits Window {
                             symbol: "📎";
                             shown: true;
                             clicked => { root.attach(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        HoverButton {
+                            symbol: "▦";
+                            shown: true;
+                            clicked => {
+                                root.open-stickers();
+                                sticker-picker.show();
+                            }
+                        }
+                        sticker-picker := PopupWindow {
+                            x: 0;
+                            y: -330px;
+                            close-policy: close-on-click-outside;
+                            Rectangle {
+                                width: 6 * 72px + 16px;
+                                height: 320px;
+                                border-radius: 10px;
+                                background: Palette.alternate-background;
+                                border-width: 1px;
+                                border-color: Palette.border;
+                                drop-shadow-blur: 8px;
+                                drop-shadow-color: #0003;
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 6px;
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for title[index] in root.sticker-packs: Rectangle {
+                                            width: pack-title.preferred-width + 16px;
+                                            height: 28px;
+                                            border-radius: 6px;
+                                            background: index == root.sticker-pack ? Palette.accent-background.with-alpha(0.18)
+                                                : pack-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                                            pack-touch := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    root.sticker-pack = index;
+                                                    root.sticker-pack-chosen();
+                                                }
+                                            }
+                                            pack-title := Text {
+                                                text: title;
+                                                font-size: 0.85rem;
+                                                color: Palette.foreground;
+                                            }
+                                        }
+                                    }
+                                    if root.stickers-busy: HorizontalLayout {
+                                        alignment: center;
+                                        Spinner {
+                                            indeterminate: true;
+                                            width: 20px;
+                                            height: 20px;
+                                        }
+                                    }
+                                    if !root.stickers-busy && root.sticker-packs.length == 0: Text {
+                                        text: "No sticker packs yet. Install some on your phone; they show up here.";
+                                        wrap: word-wrap;
+                                        horizontal-alignment: center;
+                                        color: Palette.foreground.with-alpha(0.6);
+                                    }
+                                    ListView {
+                                        vertical-stretch: 1;
+                                        for row in root.sticker-rows: HorizontalLayout {
+                                            alignment: start;
+                                            for tile in row.tiles: Rectangle {
+                                                width: 72px;
+                                                height: 72px;
+                                                border-radius: 8px;
+                                                background: tile-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                                                tile-touch := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.send-sticker(tile.pack, tile.id);
+                                                        sticker-picker.close();
+                                                    }
+                                                }
+                                                Image {
+                                                    width: 60px;
+                                                    height: 60px;
+                                                    source: tile.picture;
+                                                    image-fit: contain;
+                                                    accessible-role: image;
+                                                    accessible-label: tile.emoji;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     VerticalLayout {

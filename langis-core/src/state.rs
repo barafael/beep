@@ -301,6 +301,8 @@ pub struct ChatState {
     details: Option<(ConversationId, Option<Details>)>,
     /// What the phone accepted is known; see [`ChatState::is_request`].
     requests_known: bool,
+    /// The installed sticker packs, once asked for: `Some(None)` while they are gathered.
+    sticker_packs: Option<Option<Vec<crate::StickerPack>>>,
 }
 
 /// What [`ChatState::media`] shows on one of its tabs.
@@ -647,6 +649,9 @@ impl ChatState {
                 }
                 self.sort_conversations();
                 update.conversations = true;
+            }
+            Event::StickerPacks(packs) => {
+                self.sticker_packs = Some(Some(packs));
             }
             Event::StorageRead => {
                 self.requests_known = true;
@@ -1050,6 +1055,33 @@ impl ChatState {
         Some(Command::Respond {
             conversation: id.clone(),
             response,
+        })
+    }
+
+    /// Asks for the installed sticker packs, the first time.
+    pub fn load_stickers(&mut self) -> Option<Command> {
+        if self.sticker_packs.is_some() {
+            return None;
+        }
+        self.sticker_packs = Some(None);
+        Some(Command::LoadStickers)
+    }
+
+    /// The installed sticker packs: `Some(None)` while they are gathered.
+    pub fn sticker_packs(&self) -> Option<Option<&[crate::StickerPack]>> {
+        self.sticker_packs.as_ref().map(Option::as_deref)
+    }
+
+    /// Sends a sticker to the selected conversation.
+    pub fn send_sticker(&mut self, pack: &str, sticker: u32) -> Option<Command> {
+        let conversation = self.selected()?;
+        if !self.synced || conversation.settings.blocked || self.is_request(conversation) {
+            return None;
+        }
+        Some(Command::SendSticker {
+            conversation: conversation.id.clone(),
+            pack: pack.to_owned(),
+            sticker,
         })
     }
 

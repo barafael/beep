@@ -245,6 +245,35 @@ pub fn run(commands: Inbox, events: Events) {
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
             Ok(Command::Block { .. }) => {}
+            Ok(Command::LoadStickers) => {
+                // One pack of gradients standing in for stickers.
+                let stickers = ["😀", "🦀", "👍", "🎉", "❤️", "🙈"]
+                    .iter()
+                    .enumerate()
+                    .map(|(id, emoji)| crate::StickerItem {
+                        id: id as u32,
+                        emoji: (*emoji).into(),
+                        picture: Arc::new(gradient(64)),
+                    })
+                    .collect();
+                let _ = events.send(Event::StickerPacks(vec![crate::StickerPack {
+                    id: "mock".into(),
+                    title: "Gradients".into(),
+                    stickers,
+                }]));
+            }
+            Ok(Command::SendSticker { conversation, .. }) => {
+                let _ = events.send(Event::Message(ChatMessage {
+                    attachments: vec![attachment(
+                        &format!("sticker-{}", now_millis()),
+                        AttachmentKind::Sticker,
+                        "image/webp",
+                        None,
+                        (512, 512),
+                    )],
+                    ..message(&conversation.0, "You", "", now_millis(), true)
+                }));
+            }
             Ok(Command::Respond {
                 conversation,
                 response,

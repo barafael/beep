@@ -137,6 +137,22 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     });
+    window.on_open_stickers({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (chat.load_stickers(), Update::default()));
+        }
+    });
+    window.on_sticker_pack_chosen({
+        let shared = shared.clone();
+        move || shared.refresh(Update::default())
+    });
+    window.on_send_sticker({
+        let shared = shared.clone();
+        move |pack, id| {
+            shared.act(|chat| (chat.send_sticker(&pack, id as u32), Update::default()));
+        }
+    });
     window.on_open_media({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -678,6 +694,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
     render_media(window, chat, images);
+    render_stickers(window, chat);
     render_details(window, chat);
     let search = chat.chat_search();
     window.set_chat_search_open(search.is_some());
@@ -800,6 +817,49 @@ fn update_list<T: Clone + 'static>(model: &ModelRc<T>, items: Vec<T>, same: impl
             model.set_row_data(row, item);
         }
     }
+}
+
+/// The sticker picker. Pictures are converted each time; the picker is small.
+fn render_stickers(window: &AppWindow, chat: &ChatState) {
+    const PER_ROW: usize = 6;
+    let packs = chat.sticker_packs();
+    window.set_stickers_busy(matches!(packs, Some(None)));
+    let packs = packs.flatten().unwrap_or_default();
+    let titles: Vec<SharedString> = packs.iter().map(|p| p.title.as_str().into()).collect();
+    if window.get_sticker_packs().row_count() != titles.len() {
+        window.set_sticker_packs(ModelRc::new(VecModel::from(titles)));
+    }
+    let chosen = (window.get_sticker_pack().max(0) as usize).min(packs.len().saturating_sub(1));
+    let Some(pack) = packs.get(chosen) else {
+        window.set_sticker_rows(ModelRc::new(VecModel::<StickerRow>::default()));
+        return;
+    };
+    // Only when the pack changes, so the grid keeps its place otherwise.
+    let shown = window.get_sticker_rows();
+    let same_pack = shown
+        .row_data(0)
+        .and_then(|row| row.tiles.row_data(0))
+        .is_some_and(|tile| tile.pack.as_str() == pack.id);
+    if same_pack {
+        return;
+    }
+    let rows: Vec<StickerRow> = pack
+        .stickers
+        .chunks(PER_ROW)
+        .map(|row| StickerRow {
+            tiles: ModelRc::new(VecModel::from(
+                row.iter()
+                    .map(|sticker| StickerTile {
+                        pack: pack.id.as_str().into(),
+                        id: sticker.id as i32,
+                        picture: crate::picture_image(&sticker.picture),
+                        emoji: sticker.emoji.as_str().into(),
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+        })
+        .collect();
+    window.set_sticker_rows(ModelRc::new(VecModel::from(rows)));
 }
 
 /// The details page.

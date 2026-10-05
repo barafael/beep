@@ -553,15 +553,19 @@ impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
         {
             return image.clone();
         }
-        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-            &picture.rgba,
-            picture.width,
-            picture.height,
-        );
-        let image = Image::from_rgba8(buffer);
+        let image = picture_image(picture);
         images.insert(key.clone(), (picture.clone(), image.clone()));
         image
     }
+}
+
+/// A picture from the backend, for Slint.
+fn picture_image(picture: &Picture) -> Image {
+    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        &picture.rgba,
+        picture.width,
+        picture.height,
+    ))
 }
 
 /// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
