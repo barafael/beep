@@ -666,6 +666,11 @@ impl ChatState {
         self.error.as_deref()
     }
 
+    /// Unread messages over all conversations, e.g. for the tray icon.
+    pub fn unread_total(&self) -> u32 {
+        self.unread.values().sum()
+    }
+
     /// The chat list: groups and conversations that have messages, most recently active
     /// first. Synced contacts never written to stay out of it.
     pub fn conversations(&self) -> impl Iterator<Item = ConversationView<'_>> {

@@ -26,4 +26,14 @@ fn main() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+    // The tray icon has no widgets, so one build serves every style.
+    let dependencies = slint_build::compile_with_output_path(
+        manifest.join("ui/tray.slint"),
+        out.join("tray.rs"),
+        slint_build::CompilerConfiguration::new(),
+    )
+    .unwrap_or_else(|error| panic!("failed to compile ui/tray.slint: {error}"));
+    for path in dependencies {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 }

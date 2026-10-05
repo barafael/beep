@@ -34,3 +34,7 @@ slint-build = "1.18"
 # desktop's colors and fonts. Qt is already resident on KDE; other desktops fall back to winit.
 [target.'cfg(target_os = "linux")'.dependencies]
 slint = { version = "1.18", features = ["backend-qt"] }
+
+# Asks whether the desktop shows tray icons (see `tray::host_present`).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

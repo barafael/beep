@@ -28,6 +28,10 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
 
+    window.window().on_close_requested({
+        let shared = shared.clone();
+        move || shared.close_requested()
+    });
     window.on_select({
         let shared = shared.clone();
         move |id| {

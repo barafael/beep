@@ -1,0 +1,26 @@
+// The icon in the system tray. Separate from the window: it stays while the window is closed
+// and doesn't change with the widget style, so it is compiled once.
+
+export component Tray inherits SystemTrayIcon {
+    in property <int> unread;
+
+    callback open();
+    callback quit();
+
+    icon: @image-url("../assets/langis.svg");
+    title: "langis";
+    tooltip: unread == 0 ? "langis" : unread == 1 ? "langis — 1 unread message" : "langis — \{unread} unread messages";
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem {
+            title: "Open langis";
+            activated => { root.open(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}

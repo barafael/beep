@@ -15,6 +15,7 @@ use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 mod logging;
+mod tray;
 
 /// The UI, compiled once per Slint widget style (see `build.rs`). Slint fixes the style when it
 /// compiles, so switching styles means switching between these: each includes `ui.rs`.
@@ -70,7 +71,8 @@ pub trait Ui {
     fn render(&self, chat: &ChatState, images: &Images, update: Update);
     fn show(&self) -> Result<(), slint::PlatformError>;
     fn hide(&self);
-    /// Brings the window to the front, e.g. after a notification was clicked.
+    /// Shows the window and brings it to the front, e.g. after a notification or the tray icon
+    /// was clicked.
     fn raise(&self);
     /// Whether the window is the active one.
     fn active(&self) -> bool;
@@ -92,6 +94,7 @@ pub struct Shared {
     /// system style and Fusion waits for a restart.
     qt_style_at_start: QtStyle,
     ui: RefCell<Option<Rc<dyn Ui>>>,
+    tray: RefCell<Option<tray::Tray>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,7 +134,19 @@ impl Shared {
         let Some(ui) = self.ui() else { return };
         let mut chat = self.chat.borrow_mut();
         ui.render(&chat, &self.images, update);
+        if let Some(tray) = &*self.tray.borrow() {
+            tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
+        }
         deliver_notices(&self.notifier, &mut chat);
+    }
+
+    /// Closing the window leaves langis running in the tray, to keep receiving messages. Where
+    /// nothing shows tray icons, it quits instead.
+    fn close_requested(&self) -> slint::CloseRequestResponse {
+        if !tray::host_present() {
+            let _ = slint::quit_event_loop();
+        }
+        slint::CloseRequestResponse::HideWindow
     }
 
     /// Why the chosen style isn't showing yet, if it isn't.
@@ -242,10 +257,12 @@ fn main() -> Result<(), slint::PlatformError> {
         device_name,
         qt_style_at_start,
         ui: RefCell::default(),
+        tray: RefCell::default(),
     });
 
     let ui = styles::create(settings.style, &shared)?;
     shared.ui.replace(Some(ui.clone()));
+    shared.tray.replace(Some(tray::create(&shared)?));
     shared.refresh(everything());
     ui.show()?;
 
@@ -320,7 +337,8 @@ fn main() -> Result<(), slint::PlatformError> {
     })
     .expect("the event loop is set up");
 
-    // Until the last window closes; switching styles opens the new one before closing the old.
+    // Until "Quit" in the tray, or the window closes where there is no tray. The tray icon keeps
+    // the loop running while the window is hidden.
     let result = slint::run_event_loop();
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
