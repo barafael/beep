@@ -76,7 +76,7 @@ pub trait Ui {
     fn show(&self) -> Result<(), slint::PlatformError>;
     fn hide(&self);
     /// Shows the window and brings it to the front, e.g. after a notification or the tray icon
-    /// was clicked.
+    /// was clicked. See [`Shared::activate`].
     fn raise(&self);
     /// Whether the window is the active one.
     fn active(&self) -> bool;
@@ -163,6 +163,25 @@ impl Shared {
             let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow
+    }
+
+    /// Shows the window and brings it to the front. `token` is a Wayland activation token from
+    /// whatever asked (a launcher, a notification), which lets the compositor give langis focus.
+    fn activate(&self, token: Option<String>) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(token) = token {
+            // Qt's Wayland plugin takes the token from here when the window asks to be
+            // activated, and clears it; KDE's KWindowSystem hands tokens to Qt the same way.
+            // SAFETY: setting the environment races with C code reading it on another thread
+            // (Rust's own readers are locked). Accepted, as in KWindowSystem: nothing else in
+            // langis reads this variable, and the moment is short.
+            unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", token) };
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let _ = token;
+        if let Some(ui) = self.ui() {
+            ui.raise();
+        }
     }
 
     /// Opens the window of a start into the tray after all.
@@ -328,10 +347,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let activations = instance.activations.clone();
         let shared = shared.clone();
         slint::spawn_local(async move {
-            while activations.recv().await.is_ok() {
-                if let Some(ui) = shared.ui() {
-                    ui.raise();
-                }
+            while let Ok(token) = activations.recv().await {
+                shared.activate(token);
             }
         })
         .expect("the event loop is set up");
@@ -343,7 +360,10 @@ fn main() -> Result<(), slint::PlatformError> {
         async move {
             while let Ok(action) = notifier_actions.recv().await {
                 match action {
-                    Action::Open { key } => {
+                    Action::Open {
+                        key,
+                        activation_token,
+                    } => {
                         if let Some(key) = key {
                             shared.act(|chat| {
                                 let command = chat.select(&ConversationId(key));
@@ -355,9 +375,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 (command, update)
                             });
                         }
-                        if let Some(ui) = shared.ui() {
-                            ui.raise();
-                        }
+                        shared.activate(activation_token);
                     }
                     Action::Reply { key, text } => {
                         shared.act(|chat| {

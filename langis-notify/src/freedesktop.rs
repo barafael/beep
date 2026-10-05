@@ -99,6 +99,38 @@ enum Input {
     Closed {
         id: u32,
     },
+    /// Sent just before `Invoked`, for the app to take focus with on Wayland.
+    Token {
+        id: u32,
+        token: String,
+    },
+}
+
+impl Input {
+    /// One of the service's signals, if it is one langis uses.
+    fn from_signal(signal: &zbus::Message) -> Option<Self> {
+        let header = signal.header();
+        let body = signal.body();
+        Some(match header.member()?.as_str() {
+            "ActionInvoked" => {
+                let (id, action): (u32, String) = body.deserialize().ok()?;
+                Self::Invoked { id, action }
+            }
+            "NotificationReplied" => {
+                let (id, text): (u32, String) = body.deserialize().ok()?;
+                Self::Replied { id, text }
+            }
+            "NotificationClosed" => {
+                let (id, _reason): (u32, u32) = body.deserialize().ok()?;
+                Self::Closed { id }
+            }
+            "ActivationToken" => {
+                let (id, token): (u32, String) = body.deserialize().ok()?;
+                Self::Token { id, token }
+            }
+            _ => return None,
+        })
+    }
 }
 
 async fn serve(
@@ -113,45 +145,22 @@ async fn serve(
     let has = |capability: &str| capabilities.iter().any(|c| c == capability);
     let (clickable, replies, markup) = (has("actions"), has("inline-reply"), has("body-markup"));
 
-    // Signals cover every app's notifications; only ids in `shown` are ours.
-    let invoked = proxy
-        .receive_action_invoked()
+    // Signals cover every app's notifications; only ids in `shown` are ours. One stream keeps
+    // them in order, so a click's activation token comes before the click.
+    let signals = proxy
+        .inner()
+        .receive_all_signals()
         .await?
-        .filter_map(|signal| async move {
-            let args = signal.args().ok()?;
-            Some(Input::Invoked {
-                id: args.id,
-                action: args.action_key.to_string(),
-            })
-        });
-    let replied = proxy
-        .receive_notification_replied()
-        .await?
-        .filter_map(|signal| async move {
-            let args = signal.args().ok()?;
-            Some(Input::Replied {
-                id: args.id,
-                text: args.text.to_string(),
-            })
-        });
-    let closed = proxy
-        .receive_notification_closed()
-        .await?
-        .filter_map(|signal| async move {
-            Some(Input::Closed {
-                id: signal.args().ok()?.id,
-            })
-        });
+        .filter_map(|signal| async move { Input::from_signal(&signal) });
     let requests = requests
         .map(Input::Request)
         .chain(stream::once(async { Input::Quit }));
-    let mut inputs = std::pin::pin!(stream::select(
-        stream::select(requests, invoked),
-        stream::select(replied, closed)
-    ));
+    let mut inputs = std::pin::pin!(stream::select(requests, signals));
 
     // Our notifications on screen, by key.
     let mut shown: HashMap<Option<String>, u32> = HashMap::new();
+    // Activation tokens for clicks about to be reported, by notification id.
+    let mut tokens: HashMap<u32, String> = HashMap::new();
     let key_of = |shown: &HashMap<Option<String>, u32>, id: u32| {
         shown
             .iter()
@@ -206,18 +215,30 @@ async fn serve(
                     let _ = proxy.close_notification(id).await;
                 }
             }
+            Input::Token { id, token } => {
+                tokens.insert(id, token);
+            }
             Input::Invoked { id, action } if action == "default" => {
+                let activation_token = tokens.remove(&id);
                 if let Some(key) = key_of(&shown, id) {
-                    let _ = actions.try_send(Action::Open { key });
+                    let _ = actions.try_send(Action::Open {
+                        key,
+                        activation_token,
+                    });
                 }
             }
-            Input::Invoked { .. } => {}
+            Input::Invoked { id, .. } => {
+                tokens.remove(&id);
+            }
             Input::Replied { id, text } => {
                 if let Some(Some(key)) = key_of(&shown, id) {
                     let _ = actions.try_send(Action::Reply { key, text });
                 }
             }
-            Input::Closed { id } => shown.retain(|_, shown_id| *shown_id != id),
+            Input::Closed { id } => {
+                tokens.remove(&id);
+                shown.retain(|_, shown_id| *shown_id != id);
+            }
         }
     }
     Ok(())

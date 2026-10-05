@@ -18,8 +18,8 @@ pub enum Claim {
 }
 
 pub struct Primary {
-    /// One message per later start.
-    pub activations: async_channel::Receiver<()>,
+    /// One message per later start, with its Wayland activation token if it had one.
+    pub activations: async_channel::Receiver<Option<String>>,
     /// Holds the lock until langis ends.
     _lock: platform::Lock,
 }
@@ -53,16 +53,16 @@ mod platform {
     pub type Lock = zbus::blocking::Connection;
 
     /// The part of `org.freedesktop.Application` langis needs: launchers call `Activate`.
-    struct Application(async_channel::Sender<()>);
+    struct Application(async_channel::Sender<Option<String>>);
 
     #[zbus::interface(name = "org.freedesktop.Application")]
     impl Application {
-        fn activate(&self, _platform_data: HashMap<String, OwnedValue>) {
-            let _ = self.0.try_send(());
+        fn activate(&self, platform_data: HashMap<String, OwnedValue>) {
+            let _ = self.0.try_send(activation_token(&platform_data));
         }
 
-        fn open(&self, _uris: Vec<String>, _platform_data: HashMap<String, OwnedValue>) {
-            let _ = self.0.try_send(());
+        fn open(&self, _uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
+            let _ = self.0.try_send(activation_token(&platform_data));
         }
 
         fn activate_action(
@@ -74,8 +74,25 @@ mod platform {
         }
     }
 
+    fn activation_token(platform_data: &HashMap<String, OwnedValue>) -> Option<String> {
+        platform_data
+            .get("activation-token")
+            .and_then(|token| String::try_from(token.try_clone().ok()?).ok())
+    }
+
+    #[test]
+    fn reads_the_activation_token() {
+        let mut platform_data = HashMap::new();
+        assert_eq!(activation_token(&platform_data), None);
+        platform_data.insert(
+            "activation-token".to_string(),
+            OwnedValue::try_from(Value::from("kwin-42")).unwrap(),
+        );
+        assert_eq!(activation_token(&platform_data).as_deref(), Some("kwin-42"));
+    }
+
     /// `None` if another langis has the name; it was asked to show itself.
-    pub fn claim(activations: async_channel::Sender<()>) -> zbus::Result<Option<Lock>> {
+    pub fn claim(activations: async_channel::Sender<Option<String>>) -> zbus::Result<Option<Lock>> {
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(PATH, Application(activations))?
             .build()?;
@@ -139,7 +156,9 @@ mod platform {
     }
 
     /// `None` if another langis has the pipe; it was asked to show itself.
-    pub fn claim(activations: async_channel::Sender<()>) -> windows::core::Result<Option<Lock>> {
+    pub fn claim(
+        activations: async_channel::Sender<Option<String>>,
+    ) -> windows::core::Result<Option<Lock>> {
         let name = pipe_name();
         // Only the first instance of a pipe may be created with this flag, which makes the
         // pipe itself the lock.
@@ -176,7 +195,7 @@ mod platform {
     }
 
     /// Each connection is one later start asking langis to show itself.
-    fn serve(pipe: HANDLE, activations: async_channel::Sender<()>) {
+    fn serve(pipe: HANDLE, activations: async_channel::Sender<Option<String>>) {
         loop {
             match unsafe { ConnectNamedPipe(pipe, None) } {
                 Ok(()) => {}
@@ -187,7 +206,7 @@ mod platform {
                     return;
                 }
             }
-            if activations.try_send(()).is_err() {
+            if activations.try_send(None).is_err() {
                 return;
             }
             let _ = unsafe { DisconnectNamedPipe(pipe) };
@@ -217,7 +236,9 @@ mod platform {
 mod platform {
     pub type Lock = ();
 
-    pub fn claim(_: async_channel::Sender<()>) -> Result<Option<Lock>, std::convert::Infallible> {
+    pub fn claim(
+        _: async_channel::Sender<Option<String>>,
+    ) -> Result<Option<Lock>, std::convert::Infallible> {
         Ok(Some(()))
     }
 }

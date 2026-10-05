@@ -96,6 +96,7 @@ fn activation(args: &IInspectable) -> windows::core::Result<Option<Action>> {
     Ok(match arguments.split_once(':') {
         Some(("open", key)) => Some(Action::Open {
             key: (!key.is_empty()).then(|| key.to_string()),
+            activation_token: None,
         }),
         Some(("reply", key)) => {
             // Text inputs come back as boxed strings.

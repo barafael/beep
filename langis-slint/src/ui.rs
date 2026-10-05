@@ -214,12 +214,20 @@ impl Ui for Window {
         }
     }
 
-    /// (On Wayland the compositor may only highlight it: raising needs an activation token
-    /// Slint can't take yet.)
+    /// On Wayland the compositor decides; it lets langis to the front when given an
+    /// activation token (see `Shared::activate`), and may only highlight it otherwise.
     fn raise(&self) {
         self.0.window().set_minimized(false);
         if let Err(error) = self.0.show() {
             tracing::warn!(%error, "failed to show the window");
+        }
+        // Not in Slint's public API. On Qt this raises and activates the window, which on
+        // Wayland asks the compositor with the token in `XDG_ACTIVATION_TOKEN`, if there is one.
+        let adapter = i_slint_core::window::WindowInner::from_pub(self.0.window()).window_adapter();
+        if let Some(internal) = adapter.internal(i_slint_core::InternalToken)
+            && let Err(error) = internal.bring_to_front()
+        {
+            tracing::warn!(%error, "failed to bring the window to the front");
         }
     }
 

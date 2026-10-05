@@ -34,7 +34,11 @@ pub struct Notification {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Clicked it: bring the app to the front, showing this conversation if there is one.
-    Open { key: Option<String> },
+    Open {
+        key: Option<String>,
+        /// Lets the app take focus on Wayland, where the notification service provides one.
+        activation_token: Option<String>,
+    },
     /// Typed an answer into the popup.
     Reply { key: String, text: String },
 }
