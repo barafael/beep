@@ -203,11 +203,24 @@ pub fn run(commands: Inbox, events: Events) {
                     path,
                 });
             }
-            Ok(Command::LoadHistory(id)) => {
-                let messages = history(&id, started);
+            // In pages, like the real backend.
+            Ok(Command::LoadHistory {
+                conversation,
+                before,
+            }) => {
+                const PAGE: usize = 60;
+                let mut messages = history(&conversation, started);
+                messages.retain(|m| before.is_none_or(|before| m.timestamp < before));
+                let page = messages.split_off(messages.len().saturating_sub(PAGE));
+                // More before this page?
+                let older = (!messages.is_empty())
+                    .then(|| page.first().map(|m| m.timestamp))
+                    .flatten();
                 let _ = events.send(Event::History {
-                    conversation: id,
-                    messages,
+                    conversation,
+                    messages: page,
+                    reactions: Vec::new(),
+                    older,
                 });
             }
             // Nothing to open: mock attachments have no content.
@@ -401,6 +414,23 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 )
             },
         ],
+        // A long history, to page through.
+        "bob" => (0..250u64)
+            .map(|n| {
+                let (sender, outgoing) = if n % 3 == 0 {
+                    ("You", true)
+                } else {
+                    ("Bob", false)
+                };
+                message(
+                    "bob",
+                    sender,
+                    &format!("Message {n}"),
+                    ago((250 - n) * 30),
+                    outgoing,
+                )
+            })
+            .collect(),
         "dana" => vec![message(
             "dana",
             "Dana",

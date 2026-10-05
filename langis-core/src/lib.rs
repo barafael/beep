@@ -479,10 +479,15 @@ pub enum Event {
     },
     /// Unread incoming messages per conversation, counted from the store at start.
     Unread(Vec<(ConversationId, u32)>),
-    /// The complete stored history of a conversation, answering [`Command::LoadHistory`].
+    /// A page of a conversation's stored history, answering [`Command::LoadHistory`]: the
+    /// messages sent before the time asked for, oldest first.
     History {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
+        /// Reactions in this page to messages not in it (older ones, not loaded yet).
+        reactions: Vec<(MessageRef, Reaction, bool)>,
+        /// Where the next older page starts; `None` once the beginning is reached.
+        older: Option<u64>,
     },
     /// A conversation's newest stored message, so it can be sorted and previewed before its
     /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
@@ -495,7 +500,11 @@ pub enum Event {
 pub enum Command {
     /// Answer to [`Event::PasswordRequired`].
     Unlock(Password),
-    LoadHistory(ConversationId),
+    /// A page of stored history: the newest messages, or those sent before `before`.
+    LoadHistory {
+        conversation: ConversationId,
+        before: Option<u64>,
+    },
     /// Stop waiting for the phone to send the message history, and continue without it.
     SkipHistory,
     /// Download an image, sticker or long text for display; see [`Event::Attachment`].

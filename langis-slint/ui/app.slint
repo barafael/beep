@@ -1130,6 +1130,10 @@ export component AppWindow inherits Window {
     callback archive(string, bool);
     callback set-timer(string, int);
     callback show-archived(bool);
+    // Scrolled near the top of the open chat: older messages, if there are any.
+    callback load-older;
+    // Rust is putting older messages before those shown; the list keeps its place.
+    in-out property <bool> prepending;
     callback edit(int);
     callback delete(int, bool);
     callback reveal(int);
@@ -1479,15 +1483,29 @@ export component AppWindow inherits Window {
                     property <bool> follow: true;
                     property <int> conversation: root.selected;
                     vertical-stretch: 1;
+                    // The content height before it last changed, to keep older messages put
+                    // in above from moving what is on screen.
+                    property <length> previous-height;
                     changed conversation => { self.follow = true; }
                     // Only the user's own scrolling decides; content growing (pictures arriving,
                     // rows being measured) moves the viewport too and must not stop following.
                     scrolled => {
                         self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
+                        if self.content-y > -self.visible-height / 2 {
+                            root.load-older();
+                        }
                     }
                     changed content-height => {
                         if self.follow {
                             self.content-y = min(0px, self.visible-height - self.content-height);
+                        } else if root.prepending {
+                            self.content-y -= self.content-height - self.previous-height;
+                        }
+                        root.prepending = false;
+                        self.previous-height = self.content-height;
+                        // Nothing to scroll yet: there may be more before.
+                        if self.content-height < self.visible-height {
+                            root.load-older();
                         }
                     }
                     // E.g. the reply bar opening below.

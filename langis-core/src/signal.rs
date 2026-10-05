@@ -809,22 +809,62 @@ async fn latest_message(
     id: &ConversationId,
     thread: &Thread,
 ) -> Option<ChatMessage> {
-    const DAY: u64 = 24 * 60 * 60 * 1000;
-    let now = now_millis();
-    for since in [
-        now.saturating_sub(7 * DAY),
-        now.saturating_sub(180 * DAY),
-        0,
-    ] {
-        let contents = manager.store().messages(thread, since..).await.ok()?;
-        // Newest first; skip receipts and the like.
-        for content in contents.flatten() {
-            if let Some(message) = to_chat_message(manager, names, id.clone(), &content).await {
+    // Receipts and the like are stored too; look past them a few at a time.
+    let mut before = None;
+    loop {
+        let contents = manager
+            .store()
+            .messages_before(thread, before, 20)
+            .await
+            .ok()?;
+        for content in &contents {
+            if let Some(message) = to_chat_message(manager, names, id.clone(), content).await {
                 return Some(message);
             }
         }
+        before = Some(stored_at(contents.last()?));
     }
-    None
+}
+
+/// When a content was stored: what the store orders and pages by.
+fn stored_at(content: &Content) -> u64 {
+    content.metadata.client_timestamp.timestamp_millis() as u64
+}
+
+/// Messages shown per page of history.
+const HISTORY_PAGE: usize = 100;
+
+/// Stored contents of a thread before `before` (or the newest), newest first: enough for
+/// [`HISTORY_PAGE`] messages, plus where the next older page starts, if there is one.
+async fn history_page(
+    manager: &Mgr,
+    thread: &Thread,
+    before: Option<u64>,
+) -> Result<(Vec<Content>, Option<u64>), String> {
+    // Receipts, reactions and the like are stored between messages; read a bit more.
+    const BATCH: u32 = 200;
+    let mut contents = Vec::new();
+    let mut cursor = before;
+    loop {
+        let batch = manager
+            .store()
+            .messages_before(thread, cursor, BATCH)
+            .await
+            .map_err(|e| format!("failed to load history: {e}"))?;
+        let exhausted = batch.len() < BATCH as usize;
+        cursor = batch.last().map(stored_at).or(cursor);
+        contents.extend(batch);
+        if exhausted {
+            return Ok((contents, None));
+        }
+        let messages = contents
+            .iter()
+            .filter(|c| data_of(c).is_some_and(|(data, _)| data.reaction.is_none()))
+            .count();
+        if messages >= HISTORY_PAGE {
+            return Ok((contents, cursor));
+        }
+    }
 }
 
 /// Incoming messages in a thread after `last_read`.
@@ -1883,24 +1923,27 @@ async fn handle(
         Command::Unlock(_) => {}
         // Only meaningful during the transfer; see `link_with_history`.
         Command::SkipHistory => {}
-        Command::LoadHistory(id) => {
+        Command::LoadHistory {
+            conversation: id,
+            before,
+        } => {
             let Ok(thread) = thread(&id) else {
                 return Ok(());
             };
-            let contents = manager
-                .store()
-                .messages(&thread, ..)
-                .await
-                .map_err(|e| format!("failed to load history: {e}"))?;
+            let (contents, older) = history_page(manager, &thread, before).await?;
             let mut names = Names::new();
             let mut messages = Vec::new();
+            let mut reactions = Vec::new();
             // Oldest first, so reactions find their message and later ones win.
-            let contents: Vec<_> = contents.flatten().collect();
             for content in contents.iter().rev() {
                 if let Some((target, reaction, remove)) =
                     to_reaction(manager, &mut names, content).await
                 {
-                    apply_reaction(&mut messages, &target, reaction, remove);
+                    if messages.iter().any(|m: &ChatMessage| m.is(&target)) {
+                        apply_reaction(&mut messages, &target, reaction, remove);
+                    } else {
+                        reactions.push((target, reaction, remove));
+                    }
                 } else if let Some(message) =
                     to_chat_message(manager, &mut names, id.clone(), content).await
                 {
@@ -1908,9 +1951,14 @@ async fn handle(
                 }
             }
             decorate(ctx, &id, &mut messages).await;
-            // The store keeps nothing of messages deleted for everyone.
+            // The store keeps nothing of messages deleted for everyone; those of this page.
             let own = own_id(manager).service_id_string();
-            for target in ctx.tables.deleted(&id).await.unwrap_or_default() {
+            let page = older.unwrap_or(0)..before.unwrap_or(u64::MAX);
+            let deleted = ctx.tables.deleted(&id).await.unwrap_or_default();
+            for target in deleted
+                .into_iter()
+                .filter(|target| page.contains(&target.timestamp))
+            {
                 let outgoing = target.author_id == own;
                 let sender = match ServiceId::parse_from_service_id_string(&target.author_id) {
                     Some(author) => display_name(manager, &mut names, author).await,
@@ -1929,6 +1977,8 @@ async fn handle(
             let _ = events.send(Event::History {
                 conversation: id,
                 messages,
+                reactions,
+                older,
             });
         }
         Command::React {

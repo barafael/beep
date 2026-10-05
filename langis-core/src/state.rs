@@ -11,7 +11,7 @@ use crate::settings::NotificationContent;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Event, HistoryTransfer, MessageRef, Password, Picture,
-    QrMatrix, Quote, StyleRange, apply_reaction, format, now_millis,
+    QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -77,6 +77,9 @@ pub enum MessagesUpdate {
     /// This many messages were appended to the selected conversation; see
     /// [`ChatState::last_messages`].
     Appended(usize),
+    /// This many older messages were put before the selected conversation's; the one after
+    /// them may have changed too (its day label, its run).
+    Prepended(usize),
     /// The selected conversation's messages must be re-read.
     Reset,
 }
@@ -88,6 +91,9 @@ impl MessagesUpdate {
             (Reset, _) | (_, Reset) => Reset,
             (Appended(a), Appended(b)) => Appended(a + b),
             (Appended(n), Unchanged) | (Unchanged, Appended(n)) => Appended(n),
+            (Prepended(a), Prepended(b)) => Prepended(a + b),
+            (Prepended(n), Unchanged) | (Unchanged, Prepended(n)) => Prepended(n),
+            (Prepended(_), Appended(_)) | (Appended(_), Prepended(_)) => Reset,
             (Unchanged, Unchanged) => Unchanged,
         }
     }
@@ -246,8 +252,14 @@ pub struct ChatState {
     staged: Vec<std::path::PathBuf>,
     /// What the composer replies to; belongs to the selected conversation.
     replying: Option<Quote>,
-    /// Conversations whose stored history has arrived.
+    /// Conversations whose stored history has arrived (its newest page, at least).
     loaded: HashSet<ConversationId>,
+    /// Where each loaded conversation's next older page starts; `None` at the beginning.
+    older: HashMap<ConversationId, Option<u64>>,
+    /// Conversations whose next older page was asked for.
+    loading_older: HashSet<ConversationId>,
+    /// Reactions to messages not loaded yet, oldest first, applied when their page comes.
+    pending_reactions: HashMap<ConversationId, Vec<(MessageRef, Reaction, bool)>>,
     selected: Option<ConversationId>,
     notifications: Notifications,
     /// Who is typing where, and until when (ms) that counts without news.
@@ -346,12 +358,19 @@ impl ChatState {
                 reaction,
                 remove,
             } => {
-                // A reaction to a message not loaded yet is folded in when its history loads.
-                if let Some(history) = self.history.get_mut(&conversation)
-                    && apply_reaction(history, &target, reaction, remove)
-                    && self.selected.as_ref() == Some(&conversation)
-                {
-                    update.rows = true;
+                let Some(history) = self.history.get_mut(&conversation) else {
+                    // Not loaded at all: the stored history will include it.
+                    return update;
+                };
+                if history.iter().any(|m| m.is(&target)) {
+                    apply_reaction(history, &target, reaction, remove);
+                    update.rows = self.selected.as_ref() == Some(&conversation);
+                } else if self.loaded.contains(&conversation) {
+                    // To an older message, applied when its page loads.
+                    self.pending_reactions
+                        .entry(conversation)
+                        .or_default()
+                        .push((target, reaction, remove));
                 }
             }
             Event::Avatar {
@@ -364,21 +383,43 @@ impl ChatState {
             Event::History {
                 conversation,
                 messages,
+                reactions,
+                older,
             } => {
-                self.loaded.insert(conversation.clone());
+                let newest_page = self.loaded.insert(conversation.clone());
+                self.older.insert(conversation.clone(), older);
+                self.loading_older.remove(&conversation);
                 let history = self.history.entry(conversation.clone()).or_default();
-                let mut added = false;
+                let mut added = 0;
                 // The stored history is complete (delivery, edits, …); it replaces what came
                 // before it, e.g. the bare newest message from `Event::Latest`.
                 for message in messages {
-                    added |= upsert(history, message);
+                    added += usize::from(upsert(history, message));
                 }
-                if added {
+                // This page's reactions are older than those already waiting.
+                let waiting = self
+                    .pending_reactions
+                    .entry(conversation.clone())
+                    .or_default();
+                let mut reactions = reactions;
+                reactions.append(waiting);
+                for (target, reaction, remove) in reactions {
+                    if history.iter().any(|m| m.is(&target)) {
+                        apply_reaction(history, &target, reaction, remove);
+                    } else {
+                        waiting.push((target, reaction, remove));
+                    }
+                }
+                if newest_page || added > 0 {
                     self.sort_conversations();
                     update.conversations = true;
-                    if self.selected.as_ref() == Some(&conversation) {
+                }
+                if self.selected.as_ref() == Some(&conversation) {
+                    if newest_page {
                         update.messages = MessagesUpdate::Reset;
                         self.mark_seen();
+                    } else if added > 0 {
+                        update.messages = MessagesUpdate::Prepended(added);
                     }
                 }
             }
@@ -653,7 +694,33 @@ impl ChatState {
         self.notifications
             .pending
             .push(Notice::Withdraw(id.clone()));
-        (!self.loaded.contains(id)).then(|| Command::LoadHistory(id.clone()))
+        (!self.loaded.contains(id)).then(|| Command::LoadHistory {
+            conversation: id.clone(),
+            before: None,
+        })
+    }
+
+    /// Asks for the selected conversation's next older page of history, e.g. when scrolled to
+    /// the top; once at a time, and not past the beginning.
+    pub fn load_older(&mut self) -> Option<Command> {
+        let id = self.selected.clone()?;
+        let before = (*self.older.get(&id)?)?;
+        if !self.loading_older.insert(id.clone()) {
+            return None;
+        }
+        Some(Command::LoadHistory {
+            conversation: id,
+            before: Some(before),
+        })
+    }
+
+    /// The selected conversation's newest page is loaded but older messages are still in the
+    /// store.
+    pub fn has_older(&self) -> bool {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.older.get(id))
+            .is_some_and(Option::is_some)
     }
 
     /// Answers a conversation that needn't be the selected one, e.g. from a notification.
@@ -1754,7 +1821,9 @@ mod tests {
         let mut state = state();
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         let id = ConversationId("a".into());
-        assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
+        assert!(
+            matches!(state.select(&id), Some(Command::LoadHistory { conversation: i, before: None }) if i == id)
+        );
         assert_eq!(
             state.conversations().find(|c| c.selected).unwrap().unread,
             0
@@ -1764,6 +1833,8 @@ mod tests {
         state.apply(Event::History {
             conversation: id.clone(),
             messages: Vec::new(),
+            reactions: Vec::new(),
+            older: None,
         });
         assert!(state.select(&id).is_none());
         assert!(state.select(&ConversationId("nope".into())).is_none());
@@ -1781,7 +1852,9 @@ mod tests {
         assert_eq!(view.last_message.unwrap().timestamp, 5);
         assert_eq!(view.unread, 0);
         // Opening it still fetches the full history.
-        assert!(matches!(state.select(&id), Some(Command::LoadHistory(i)) if i == id));
+        assert!(
+            matches!(state.select(&id), Some(Command::LoadHistory { conversation: i, before: None }) if i == id)
+        );
     }
 
     fn with_attachment(
@@ -2138,6 +2211,8 @@ mod tests {
                 message("a", "Alice", 3, false),
                 message("a", "You", 1, true),
             ],
+            reactions: Vec::new(),
+            older: None,
         });
         assert_eq!(update.messages, MessagesUpdate::Reset);
         let stamps: Vec<_> = state.messages().map(|m| m.message.timestamp).collect();
@@ -2156,12 +2231,16 @@ mod tests {
         state.apply(Event::History {
             conversation: id.clone(),
             messages: vec![message("a", "Alice", 5, false)],
+            reactions: Vec::new(),
+            older: None,
         });
         assert_eq!(state.messages().count(), 1);
         // Same timestamp from a different author is a different message.
         state.apply(Event::History {
             conversation: id,
             messages: vec![message("a", "Bob", 5, false)],
+            reactions: Vec::new(),
+            older: None,
         });
         assert_eq!(state.messages().count(), 2);
     }
@@ -2384,6 +2463,8 @@ mod tests {
                 message("a", "Ann", 10, false),
                 message("a", "Ann", 20, false),
             ],
+            reactions: Vec::new(),
+            older: None,
         });
         state.apply(Event::Settings {
             conversation: id("a"),
@@ -2635,5 +2716,43 @@ mod tests {
         assert!(state.messages().next().unwrap().message.deleted);
         // Already deleted for everyone.
         assert!(state.delete(0, true).0.is_none());
+    }
+
+    #[test]
+    fn older_pages_prepend_and_bring_their_reactions_home() {
+        let mut state = state();
+        let a = id("a");
+        assert!(matches!(
+            state.select(&a),
+            Some(Command::LoadHistory { before: None, .. })
+        ));
+        let old = message("a", "Ann", 10, false);
+        state.apply(Event::History {
+            conversation: a.clone(),
+            messages: vec![message("a", "Ann", 30, false)],
+            // A reaction stored with the newer page, to a message in the older one.
+            reactions: vec![(old.reference(), reaction("👍", "bob", false), false)],
+            older: Some(30),
+        });
+        assert!(state.has_older());
+        assert!(matches!(
+            state.load_older(),
+            Some(Command::LoadHistory {
+                before: Some(30),
+                ..
+            })
+        ));
+        assert!(state.load_older().is_none(), "once at a time");
+        let update = state.apply(Event::History {
+            conversation: a,
+            messages: vec![old, message("a", "Ann", 20, false)],
+            reactions: Vec::new(),
+            older: None,
+        });
+        assert_eq!(update.messages, MessagesUpdate::Prepended(2));
+        assert!(!state.has_older());
+        assert!(state.load_older().is_none());
+        let first = state.messages().next().unwrap().message;
+        assert_eq!((first.timestamp, first.reactions.len()), (10, 1));
     }
 }

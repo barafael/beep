@@ -102,6 +102,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_load_older({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (chat.load_older(), Update::default()));
+        }
+    });
     window.on_show_archived({
         let shared = shared.clone();
         move |show| {
@@ -457,6 +463,19 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
                 messages.push(message_item(&message, chat, images));
+            }
+        }
+        MessagesUpdate::Prepended(n) => {
+            // Rows keep their place on screen; see `message-list` in app.slint.
+            window.set_prepending(true);
+            let items: Vec<_> = chat.messages().take(n + 1).map(|m| message_item(&m, chat, images)).collect();
+            for (row, item) in items.into_iter().enumerate() {
+                if row < n {
+                    messages.insert(row, item);
+                } else {
+                    // The first of those already shown: its day label or run may have changed.
+                    messages.set_row_data(row, item);
+                }
             }
         }
         MessagesUpdate::Reset => {
