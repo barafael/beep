@@ -41,15 +41,18 @@ media overview (media, files, links), sending stickers from installed packs, lin
 (shown; sending opt-in), pasting and dropping files, blurred previews, video tiles and captions,
 keyboard shortcuts, screen-reader labels.
 
+Also done: writing chat settings back to the storage service (opt-in, Settings → Account):
+records and manifest changed in their bytes so unknown fields survive, written only on top of
+the version last read, conflicts read and retried.
+
 Remaining:
 
-- **Storage service, writing**, so pins (the first four), mutes, archive, blocks, folders and
-  accepted requests follow to the phone; then langis-only changes no longer need protecting
-  from the next read. Records must be changed in their bytes, field by field: prost drops
-  fields it doesn't know, and rewriting a record would delete newer settings on the phone.
+- **Live verification** of all of M2 against a real account, the storage write above all: try
+  it with one change (e.g. pin a chat) and check the phone before relying on it.
 - **Not done within the items above:** marking a safety number verified; a notice when a
   contact's safety number changes (needs the presage fork to report identity changes);
-  creating and editing folders (needs storage writing); animated GIFs and real video
+  creating and editing folders (folder records aren't written yet); new storage records for
+  chats the phone has none for (only existing records are changed); animated GIFs and real video
   thumbnails (need a video decoder; they open in the desktop's player); a sticker picker
   test that sees the stickers (the testing backend doesn't lay out popups).
 
