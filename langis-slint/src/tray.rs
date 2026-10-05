@@ -58,7 +58,13 @@ pub fn open_unless_host_appears(shared: &Rc<Shared>, wait: Duration) {
             shared.stop_hiding();
             return;
         }
-        // Slint gives up on an icon that found no tray, so it needs a new one.
+        // Slint gives up on an icon that found nowhere to register, so then it needs a new one.
+        // Slint registers on this thread too, so this can't overlap with its own attempt; and
+        // as replacing the icon takes down the old one, it never shows twice.
+        if icon_registered() {
+            return;
+        }
+        tracing::info!("the tray came up; putting langis in it");
         match create(&shared) {
             Ok(tray) => {
                 shared.tray.replace(Some(tray));
@@ -82,29 +88,44 @@ pub fn open_unless_host_appears(shared: &Rc<Shared>, wait: Duration) {
 /// the AppIndicator extension.
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn host_present() -> bool {
-    let registered = || -> zbus::Result<bool> {
-        let connection = zbus::blocking::Connection::session()?;
-        let reply = connection.call_method(
-            Some("org.kde.StatusNotifierWatcher"),
-            "/StatusNotifierWatcher",
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &(
-                "org.kde.StatusNotifierWatcher",
-                "IsStatusNotifierHostRegistered",
-            ),
-        )?;
-        let value: zbus::zvariant::OwnedValue = reply.body().deserialize()?;
-        Ok(bool::try_from(value)?)
-    };
-    registered().unwrap_or_else(|error| {
-        tracing::debug!(%error, "no tray host");
-        false
-    })
+    watcher_property("IsStatusNotifierHostRegistered")
+        .and_then(|value| Ok(bool::try_from(value)?))
+        .unwrap_or_else(|error| {
+            tracing::debug!(%error, "no tray host");
+            false
+        })
+}
+
+/// Whether langis' icon is registered with the StatusNotifierWatcher, which tray hosts take
+/// their icons from. Its service is named `org.kde.StatusNotifierItem-<pid>-<n>`.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn icon_registered() -> bool {
+    let ours = format!("org.kde.StatusNotifierItem-{}-", std::process::id());
+    watcher_property("RegisteredStatusNotifierItems")
+        .and_then(|value| Ok(Vec::<String>::try_from(value)?))
+        .is_ok_and(|items| items.iter().any(|item| item.starts_with(&ours)))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn watcher_property(name: &str) -> zbus::Result<zbus::zvariant::OwnedValue> {
+    let connection = zbus::blocking::Connection::session()?;
+    let reply = connection.call_method(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.kde.StatusNotifierWatcher", name),
+    )?;
+    reply.body().deserialize()
 }
 
 /// Windows and macOS always have one.
 #[cfg(not(all(unix, not(target_os = "macos"))))]
 pub fn host_present() -> bool {
+    true
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn icon_registered() -> bool {
     true
 }
