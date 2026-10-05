@@ -163,3 +163,39 @@ fn forwarding_goes_to_the_clicked_chat() {
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(to.borrow().as_deref(), Some("c"));
 }
+
+#[test]
+fn jumping_brings_the_row_into_view() {
+    let (window, _messages) = window_with_messages(60);
+    assert!(find(&window, "Message 10").is_none());
+    window.set_jump_row(10);
+    window.set_jump_serial(1);
+    settle(&window);
+    assert!(find(&window, "Message 10").is_some());
+}
+
+#[test]
+fn clicking_a_search_result_shows_it() {
+    let (window, _messages) = window_with_messages(3);
+    let shown = Rc::new(Cell::new(None));
+    window.on_show_result({
+        let shown = shown.clone();
+        move |index| shown.set(Some(index))
+    });
+    window.set_chat_search_open(true);
+    window.set_chat_search_text("moon".into());
+    let result = |text: &str| crate::styles::fluent::SearchResult {
+        sender: "Ann".into(),
+        when: "Oct 2".into(),
+        text: text.into(),
+    };
+    window.set_search_results(ModelRc::new(VecModel::from(vec![
+        result("the moon"),
+        result("a moon rising"),
+    ])));
+    settle(&window);
+    find(&window, "a moon rising")
+        .expect("listed")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(shown.get(), Some(1));
+}

@@ -132,6 +132,7 @@ pub enum Delivery {
 }
 
 impl Delivery {
+    #[cfg(feature = "signal")]
     pub(crate) fn from_index(index: i64) -> Self {
         match index {
             2 => Self::Read,
@@ -490,6 +491,13 @@ pub enum Event {
         conversation: ConversationId,
         settings: ChatSettings,
     },
+    /// Messages of a conversation containing `query`, newest first, answering
+    /// [`Command::SearchChat`].
+    SearchResults {
+        conversation: ConversationId,
+        query: String,
+        messages: Vec<ChatMessage>,
+    },
     /// Unread incoming messages per conversation, counted from the store at start.
     Unread(Vec<(ConversationId, u32)>),
     /// A page of a conversation's stored history, answering [`Command::LoadHistory`]: the
@@ -535,6 +543,12 @@ pub enum Command {
         styles: Vec<StyleRange>,
         /// People mentioned: where "@Name" stands in `body` (bytes), and who it is.
         mentions: Vec<Mention>,
+    },
+    /// Looks for messages containing `query` (ignoring case) in a conversation's whole stored
+    /// history; see [`Event::SearchResults`].
+    SearchChat {
+        conversation: ConversationId,
+        query: String,
     },
     /// Sends a copy of a message (its text and attachments) to `conversation`.
     Forward {

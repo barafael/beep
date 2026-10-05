@@ -2108,6 +2108,20 @@ async fn handle(
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
+        Command::SearchChat {
+            conversation,
+            query,
+        } => {
+            let Ok(thread) = thread(&conversation) else {
+                return Ok(());
+            };
+            let messages = search(manager, &thread, &conversation, &query).await?;
+            let _ = events.send(Event::SearchResults {
+                conversation,
+                query,
+                messages,
+            });
+        }
         // The attachments are already on the CDN; their pointers work for anyone.
         Command::Forward {
             conversation,
@@ -2291,6 +2305,51 @@ async fn handle(
         Command::Preferences(privacy) => ctx.privacy.set(privacy),
     }
     Ok(())
+}
+
+/// Messages of a thread whose text contains `query`, ignoring case; newest first, at most
+/// [`SEARCH_HITS`].
+async fn search(
+    manager: &Mgr,
+    thread: &Thread,
+    conversation: &ConversationId,
+    query: &str,
+) -> Result<Vec<ChatMessage>, String> {
+    const SEARCH_HITS: usize = 100;
+    const BATCH: u32 = 500;
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut names = Names::new();
+    let mut hits = Vec::new();
+    let mut before = None;
+    loop {
+        let batch = manager
+            .store()
+            .messages_before(thread, before, BATCH)
+            .await
+            .map_err(|e| format!("failed to search: {e}"))?;
+        for content in &batch {
+            // Cheap test first: most messages don't match.
+            let matches = data_of(content)
+                .and_then(|(data, _)| data.body.as_deref())
+                .is_some_and(|body| body.to_lowercase().contains(&query));
+            if matches
+                && let Some(message) =
+                    to_chat_message(manager, &mut names, conversation.clone(), content).await
+            {
+                hits.push(message);
+                if hits.len() == SEARCH_HITS {
+                    return Ok(hits);
+                }
+            }
+        }
+        if batch.len() < BATCH as usize {
+            return Ok(hits);
+        }
+        before = batch.last().map(stored_at);
+    }
 }
 
 /// A new message of ours, ready to go (attachments uploaded).

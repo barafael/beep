@@ -94,6 +94,17 @@ export struct MessageItem {
     // The first message that came after the chat was last read.
     first-unread: bool,
     can-forward: bool,
+    // The search result last shown.
+    highlighted: bool,
+}
+
+// A message found by searching a chat.
+export struct SearchResult {
+    sender: string,
+    // When it was sent, e.g. "Oct 2, 14:05".
+    when: string,
+    // The text around the match.
+    text: string,
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -561,8 +572,8 @@ component Bubble inherits Rectangle {
                     border-bottom-right-radius: item.outgoing && !item.last ? root.tight : root.round;
                     // Darkened, so white text reads even on a light accent (Breeze's dark scheme).
                     background: item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background;
-                    border-width: item.outgoing ? 0 : 1px;
-                    border-color: Palette.border;
+                    border-width: item.highlighted ? 2px : item.outgoing ? 0 : 1px;
+                    border-color: item.highlighted ? Palette.accent-background.brighter(0.4) : Palette.border;
                     VerticalLayout {
                         padding-left: 12px;
                         padding-right: 12px;
@@ -1171,6 +1182,19 @@ export component AppWindow inherits Window {
     in property <string> typing;
     // The composer replaces the text of one of our messages.
     in property <bool> editing;
+    // Searching the open chat.
+    in property <bool> chat-search-open;
+    in-out property <string> chat-search-text;
+    // Looking, no results yet.
+    in property <bool> chat-search-busy;
+    in property <[SearchResult]> search-results;
+    callback open-chat-search;
+    callback close-chat-search;
+    callback chat-search(string);
+    callback show-result(int);
+    // Scroll the open chat to this row once `jump-serial` changes.
+    in property <int> jump-row;
+    in property <int> jump-serial;
     // Choosing where to forward a message to.
     in property <bool> forwarding;
     in property <[ConversationItem]> forward-targets;
@@ -1488,6 +1512,17 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             HoverButton {
+                                symbol: "🔍";
+                                shown: true;
+                                clicked => {
+                                    root.chat-search-text = "";
+                                    root.open-chat-search();
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            HoverButton {
                                 symbol: "⋮";
                                 shown: true;
                                 clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
@@ -1513,13 +1548,33 @@ export component AppWindow inherits Window {
                     height: 3px;
                 }
 
+                Rectangle {
+                vertical-stretch: 1;
                 message-list := ListView {
+                    width: parent.width;
+                    height: parent.height;
                     // Follow new messages only while the newest one is in view, so reading
                     // older messages isn't interrupted. Opening a chat starts at the bottom.
                     property <bool> follow: true;
                     property <int> conversation: root.selected;
-                    vertical-stretch: 1;
                     changed conversation => { self.follow = true; }
+                    // Jumping to a search result: rows have different heights and are only
+                    // measured once shown, so the place is estimated from the average and
+                    // corrected a few times as they are.
+                    property <int> jump-serial: root.jump-serial;
+                    property <int> settling;
+                    function scroll-to-jump() {
+                        if root.messages.length > 0 {
+                            self.content-y = max(self.visible-height - self.content-height,
+                                min(0px, self.visible-height / 3
+                                    - root.jump-row * self.content-height / root.messages.length));
+                        }
+                    }
+                    changed jump-serial => {
+                        self.follow = false;
+                        self.settling = 6;
+                        self.scroll-to-jump();
+                    }
                     // Only the user's own scrolling decides; content growing (pictures arriving,
                     // rows being measured) moves the viewport too and must not stop following.
                     scrolled => {
@@ -1537,6 +1592,10 @@ export component AppWindow inherits Window {
                         // Nothing to scroll yet: there may be more before.
                         if self.content-height < self.visible-height {
                             root.load-older();
+                        }
+                        if self.settling > 0 {
+                            self.settling -= 1;
+                            self.scroll-to-jump();
                         }
                     }
                     // E.g. the reply bar opening below.
@@ -1569,6 +1628,90 @@ export component AppWindow inherits Window {
                             root.forward(index);
                         }
                     }
+                }
+                if root.chat-search-open: Rectangle {
+                    background: Palette.background;
+                    search-timer := Timer {
+                        interval: 300ms;
+                        running: false;
+                        triggered => {
+                            self.running = false;
+                            root.chat-search(root.chat-search-text);
+                        }
+                    }
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit {
+                                placeholder-text: "Search this chat";
+                                text <=> root.chat-search-text;
+                                init => { self.focus(); }
+                                // After a pause in typing.
+                                edited => {
+                                    search-timer.running = false;
+                                    search-timer.running = true;
+                                }
+                                accepted => { root.chat-search(self.text); }
+                            }
+                            Button {
+                                text: "Close";
+                                clicked => {
+                                    root.close-chat-search();
+                                    composer.focus();
+                                }
+                            }
+                        }
+                        if root.chat-search-busy: HorizontalLayout {
+                            alignment: center;
+                            Spinner {
+                                indeterminate: true;
+                                width: 20px;
+                                height: 20px;
+                            }
+                        }
+                        if !root.chat-search-busy && root.chat-search-text != "" && root.search-results.length == 0: Text {
+                            text: "No messages found.";
+                            horizontal-alignment: center;
+                            color: Palette.foreground.with-alpha(0.6);
+                        }
+                        ListView {
+                            vertical-stretch: 1;
+                            for result[index] in root.search-results: Rectangle {
+                                height: result-column.preferred-height;
+                                border-radius: 6px;
+                                background: result-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
+                                result-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.show-result(index); }
+                                }
+                                result-column := VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 2px;
+                                    HorizontalLayout {
+                                        Text {
+                                            text: result.sender;
+                                            font-weight: 600;
+                                            horizontal-stretch: 1;
+                                            color: Palette.foreground;
+                                        }
+                                        Text {
+                                            text: result.when;
+                                            font-size: 0.8rem;
+                                            color: Palette.foreground.with-alpha(0.55);
+                                        }
+                                    }
+                                    Text {
+                                        text: result.text;
+                                        wrap: word-wrap;
+                                        color: Palette.foreground.with-alpha(0.8);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 }
 
                 if root.mention-candidates.length > 0: Rectangle {
@@ -1784,6 +1927,11 @@ export component AppWindow inherits Window {
                                 if event.text == Key.Escape && root.editing {
                                     root.cancel-edit();
                                     root.draft = "";
+                                    return accept;
+                                }
+                                if event.modifiers.control && (event.text == "f" || event.text == "F") {
+                                    root.chat-search-text = "";
+                                    root.open-chat-search();
                                     return accept;
                                 }
                                 // Alt+1…9 opens the pinned chats.

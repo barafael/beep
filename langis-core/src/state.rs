@@ -183,6 +183,8 @@ pub struct MessageView<'a> {
     pub first_unread: bool,
     /// Its spoilers were clicked open.
     pub revealed: bool,
+    /// The search result last shown.
+    pub highlighted: bool,
 }
 
 /// What a message deleted for everyone shows instead.
@@ -282,6 +284,22 @@ pub struct ChatState {
     draft_mentions: Vec<Person>,
     /// The message being forwarded, while its target is chosen.
     forwarding: Option<ChatMessage>,
+    /// Searching the selected conversation.
+    chat_search: Option<ChatSearch>,
+    /// A search result to show once its page of history has loaded.
+    pending_jump: Option<MessageRef>,
+    /// The row of [`ChatState::messages`] to scroll to, and a number counting such requests;
+    /// see [`ChatState::jump`].
+    jump: Option<(usize, u64)>,
+    /// The search result shown, marked in the chat.
+    highlight: Option<MessageRef>,
+}
+
+struct ChatSearch {
+    conversation: ConversationId,
+    query: String,
+    /// `None` while the search runs.
+    results: Option<Vec<ChatMessage>>,
 }
 
 struct Typist {
@@ -425,6 +443,7 @@ impl ChatState {
                     } else if added > 0 {
                         update.messages = MessagesUpdate::Prepended(added);
                     }
+                    self.continue_jump();
                 }
             }
             Event::Latest(message) => {
@@ -611,6 +630,18 @@ impl ChatState {
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::SearchResults {
+                conversation,
+                query,
+                messages,
+            } => {
+                if let Some(search) = &mut self.chat_search
+                    && search.conversation == conversation
+                    && search.query == query
+                {
+                    search.results = Some(messages);
+                }
+            }
             Event::Unread(counts) => {
                 for (conversation, count) in counts {
                     if count > 0 && self.selected.as_ref() != Some(&conversation) {
@@ -686,6 +717,9 @@ impl ChatState {
             return None;
         }
         if self.selected.as_ref() != Some(id) {
+            self.chat_search = None;
+            self.pending_jump = None;
+            self.highlight = None;
             self.replying = None;
             self.editing = None;
             self.draft_mentions.clear();
@@ -930,6 +964,93 @@ impl ChatState {
             styles,
             mentions,
         })
+    }
+
+    /// Opens the search in the selected conversation.
+    pub fn open_chat_search(&mut self) {
+        if let Some(conversation) = self.selected.clone() {
+            self.chat_search = Some(ChatSearch {
+                conversation,
+                query: String::new(),
+                results: None,
+            });
+        }
+    }
+
+    pub fn close_chat_search(&mut self) {
+        self.chat_search = None;
+    }
+
+    /// Searches the selected conversation for `query`.
+    pub fn search_chat(&mut self, query: &str) -> Option<Command> {
+        let search = self.chat_search.as_mut()?;
+        let query = query.trim();
+        search.query = query.to_owned();
+        search.results = (query.is_empty()).then(Vec::new);
+        (!query.is_empty()).then(|| Command::SearchChat {
+            conversation: search.conversation.clone(),
+            query: query.to_owned(),
+        })
+    }
+
+    /// The search in the selected conversation, if open: what is looked for, and what was found
+    /// (`None` while looking).
+    pub fn chat_search(&self) -> Option<(&str, Option<&[ChatMessage]>)> {
+        let search = self.chat_search.as_ref()?;
+        Some((&search.query, search.results.as_deref()))
+    }
+
+    /// Shows the `index`th search result in the chat: closes the search, marks the message, and
+    /// scrolls to it, loading older history first if needed (through
+    /// [`ChatState::take_commands`]).
+    pub fn show_result(&mut self, index: usize) -> Update {
+        let target = self
+            .chat_search
+            .as_ref()
+            .and_then(|search| search.results.as_ref()?.get(index))
+            .map(ChatMessage::reference);
+        let Some(target) = target else {
+            return Update::default();
+        };
+        self.chat_search = None;
+        self.highlight = Some(target.clone());
+        self.pending_jump = Some(target);
+        self.continue_jump();
+        Update {
+            rows: true,
+            ..Update::default()
+        }
+    }
+
+    /// Scrolls to the pending search result if it is loaded, or asks for the page before.
+    fn continue_jump(&mut self) {
+        let Some(target) = self.pending_jump.clone() else {
+            return;
+        };
+        let id = self.selected.clone();
+        let found = id
+            .as_ref()
+            .and_then(|id| self.history.get(id))
+            .and_then(|history| history.iter().position(|m| m.is(&target)));
+        match found {
+            Some(row) => {
+                self.pending_jump = None;
+                let count = self.jump.map_or(1, |(_, count)| count + 1);
+                self.jump = Some((row, count));
+            }
+            None => match self.load_older() {
+                Some(command) => self.queued.push(command),
+                // Not in the store after all (deleted meanwhile).
+                None if !self.has_older() => self.pending_jump = None,
+                None => {}
+            },
+        }
+    }
+
+    /// The row the UI should scroll to, with a number that changes with each request, so the
+    /// UI scrolls once per request.
+    pub fn jump(&self) -> Option<(usize, u64)> {
+        self.jump
     }
 
     /// Whether a message can be forwarded: not deleted, not view-once.
@@ -1531,6 +1652,7 @@ impl ChatState {
                 last_of_run: next.is_none_or(|n| !same_run(message, n)),
                 first_unread: first_unread == Some(i),
                 revealed: self.revealed.contains(&message.reference()),
+                highlighted: self.highlight.as_ref().is_some_and(|h| message.is(h)),
                 sender_avatar: if group && !message.outgoing {
                     self.avatars
                         .get(&ConversationId::contact(&message.sender_id))
@@ -1579,6 +1701,36 @@ impl ChatState {
         });
         self.conversations = conversations;
     }
+}
+
+/// A line of `body` around where it contains `query` (ignoring case), for search results.
+pub fn snippet(body: &str, query: &str) -> String {
+    const AROUND: usize = 40;
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = flat.chars().collect();
+    let lower: Vec<char> = flat.to_lowercase().chars().collect();
+    let wanted: Vec<char> = query.trim().to_lowercase().chars().collect();
+    // Lowercasing can change the length (rarely); then just show the start.
+    let at = if lower.len() == chars.len() && !wanted.is_empty() {
+        lower
+            .windows(wanted.len())
+            .position(|w| w == wanted.as_slice())
+    } else {
+        None
+    };
+    let start = at.map_or(0, |at| at.saturating_sub(AROUND));
+    let end = (at.unwrap_or(0) + wanted.len() + AROUND * 2)
+        .min(chars.len())
+        .max(start);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// "Ann is typing…", "Ann and Bob are typing…"; empty if nobody is.
@@ -2986,5 +3138,60 @@ mod tests {
         );
         assert!(!state.forwarding());
         assert!(state.forward_to(&id("g")).is_none(), "once");
+    }
+
+    #[test]
+    fn search_results_load_their_page_and_are_scrolled_to() {
+        let mut state = state();
+        let a = id("a");
+        state.select(&a);
+        state.apply(Event::History {
+            conversation: a.clone(),
+            messages: vec![message("a", "Ann", 30, false)],
+            reactions: Vec::new(),
+            older: Some(30),
+        });
+        state.take_commands();
+        state.open_chat_search();
+        assert!(matches!(
+            state.search_chat(" moon "),
+            Some(Command::SearchChat { query, .. }) if query == "moon"
+        ));
+        assert!(matches!(state.chat_search(), Some(("moon", None))));
+        let old = message("a", "Ann", 10, false);
+        state.apply(Event::SearchResults {
+            conversation: a.clone(),
+            query: "moon".into(),
+            messages: vec![old.clone()],
+        });
+        assert_eq!(state.chat_search().unwrap().1.unwrap().len(), 1);
+        state.show_result(0);
+        assert!(state.chat_search().is_none());
+        // Not loaded yet: the page before is asked for, then it is scrolled to.
+        assert!(matches!(
+            &state.take_commands()[..],
+            [Command::LoadHistory {
+                before: Some(30),
+                ..
+            }]
+        ));
+        assert_eq!(state.jump(), None);
+        state.apply(Event::History {
+            conversation: a,
+            messages: vec![old, message("a", "Ann", 20, false)],
+            reactions: Vec::new(),
+            older: None,
+        });
+        assert_eq!(state.jump(), Some((0, 1)));
+        assert!(state.messages().next().unwrap().highlighted);
+    }
+
+    #[test]
+    fn snippets_show_the_match_in_context() {
+        assert_eq!(snippet("see\nthe moon", "MOON"), "see the moon");
+        let long = format!("{} needle {}", "a".repeat(100), "b".repeat(100));
+        let shown = snippet(&long, "needle");
+        assert!(shown.starts_with('…') && shown.ends_with('…') && shown.contains("needle"));
+        assert!(shown.chars().count() < 140);
     }
 }

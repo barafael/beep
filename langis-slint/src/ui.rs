@@ -103,6 +103,36 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_open_chat_search({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.open_chat_search();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_close_chat_search({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_chat_search();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_chat_search({
+        let shared = shared.clone();
+        move |text| {
+            shared.act(|chat| (chat.search_chat(&text), Update::default()));
+        }
+    });
+    window.on_show_result({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.show_result(index as usize)));
+        }
+    });
     window.on_forward({
         let shared = shared.clone();
         move |index| {
@@ -491,6 +521,23 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
+    let search = chat.chat_search();
+    window.set_chat_search_open(search.is_some());
+    window.set_chat_search_busy(search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()));
+    let results: Vec<SearchResult> = search
+        .and_then(|(query, results)| Some((query, results?)))
+        .map(|(query, results)| {
+            results
+                .iter()
+                .map(|m| SearchResult {
+                    sender: m.sender.as_str().into(),
+                    when: state::format_time(m.timestamp).into(),
+                    text: state::snippet(&m.body, query).into(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    window.set_search_results(ModelRc::new(VecModel::from(results)));
     window.set_forwarding(chat.forwarding());
     if chat.forwarding() {
         let targets: Vec<_> = chat
@@ -550,6 +597,14 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
                 messages.set_row_data(row, item);
             }
         }
+    }
+
+    // After the rows are there.
+    if let Some((row, count)) = chat.jump()
+        && count as i32 != window.get_jump_serial()
+    {
+        window.set_jump_row(row as i32);
+        window.set_jump_serial(count as i32);
     }
 
     if update.conversations {
@@ -647,6 +702,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,
         can_forward: ChatState::can_forward(m),
+        highlighted: view.highlighted,
     }
 }
 
