@@ -1225,6 +1225,11 @@ export component AppWindow inherits Window {
     // Scroll the open chat to this row once `jump-serial` changes.
     in property <int> jump-row;
     in property <int> jump-serial;
+    // Ctrl+V in the composer: attaches a copied picture or files; `false` if the clipboard holds
+    // neither, and the text is pasted as usual.
+    callback paste() -> bool;
+    // Files dropped onto the open chat, to attach.
+    callback files-dropped(DropEvent);
     // Choosing where to forward a message to.
     in property <bool> forwarding;
     in property <[ConversationItem]> forward-targets;
@@ -2094,6 +2099,9 @@ export component AppWindow inherits Window {
                                     root.draft = "";
                                     return accept;
                                 }
+                                if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste() {
+                                    return accept;
+                                }
                                 if event.modifiers.control && (event.text == "f" || event.text == "F") {
                                     root.chat-search-text = "";
                                     root.open-chat-search();
@@ -2117,6 +2125,27 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Files dragged from elsewhere onto the open chat are attached.
+    if root.screen == Screen.chats && root.selected >= 0 && !root.settings-open: DropArea {
+        can-drop(event) => { return DragAction.copy; }
+        dropped(event) => {
+            root.files-dropped(event);
+            return DragAction.copy;
+        }
+        if self.has-drag: Rectangle {
+            background: Palette.background.with-alpha(0.85);
+            border-width: 2px;
+            border-color: Palette.accent-background;
+            border-radius: 12px;
+            Text {
+                text: "Drop to attach";
+                font-size: 1.3rem;
+                font-weight: 600;
+                color: Palette.accent-background;
             }
         }
     }

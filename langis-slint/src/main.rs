@@ -17,6 +17,7 @@ use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 mod autostart;
+mod clipboard;
 mod instance;
 mod logging;
 mod shutdown;
@@ -339,6 +340,7 @@ fn main() -> Result<(), slint::PlatformError> {
         instance::Claim::Unchecked => None,
     };
     let shutdown = shutdown::watch();
+    clipboard::clean();
 
     let config = Config::default();
     let device_name = config.device_name.clone();

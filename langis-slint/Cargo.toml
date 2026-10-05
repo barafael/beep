@@ -27,6 +27,9 @@ open = "5"
 # The file picker for attachments (the desktop's own, through its portal on Linux).
 rfd = "0.15"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pictures and files pasted into the composer (`clipboard.rs`).
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+png = "0.18"
 
 [build-dependencies]
 slint-build = "1.18"

@@ -321,6 +321,30 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     });
+    window.on_paste({
+        let shared = shared.clone();
+        move || {
+            let Some(files) = crate::clipboard::pasted() else {
+                return false;
+            };
+            shared.act(|chat| {
+                chat.stage_files(files);
+                (None, Update::default())
+            });
+            true
+        }
+    });
+    window.on_files_dropped({
+        let shared = shared.clone();
+        move |event| {
+            let Ok(paths) = event.data.file_paths() else { return };
+            let files: Vec<_> = paths.map(std::path::Path::to_path_buf).collect();
+            shared.act(|chat| {
+                chat.stage_files(files);
+                (None, Update::default())
+            });
+        }
+    });
     window.on_stage_files({
         let shared = shared.clone();
         move |files| {
