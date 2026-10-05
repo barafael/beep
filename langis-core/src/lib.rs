@@ -19,6 +19,8 @@ pub mod settings;
 mod signal;
 pub mod state;
 #[cfg(feature = "signal")]
+mod storage;
+#[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]
 mod vault;

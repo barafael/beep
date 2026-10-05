@@ -92,6 +92,18 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (conversation, author, ts)
     )",
     "CREATE INDEX IF NOT EXISTS langis_expiry_at ON langis_expiry (expires_at)",
+    // What the storage service said last, per conversation; see `storage.rs`.
+    "CREATE TABLE IF NOT EXISTS langis_remote (
+        id TEXT PRIMARY KEY NOT NULL,
+        pinned INTEGER,
+        muted_until INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0,
+        marked_unread INTEGER NOT NULL DEFAULT 0
+    )",
+    "CREATE TABLE IF NOT EXISTS langis_meta (
+        key TEXT PRIMARY KEY NOT NULL,
+        value INTEGER NOT NULL
+    )",
 ];
 
 impl LocalStore {
@@ -199,6 +211,88 @@ impl LocalStore {
         .fetch_optional(&self.db)
         .await?;
         Ok(row.as_ref().map(settings_of))
+    }
+
+    /// Stores several conversations' settings at once (but their read positions).
+    pub(crate) async fn save_settings(
+        &self,
+        settings: &[(ConversationId, ChatSettings)],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.db.begin().await?;
+        for (id, s) in settings {
+            sqlx::query(
+                "INSERT INTO langis_conversation (id, pinned, muted_until, archived, marked_unread)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned,
+                    muted_until = excluded.muted_until, archived = excluded.archived,
+                    marked_unread = excluded.marked_unread",
+            )
+            .bind(&id.0)
+            .bind(s.pinned.map(i64::from))
+            .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
+            .bind(s.archived as i64)
+            .bind(s.marked_unread as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// What the storage service said last (`last_read` unused), by conversation.
+    pub(crate) async fn remote(
+        &self,
+    ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, pinned, muted_until, archived, 0, marked_unread FROM langis_remote",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| (ConversationId(row.get(0)), settings_of(row)))
+            .collect())
+    }
+
+    /// Replaces what the storage service said last, and its manifest version.
+    pub(crate) async fn set_remote(
+        &self,
+        remote: &HashMap<ConversationId, ChatSettings>,
+        version: u64,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.db.begin().await?;
+        sqlx::query("DELETE FROM langis_remote")
+            .execute(&mut *tx)
+            .await?;
+        for (id, s) in remote {
+            sqlx::query(
+                "INSERT INTO langis_remote (id, pinned, muted_until, archived, marked_unread)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&id.0)
+            .bind(s.pinned.map(i64::from))
+            .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
+            .bind(s.archived as i64)
+            .bind(s.marked_unread as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO langis_meta (key, value) VALUES ('storage_version', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(version.min(i64::MAX as u64) as i64)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// The storage service's manifest version last read; 0 before the first time.
+    pub(crate) async fn storage_version(&self) -> Result<u64, sqlx::Error> {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM langis_meta WHERE key = 'storage_version'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(version.unwrap_or(0) as u64)
     }
 
     /// Pins exactly `order`, in that order; everything else is unpinned.

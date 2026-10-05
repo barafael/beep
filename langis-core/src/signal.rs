@@ -384,6 +384,7 @@ async fn run_linked(
         tables: tables.clone(),
         privacy: Rc::default(),
         expiring: Rc::default(),
+        storage_changed: Rc::default(),
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
@@ -398,6 +399,7 @@ async fn run_linked(
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
     let sweeping = tokio::task::spawn_local(sweep_expired(manager.clone(), ctx.clone()));
+    let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
 
     let downloads = attachments::download_limit();
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
@@ -430,6 +432,7 @@ async fn run_linked(
     };
     latest.abort();
     sweeping.abort();
+    following.abort();
     receiving.abort();
     was_removed
 }
@@ -666,6 +669,8 @@ struct Ctx {
     privacy: Rc<Cell<Privacy>>,
     /// Woken when a disappearing message starts counting down, for `sweep_expired`.
     expiring: Rc<tokio::sync::Notify>,
+    /// Woken when the phone says the storage service changed, for `follow_storage`.
+    storage_changed: Rc<tokio::sync::Notify>,
 }
 
 /// The thread a conversation id stands for; see [`conversation_id`].
@@ -938,6 +943,25 @@ async fn decorate(ctx: &Ctx, id: &ConversationId, messages: &mut [ChatMessage]) 
             message.edits = earlier;
         }
         message.expires_at = expiries.remove(&reference);
+    }
+}
+
+/// Takes over chat settings from the phone's storage service now, and each time the phone
+/// says they changed, for the rest of the session.
+async fn follow_storage(manager: Mgr, ctx: Ctx) {
+    const RETRY: Duration = Duration::from_secs(5 * 60);
+    loop {
+        match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
+            Ok(()) => ctx.storage_changed.notified().await,
+            // E.g. offline at the start; try again later.
+            Err(error) => {
+                warn!(%error, "failed to read the storage service");
+                tokio::select! {
+                    () = tokio::time::sleep(RETRY) => {}
+                    () = ctx.storage_changed.notified() => {}
+                }
+            }
+        }
     }
 }
 
@@ -1469,6 +1493,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         }
         ContentBody::SynchronizeMessage(sync) if !sync.read.is_empty() => {
             on_read_elsewhere(manager, ctx, &sync.read).await;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::FetchLatest(latest)),
+            ..
+        }) => {
+            if latest.r#type() == sync_message::fetch_latest::Type::StorageManifest {
+                ctx.storage_changed.notify_one();
+            }
+            return true;
         }
         _ => {}
     }

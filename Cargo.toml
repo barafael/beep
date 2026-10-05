@@ -15,8 +15,8 @@ qrcode = { version = "0.14", default-features = false }
 
 # Not on crates.io. Our fork adds the link-time history transfer on top of upstream 33dd149
 # (branch langis/link-history-key); drop it once that lands upstream (whisperfish/presage#430).
-presage = { git = "https://github.com/barafael/presage", rev = "dc5db7a75303e528a5cff5f882d506271513a7bb" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "dc5db7a75303e528a5cff5f882d506271513a7bb" }
+presage = { git = "https://github.com/barafael/presage", rev = "3832dda6b87615627b4678b6ed84622df28dd1f8" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "3832dda6b87615627b4678b6ed84622df28dd1f8" }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
