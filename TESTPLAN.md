@@ -298,3 +298,5 @@ part of a test. Every change below reaches all members' phones.
      background, and on your phone under "My stories".
 6. **Photo…** → pick a picture → it is posted the same way, as a photo story.
 7. 24 hours after posting, stories are gone from the list (also after restarting).
+8. Stories from someone whose chat is an unanswered message request, or whom you blocked, don't
+   show (watching would tell them you're active). Accept the request: their stories appear.

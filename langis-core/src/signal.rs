@@ -783,10 +783,11 @@ async fn group_conversation(
         .map_or(0, |t| t.duration);
     let people = people(manager, names, &group).await;
     // Invited without our profile key: joining is done on the phone for now.
+    let ids = &manager.registration_data().service_ids;
     let invited = group
         .pending_members
         .iter()
-        .any(|m| m.uuid == presage::libsignal_service::prelude::Uuid::from(own));
+        .any(|m| m.uuid == ids.aci || m.uuid == ids.pni);
     let subtitle = if left && invited {
         "You're invited to this group: accept on your phone.".into()
     } else if left {
@@ -820,7 +821,8 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
 }
 
 /// If `context`'s change removed us, drops us from the stored group: presage can't read the
-/// group from the server any more, so its copy would still count us in.
+/// group from the server any more, so its copy would still count us in. Only changes the
+/// server signed count: any member could send a made-up one.
 async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV2) {
     use presage::libsignal_service::groups_v2::{GroupChange, GroupOperations};
     use presage::libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams};
@@ -832,6 +834,19 @@ async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV
     else {
         return;
     };
+    let servers = presage::libsignal_service::configuration::ServiceConfiguration::from(
+        manager.registration_data().signal_servers,
+    );
+    let signed = <[u8; 64]>::try_from(change.server_signature.as_slice()).is_ok_and(|signature| {
+        servers
+            .zkgroup_server_public_params
+            .verify_signature(&change.actions, signature)
+            .is_ok()
+    });
+    if !signed {
+        debug!("a group change without the server's signature; ignored");
+        return;
+    }
     let operations = GroupOperations::new(GroupSecretParams::derive_from_master_key(
         GroupMasterKey::new(key),
     ));
@@ -929,12 +944,10 @@ async fn send_stories(manager: &Mgr, ctx: &Ctx) {
     let mut names = Names::new();
     let mut stories = Vec::new();
     for story in stored {
-        // Not from those we block, nor from strangers: watching would send them a receipt.
+        // Not from those we block, also in groups. (Strangers' are left out when listing.)
         let by_author = ConversationId::contact(&story.author);
         if !story.outgoing
-            && (is_blocked(ctx, &by_author).await
-                || is_blocked(ctx, &story.conversation).await
-                || is_unanswered_request(ctx, &story.conversation).await)
+            && (is_blocked(ctx, &by_author).await || is_blocked(ctx, &story.conversation).await)
         {
             continue;
         }

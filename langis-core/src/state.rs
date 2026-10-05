@@ -1321,7 +1321,7 @@ impl ChatState {
     /// Who has stories: unseen ones first, then the newest.
     pub fn story_rings(&self) -> Vec<StoryRing<'_>> {
         let mut rings: Vec<StoryRing<'_>> = Vec::new();
-        for story in &self.stories {
+        for story in self.stories.iter().filter(|s| self.story_shown(s)) {
             match rings
                 .iter_mut()
                 .find(|r| *r.conversation == story.conversation)
@@ -1348,11 +1348,26 @@ impl ChatState {
 
     /// Stories not seen yet, e.g. for a dot on the stories button.
     pub fn unviewed_stories(&self) -> usize {
-        self.stories.iter().filter(|s| !s.viewed).count()
+        self.stories
+            .iter()
+            .filter(|s| !s.viewed && self.story_shown(s))
+            .count()
     }
 
+    /// Whether a story is listed: not from strangers (chats that are message requests, or
+    /// none at all), as watching it would tell them.
+    fn story_shown(&self, story: &crate::Story) -> bool {
+        story.outgoing
+            || self
+                .conversation(&story.conversation)
+                .is_some_and(|c| !self.is_request(c) && !c.settings.blocked)
+    }
+
+    /// A conversation's stories, if they are shown at all.
     fn stories_of<'a>(&'a self, id: &'a ConversationId) -> impl Iterator<Item = &'a crate::Story> {
-        self.stories.iter().filter(move |s| &s.conversation == id)
+        self.stories
+            .iter()
+            .filter(move |s| &s.conversation == id && self.story_shown(s))
     }
 
     /// Shows a conversation's stories, from the first not seen yet.
@@ -1398,6 +1413,8 @@ impl ChatState {
     /// Marks the story shown as seen, the first time.
     fn view_current(&mut self) -> Option<Command> {
         let (id, at) = self.story_view.clone()?;
+        // A conversation's stories are shown all or none, so its index holds among them all.
+        self.stories_of(&id).nth(at)?;
         let story = self
             .stories
             .iter_mut()
@@ -4013,7 +4030,10 @@ mod tests {
             story("ann", "a", 10, true),
             story("ann", "a", 20, false),
             story("bob", "g", 30, true),
+            // A stranger's: no chat with them, so not listed (watching would tell them).
+            story("eve", "c:eve", 25, false),
         ]));
+        assert!(state.open_story(&id("c:eve")).is_none());
         let rings: Vec<_> = state
             .story_rings()
             .iter()
@@ -4059,7 +4079,9 @@ mod tests {
             story("bob", "g", 30, true),
         ]));
         assert_eq!(
-            state.current_story().map(|(s, at, count)| (s.timestamp, at, count)),
+            state
+                .current_story()
+                .map(|(s, at, count)| (s.timestamp, at, count)),
             Some((20, 0, 1))
         );
         // Once it expires too, the viewer closes.
