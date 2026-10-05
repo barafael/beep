@@ -106,6 +106,21 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_open_details({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (chat.open_details(), Update::default()));
+        }
+    });
+    window.on_close_details({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_details();
+                (None, Update::default())
+            });
+        }
+    });
     window.on_open_media({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -561,6 +576,8 @@ fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
     let mut chat = shared.chat.borrow_mut();
     if chat.forwarding() {
         chat.cancel_forward();
+    } else if chat.details().is_some() {
+        chat.close_details();
     } else if chat.media().is_some() {
         chat.close_media();
     } else if chat.chat_search().is_some() {
@@ -643,6 +660,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
     render_media(window, chat, images);
+    render_details(window, chat);
     let search = chat.chat_search();
     window.set_chat_search_open(search.is_some());
     window.set_chat_search_busy(search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()));
@@ -764,6 +782,37 @@ fn update_list<T: Clone + 'static>(model: &ModelRc<T>, items: Vec<T>, same: impl
             model.set_row_data(row, item);
         }
     }
+}
+
+/// The details page.
+fn render_details(window: &AppWindow, chat: &ChatState) {
+    let details = chat.details();
+    window.set_details_open(details.is_some());
+    window.set_details_busy(matches!(details, Some(None)));
+    let details = details.flatten().cloned().unwrap_or_default();
+    window.set_details_about(details.about.unwrap_or_default().into());
+    window.set_details_phone(details.phone.unwrap_or_default().into());
+    // Four groups of five digits per line, as on phones.
+    let safety = details.safety_number.map(|number| {
+        let groups: Vec<&str> = number.split_whitespace().collect();
+        groups.chunks(4).map(|line| line.join(" ")).collect::<Vec<_>>().join("\n")
+    });
+    window.set_details_safety_number(safety.unwrap_or_default().into());
+    window.set_details_description(details.description.unwrap_or_default().into());
+    let members: Vec<MemberItem> = details
+        .members
+        .iter()
+        .map(|(person, admin)| {
+            let id = ConversationId::contact(&person.service_id);
+            MemberItem {
+                name: person.name.as_str().into(),
+                initials: state::initials(&person.name).into(),
+                color: avatar_color(&id),
+                admin: *admin,
+            }
+        })
+        .collect();
+    window.set_details_members(ModelRc::new(VecModel::from(members)));
 }
 
 /// The media overview.

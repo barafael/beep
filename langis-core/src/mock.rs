@@ -240,6 +240,38 @@ pub fn run(commands: Inbox, events: Events) {
             }
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
+            Ok(Command::LoadDetails(conversation)) => {
+                let details = match conversation.0.as_str() {
+                    "rust" => crate::Details {
+                        description: Some("All things Rust 🦀, mostly GUIs".into()),
+                        members: ["Carol", "Dana", "Eve", "Ferris"]
+                            .iter()
+                            .map(|name| {
+                                let person = Person {
+                                    service_id: name.to_lowercase(),
+                                    name: (*name).into(),
+                                };
+                                (person, *name == "Ferris")
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    _ => crate::Details {
+                        about: Some("🏔 Out climbing".into()),
+                        phone: Some("+49 151 23456789".into()),
+                        safety_number: Some(
+                            "05236 77412 59001 83312 41875 22604 \
+                             93141 00552 36988 14205 77310 54128"
+                                .into(),
+                        ),
+                        ..Default::default()
+                    },
+                };
+                let _ = events.send(Event::Details {
+                    conversation,
+                    details,
+                });
+            }
             Ok(Command::LoadMedia(conversation)) => {
                 let mut messages: Vec<_> = history(&conversation, started)
                     .into_iter()

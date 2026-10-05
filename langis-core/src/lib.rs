@@ -62,6 +62,21 @@ pub struct Conversation {
     pub members: Vec<Person>,
 }
 
+/// More about a conversation, for its details page; see [`Command::LoadDetails`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Details {
+    /// Their profile's "about" line, with its emoji.
+    pub about: Option<String>,
+    pub phone: Option<String>,
+    /// The safety number (60 digits) of a 1:1 conversation, to compare in person or by
+    /// another channel; `None` if there is no session yet.
+    pub safety_number: Option<String>,
+    /// A group's description.
+    pub description: Option<String>,
+    /// A group's members, with whether each is an admin.
+    pub members: Vec<(Person, bool)>,
+}
+
 /// Someone who can be mentioned.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Person {
@@ -498,6 +513,11 @@ pub enum Event {
         query: String,
         messages: Vec<ChatMessage>,
     },
+    /// Answers [`Command::LoadDetails`].
+    Details {
+        conversation: ConversationId,
+        details: Details,
+    },
     /// A conversation's messages with attachments or links, newest first, answering
     /// [`Command::LoadMedia`].
     Media {
@@ -556,6 +576,8 @@ pub enum Command {
         conversation: ConversationId,
         query: String,
     },
+    /// Gathers what the details page shows; see [`Event::Details`].
+    LoadDetails(ConversationId),
     /// Gathers a conversation's media, files and links from its whole stored history; see
     /// [`Event::Media`].
     LoadMedia(ConversationId),

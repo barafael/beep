@@ -2108,6 +2108,16 @@ async fn handle(
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
+        Command::LoadDetails(conversation) => {
+            let Ok(thread) = thread(&conversation) else {
+                return Ok(());
+            };
+            let details = details(manager, &thread).await;
+            let _ = events.send(Event::Details {
+                conversation,
+                details,
+            });
+        }
         Command::LoadMedia(conversation) => {
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
@@ -2315,6 +2325,88 @@ async fn handle(
         Command::Preferences(privacy) => ctx.privacy.set(privacy),
     }
     Ok(())
+}
+
+/// What the details page shows about a thread. Whatever can't be found is left out.
+async fn details(manager: &mut Mgr, thread: &Thread) -> crate::Details {
+    let mut details = crate::Details::default();
+    match thread {
+        Thread::Contact(who) => {
+            if let Ok(Some(contact)) = manager.store().contact_by_id(who).await {
+                details.phone = contact.phone_number.as_ref().map(display_number);
+            }
+            if *who != own_id(manager) {
+                details.safety_number = safety_number(manager, *who).await;
+            }
+            if let (ServiceId::Aci(aci), Ok(Some(key))) =
+                (who, manager.store().profile_key(who).await)
+            {
+                match manager.retrieve_profile_by_uuid(*aci, key).await {
+                    Ok(profile) => {
+                        let about = [profile.about_emoji, profile.about]
+                            .into_iter()
+                            .flatten()
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        details.about = (!about.is_empty()).then_some(about);
+                    }
+                    Err(error) => debug!(%error, "couldn't fetch a profile"),
+                }
+            }
+        }
+        Thread::Group(key) => {
+            if let Ok(Some(group)) = manager.store().group(*key).await {
+                details.description = group.description.clone().filter(|d| !d.is_empty());
+                let mut names = Names::new();
+                for member in &group.members {
+                    let who = ServiceId::Aci(member.aci);
+                    let person = crate::Person {
+                        service_id: who.service_id_string(),
+                        name: display_name(manager, &mut names, who).await,
+                    };
+                    let admin =
+                        member.role == presage::libsignal_service::groups_v2::Role::Administrator;
+                    details.members.push((person, admin));
+                }
+                // Admins first, then by name.
+                details
+                    .members
+                    .sort_by_cached_key(|(p, admin)| (!admin, p.name.to_lowercase()));
+            }
+        }
+    }
+    details
+}
+
+/// The safety number with `who`, as Signal shows it: 60 digits in groups of five.
+async fn safety_number(manager: &Mgr, who: ServiceId) -> Option<String> {
+    use presage::libsignal_service::protocol::{
+        DeviceId, Fingerprint, IdentityKeyStore, ProtocolAddress,
+    };
+    use presage::store::Store as _;
+    let store = manager.store().aci_protocol_store();
+    let ours = store.get_identity_key_pair().await.ok()?;
+    let address = ProtocolAddress::new(who.service_id_string(), DeviceId::new(1).ok()?);
+    let theirs = store.get_identity(&address).await.ok()??;
+    let own = own_id(manager);
+    // Version 2 identifies both sides by their ACI.
+    let fingerprint = Fingerprint::new(
+        2,
+        5200,
+        own.raw_uuid().as_bytes(),
+        ours.identity_key(),
+        who.raw_uuid().as_bytes(),
+        &theirs,
+    )
+    .ok()?;
+    let digits = fingerprint.display_string().ok()?;
+    let groups: Vec<&str> = digits
+        .as_bytes()
+        .chunks(5)
+        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+        .collect();
+    Some(groups.join(" "))
 }
 
 /// Messages of a thread with attachments (other than a long message's text) or links;

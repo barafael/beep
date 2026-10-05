@@ -10,8 +10,9 @@ use std::{
 use crate::settings::NotificationContent;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Event, HistoryTransfer, Mention, MessageRef, Password,
-    Person, Picture, QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format, now_millis,
+    Command, Conversation, ConversationId, Details, Event, HistoryTransfer, Mention, MessageRef,
+    Password, Person, Picture, QrMatrix, Quote, Reaction, StyleRange, apply_reaction, format,
+    now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -296,6 +297,8 @@ pub struct ChatState {
     /// The selected conversation's media, files and links, while shown: `None` inside while
     /// they are gathered.
     media: Option<(ConversationId, Option<Vec<ChatMessage>>)>,
+    /// The selected conversation's details page, while shown: `None` inside while gathered.
+    details: Option<(ConversationId, Option<Details>)>,
 }
 
 /// What [`ChatState::media`] shows on one of its tabs.
@@ -643,6 +646,16 @@ impl ChatState {
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::Details {
+                conversation,
+                details,
+            } => {
+                if let Some((shown, shown_details)) = &mut self.details
+                    && *shown == conversation
+                {
+                    *shown_details = Some(details);
+                }
+            }
             Event::Media {
                 conversation,
                 messages,
@@ -741,6 +754,7 @@ impl ChatState {
         }
         if self.selected.as_ref() != Some(id) {
             self.media = None;
+            self.details = None;
             self.chat_search = None;
             self.pending_jump = None;
             self.highlight = None;
@@ -988,6 +1002,23 @@ impl ChatState {
             styles,
             mentions,
         })
+    }
+
+    /// Shows the selected conversation's details page; returns the command that gathers what it
+    /// shows.
+    pub fn open_details(&mut self) -> Option<Command> {
+        let id = self.selected.clone()?;
+        self.details = Some((id.clone(), None));
+        Some(Command::LoadDetails(id))
+    }
+
+    pub fn close_details(&mut self) {
+        self.details = None;
+    }
+
+    /// The details page, if shown: `Some(None)` while it is gathered.
+    pub fn details(&self) -> Option<Option<&Details>> {
+        self.details.as_ref().map(|(_, details)| details.as_ref())
     }
 
     /// Shows the selected conversation's media, files and links; returns the command that

@@ -98,6 +98,14 @@ export struct MessageItem {
     highlighted: bool,
 }
 
+// A group member on the details page.
+export struct MemberItem {
+    name: string,
+    initials: string,
+    color: color,
+    admin: bool,
+}
+
 // A row of the media overview's grid.
 export struct MediaRow {
     tiles: [AttachmentItem],
@@ -160,8 +168,9 @@ component ConversationMenu inherits ContextMenuArea {
     callback mute(int);
     callback archive(bool);
     callback set-timer(int);
-    // With `with-timer`: the chat's media, files and links.
+    // With `with-timer`: the chat's media, files and links, and its details.
     callback show-media;
+    callback show-details;
     property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
     Menu {
         MenuItem {
@@ -190,6 +199,10 @@ component ConversationMenu inherits ContextMenuArea {
             MenuItem { title: "For 8 hours"; activated => { root.mute(28800); } }
             MenuItem { title: "For 1 week"; activated => { root.mute(604800); } }
             MenuItem { title: "Always"; activated => { root.mute(-1); } }
+        }
+        if root.with-timer: MenuItem {
+            title: "Details";
+            activated => { root.show-details(); }
         }
         if root.with-timer: MenuItem {
             title: "Media, files and links";
@@ -1228,6 +1241,17 @@ export component AppWindow inherits Window {
     in property <string> typing;
     // The composer replaces the text of one of our messages.
     in property <bool> editing;
+    // The open chat's details page.
+    in property <bool> details-open;
+    in property <bool> details-busy;
+    in property <string> details-about;
+    in property <string> details-phone;
+    // In lines of four groups; empty if there is none.
+    in property <string> details-safety-number;
+    in property <string> details-description;
+    in property <[MemberItem]> details-members;
+    callback open-details;
+    callback close-details;
     // The open chat's media, files and links.
     in property <bool> media-open;
     // Gathering them.
@@ -1542,6 +1566,11 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 Rectangle {
                     height: 60px;
+                    // The chat's picture and name open its details; the buttons, above, don't.
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-details(); }
+                    }
                     HorizontalLayout {
                         padding-left: root.narrow ? 4px : 16px;
                         padding-right: 16px;
@@ -1620,6 +1649,7 @@ export component AppWindow inherits Window {
                         archive(archived) => { root.archive(self.id, archived); }
                         set-timer(seconds) => { root.set-timer(self.id, seconds); }
                         show-media => { root.open-media(); }
+                        show-details => { root.open-details(); }
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
                 }
@@ -1787,6 +1817,141 @@ export component AppWindow inherits Window {
                                         text: result.text;
                                         wrap: word-wrap;
                                         color: Palette.foreground.with-alpha(0.8);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.details-open: Rectangle {
+                    background: Palette.background;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            Rectangle { horizontal-stretch: 1; }
+                            Button {
+                                text: "Close";
+                                clicked => { root.close-details(); }
+                            }
+                        }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                padding-bottom: 16px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Avatar {
+                                        width: 96px;
+                                        initials: root.conversations[root.selected].initials;
+                                        tint: root.conversations[root.selected].avatar-color;
+                                        picture: root.conversations[root.selected].avatar;
+                                    }
+                                }
+                                Text {
+                                    text: root.conversations[root.selected].title;
+                                    font-size: 1.4rem;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    color: Palette.foreground;
+                                }
+                                if root.details-about != "": Text {
+                                    text: root.details-about;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                    color: Palette.foreground.with-alpha(0.75);
+                                }
+                                Text {
+                                    text: root.details-phone != "" ? root.details-phone : root.conversations[root.selected].subtitle;
+                                    horizontal-alignment: center;
+                                    color: Palette.foreground.with-alpha(0.6);
+                                }
+                                if root.details-busy: HorizontalLayout {
+                                    alignment: center;
+                                    Spinner {
+                                        indeterminate: true;
+                                        width: 20px;
+                                        height: 20px;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Button {
+                                        text: "Media, files and links";
+                                        clicked => {
+                                            root.close-details();
+                                            root.open-media();
+                                        }
+                                    }
+                                }
+                                if root.details-description != "": VerticalLayout {
+                                    spacing: 4px;
+                                    SectionTitle { text: "Description"; }
+                                    Text {
+                                        text: root.details-description;
+                                        wrap: word-wrap;
+                                        color: Palette.foreground;
+                                    }
+                                }
+                                if root.details-safety-number != "": VerticalLayout {
+                                    spacing: 6px;
+                                    SectionTitle { text: "Safety number"; }
+                                    Text {
+                                        text: "Compare it with the one on their phone, in person or another way you trust. If both match, nobody is in between: your messages are end-to-end encrypted with them.";
+                                        wrap: word-wrap;
+                                        font-size: 0.85rem;
+                                        color: Palette.foreground.with-alpha(0.7);
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        Rectangle {
+                                            border-radius: 8px;
+                                            background: Palette.alternate-background;
+                                            HorizontalLayout {
+                                                padding: 12px;
+                                                Text {
+                                                    text: root.details-safety-number;
+                                                    font-family: "monospace";
+                                                    font-size: 1.05rem;
+                                                    color: Palette.foreground;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        Button {
+                                            text: "Copy";
+                                            clicked => { root.copy-text(root.details-safety-number); }
+                                        }
+                                    }
+                                }
+                                if root.details-members.length > 0: VerticalLayout {
+                                    spacing: 4px;
+                                    SectionTitle { text: root.details-members.length + " members"; }
+                                    for member in root.details-members: HorizontalLayout {
+                                        spacing: 10px;
+                                        padding-top: 2px;
+                                        padding-bottom: 2px;
+                                        Avatar {
+                                            width: 32px;
+                                            initials: member.initials;
+                                            tint: member.color;
+                                        }
+                                        Text {
+                                            text: member.name;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            color: Palette.foreground;
+                                        }
+                                        if member.admin: Text {
+                                            text: "Admin";
+                                            font-size: 0.8rem;
+                                            vertical-alignment: center;
+                                            color: Palette.foreground.with-alpha(0.6);
+                                        }
                                     }
                                 }
                             }
