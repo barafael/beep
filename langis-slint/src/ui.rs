@@ -9,8 +9,8 @@ use langis_core::state::{
     Update,
 };
 use langis_core::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId,
-    HistoryTransfer,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
+    HistoryTransfer, now_millis,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -81,7 +81,75 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     });
     window.on_draft_edited({
         let shared = shared.clone();
-        move |_| shared.refresh(Update::default())
+        move |text| {
+            shared.act(|chat| (chat.draft_changed(&text), Update::default()));
+        }
+    });
+    window.on_conversation_action({
+        let shared = shared.clone();
+        move |id, action| {
+            let id = ConversationId(id.into());
+            shared.act(|chat| {
+                let command = conversation_action(chat, &id, &action);
+                // Archiving or marking unread closes the chat.
+                (command, Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() })
+            });
+        }
+    });
+    window.on_show_archived({
+        let shared = shared.clone();
+        move |show| {
+            shared.act(|chat| (None, chat.show_archived(show)));
+        }
+    });
+    window.on_pinned_shortcut({
+        let shared = shared.clone();
+        move |key| {
+            let Some(n) = key.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) else {
+                return false;
+            };
+            let mut found = false;
+            shared.act(|chat| match chat.select_pinned(n - 1) {
+                Some(command) => {
+                    found = true;
+                    (command, Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() })
+                }
+                None => (None, Update::default()),
+            });
+            found
+        }
+    });
+    window.on_edit({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move |index| {
+            let text = shared.chat.borrow_mut().edit(index as usize);
+            if let (Some(text), Some(window)) = (text, window.upgrade()) {
+                window.set_draft(text.into());
+                shared.refresh(Update::default());
+            }
+        }
+    });
+    window.on_cancel_edit({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.cancel_edit();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_delete({
+        let shared = shared.clone();
+        move |index, everyone| {
+            shared.act(|chat| chat.delete(index as usize, everyone));
+        }
+    });
+    window.on_reveal({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.reveal(index as usize)));
+        }
     });
     window.on_settings_changed({
         let shared = shared.clone();
@@ -278,6 +346,8 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         NotificationContent::Nothing => 2,
     });
     window.set_close_to_tray(settings.close_to_tray);
+    window.set_read_receipts(settings.read_receipts);
+    window.set_typing_indicators(settings.typing_indicators);
     window.set_autostart_supported(crate::autostart::SUPPORTED);
     window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
@@ -304,6 +374,31 @@ fn read_settings(window: &AppWindow) -> Settings {
             _ => NotificationContent::NameAndMessage,
         },
         close_to_tray: window.get_close_to_tray(),
+        read_receipts: window.get_read_receipts(),
+        typing_indicators: window.get_typing_indicators(),
+    }
+}
+
+/// See `ConversationMenu` in app.slint.
+fn conversation_action(chat: &mut ChatState, id: &ConversationId, action: &str) -> Option<langis_core::Command> {
+    let seconds = |prefix: &str| action.strip_prefix(prefix).and_then(|s| s.parse::<u64>().ok());
+    match action {
+        "pin" | "unpin" => chat.toggle_pin(id),
+        "read" => chat.mark_unread(id, false),
+        "unread" => chat.mark_unread(id, true),
+        "unmute" => chat.mute(id, None),
+        "mute:forever" => chat.mute(id, Some(u64::MAX)),
+        "archive" => chat.archive(id, true),
+        "unarchive" => chat.archive(id, false),
+        _ => {
+            if let Some(seconds) = seconds("mute:") {
+                chat.mute(id, Some(now_millis() + seconds * 1000))
+            } else if let Some(seconds) = seconds("timer:") {
+                chat.set_timer(id, u32::try_from(seconds).ok()?)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -347,6 +442,12 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
+    let (archived, archived_unread) = chat.archived();
+    window.set_archived_count(archived as i32);
+    window.set_archived_unread(archived_unread as i32);
+    window.set_showing_archived(chat.showing_archived());
+    window.set_typing(chat.selected().map(|c| state::typing_label(&chat.typing(&c.id))).unwrap_or_default().into());
+    window.set_editing(chat.editing().is_some());
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
     window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
@@ -412,6 +513,13 @@ fn conversation_item(view: &ConversationView, images: &Images) -> ConversationIt
         time: view.last_message.map(|m| state::format_list_time(m.timestamp)).unwrap_or_default().into(),
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
+        pinned: view.pinned(),
+        muted: view.muted(),
+        marked_unread: view.marked_unread(),
+        archived: c.settings.archived,
+        typing: state::typing_label(&view.typing).into(),
+        timer: c.settings.expire_timer as i32,
+        timer_label: langis_core::format_timer(c.settings.expire_timer).into(),
     }
 }
 
@@ -430,8 +538,14 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
         sender: m.sender.as_str().into(),
-        body: crate::rich_text(view.body),
-        has_body: !view.body.is_empty(),
+        body: if m.deleted {
+            crate::rich_text("This message was deleted.", &[], false)
+        } else {
+            // A long message's fetched text has no formatting of its own.
+            let styles = if view.body == m.body { &m.styles[..] } else { &[] };
+            crate::rich_text(view.body, styles, view.revealed)
+        },
+        has_body: m.deleted || !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
@@ -446,6 +560,19 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
         attachments: ModelRc::new(VecModel::from(attachments)),
         reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
+        text: if m.deleted { "" } else { view.body }.into(),
+        delivery: match (m.outgoing, m.delivery) {
+            (false, _) => 0,
+            (true, Delivery::Sent) => 1,
+            (true, Delivery::Delivered) => 2,
+            (true, Delivery::Read) => 3,
+        },
+        edited: !m.edits.is_empty(),
+        deleted: m.deleted,
+        expires: m.expires_at.map(|at| state::format_remaining(at, now_millis())).unwrap_or_default().into(),
+        can_edit: chat.can_edit(m),
+        can_delete_for_everyone: chat.can_delete_for_everyone(m),
+        first_unread: view.first_unread,
     }
 }
 

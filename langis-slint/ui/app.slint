@@ -13,6 +13,16 @@ export struct ConversationItem {
     // Under the title in the chat header: a phone number, "4 members", …
     subtitle: string,
     unread: int,
+    pinned: bool,
+    muted: bool,
+    // Marked unread by hand: a dot, no count.
+    marked-unread: bool,
+    archived: bool,
+    // "Ann is typing…", shown instead of the preview; empty otherwise.
+    typing: string,
+    // Disappearing messages: seconds, 0 for off; and as said, e.g. "1 hour".
+    timer: int,
+    timer-label: string,
 }
 
 export struct AttachmentItem {
@@ -68,6 +78,18 @@ export struct MessageItem {
     quote-text: string,
     attachments: [AttachmentItem],
     reactions: [ReactionItem],
+    // Plain text, for copying.
+    text: string,
+    // Ours: 1 sent, 2 delivered, 3 read; 0 for others' messages.
+    delivery: int,
+    edited: bool,
+    deleted: bool,
+    // Time left until it disappears, e.g. "5m"; empty if it doesn't.
+    expires: string,
+    can-edit: bool,
+    can-delete-for-everyone: bool,
+    // The first message that came after the chat was last read.
+    first-unread: bool,
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -96,10 +118,63 @@ component Avatar inherits Rectangle {
     }
 }
 
+// What can be done with a conversation, in its context menu and the chat header's menu.
+// `action` gets "pin", "unpin", "read", "unread", "mute:<seconds>", "mute:forever", "unmute",
+// "archive", "unarchive" or "timer:<seconds>".
+component ConversationMenu inherits ContextMenuArea {
+    in property <ConversationItem> item;
+    // With the disappearing-messages timer (the chat header's menu).
+    in property <bool> with-timer;
+    callback action(string);
+    Menu {
+        MenuItem {
+            title: root.item.pinned ? "Unpin" : "Pin";
+            activated => { root.action(root.item.pinned ? "unpin" : "pin"); }
+        }
+        MenuItem {
+            title: root.item.unread > 0 || root.item.marked-unread ? "Mark as read" : "Mark as unread";
+            activated => { root.action(root.item.unread > 0 || root.item.marked-unread ? "read" : "unread"); }
+        }
+        if root.item.muted: MenuItem {
+            title: "Unmute";
+            activated => { root.action("unmute"); }
+        }
+        if !root.item.muted: Menu {
+            title: "Mute";
+            MenuItem { title: "For 1 hour"; activated => { root.action("mute:3600"); } }
+            MenuItem { title: "For 8 hours"; activated => { root.action("mute:28800"); } }
+            MenuItem { title: "For 1 week"; activated => { root.action("mute:604800"); } }
+            MenuItem { title: "Always"; activated => { root.action("mute:forever"); } }
+        }
+        if root.with-timer: Menu {
+            title: "Disappearing messages";
+            for choice in [
+                { label: "Off", seconds: 0 },
+                { label: "30 seconds", seconds: 30 },
+                { label: "5 minutes", seconds: 300 },
+                { label: "1 hour", seconds: 3600 },
+                { label: "8 hours", seconds: 28800 },
+                { label: "1 day", seconds: 86400 },
+                { label: "1 week", seconds: 604800 },
+                { label: "4 weeks", seconds: 2419200 },
+            ]: MenuItem {
+                title: (choice.seconds == root.item.timer ? "✓ " : "") + choice.label;
+                activated => { root.action("timer:" + choice.seconds); }
+            }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: root.item.archived ? "Unarchive" : "Archive";
+            activated => { root.action(root.item.archived ? "unarchive" : "archive"); }
+        }
+    }
+}
+
 component ConversationRow inherits Rectangle {
     in property <ConversationItem> item;
     in property <bool> selected;
     callback clicked;
+    callback action(string);
 
     height: 64px;
     border-radius: 6px;
@@ -131,6 +206,18 @@ component ConversationRow inherits Rectangle {
                     horizontal-stretch: 1;
                     color: Palette.foreground;
                 }
+                if item.muted: Text {
+                    text: "🔕";
+                    font-size: 0.75rem;
+                    vertical-alignment: center;
+                    opacity: 0.6;
+                }
+                if item.pinned: Text {
+                    text: "📌";
+                    font-size: 0.75rem;
+                    vertical-alignment: center;
+                    opacity: 0.7;
+                }
                 Text {
                     text: item.time;
                     font-size: 0.75rem;
@@ -141,17 +228,25 @@ component ConversationRow inherits Rectangle {
             HorizontalLayout {
                 spacing: 6px;
                 Text {
-                    text: item.preview;
+                    text: item.typing != "" ? item.typing : item.preview;
                     overflow: elide;
                     horizontal-stretch: 1;
-                    color: Palette.foreground.with-alpha(0.65);
+                    color: item.typing != "" ? Palette.accent-background : Palette.foreground.with-alpha(0.65);
                     font-size: 0.9rem;
+                }
+                if item.unread == 0 && item.marked-unread: Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 5px;
+                    background: Palette.accent-background;
                 }
                 if item.unread > 0: Rectangle {
                     width: max(18px, badge.preferred-width + 10px);
                     height: 18px;
                     border-radius: 9px;
-                    background: Palette.accent-background;
+                    // Muted chats count quietly.
+                    background: item.muted ? Palette.foreground.with-alpha(0.35) : Palette.accent-background;
                     badge := Text {
                         text: item.unread;
                         // White on the accent, whatever the style's accent text colour is.
@@ -162,6 +257,11 @@ component ConversationRow inherits Rectangle {
                 }
             }
         }
+    }
+    // On top: it takes only right clicks, so left clicks still reach the row.
+    ConversationMenu {
+        item: root.item;
+        action(action) => { root.action(action); }
     }
 }
 
@@ -332,6 +432,10 @@ component Bubble inherits Rectangle {
     callback open-link(string);
     callback reply;
     callback react(string);
+    callback edit;
+    callback delete(bool);
+    callback copy-text(string);
+    callback reveal;
 
     // Outgoing bubbles use the accent colour: white text reads on any style's accent.
     property <color> ink: item.outgoing ? white : Palette.alternate-foreground;
@@ -349,6 +453,21 @@ component Bubble inherits Rectangle {
     }
 
     VerticalLayout {
+        if item.first-unread: HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 10px;
+            spacing: 8px;
+            Rectangle { height: 1px; y: (parent.height - 1px) / 2; background: Palette.accent-background.with-alpha(0.5); }
+            new-label := Text {
+                text: "New messages";
+                font-size: 0.8rem;
+                font-weight: 600;
+                horizontal-stretch: 0;
+                color: Palette.accent-background;
+            }
+            Rectangle { height: 1px; y: (parent.height - 1px) / 2; background: Palette.accent-background.with-alpha(0.5); }
+        }
         if item.day != "": HorizontalLayout {
             alignment: center;
             padding-top: 14px;
@@ -392,6 +511,7 @@ component Bubble inherits Rectangle {
             if item.outgoing: VerticalLayout {
                 alignment: center;
                 HoverButtons {
+                    visible: !item.deleted;
                     shown: hover.has-hover;
                     react => { picker.show(); }
                     reply => { root.reply(); }
@@ -462,16 +582,45 @@ component Bubble inherits Rectangle {
                         }
                         if item.has-body: StyledText {
                             text: item.body;
-                            default-color: root.ink;
+                            default-color: item.deleted ? root.ink.with-alpha(0.6) : root.ink;
                             link-color: item.outgoing ? white : Palette.accent-background;
-                            link-clicked(link) => { root.open-link(link); }
+                            // Spoilers are links that reveal them.
+                            link-clicked(link) => {
+                                if link == "spoiler:" {
+                                    root.reveal();
+                                } else {
+                                    root.open-link(link);
+                                }
+                            }
                         }
-                        // Once per run, on its last message.
-                        if item.last: Text {
-                            text: item.time;
-                            font-size: 0.72rem;
-                            horizontal-alignment: right;
-                            color: root.ink.with-alpha(0.65);
+                        // Once per run, on its last message; always if it changed or goes away.
+                        if item.last || item.edited || item.expires != "": HorizontalLayout {
+                            alignment: end;
+                            spacing: 4px;
+                            property <color> faint: root.ink.with-alpha(0.65);
+                            if item.expires != "": Text {
+                                text: "⏱ " + item.expires;
+                                font-size: 0.72rem;
+                                color: parent.faint;
+                            }
+                            if item.edited: Text {
+                                text: "edited";
+                                font-size: 0.72rem;
+                                font-italic: true;
+                                color: parent.faint;
+                            }
+                            if item.last: Text {
+                                text: item.time;
+                                font-size: 0.72rem;
+                                color: parent.faint;
+                            }
+                            // ✓ sent, ✓✓ delivered, ✓✓ in full white once read.
+                            if item.last && item.delivery > 0: Text {
+                                text: item.delivery == 1 ? "✓" : "✓✓";
+                                font-size: 0.72rem;
+                                font-weight: item.delivery == 3 ? 700 : 400;
+                                color: item.delivery == 3 ? root.ink : parent.faint;
+                            }
                         }
                     }
                 }
@@ -502,10 +651,50 @@ component Bubble inherits Rectangle {
             if !item.outgoing: VerticalLayout {
                 alignment: center;
                 HoverButtons {
+                    visible: !item.deleted;
                     shown: hover.has-hover;
                     react => { picker.show(); }
                     reply => { root.reply(); }
                 }
+            }
+        }
+    }
+
+    // On top: it takes only right clicks.
+    if !item.deleted: ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Reply";
+                activated => { root.reply(); }
+            }
+            MenuItem {
+                title: "React…";
+                activated => { picker.show(); }
+            }
+            if item.text != "": MenuItem {
+                title: "Copy text";
+                activated => { root.copy-text(item.text); }
+            }
+            if item.can-edit: MenuItem {
+                title: "Edit";
+                activated => { root.edit(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Delete for me";
+                activated => { root.delete(false); }
+            }
+            if item.can-delete-for-everyone: MenuItem {
+                title: "Delete for everyone";
+                activated => { root.delete(true); }
+            }
+        }
+    }
+    if item.deleted: ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Delete for me";
+                activated => { root.delete(false); }
             }
         }
     }
@@ -654,6 +843,8 @@ component SettingsPage inherits Rectangle {
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
     in-out property <bool> start-with-system;
+    in-out property <bool> read-receipts;
+    in-out property <bool> typing-indicators;
     in property <string> account;
     in property <string> device-name;
     callback changed-settings;
@@ -767,6 +958,25 @@ component SettingsPage inherits Rectangle {
                     }
 
                     Rectangle { height: 8px; }
+                    SectionTitle { text: "Privacy"; }
+                    SettingRow {
+                        label: "Read receipts";
+                        hint: "Let people know when you've read their messages. Turned off, you don't see theirs either on your phone.";
+                        Switch {
+                            checked <=> root.read-receipts;
+                            toggled => { root.changed-settings(); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Typing indicators";
+                        hint: "Let people see when you're typing.";
+                        Switch {
+                            checked <=> root.typing-indicators;
+                            toggled => { root.changed-settings(); }
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
                     SectionTitle { text: "Background"; }
                     SettingRow {
                         label: "Keep running in the tray";
@@ -855,6 +1065,8 @@ export component AppWindow inherits Window {
     in property <bool> autostart-supported;
     in-out property <bool> start-with-system;
     in-out property <int> notification-content;
+    in-out property <bool> read-receipts: true;
+    in-out property <bool> typing-indicators: true;
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -908,6 +1120,31 @@ export component AppWindow inherits Window {
     in-out property <string> search-text;
     callback fetch-attachment(string);
     callback save-attachment(string);
+    // See `ConversationMenu`.
+    callback conversation-action(string, string);
+    callback show-archived(bool);
+    callback edit(int);
+    callback delete(int, bool);
+    callback reveal(int);
+    callback cancel-edit;
+    // Alt+1…9 (the key's text): opens that pinned chat; whether there is one.
+    callback pinned-shortcut(string) -> bool;
+    // How many chats are archived, and how many of those have unread messages.
+    in property <int> archived-count;
+    in property <int> archived-unread;
+    in property <bool> showing-archived;
+    // Who is typing in the open chat, e.g. "Ann is typing…"; empty if nobody is.
+    in property <string> typing;
+    // The composer replaces the text of one of our messages.
+    in property <bool> editing;
+
+    // Copies through a text input, the way Slint reaches the clipboard.
+    clipboard := TextInput { visible: false; width: 0; height: 0; }
+    function copy-text(text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+    }
 
     VerticalLayout {
         if root.error != "": Rectangle {
@@ -965,8 +1202,18 @@ export component AppWindow inherits Window {
                         padding: 16px;
                         padding-bottom: 8px;
                         spacing: 8px;
+                        if root.showing-archived: TouchArea {
+                            width: 24px;
+                            mouse-cursor: pointer;
+                            clicked => { root.show-archived(false); }
+                            Text {
+                                text: "←";
+                                font-size: 1.3rem;
+                                color: Palette.foreground.with-alpha(0.8);
+                            }
+                        }
                         Text {
-                            text: "Chats";
+                            text: root.showing-archived ? "Archived" : "Chats";
                             font-size: 1.3rem;
                             font-weight: 700;
                             color: Palette.foreground;
@@ -1025,6 +1272,43 @@ export component AppWindow inherits Window {
                             edited(text) => { root.search(text); }
                         }
                     }
+                    if root.archived-count > 0 && !root.showing-archived && root.search-text == "": HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 6px;
+                            background: archive-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
+                            archive-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.show-archived(true); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 12px;
+                                Text {
+                                    text: "📦";
+                                    width: 40px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    color: Palette.foreground.with-alpha(0.7);
+                                }
+                                Text {
+                                    text: "Archived chats";
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    color: Palette.foreground.with-alpha(0.8);
+                                }
+                                Text {
+                                    text: root.archived-unread > 0 ? root.archived-count + " · " + root.archived-unread + " unread" : root.archived-count;
+                                    font-size: 0.8rem;
+                                    vertical-alignment: center;
+                                    color: Palette.foreground.with-alpha(0.55);
+                                }
+                            }
+                        }
+                    }
                     ListView {
                         for item[index] in root.conversations: HorizontalLayout {
                             padding-left: 8px;
@@ -1036,6 +1320,7 @@ export component AppWindow inherits Window {
                                     root.settings-open = false;
                                     root.select(item.id);
                                 }
+                                action(action) => { root.conversation-action(item.id, action); }
                             }
                         }
                     }
@@ -1068,6 +1353,8 @@ export component AppWindow inherits Window {
                 tray-available: root.tray-available;
                 autostart-supported: root.autostart-supported;
                 start-with-system <=> root.start-with-system;
+                read-receipts <=> root.read-receipts;
+                typing-indicators <=> root.typing-indicators;
                 account: root.account;
                 device-name: root.device-name;
                 changed-settings => { root.settings-changed(); }
@@ -1133,13 +1420,35 @@ export component AppWindow inherits Window {
                                 overflow: elide;
                                 color: Palette.foreground;
                             }
-                            if root.conversations[root.selected].subtitle != "": Text {
-                                text: root.conversations[root.selected].subtitle;
+                            if root.typing != "": Text {
+                                text: root.typing;
+                                font-size: 0.8rem;
+                                overflow: elide;
+                                color: Palette.accent-background;
+                            }
+                            if root.typing == "" && (root.conversations[root.selected].subtitle != "" || root.conversations[root.selected].timer > 0): Text {
+                                text: root.conversations[root.selected].subtitle
+                                    + (root.conversations[root.selected].timer > 0
+                                        ? (root.conversations[root.selected].subtitle != "" ? " · " : "") + "⏱ " + root.conversations[root.selected].timer-label
+                                        : "");
                                 font-size: 0.8rem;
                                 overflow: elide;
                                 color: Palette.foreground.with-alpha(0.6);
                             }
                         }
+                        VerticalLayout {
+                            alignment: center;
+                            HoverButton {
+                                symbol: "⋮";
+                                shown: true;
+                                clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
+                            }
+                        }
+                    }
+                    chat-menu := ConversationMenu {
+                        item: root.conversations[root.selected];
+                        with-timer: true;
+                        action(action) => { root.conversation-action(root.conversations[root.selected].id, action); }
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
                 }
@@ -1184,9 +1493,47 @@ export component AppWindow inherits Window {
                         open-attachment(id) => { root.open-attachment(id); }
                         open-link(link) => { root.open-link(link); }
                         react(emoji) => { root.react(index, emoji); }
+                        edit => {
+                            root.edit(index);
+                            composer.focus();
+                        }
+                        delete(everyone) => { root.delete(index, everyone); }
+                        copy-text(text) => { root.copy-text(text); }
+                        reveal => { root.reveal(index); }
                     }
                 }
 
+                if root.editing: Rectangle {
+                    background: Palette.alternate-background;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 3px;
+                            border-radius: 1.5px;
+                            background: Palette.accent-background;
+                        }
+                        Text {
+                            text: "Editing message";
+                            font-size: 0.85rem;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground;
+                        }
+                        TouchArea {
+                            width: 28px;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.cancel-edit();
+                                root.draft = "";
+                            }
+                            Text { text: "✕"; color: Palette.foreground.with-alpha(0.6); }
+                        }
+                    }
+                }
                 if root.reply-author != "" || root.reply-text != "": Rectangle {
                     background: Palette.alternate-background;
                     HorizontalLayout {
@@ -1325,13 +1672,22 @@ export component AppWindow inherits Window {
                             width: parent.width;
                             height: parent.height;
                             text <=> root.draft;
-                            placeholder-text: "Message";
+                            placeholder-text: root.editing ? "Edit message" : "Message";
                             wrap: word-wrap;
                             edited(text) => { root.draft-edited(text); }
                             // Enter sends; Shift+Enter starts a new line.
                             key-pressed(event) => {
                                 if event.text == Key.Return && !event.modifiers.shift {
                                     if root.can-send { root.send(root.draft); }
+                                    return accept;
+                                }
+                                if event.text == Key.Escape && root.editing {
+                                    root.cancel-edit();
+                                    root.draft = "";
+                                    return accept;
+                                }
+                                // Alt+1…9 opens the pinned chats.
+                                if event.modifiers.alt && root.pinned-shortcut(event.text) {
                                     return accept;
                                 }
                                 return reject;
@@ -1341,7 +1697,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         alignment: end;
                         Button {
-                            text: "Send";
+                            text: root.editing ? "Save" : "Send";
                             primary: true;
                             enabled: root.can-send;
                             clicked => { root.send(root.draft); composer.focus(); }

@@ -115,6 +115,9 @@ impl ConversationView<'_> {
         let Some(message) = self.last_message else {
             return String::new();
         };
+        if message.deleted {
+            return "This message was deleted.".into();
+        }
         let body = match message.body.lines().next() {
             Some(line) => line.to_string(),
             None => message
@@ -159,6 +162,8 @@ pub struct MessageView<'a> {
     pub sender_avatar: Option<&'a Arc<Picture>>,
     /// The first message that arrived after the conversation was last read.
     pub first_unread: bool,
+    /// Its spoilers were clicked open.
+    pub revealed: bool,
 }
 
 /// Messages further apart than this start a new run, even from the same person.
@@ -243,6 +248,8 @@ pub struct ChatState {
     /// Commands that follow from state changes rather than a single user action, e.g. read
     /// receipts; see [`ChatState::take_commands`].
     queued: Vec<Command>,
+    /// Messages whose spoilers were clicked open.
+    revealed: HashSet<MessageRef>,
 }
 
 struct Typist {
@@ -1073,6 +1080,16 @@ impl ChatState {
         })
     }
 
+    /// Shows the spoilers of the `index`th message of [`ChatState::messages`].
+    pub fn reveal(&mut self, index: usize) -> Update {
+        let reference = self.messages().nth(index).map(|v| v.message.reference());
+        self.revealed.extend(reference);
+        Update {
+            rows: true,
+            ..Update::default()
+        }
+    }
+
     /// Names of who is typing in a conversation.
     pub fn typing(&self, id: &ConversationId) -> Vec<&str> {
         let now = now_millis();
@@ -1287,7 +1304,8 @@ impl ChatState {
             .and_then(|id| self.history.get(id))
             .map_or(&[][..], Vec::as_slice);
         let now = jiff::Zoned::now();
-        let read_mark = self.read_mark;
+        // Not in chats never read here: everything would be "new".
+        let read_mark = self.read_mark.filter(|&mark| mark > 0);
         let first_unread = read_mark.and_then(|mark| {
             history
                 .iter()
@@ -1312,6 +1330,7 @@ impl ChatState {
                 first_of_run,
                 last_of_run: next.is_none_or(|n| !same_run(message, n)),
                 first_unread: first_unread == Some(i),
+                revealed: self.revealed.contains(&message.reference()),
                 sender_avatar: if group && !message.outgoing {
                     self.avatars
                         .get(&ConversationId::contact(&message.sender_id))
@@ -1359,6 +1378,27 @@ impl ChatState {
             )
         });
         self.conversations = conversations;
+    }
+}
+
+/// "Ann is typing…", "Ann and Bob are typing…"; empty if nobody is.
+pub fn typing_label(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => format!("{one} is typing…"),
+        [one, two] => format!("{one} and {two} are typing…"),
+        _ => "Several people are typing…".into(),
+    }
+}
+
+/// How long until `at` (ms since the epoch), roughly: "5m", "3h", "2d".
+pub fn format_remaining(at: u64, now: u64) -> String {
+    let seconds = at.saturating_sub(now).div_ceil(1000);
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds.div_ceil(60)),
+        3600..86400 => format!("{}h", seconds.div_ceil(3600)),
+        _ => format!("{}d", seconds.div_ceil(86400)),
     }
 }
 

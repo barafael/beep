@@ -89,6 +89,10 @@ pub struct Settings {
     pub notification_content: NotificationContent,
     /// Closing the window leaves langis running in the tray, still receiving messages.
     pub close_to_tray: bool,
+    /// Tell senders when their messages were read.
+    pub read_receipts: bool,
+    /// Show others when we are typing.
+    pub typing_indicators: bool,
 }
 
 impl Default for Settings {
@@ -101,6 +105,8 @@ impl Default for Settings {
             notifications: true,
             notification_content: NotificationContent::default(),
             close_to_tray: true,
+            read_receipts: true,
+            typing_indicators: true,
         }
     }
 }
@@ -157,6 +163,10 @@ impl Settings {
                 }
                 ("close_to_tray", "true") => settings.close_to_tray = true,
                 ("close_to_tray", "false") => settings.close_to_tray = false,
+                ("read_receipts", "true") => settings.read_receipts = true,
+                ("read_receipts", "false") => settings.read_receipts = false,
+                ("typing_indicators", "true") => settings.typing_indicators = true,
+                ("typing_indicators", "false") => settings.typing_indicators = false,
                 _ => {}
             }
         }
@@ -181,11 +191,14 @@ impl Settings {
         };
         format!(
             "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
-             notification_content = {notification_content}\nclose_to_tray = {}\n",
+             notification_content = {notification_content}\nclose_to_tray = {}\n\
+             read_receipts = {}\ntyping_indicators = {}\n",
             self.style.key(),
             self.show_avatars,
             self.notifications,
-            self.close_to_tray
+            self.close_to_tray,
+            self.read_receipts,
+            self.typing_indicators
         )
     }
 }
@@ -210,6 +223,8 @@ mod tests {
                 notifications: false,
                 notification_content: NotificationContent::NameOnly,
                 close_to_tray: false,
+                read_receipts: false,
+                typing_indicators: false,
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }

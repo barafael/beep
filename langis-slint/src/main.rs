@@ -11,6 +11,7 @@ use langis_core::settings::{Settings, WidgetStyle};
 use langis_core::state::{ChatState, MessagesUpdate, Notice, Screen, Update};
 use langis_core::{
     AttachmentId, Backend, Command, Commands, Config, ConversationId, Event, Picture, QrMatrix,
+    Style, StyleRange,
 };
 use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -103,6 +104,8 @@ pub struct Shared {
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
     /// e.g. for the password, until the chats are there.
     start_hidden: Cell<bool>,
+    /// When someone typing next counts as stopped; no event says so, so a timer redraws then.
+    typing_until: Cell<Option<u64>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +161,15 @@ impl Shared {
         for command in chat.take_commands() {
             self.commands.send(command);
         }
+        self.typing_until.set(chat.typing_expires());
+    }
+
+    /// Tells the backend the privacy preferences in `settings`.
+    fn send_preferences(&self, settings: &Settings) {
+        self.commands.send(Command::Preferences {
+            read_receipts: settings.read_receipts,
+            typing_indicators: settings.typing_indicators,
+        });
     }
 
     /// Closing the window leaves langis running in the tray, to keep receiving messages, unless
@@ -221,6 +233,7 @@ impl Shared {
             tracing::warn!(%error, "failed to save settings");
         }
         let previous = self.settings.replace(settings.clone());
+        self.send_preferences(&settings);
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_shown(settings.close_to_tray);
         }
@@ -332,6 +345,24 @@ fn main() -> Result<(), slint::PlatformError> {
         ui: RefCell::default(),
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
+        typing_until: Cell::default(),
+    });
+    shared.send_preferences(&settings);
+    let typing_timer = slint::Timer::default();
+    typing_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), {
+        let shared = shared.clone();
+        move || {
+            if shared
+                .typing_until
+                .get()
+                .is_some_and(|at| at <= langis_core::now_millis())
+            {
+                shared.refresh(Update {
+                    conversations: true,
+                    ..Update::default()
+                });
+            }
+        }
     });
 
     let ui = styles::create(settings.style, &shared)?;
@@ -510,7 +541,16 @@ impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
 
 /// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
 /// formatting, except web addresses, which become links.
-fn rich_text(body: &str) -> slint::StyledText {
+fn rich_text(body: &str, styles: &[StyleRange], revealed: bool) -> slint::StyledText {
+    slint::StyledText::from_markdown(&markdown(body, styles, revealed))
+        .unwrap_or_else(|_| slint::StyledText::from_plain_text(body))
+}
+
+/// See [`rich_text`].
+fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
+    /// Between markers and text, so emphasis opens and closes whatever the neighbouring
+    /// characters are (CommonMark's flanking rules); invisible.
+    const JOIN: char = '\u{2060}';
     fn escape(text: &str, out: &mut String) {
         for c in text.chars() {
             if c.is_ascii_punctuation() {
@@ -519,30 +559,109 @@ fn rich_text(body: &str) -> slint::StyledText {
             out.push(c);
         }
     }
-    let mut markdown = String::with_capacity(body.len() + 16);
-    for (i, line) in body.split('\n').enumerate() {
-        if i > 0 {
-            // A hard line break, as the sender typed it.
-            markdown.push_str("\\\n");
-        }
-        // Leading spaces would start a code block; keep them as non-breaking spaces.
-        let text = line.trim_start_matches(' ');
-        markdown.extend(std::iter::repeat_n('\u{a0}', line.len() - text.len()));
+    fn with_links(text: &str, out: &mut String) {
         let mut rest = text;
         while let Some((start, end)) = find_url(rest) {
-            escape(&rest[..start], &mut markdown);
+            escape(&rest[..start], out);
             let url = &rest[start..end];
-            markdown.push('[');
-            escape(url, &mut markdown);
-            markdown.push_str("](<");
-            markdown.push_str(url);
-            markdown.push_str(">)");
+            out.push('[');
+            escape(url, out);
+            out.push_str("](<");
+            out.push_str(url);
+            out.push_str(">)");
             rest = &rest[end..];
         }
-        escape(rest, &mut markdown);
+        escape(rest, out);
     }
-    slint::StyledText::from_markdown(&markdown)
-        .unwrap_or_else(|_| slint::StyledText::from_plain_text(body))
+    let valid = |s: &&StyleRange| {
+        s.start < s.end
+            && s.end <= body.len()
+            && body.is_char_boundary(s.start)
+            && body.is_char_boundary(s.end)
+    };
+    // Pieces with the same formatting throughout; lines apart, for the breaks between them.
+    let mut cuts: Vec<usize> = vec![0, body.len()];
+    cuts.extend(styles.iter().filter(valid).flat_map(|s| [s.start, s.end]));
+    cuts.extend(body.match_indices('\n').flat_map(|(i, _)| [i, i + 1]));
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut markdown = String::with_capacity(body.len() + 16);
+    for piece in cuts.windows(2) {
+        let (start, end) = (piece[0], piece[1]);
+        let text = &body[start..end];
+        if text == "\n" {
+            // A hard line break, as the sender typed it.
+            markdown.push_str("\\\n");
+            continue;
+        }
+        let has = |style| {
+            styles
+                .iter()
+                .filter(valid)
+                .any(|s| s.style == style && s.start <= start && end <= s.end)
+        };
+        // Leading spaces would start a code block; keep them as non-breaking spaces.
+        let line_start = start == 0 || body.as_bytes()[start - 1] == b'\n';
+        let text = if line_start {
+            let trimmed = text.trim_start_matches(' ');
+            markdown.extend(std::iter::repeat_n('\u{a0}', text.len() - trimmed.len()));
+            trimmed
+        } else {
+            text
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if has(Style::Spoiler) && !revealed {
+            // Hidden behind a link that reveals it; see `Bubble` in app.slint.
+            let hidden: String = text
+                .chars()
+                .map(|c| if c.is_whitespace() { c } else { '▒' })
+                .collect();
+            markdown.push('[');
+            markdown.push_str(&hidden);
+            markdown.push_str("](spoiler:)");
+            continue;
+        }
+        let markers: Vec<&str> = [
+            (Style::Bold, "**"),
+            (Style::Italic, "*"),
+            (Style::Strikethrough, "~~"),
+        ]
+        .into_iter()
+        .filter(|(style, _)| has(*style))
+        .map(|(_, marker)| marker)
+        .collect();
+        // Apart from the previous piece's closing markers, which would otherwise run into these.
+        if !markers.is_empty() {
+            markdown.push(JOIN);
+        }
+        for marker in &markers {
+            markdown.push_str(marker);
+            markdown.push(JOIN);
+        }
+        if has(Style::Monospace) {
+            // Code spans take no escapes; a longer fence than any backtick run inside.
+            let longest = text
+                .split(|c| c != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or_default();
+            let fence = "`".repeat(longest + 1);
+            markdown.push_str(&fence);
+            markdown.push(' ');
+            markdown.push_str(text);
+            markdown.push(' ');
+            markdown.push_str(&fence);
+        } else {
+            with_links(text, &mut markdown);
+        }
+        for marker in markers.iter().rev() {
+            markdown.push(JOIN);
+            markdown.push_str(marker);
+        }
+    }
+    markdown
 }
 
 /// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
@@ -608,14 +727,37 @@ mod tests {
             "    indented",
             "two\nlines",
         ] {
-            let shown = raw(&rich_text(text));
+            let shown = raw(&rich_text(text, &[], false));
             assert_eq!(shown.replace('\u{a0}', " "), text, "{text:?}");
         }
     }
 
     #[test]
     fn links_keep_their_text() {
-        let shown = raw(&rich_text("look: https://example.org/x_y*z ok"));
+        let shown = raw(&rich_text("look: https://example.org/x_y*z ok", &[], false));
         assert_eq!(shown, "look: https://example.org/x_y*z ok");
+    }
+
+    /// Formatting applies whatever surrounds it, and the text stays as it was.
+    #[test]
+    fn formatting_keeps_the_text() {
+        let range = |start, end, style| StyleRange { start, end, style };
+        let text = "a\"b\" (c) `d` e";
+        let styles = [
+            range(1, 4, Style::Bold),
+            range(5, 8, Style::Italic),
+            range(9, 12, Style::Monospace),
+            range(0, 14, Style::Strikethrough),
+        ];
+        // Parsed, not the plain-text fallback: the markers are gone.
+        let parse = |styles: &[StyleRange], revealed| {
+            let markdown = markdown(text, styles, revealed);
+            raw(&slint::StyledText::from_markdown(&markdown).expect("valid markdown"))
+                .replace('\u{2060}', "")
+        };
+        assert_eq!(parse(&styles, false), text);
+        let spoiler = [range(5, 8, Style::Spoiler)];
+        assert_eq!(parse(&spoiler, false), "a\"b\" ▒▒▒ `d` e");
+        assert_eq!(parse(&spoiler, true), text);
     }
 }
