@@ -9,13 +9,20 @@ use std::{
 
 use crate::settings::NotificationContent;
 use crate::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, Command,
-    Conversation, ConversationId, Event, HistoryTransfer, Password, Picture, QrMatrix, Quote,
-    apply_reaction,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
+    Command, Conversation, ConversationId, Event, HistoryTransfer, MessageRef, Password, Picture,
+    QrMatrix, Quote, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
+
+/// Someone typing counts as stopped after this long without hearing from them, as in Signal.
+const TYPING_TIMEOUT_MS: u64 = 15_000;
+/// While we keep typing, Signal expects a fresh "started" this often.
+const TYPING_REPEAT_MS: u64 = 10_000;
+/// Messages can be deleted for everyone this long after they were sent.
+pub const DELETE_FOR_EVERYONE_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Screen {
@@ -83,6 +90,23 @@ pub struct ConversationView<'a> {
     pub last_message: Option<&'a ChatMessage>,
     pub unread: u32,
     pub selected: bool,
+    /// Names of who is typing there right now.
+    pub typing: Vec<&'a str>,
+}
+
+impl ConversationView<'_> {
+    pub fn pinned(&self) -> bool {
+        self.conversation.settings.pinned.is_some()
+    }
+
+    pub fn muted(&self) -> bool {
+        self.conversation.settings.muted(now_millis())
+    }
+
+    /// Marked unread by hand, without a count.
+    pub fn marked_unread(&self) -> bool {
+        self.unread == 0 && self.conversation.settings.marked_unread
+    }
 }
 
 impl ConversationView<'_> {
@@ -133,6 +157,8 @@ pub struct MessageView<'a> {
     pub last_of_run: bool,
     /// The sender's picture, if known (for incoming group messages).
     pub sender_avatar: Option<&'a Arc<Picture>>,
+    /// The first message that arrived after the conversation was last read.
+    pub first_unread: bool,
 }
 
 /// Messages further apart than this start a new run, even from the same person.
@@ -203,6 +229,26 @@ pub struct ChatState {
     loaded: HashSet<ConversationId>,
     selected: Option<ConversationId>,
     notifications: Notifications,
+    /// Who is typing where, and until when (ms) that counts without news.
+    typing: HashMap<ConversationId, Vec<Typist>>,
+    /// When we last told the selected conversation we are typing.
+    typing_sent: Option<(ConversationId, u64)>,
+    /// One of our messages whose text the composer replaces.
+    editing: Option<MessageRef>,
+    /// Shows the archived conversations instead of the others.
+    show_archived: bool,
+    /// Where the "New messages" line goes in the selected conversation: its `last_read`
+    /// when it was opened, kept while it is open so the line doesn't jump away.
+    read_mark: Option<u64>,
+    /// Commands that follow from state changes rather than a single user action, e.g. read
+    /// receipts; see [`ChatState::take_commands`].
+    queued: Vec<Command>,
+}
+
+struct Typist {
+    sender_id: String,
+    sender: String,
+    until: u64,
 }
 
 /// Inputs and output of the notification policy.
@@ -307,6 +353,7 @@ impl ChatState {
                     update.conversations = true;
                     if self.selected.as_ref() == Some(&conversation) {
                         update.messages = MessagesUpdate::Reset;
+                        self.mark_seen();
                     }
                 }
             }
@@ -329,6 +376,17 @@ impl ChatState {
                     return update;
                 };
                 let appended = pos + 1 == history.len();
+                // Every message carries the conversation's current timer.
+                let timer = history[pos].expire_timer.unwrap_or(0);
+                if let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id) {
+                    conversation.settings.expire_timer = timer;
+                }
+                if let Some(typists) = self.typing.get_mut(&id) {
+                    let sender_id = &history[pos].sender_id;
+                    typists.retain(|t| &t.sender_id != sender_id);
+                }
+                let looking =
+                    self.selected.as_ref() == Some(&id) && self.notifications.window_focused;
                 if !outgoing {
                     let message = &history[pos];
                     // A photo or sticker alone says what it is.
@@ -345,15 +403,207 @@ impl ChatState {
                     } else {
                         MessagesUpdate::Reset
                     };
+                }
+                if looking {
+                    self.mark_seen();
                 } else if !outgoing {
                     *self.unread.entry(id).or_default() += 1;
                 }
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::Delivered {
+                conversation,
+                timestamps,
+                delivery,
+            } => {
+                let Some(history) = self.history.get_mut(&conversation) else {
+                    return update;
+                };
+                for message in history
+                    .iter_mut()
+                    .filter(|m| m.outgoing && timestamps.contains(&m.timestamp))
+                {
+                    message.delivery = message.delivery.max(delivery);
+                }
+                update.rows = self.selected.as_ref() == Some(&conversation);
+            }
+            Event::Typing {
+                conversation,
+                sender_id,
+                sender,
+                typing,
+            } => {
+                let typists = self.typing.entry(conversation).or_default();
+                typists.retain(|t| t.sender_id != sender_id);
+                if typing {
+                    typists.push(Typist {
+                        sender_id,
+                        sender,
+                        until: now_millis() + TYPING_TIMEOUT_MS,
+                    });
+                }
+                update.conversations = true;
+            }
+            Event::Edited {
+                conversation,
+                target,
+                mut message,
+            } => {
+                if let Some(old) = self.find_message(&conversation, &target) {
+                    // The backend may not know the text before (incoming edits replace it in
+                    // the store); here it is known.
+                    let edited_at = message.edits.last().map_or_else(now_millis, |e| e.0);
+                    let mut edits = std::mem::take(&mut old.edits);
+                    edits.push((edited_at, std::mem::take(&mut old.body)));
+                    message.edits = edits;
+                    // Known by its original time; what reacted to it still applies.
+                    message.timestamp = old.timestamp;
+                    message.reactions = std::mem::take(&mut old.reactions);
+                    message.delivery = old.delivery;
+                    message.expires_at = message.expires_at.or(old.expires_at);
+                    *old = message;
+                    update.rows = self.selected.as_ref() == Some(&conversation);
+                    update.conversations = true;
+                }
+            }
+            Event::Deleted {
+                conversation,
+                target,
+            } => {
+                if let Some(message) = self.find_message(&conversation, &target) {
+                    tombstone(message);
+                    update.rows = self.selected.as_ref() == Some(&conversation);
+                    update.conversations = true;
+                }
+            }
+            Event::Expiring {
+                conversation,
+                expiries,
+            } => {
+                for (target, at) in expiries {
+                    if let Some(message) = self.find_message(&conversation, &target) {
+                        message.expires_at = Some(at);
+                        update.rows = self.selected.as_ref() == Some(&conversation);
+                    }
+                }
+            }
+            Event::Expired {
+                conversation,
+                targets,
+            } => {
+                if let Some(history) = self.history.get_mut(&conversation) {
+                    let before = history.len();
+                    history.retain(|m| !targets.contains(&m.reference()));
+                    if history.len() != before {
+                        if self.selected.as_ref() == Some(&conversation) {
+                            update.messages = MessagesUpdate::Reset;
+                        }
+                        update.conversations = true;
+                    }
+                }
+            }
+            Event::Settings {
+                conversation,
+                settings,
+            } => {
+                let Some(existing) = self.conversations.iter_mut().find(|c| c.id == conversation)
+                else {
+                    return update;
+                };
+                let read_further = settings.last_read > existing.settings.last_read;
+                // The timer follows the messages, not these settings.
+                existing.settings = ChatSettings {
+                    expire_timer: existing.settings.expire_timer,
+                    ..settings
+                };
+                if read_further {
+                    // Read on another device: what is still unread is what came after.
+                    let last_read = existing.settings.last_read;
+                    let unread = self.history.get(&conversation).map_or(0, |history| {
+                        history
+                            .iter()
+                            .filter(|m| !m.outgoing && m.timestamp > last_read)
+                            .count()
+                    });
+                    match unread {
+                        0 => {
+                            self.unread.remove(&conversation);
+                            self.notifications
+                                .pending
+                                .push(Notice::Withdraw(conversation.clone()));
+                        }
+                        n => {
+                            let count = self.unread.entry(conversation).or_default();
+                            *count = (*count).min(n as u32);
+                        }
+                    }
+                }
+                self.sort_conversations();
+                update.conversations = true;
+            }
+            Event::Unread(counts) => {
+                for (conversation, count) in counts {
+                    if count > 0 && self.selected.as_ref() != Some(&conversation) {
+                        self.unread.insert(conversation, count);
+                    }
+                }
+                update.conversations = true;
+            }
             Event::Error(error) => self.error = Some(error),
         }
         update
+    }
+
+    fn find_message(
+        &mut self,
+        conversation: &ConversationId,
+        target: &MessageRef,
+    ) -> Option<&mut ChatMessage> {
+        self.history
+            .get_mut(conversation)?
+            .iter_mut()
+            .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+    }
+
+    /// The selected conversation is in front of the user: its messages count as read.
+    fn mark_seen(&mut self) {
+        if let Some(command) = self.selected.clone().and_then(|id| self.mark_read(id)) {
+            self.queued.push(command);
+        }
+    }
+
+    /// Counts a conversation's messages as read; returns the [`Command::MarkRead`] for those
+    /// that weren't.
+    fn mark_read(&mut self, id: ConversationId) -> Option<Command> {
+        self.unread.remove(&id);
+        let conversation = self.conversations.iter_mut().find(|c| c.id == id)?;
+        let settings = &mut conversation.settings;
+        let messages: Vec<MessageRef> = self
+            .history
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|m| !m.outgoing && m.timestamp > settings.last_read)
+            .map(ChatMessage::reference)
+            .collect();
+        if messages.is_empty() && !settings.marked_unread {
+            return None;
+        }
+        settings.marked_unread = false;
+        if let Some(newest) = messages.iter().map(|m| m.timestamp).max() {
+            settings.last_read = newest;
+        }
+        Some(Command::MarkRead {
+            conversation: id,
+            messages,
+        })
+    }
+
+    /// Commands that followed from what happened since the last call (read receipts and
+    /// the like); to be sent to the backend.
+    pub fn take_commands(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.queued)
     }
 
     /// Selects a conversation; until its stored history has arrived, returns the command
@@ -363,12 +613,14 @@ impl ChatState {
         if !self.conversations.iter().any(|c| &c.id == id) {
             return None;
         }
-        self.unread.remove(id);
         if self.selected.as_ref() != Some(id) {
             self.replying = None;
+            self.editing = None;
             self.staged.clear();
+            self.read_mark = self.conversation(id).map(|c| c.settings.last_read);
         }
         self.selected = Some(id.clone());
+        self.mark_seen();
         // Picking a search result ends the search; the chosen chat stays on the list.
         self.filter.clear();
         self.notifications
@@ -384,15 +636,20 @@ impl ChatState {
         if body.is_empty() || self.conversation(id).is_none() {
             return None;
         }
-        self.unread.remove(id);
+        if let Some(command) = self.mark_read(id.clone()) {
+            self.queued.push(command);
+        }
         self.notifications
             .pending
             .push(Notice::Withdraw(id.clone()));
+        let (body, styles) = format::parse(body);
         Some(Command::Send {
             files: Vec::new(),
             conversation: id.clone(),
-            body: body.to_string(),
+            body,
             quote: None,
+            styles,
+            mentions: Vec::new(),
         })
     }
 
@@ -404,11 +661,15 @@ impl ChatState {
     /// Whether the window has the user's attention; messages for the open conversation of a
     /// focused window don't notify.
     pub fn set_window_focused(&mut self, focused: bool) {
+        let gained = focused && !self.notifications.window_focused;
         self.notifications.window_focused = focused;
         if let (true, Some(id)) = (focused, &self.selected) {
             self.notifications
                 .pending
                 .push(Notice::Withdraw(id.clone()));
+        }
+        if gained {
+            self.mark_seen();
         }
     }
 
@@ -422,8 +683,11 @@ impl ChatState {
     }
 
     fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
+        let muted = self
+            .conversation(id)
+            .is_some_and(|c| c.settings.muted(now_millis()));
         let n = &mut self.notifications;
-        if !n.enabled || (n.window_focused && self.selected.as_ref() == Some(id)) {
+        if !n.enabled || muted || (n.window_focused && self.selected.as_ref() == Some(id)) {
             return;
         }
         if !self.synced {
@@ -528,6 +792,8 @@ impl ChatState {
     pub fn deselect(&mut self) -> Update {
         self.selected = None;
         self.replying = None;
+        self.editing = None;
+        self.read_mark = None;
         self.staged.clear();
         Update {
             conversations: true,
@@ -543,12 +809,291 @@ impl ChatState {
             return None;
         }
         let conversation = self.selected.clone()?;
+        self.typing_sent = None;
+        let (body, styles) = format::parse(text.trim());
+        if let Some(target) = self.editing.take() {
+            return Some(Command::Edit {
+                conversation,
+                target,
+                body,
+                styles,
+            });
+        }
         Some(Command::Send {
             conversation,
-            body: text.trim().to_string(),
+            body,
             quote: self.replying.take(),
             files: std::mem::take(&mut self.staged),
+            styles,
+            mentions: Vec::new(),
         })
+    }
+
+    /// The composer's text changed: tells the conversation we are typing, at most every few
+    /// seconds, or that we stopped once it is empty.
+    pub fn draft_changed(&mut self, text: &str) -> Option<Command> {
+        let conversation = self.selected.clone()?;
+        let now = now_millis();
+        let typing = !text.trim().is_empty() && self.editing.is_none();
+        let sent = self
+            .typing_sent
+            .as_ref()
+            .filter(|(id, _)| *id == conversation)
+            .map(|(_, at)| *at);
+        match (typing, sent) {
+            (true, Some(at)) if now.saturating_sub(at) < TYPING_REPEAT_MS => None,
+            (false, None) => None,
+            (true, _) => {
+                self.typing_sent = Some((conversation.clone(), now));
+                Some(Command::Typing {
+                    conversation,
+                    typing: true,
+                })
+            }
+            (false, Some(_)) => {
+                self.typing_sent = None;
+                Some(Command::Typing {
+                    conversation,
+                    typing: false,
+                })
+            }
+        }
+    }
+
+    /// Starts editing the `index`th message of [`ChatState::messages`], if it is ours and
+    /// can still be edited; returns its text for the composer.
+    pub fn edit(&mut self, index: usize) -> Option<String> {
+        let view = self.messages().nth(index)?;
+        let message = view.message;
+        if !self.can_edit(message) {
+            return None;
+        }
+        let text = view.body.to_owned();
+        self.editing = Some(message.reference());
+        self.replying = None;
+        Some(text)
+    }
+
+    /// Our own message that is still there and recent enough; Signal allows editing as long as
+    /// deleting for everyone.
+    pub fn can_edit(&self, message: &ChatMessage) -> bool {
+        message.outgoing
+            && !message.deleted
+            && now_millis().saturating_sub(message.timestamp) < DELETE_FOR_EVERYONE_MS
+    }
+
+    pub fn can_delete_for_everyone(&self, message: &ChatMessage) -> bool {
+        self.can_edit(message)
+    }
+
+    pub fn cancel_edit(&mut self) {
+        self.editing = None;
+    }
+
+    /// The message whose text the composer replaces, if any.
+    pub fn editing(&self) -> Option<&ChatMessage> {
+        let target = self.editing.as_ref()?;
+        self.history
+            .get(self.selected.as_ref()?)?
+            .iter()
+            .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+    }
+
+    /// Deletes the `index`th message of [`ChatState::messages`] here, or for everyone.
+    pub fn delete(&mut self, index: usize, for_everyone: bool) -> (Option<Command>, Update) {
+        let Some(message) = self.messages().nth(index).map(|v| v.message) else {
+            return (None, Update::default());
+        };
+        if for_everyone && !self.can_delete_for_everyone(message) {
+            return (None, Update::default());
+        }
+        let target = message.reference();
+        let conversation = message.conversation.clone();
+        if self.editing.as_ref() == Some(&target) {
+            self.editing = None;
+        }
+        let history = self.history.get_mut(&conversation).expect("shown");
+        if for_everyone {
+            if let Some(message) = history.iter_mut().find(|m| m.reference() == target) {
+                tombstone(message);
+            }
+        } else {
+            history.retain(|m| m.reference() != target);
+        }
+        let command = Command::Delete {
+            conversation,
+            target,
+            for_everyone,
+        };
+        let update = Update {
+            conversations: true,
+            messages: MessagesUpdate::Reset,
+            ..Update::default()
+        };
+        (Some(command), update)
+    }
+
+    /// Changes a conversation's settings here at once; the command makes it last.
+    fn change_settings(
+        &mut self,
+        id: &ConversationId,
+        change: impl FnOnce(&mut ChatSettings),
+    ) -> Option<()> {
+        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        change(&mut conversation.settings);
+        self.sort_conversations();
+        Some(())
+    }
+
+    /// The pinned conversations, in order.
+    pub fn pinned(&self) -> Vec<ConversationId> {
+        let mut pinned: Vec<_> = self
+            .conversations
+            .iter()
+            .filter_map(|c| Some((c.settings.pinned?, c.id.clone())))
+            .collect();
+        pinned.sort_by_key(|(at, _)| *at);
+        pinned.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Pins a conversation at the end of the pinned ones, or unpins it.
+    pub fn toggle_pin(&mut self, id: &ConversationId) -> Option<Command> {
+        let mut pinned = self.pinned();
+        match pinned.iter().position(|p| p == id) {
+            Some(at) => {
+                pinned.remove(at);
+            }
+            None => {
+                self.conversation(id)?;
+                pinned.push(id.clone());
+            }
+        }
+        // Pinning brings an archived chat back.
+        self.change_settings(id, |s| s.archived = false);
+        Some(self.set_pins(pinned))
+    }
+
+    /// Moves a pinned conversation to `to` among the pinned ones, e.g. by dragging.
+    pub fn move_pin(&mut self, id: &ConversationId, to: usize) -> Option<Command> {
+        let mut pinned = self.pinned();
+        let from = pinned.iter().position(|p| p == id)?;
+        let id = pinned.remove(from);
+        pinned.insert(to.min(pinned.len()), id);
+        Some(self.set_pins(pinned))
+    }
+
+    fn set_pins(&mut self, pinned: Vec<ConversationId>) -> Command {
+        for conversation in &mut self.conversations {
+            conversation.settings.pinned = pinned
+                .iter()
+                .position(|p| *p == conversation.id)
+                .map(|i| i as u32);
+        }
+        self.sort_conversations();
+        Command::SetPins(pinned)
+    }
+
+    /// Opens the `n`th pinned conversation (from 0), e.g. for Alt+1…9.
+    pub fn select_pinned(&mut self, n: usize) -> Option<Option<Command>> {
+        let id = self.pinned().into_iter().nth(n)?;
+        self.show_archived = false;
+        Some(self.select(&id))
+    }
+
+    /// Mutes until `until` (ms; `u64::MAX` for good), or unmutes.
+    pub fn mute(&mut self, id: &ConversationId, until: Option<u64>) -> Option<Command> {
+        self.change_settings(id, |s| s.muted_until = until)?;
+        Some(Command::Mute {
+            conversation: id.clone(),
+            until,
+        })
+    }
+
+    pub fn archive(&mut self, id: &ConversationId, archived: bool) -> Option<Command> {
+        self.change_settings(id, |s| {
+            s.archived = archived;
+            if archived {
+                s.pinned = None;
+            }
+        })?;
+        if archived && self.selected.as_ref() == Some(id) {
+            self.deselect();
+        }
+        Some(Command::Archive {
+            conversation: id.clone(),
+            archived,
+        })
+    }
+
+    /// Marks a conversation unread by hand, or read.
+    pub fn mark_unread(&mut self, id: &ConversationId, unread: bool) -> Option<Command> {
+        if !unread {
+            return self.mark_read(id.clone());
+        }
+        self.change_settings(id, |s| s.marked_unread = true)?;
+        if self.selected.as_ref() == Some(id) {
+            self.deselect();
+        }
+        Some(Command::MarkUnread {
+            conversation: id.clone(),
+            unread: true,
+        })
+    }
+
+    /// Sets how long new messages in a conversation last (seconds; 0 for good).
+    pub fn set_timer(&mut self, id: &ConversationId, seconds: u32) -> Option<Command> {
+        self.change_settings(id, |s| s.expire_timer = seconds)?;
+        Some(Command::SetTimer {
+            conversation: id.clone(),
+            seconds,
+        })
+    }
+
+    /// Shows the archived conversations in the chat list instead of the others, or back.
+    pub fn show_archived(&mut self, show: bool) -> Update {
+        self.show_archived = show;
+        Update {
+            conversations: true,
+            ..Update::default()
+        }
+    }
+
+    pub fn showing_archived(&self) -> bool {
+        self.show_archived
+    }
+
+    /// How many conversations are archived, and how many of those have unread messages.
+    pub fn archived(&self) -> (usize, usize) {
+        let archived = self.conversations.iter().filter(|c| c.settings.archived);
+        archived.fold((0, 0), |(all, unread), c| {
+            (
+                all + 1,
+                unread + usize::from(self.unread.contains_key(&c.id)),
+            )
+        })
+    }
+
+    /// Names of who is typing in a conversation.
+    pub fn typing(&self, id: &ConversationId) -> Vec<&str> {
+        let now = now_millis();
+        self.typing.get(id).map_or_else(Vec::new, |typists| {
+            typists
+                .iter()
+                .filter(|t| t.until > now)
+                .map(|t| t.sender.as_str())
+                .collect()
+        })
+    }
+
+    /// When someone typing next counts as stopped, so the UI can redraw then.
+    pub fn typing_expires(&self) -> Option<u64> {
+        let now = now_millis();
+        self.typing
+            .values()
+            .flatten()
+            .map(|t| t.until)
+            .filter(|&until| until > now)
+            .min()
     }
 
     /// Reacts to the `index`th message of [`ChatState::messages`] with `emoji`; reacting with
@@ -667,8 +1212,17 @@ impl ChatState {
     }
 
     /// Unread messages over all conversations, e.g. for the tray icon.
+    /// Muted conversations don't count; ones marked unread by hand count as one.
     pub fn unread_total(&self) -> u32 {
-        self.unread.values().sum()
+        let now = now_millis();
+        self.conversations
+            .iter()
+            .filter(|c| !c.settings.muted(now))
+            .map(|c| match self.unread.get(&c.id) {
+                Some(&n) => n,
+                None => u32::from(c.settings.marked_unread),
+            })
+            .sum()
     }
 
     /// The chat list: groups and conversations that have messages, most recently active
@@ -680,6 +1234,7 @@ impl ChatState {
             last_message: self.last_of(&c.id),
             unread: self.unread.get(&c.id).copied().unwrap_or_default(),
             selected: self.selected.as_ref() == Some(&c.id),
+            typing: self.typing(&c.id),
         })
     }
 
@@ -698,7 +1253,11 @@ impl ChatState {
         let filter = self.filter.to_lowercase();
         self.conversations.iter().filter(move |c| {
             if filter.is_empty() {
-                c.is_group || self.last_of(&c.id).is_some() || self.selected.as_ref() == Some(&c.id)
+                c.settings.archived == self.show_archived
+                    && (c.is_group
+                        || c.settings.pinned.is_some()
+                        || self.last_of(&c.id).is_some()
+                        || self.selected.as_ref() == Some(&c.id))
             } else {
                 c.title.to_lowercase().contains(&filter)
             }
@@ -728,6 +1287,12 @@ impl ChatState {
             .and_then(|id| self.history.get(id))
             .map_or(&[][..], Vec::as_slice);
         let now = jiff::Zoned::now();
+        let read_mark = self.read_mark;
+        let first_unread = read_mark.and_then(|mark| {
+            history
+                .iter()
+                .position(|m| !m.outgoing && m.timestamp > mark)
+        });
         let same_run = |a: &ChatMessage, b: &ChatMessage| {
             a.sender_id == b.sender_id
                 && b.timestamp.saturating_sub(a.timestamp) <= RUN_GAP_MS
@@ -746,6 +1311,7 @@ impl ChatState {
                 day: new_day.then(|| day_label(message.timestamp, &now)),
                 first_of_run,
                 last_of_run: next.is_none_or(|n| !same_run(message, n)),
+                first_unread: first_unread == Some(i),
                 sender_avatar: if group && !message.outgoing {
                     self.avatars
                         .get(&ConversationId::contact(&message.sender_id))
@@ -780,12 +1346,13 @@ impl ChatState {
         self.history.get(id).and_then(|h| h.last())
     }
 
-    /// Newest activity first; conversations without messages alphabetically after those,
+    /// Pinned ones first, in their order; then newest activity first; conversations without messages alphabetically after those,
     /// names before bare phone numbers.
     fn sort_conversations(&mut self) {
         let mut conversations = std::mem::take(&mut self.conversations);
         conversations.sort_by_cached_key(|c| {
             (
+                c.settings.pinned.unwrap_or(u32::MAX),
                 Reverse(self.last_of(&c.id).map(|m| m.timestamp)),
                 !c.title.starts_with(char::is_alphabetic),
                 c.title.to_lowercase(),
@@ -793,6 +1360,17 @@ impl ChatState {
         });
         self.conversations = conversations;
     }
+}
+
+/// What is left of a message deleted for everyone.
+fn tombstone(message: &mut ChatMessage) {
+    message.deleted = true;
+    message.body.clear();
+    message.attachments.clear();
+    message.quote = None;
+    message.reactions.clear();
+    message.styles.clear();
+    message.edits.clear();
 }
 
 /// Signal identifies a message by its author and sent timestamp.
@@ -905,6 +1483,7 @@ pub fn format_time(timestamp: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Delivery;
 
     fn conversation(id: &str, is_group: bool) -> Conversation {
         Conversation {
@@ -1698,5 +2277,310 @@ mod tests {
         assert_eq!(initials("Rustaceans 🦀"), "R");
         assert_eq!(initials("ada lovelace"), "AL");
         assert_eq!(initials(""), "?");
+    }
+
+    fn id(s: &str) -> ConversationId {
+        ConversationId(s.into())
+    }
+
+    fn listed(state: &ChatState) -> Vec<String> {
+        state
+            .conversations()
+            .map(|c| c.conversation.id.0.clone())
+            .collect()
+    }
+
+    #[test]
+    fn viewing_a_chat_reads_it_and_queues_receipts_once() {
+        let mut state = state();
+        state.set_window_focused(true);
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.apply(Event::Message(message("a", "Ann", 20, false)));
+        assert_eq!(state.unread_total(), 2);
+        state.select(&id("a"));
+        let commands = state.take_commands();
+        assert!(matches!(
+            &commands[..],
+            [Command::MarkRead { conversation, messages }]
+                if *conversation == id("a") && messages.len() == 2
+        ));
+        assert_eq!(state.unread_total(), 0);
+        assert_eq!(state.conversation(&id("a")).unwrap().settings.last_read, 20);
+        // Seen as it arrives while the window has focus; nothing twice.
+        state.apply(Event::Message(message("a", "Ann", 30, false)));
+        let commands = state.take_commands();
+        assert!(matches!(
+            &commands[..],
+            [Command::MarkRead { messages, .. }] if messages.len() == 1 && messages[0].timestamp == 30
+        ));
+        state.set_window_focused(false);
+        state.apply(Event::Message(message("a", "Ann", 40, false)));
+        assert!(state.take_commands().is_empty());
+        assert_eq!(state.unread_total(), 1);
+        state.set_window_focused(true);
+        assert_eq!(state.take_commands().len(), 1);
+        assert_eq!(state.unread_total(), 0);
+    }
+
+    #[test]
+    fn new_messages_line_stays_where_reading_began() {
+        let mut state = state();
+        state.apply(Event::History {
+            conversation: id("a"),
+            messages: vec![
+                message("a", "Ann", 10, false),
+                message("a", "Ann", 20, false),
+            ],
+        });
+        state.apply(Event::Settings {
+            conversation: id("a"),
+            settings: ChatSettings {
+                last_read: 10,
+                ..ChatSettings::default()
+            },
+        });
+        state.select(&id("a"));
+        let firsts: Vec<bool> = state.messages().map(|m| m.first_unread).collect();
+        assert_eq!(firsts, [false, true]);
+    }
+
+    #[test]
+    fn read_elsewhere_clears_what_was_read_there() {
+        let mut state = state();
+        for ts in [10, 20, 30] {
+            state.apply(Event::Message(message("a", "Ann", ts, false)));
+        }
+        state.take_notices();
+        state.apply(Event::Settings {
+            conversation: id("a"),
+            settings: ChatSettings {
+                last_read: 20,
+                ..ChatSettings::default()
+            },
+        });
+        assert_eq!(state.unread_total(), 1);
+        state.apply(Event::Settings {
+            conversation: id("a"),
+            settings: ChatSettings {
+                last_read: 30,
+                ..ChatSettings::default()
+            },
+        });
+        assert_eq!(state.unread_total(), 0);
+        assert_eq!(state.take_notices(), [Notice::Withdraw(id("a"))]);
+    }
+
+    #[test]
+    fn pinned_chats_come_first_in_their_order() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![conversation("b", false)]));
+        for (chat, ts) in [("a", 30), ("b", 20), ("g", 10)] {
+            state.apply(Event::Message(message(chat, "Ann", ts, false)));
+        }
+        assert_eq!(listed(&state), ["a", "b", "g"]);
+        assert!(matches!(state.toggle_pin(&id("g")), Some(Command::SetPins(p)) if p == [id("g")]));
+        state.toggle_pin(&id("b"));
+        assert_eq!(listed(&state), ["g", "b", "a"]);
+        assert!(
+            matches!(state.move_pin(&id("b"), 0), Some(Command::SetPins(p)) if p == [id("b"), id("g")])
+        );
+        assert_eq!(listed(&state), ["b", "g", "a"]);
+        state.toggle_pin(&id("b"));
+        assert_eq!(listed(&state), ["g", "a", "b"]);
+        assert!(state.select_pinned(0).is_some());
+        assert_eq!(state.selected().unwrap().id, id("g"));
+        assert!(state.select_pinned(1).is_none());
+    }
+
+    #[test]
+    fn archived_chats_have_their_own_list() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.select(&id("a"));
+        assert!(matches!(
+            state.archive(&id("a"), true),
+            Some(Command::Archive { archived: true, .. })
+        ));
+        assert!(state.selected().is_none());
+        assert_eq!(listed(&state), ["g"]);
+        assert_eq!(state.archived(), (1, 0));
+        state.show_archived(true);
+        assert_eq!(listed(&state), ["a"]);
+    }
+
+    #[test]
+    fn muted_chats_neither_notify_nor_count() {
+        let mut state = notifying();
+        state.mute(&id("a"), Some(u64::MAX));
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        assert!(state.take_notices().is_empty());
+        assert_eq!(state.unread_total(), 0);
+        assert_eq!(
+            state
+                .conversations()
+                .find(|c| c.conversation.id == id("a"))
+                .unwrap()
+                .unread,
+            1
+        );
+        state.mute(&id("a"), None);
+        assert_eq!(state.unread_total(), 1);
+    }
+
+    #[test]
+    fn marked_unread_counts_as_one_until_opened() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.select(&id("a"));
+        state.take_commands();
+        assert!(matches!(
+            state.mark_unread(&id("a"), true),
+            Some(Command::MarkUnread { unread: true, .. })
+        ));
+        assert!(state.selected().is_none());
+        assert_eq!(state.unread_total(), 1);
+        state.select(&id("a"));
+        assert!(
+            matches!(&state.take_commands()[..], [Command::MarkRead { messages, .. }] if messages.is_empty())
+        );
+        assert_eq!(state.unread_total(), 0);
+    }
+
+    #[test]
+    fn receipts_edits_and_deletions_change_messages_in_place() {
+        let mut state = state();
+        state.select(&id("a"));
+        state.apply(Event::Message(message("a", "You", 10, true)));
+        let update = state.apply(Event::Delivered {
+            conversation: id("a"),
+            timestamps: vec![10],
+            delivery: Delivery::Read,
+        });
+        assert!(update.rows);
+        // Never backwards.
+        state.apply(Event::Delivered {
+            conversation: id("a"),
+            timestamps: vec![10],
+            delivery: Delivery::Delivered,
+        });
+        let target = state.messages().next().unwrap().message.reference();
+        assert_eq!(
+            state.messages().next().unwrap().message.delivery,
+            Delivery::Read
+        );
+        state.apply(Event::Edited {
+            conversation: id("a"),
+            target: target.clone(),
+            message: ChatMessage {
+                body: "better".into(),
+                edits: vec![(50, String::new())],
+                ..message("a", "You", 10, true)
+            },
+        });
+        let edited = state.messages().next().unwrap().message;
+        assert_eq!(edited.body, "better");
+        assert_eq!(edited.delivery, Delivery::Read);
+        assert_eq!(edited.edits, [(50, "You at 10\nsecond line".to_string())]);
+        state.apply(Event::Deleted {
+            conversation: id("a"),
+            target: target.clone(),
+        });
+        let deleted = state.messages().next().unwrap().message;
+        assert!(deleted.deleted && deleted.body.is_empty());
+        let update = state.apply(Event::Expired {
+            conversation: id("a"),
+            targets: vec![target],
+        });
+        assert_eq!(update.messages, MessagesUpdate::Reset);
+        assert_eq!(state.messages().len(), 0);
+    }
+
+    #[test]
+    fn composing_formats_and_edits() {
+        let mut state = state();
+        state.select(&id("a"));
+        assert!(matches!(
+            state.compose("*hi* there"),
+            Some(Command::Send { body, styles, .. }) if body == "hi there" && styles.len() == 1
+        ));
+        state.apply(Event::Message(ChatMessage {
+            timestamp: now_millis(),
+            ..message("a", "You", 0, true)
+        }));
+        state.apply(Event::Message(message("a", "Ann", 1, false)));
+        let ours = state.messages().position(|m| m.message.outgoing).unwrap();
+        let theirs = state.messages().position(|m| !m.message.outgoing).unwrap();
+        assert_eq!(state.edit(theirs), None);
+        assert!(state.edit(ours).is_some());
+        assert!(matches!(
+            state.compose("fixed"),
+            Some(Command::Edit { body, .. }) if body == "fixed"
+        ));
+        // Editing ends with the edit.
+        assert!(matches!(state.compose("next"), Some(Command::Send { .. })));
+    }
+
+    #[test]
+    fn typing_is_announced_sparingly() {
+        let mut state = state();
+        state.select(&id("a"));
+        assert!(matches!(
+            state.draft_changed("h"),
+            Some(Command::Typing { typing: true, .. })
+        ));
+        assert!(state.draft_changed("hi").is_none());
+        assert!(matches!(
+            state.draft_changed(""),
+            Some(Command::Typing { typing: false, .. })
+        ));
+        assert!(state.draft_changed("").is_none());
+    }
+
+    #[test]
+    fn typing_shows_until_their_message_arrives() {
+        let mut state = state();
+        state.apply(Event::Typing {
+            conversation: id("a"),
+            sender_id: "ann".into(),
+            sender: "Ann".into(),
+            typing: true,
+        });
+        assert_eq!(state.typing(&id("a")), ["Ann"]);
+        assert!(state.typing_expires().is_some());
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        assert!(state.typing(&id("a")).is_empty());
+    }
+
+    #[test]
+    fn deleting_here_removes_and_for_everyone_leaves_a_tombstone() {
+        let mut state = state();
+        state.select(&id("a"));
+        let now = now_millis();
+        for ts in [now - 2, now - 1] {
+            state.apply(Event::Message(ChatMessage {
+                timestamp: ts,
+                ..message("a", "You", 0, true)
+            }));
+        }
+        let (command, _) = state.delete(0, false);
+        assert!(matches!(
+            command,
+            Some(Command::Delete {
+                for_everyone: false,
+                ..
+            })
+        ));
+        assert_eq!(state.messages().len(), 1);
+        let (command, _) = state.delete(0, true);
+        assert!(matches!(
+            command,
+            Some(Command::Delete {
+                for_everyone: true,
+                ..
+            })
+        ));
+        assert!(state.messages().next().unwrap().message.deleted);
+        // Already deleted for everyone.
+        assert!(state.delete(0, true).0.is_none());
     }
 }

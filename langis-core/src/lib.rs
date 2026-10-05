@@ -7,8 +7,11 @@
 
 #[cfg(feature = "signal")]
 mod attachments;
+pub mod format;
 #[cfg(feature = "signal")]
 mod import;
+#[cfg(feature = "signal")]
+mod local;
 mod mock;
 mod qr;
 pub mod settings;
@@ -47,32 +50,113 @@ pub struct Conversation {
     pub is_group: bool,
     /// A line under the title: a phone number, a group's size, "Messages to yourself".
     pub subtitle: String,
+    pub settings: ChatSettings,
+}
+
+/// What langis remembers about a conversation besides its messages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatSettings {
+    /// Position among the pinned chats, from 0; pinned chats come first.
+    pub pinned: Option<u32>,
+    /// Muted until then (ms since the epoch; `u64::MAX` for good): no notifications.
+    pub muted_until: Option<u64>,
+    pub archived: bool,
+    /// Incoming messages up to this time (ms) were read, here or on another device.
+    pub last_read: u64,
+    /// Marked unread by hand.
+    pub marked_unread: bool,
+    /// Disappearing messages: seconds a message lasts once read (incoming) or sent; 0 is off.
+    pub expire_timer: u32,
+}
+
+impl ChatSettings {
+    pub fn muted(&self, now: u64) -> bool {
+        self.muted_until.is_some_and(|until| until > now)
+    }
+}
+
+/// How far one of our messages got. Ordered: a later state implies the earlier ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Delivery {
+    #[default]
+    Sent = 0,
+    Delivered = 1,
+    Read = 2,
+}
+
+impl Delivery {
+    pub(crate) fn from_index(index: i64) -> Self {
+        match index {
+            2 => Self::Read,
+            1 => Self::Delivered,
+            _ => Self::Sent,
+        }
+    }
+}
+
+/// A mention in text being sent: `body[start..end]` reads "@Name" and stands for `service_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mention {
+    pub start: usize,
+    pub end: usize,
+    pub service_id: String,
+}
+
+/// Formatting of part of a message's text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Style {
+    Bold,
+    Italic,
+    Strikethrough,
+    Monospace,
+    /// Hidden until revealed.
+    Spoiler,
+}
+
+/// A formatted range of a message's text, in bytes of [`ChatMessage::body`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StyleRange {
+    pub start: usize,
+    pub end: usize,
+    pub style: Style,
 }
 
 /// Replaces the placeholders Signal puts where a mention goes (U+FFFC) with "@Name".
 /// `mentions` are `(start, length, name)` in UTF-16 code units, as Signal counts them. A
 /// placeholder without one (e.g. from history imported before mentions were) reads "@…".
 pub fn resolve_mentions(body: &str, mentions: &[(u32, u32, String)]) -> String {
-    if mentions.is_empty() {
-        return body.replace('\u{FFFC}', "@…");
+    let ranges: Vec<_> = mentions
+        .iter()
+        .map(|(start, length, _)| format::WireRange {
+            start: *start,
+            length: *length,
+            value: format::RangeValue::Mention(String::new()),
+        })
+        .collect();
+    let names: Vec<_> = mentions
+        .iter()
+        .map(|(start, _, name)| (*start, name.clone()))
+        .collect();
+    format::decode(body, &ranges, &names).0
+}
+
+/// A disappearing-message timer as people say it: "5 minutes", "1 week".
+pub fn format_timer(seconds: u32) -> String {
+    const UNITS: [(u32, &str); 5] = [
+        (7 * 24 * 3600, "week"),
+        (24 * 3600, "day"),
+        (3600, "hour"),
+        (60, "minute"),
+        (1, "second"),
+    ];
+    let (size, unit) = UNITS
+        .into_iter()
+        .find(|(size, _)| seconds >= *size && seconds.is_multiple_of(*size))
+        .unwrap_or((1, "second"));
+    match seconds / size {
+        1 => format!("1 {unit}"),
+        n => format!("{n} {unit}s"),
     }
-    let mut out = String::with_capacity(body.len());
-    let mut position = 0u32;
-    let mut skip_until = 0u32;
-    for c in body.chars() {
-        if let Some((start, length, name)) =
-            mentions.iter().find(|(start, _, _)| *start == position)
-        {
-            out.push('@');
-            out.push_str(name);
-            skip_until = start + length;
-        }
-        if position >= skip_until {
-            out.push(c);
-        }
-        position += c.len_utf16() as u32;
-    }
-    out.replace('\u{FFFC}', "@…")
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -90,6 +174,19 @@ pub struct ChatMessage {
     pub attachments: Vec<Attachment>,
     /// At most one per person, in the order they came.
     pub reactions: Vec<Reaction>,
+    /// For our own messages.
+    pub delivery: Delivery,
+    /// Earlier versions, oldest first, with when they were replaced; empty if never edited.
+    pub edits: Vec<(u64, String)>,
+    /// Deleted for everyone: shown as such, without content.
+    pub deleted: bool,
+    /// When a disappearing message goes (ms since the epoch); `None` if it doesn't, or its
+    /// timer hasn't started (it starts when read).
+    pub expires_at: Option<u64>,
+    /// Its disappearing timer in seconds, if it has one.
+    pub expire_timer: Option<u32>,
+    /// Formatting, in [`ChatMessage::body`]'s bytes.
+    pub styles: Vec<StyleRange>,
 }
 
 impl ChatMessage {
@@ -309,6 +406,47 @@ pub enum Event {
         id: AttachmentId,
         path: Result<std::path::PathBuf, String>,
     },
+    /// Our messages sent at `timestamps` in `conversation` got this far.
+    Delivered {
+        conversation: ConversationId,
+        timestamps: Vec<u64>,
+        delivery: Delivery,
+    },
+    /// Someone started or stopped typing. Stops by itself after a while if no stop arrives.
+    Typing {
+        conversation: ConversationId,
+        sender_id: String,
+        sender: String,
+        typing: bool,
+    },
+    /// A message was edited: `message` is its new version, with the old ones in `edits`.
+    Edited {
+        conversation: ConversationId,
+        target: MessageRef,
+        message: ChatMessage,
+    },
+    /// A message was deleted for everyone.
+    Deleted {
+        conversation: ConversationId,
+        target: MessageRef,
+    },
+    /// Disappearing messages started counting down (ms since the epoch when each goes).
+    Expiring {
+        conversation: ConversationId,
+        expiries: Vec<(MessageRef, u64)>,
+    },
+    /// Disappearing messages are gone.
+    Expired {
+        conversation: ConversationId,
+        targets: Vec<MessageRef>,
+    },
+    /// A conversation's settings changed (pinned, muted, read on another device, …).
+    Settings {
+        conversation: ConversationId,
+        settings: ChatSettings,
+    },
+    /// Unread incoming messages per conversation, counted from the store at start.
+    Unread(Vec<(ConversationId, u32)>),
     /// The complete stored history of a conversation, answering [`Command::LoadHistory`].
     History {
         conversation: ConversationId,
@@ -339,9 +477,63 @@ pub enum Command {
         body: String,
         quote: Option<Quote>,
         files: Vec<std::path::PathBuf>,
+        /// Formatting, in `body`'s bytes.
+        styles: Vec<StyleRange>,
+        /// People mentioned: where "@Name" stands in `body` (bytes), and who it is.
+        mentions: Vec<Mention>,
     },
     /// Downloads an attachment and opens it with the desktop's default app for its type.
     OpenAttachment(Attachment),
+    /// We started or stopped typing in a conversation.
+    Typing {
+        conversation: ConversationId,
+        typing: bool,
+    },
+    /// These incoming messages were seen: tells their senders (if read receipts are on) and
+    /// our other devices, and starts disappearing timers.
+    MarkRead {
+        conversation: ConversationId,
+        messages: Vec<MessageRef>,
+    },
+    /// Marks a conversation unread by hand, or clears that.
+    MarkUnread {
+        conversation: ConversationId,
+        unread: bool,
+    },
+    /// Replaces the text of one of our messages.
+    Edit {
+        conversation: ConversationId,
+        target: MessageRef,
+        body: String,
+        styles: Vec<StyleRange>,
+    },
+    /// Deletes a message here, or for everyone (only our own, within a day).
+    Delete {
+        conversation: ConversationId,
+        target: MessageRef,
+        for_everyone: bool,
+    },
+    /// Pins exactly these conversations, in this order.
+    SetPins(Vec<ConversationId>),
+    /// Mutes until then (ms since the epoch; `u64::MAX` for good), or unmutes.
+    Mute {
+        conversation: ConversationId,
+        until: Option<u64>,
+    },
+    Archive {
+        conversation: ConversationId,
+        archived: bool,
+    },
+    /// Sets the disappearing-message timer (seconds; 0 turns it off).
+    SetTimer {
+        conversation: ConversationId,
+        seconds: u32,
+    },
+    /// Privacy preferences the backend acts on.
+    Preferences {
+        read_receipts: bool,
+        typing_indicators: bool,
+    },
     /// Reacts to a message with `emoji`, or takes our reaction back.
     React {
         conversation: ConversationId,

@@ -1,15 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, Command,
-    Conversation, ConversationId, Event, Events, HistoryTransfer, Inbox, Picture, QrMatrix, Quote,
-    Reaction, now_millis,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
+    Command, Conversation, ConversationId, Delivery, Event, Events, HistoryTransfer, Inbox,
+    Picture, QrMatrix, Quote, Reaction, Style, StyleRange, now_millis,
 };
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
+    ("dana", "Dana", false),
 ];
 
 pub fn run(commands: Inbox, events: Events) {
@@ -88,6 +89,12 @@ pub fn run(commands: Inbox, events: Events) {
             } else {
                 "+49 151 23456789".into()
             },
+            settings: ChatSettings {
+                pinned: (id == "rust").then_some(0),
+                archived: id == "dana",
+                muted_until: (id == "bob").then_some(u64::MAX),
+                ..ChatSettings::default()
+            },
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
@@ -112,7 +119,47 @@ pub fn run(commands: Inbox, events: Events) {
             None => commands.recv_timeout(Duration::from_secs(20)),
         };
         match next {
-            Ok(Command::Unlock(_) | Command::SkipHistory) => {}
+            // The state changes these settings itself; nothing to keep here.
+            Ok(
+                Command::Unlock(_)
+                | Command::SkipHistory
+                | Command::Typing { .. }
+                | Command::MarkRead { .. }
+                | Command::MarkUnread { .. }
+                | Command::SetPins(_)
+                | Command::Mute { .. }
+                | Command::Archive { .. }
+                | Command::SetTimer { .. }
+                | Command::Preferences { .. },
+            ) => {}
+            Ok(Command::Edit {
+                conversation,
+                target,
+                body,
+                styles,
+            }) => {
+                let message = ChatMessage {
+                    styles,
+                    edits: vec![(now_millis(), "(the earlier text)".into())],
+                    ..message(&conversation.0, "You", &body, target.timestamp, true)
+                };
+                let _ = events.send(Event::Edited {
+                    conversation,
+                    target,
+                    message,
+                });
+            }
+            Ok(Command::Delete {
+                conversation,
+                target,
+                for_everyone: true,
+            }) => {
+                let _ = events.send(Event::Deleted {
+                    conversation,
+                    target,
+                });
+            }
+            Ok(Command::Delete { .. }) => {}
             Ok(Command::React {
                 conversation,
                 target,
@@ -169,6 +216,8 @@ pub fn run(commands: Inbox, events: Events) {
                 body,
                 quote,
                 files,
+                styles,
+                mentions: _,
             }) => {
                 let attachments = files
                     .iter()
@@ -184,12 +233,29 @@ pub fn run(commands: Inbox, events: Events) {
                     })
                     .collect();
                 let echo = format!("You said: {body}");
+                let sent = now_millis();
                 let _ = events.send(Event::Message(ChatMessage {
                     quote,
                     attachments,
-                    ..message(&conversation.0, "You", &body, now_millis(), true)
+                    styles,
+                    ..message(&conversation.0, "You", &body, sent, true)
                 }));
-                std::thread::sleep(Duration::from_millis(600));
+                let typing = |typing| Event::Typing {
+                    conversation: conversation.clone(),
+                    sender_id: "echo".into(),
+                    sender: "Echo".into(),
+                    typing,
+                };
+                for (delivery, wait) in [(Delivery::Delivered, 300), (Delivery::Read, 300)] {
+                    std::thread::sleep(Duration::from_millis(wait));
+                    let _ = events.send(Event::Delivered {
+                        conversation: conversation.clone(),
+                        timestamps: vec![sent],
+                        delivery,
+                    });
+                }
+                let _ = events.send(typing(true));
+                std::thread::sleep(Duration::from_millis(1500));
                 let _ = events.send(Event::Message(message(
                     &conversation.0,
                     "Echo",
@@ -297,9 +363,49 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     Some("route-notes.pdf"),
                     (0, 0),
                 )],
+                delivery: Delivery::Read,
                 ..message("alice", "You", "", ago(29), true)
             },
+            ChatMessage {
+                styles: vec![
+                    StyleRange {
+                        start: 8,
+                        end: 12,
+                        style: Style::Bold,
+                    },
+                    StyleRange {
+                        start: 13,
+                        end: 19,
+                        style: Style::Italic,
+                    },
+                ],
+                edits: vec![(ago(5), "Look at the stars tonight".into())],
+                delivery: Delivery::Delivered,
+                ..message("alice", "You", "See the moon rising tonight", ago(6), true)
+            },
+            ChatMessage {
+                deleted: true,
+                ..message("alice", "Alice", "", ago(3), false)
+            },
+            ChatMessage {
+                expire_timer: Some(3600),
+                expires_at: Some(started + 50 * 60_000),
+                ..message(
+                    "alice",
+                    "Alice",
+                    "This one disappears in an hour",
+                    ago(2),
+                    false,
+                )
+            },
         ],
+        "dana" => vec![message(
+            "dana",
+            "Dana",
+            "Old news",
+            ago(60 * 24 * 40),
+            false,
+        )],
         "rust" => vec![
             message("rust", "Ferris", "Slint or iced?", ago(120), false),
             ChatMessage {

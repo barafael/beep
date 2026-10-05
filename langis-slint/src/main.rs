@@ -155,6 +155,9 @@ impl Shared {
             tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
         }
         deliver_notices(&self.notifier, &mut chat);
+        for command in chat.take_commands() {
+            self.commands.send(command);
+        }
     }
 
     /// Closing the window leaves langis running in the tray, to keep receiving messages, unless

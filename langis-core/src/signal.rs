@@ -12,6 +12,7 @@ use std::{
 use futures::{StreamExt, channel::oneshot, future, pin_mut};
 use presage::{
     Error as PresageError, Manager,
+    libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams},
     libsignal_service::{
         configuration::SignalServers,
         content::{Content, ContentBody, DataMessage, GroupContextV2},
@@ -21,8 +22,11 @@ use presage::{
     manager::Registered,
     model::{identity::OnNewIdentity, messages::Received},
     proto::{
-        SyncMessage,
-        sync_message::{Content as SyncContent, Sent},
+        BodyRange, EditMessage, ReceiptMessage, SyncMessage, TypingMessage, body_range,
+        data_message::{Delete, Flags},
+        receipt_message,
+        sync_message::{self, Content as SyncContent, Sent},
+        typing_message,
     },
     store::{ContentExt, ContentsStore, StateStore, Thread},
 };
@@ -35,8 +39,11 @@ use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, Command, Config, Conversation, ConversationId, Event, Events, HistoryTransfer,
-    Inbox, MessageRef, Password, Picture, QrMatrix, Quote, Reaction, apply_reaction, attachments,
+    ChatMessage, ChatSettings, Command, Config, Conversation, ConversationId, Delivery, Event,
+    Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, QrMatrix, Quote, Reaction,
+    Style, StyleRange, apply_reaction, attachments,
+    format::{self, RangeValue, WireRange},
+    local::LocalStore,
     now_millis, transfer,
     vault::{self, KeySource, KeyringKey},
 };
@@ -54,8 +61,11 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
     let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
-        Ok(Some((store, closed))) => (
-            local.block_on(&runtime, session(config, store, commands, events.clone())),
+        Ok(Some((store, tables, closed))) => (
+            local.block_on(
+                &runtime,
+                session(config, store, tables, commands, events.clone()),
+            ),
             Some(closed),
         ),
         // The UI went away while we were waiting for a password.
@@ -147,7 +157,7 @@ fn unlock(
     local: &LocalSet,
     commands: &Inbox,
     events: &Events,
-) -> Result<Option<(SqliteStore, Closed)>, String> {
+) -> Result<Option<(SqliteStore, LocalStore, Closed)>, String> {
     let paths = Paths::new()?;
     let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
         Some(KeySource::Keyring) => {
@@ -249,7 +259,7 @@ fn open_store(
     local: &LocalSet,
     paths: &Paths,
     key: &vault::Key,
-) -> Result<(SqliteStore, Closed), String> {
+) -> Result<(SqliteStore, LocalStore, Closed), String> {
     // The store doesn't expose its connection pool, so it can't be closed and awaited. Instead,
     // a never-used collation holds `open`: SQLite destroys a collation when its connection
     // closes (after closing the database file), and the pool's options hold the last copy.
@@ -277,8 +287,12 @@ fn open_store(
     let store = local
         .block_on(
             runtime,
-            SqliteStore::open_with_options(options, OnNewIdentity::Trust),
+            SqliteStore::open_with_options(options.clone(), OnNewIdentity::Trust),
         )
+        .map_err(|e| format!("failed to open the database: {e}"))?;
+    // Same options, so the same key and close guard.
+    let tables = local
+        .block_on(runtime, LocalStore::open(options))
         .map_err(|e| format!("failed to open the database: {e}"))?;
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
@@ -293,12 +307,13 @@ fn open_store(
             warn!(path = %path.display(), %error, "could not make a database file private");
         }
     }
-    Ok((store, closed))
+    Ok((store, tables, closed))
 }
 
 async fn session(
     config: Config,
     store: SqliteStore,
+    tables: LocalStore,
     commands: Inbox,
     events: Events,
 ) -> Result<(), String> {
@@ -340,7 +355,7 @@ async fn session(
         let Some((manager, pending)) = linked else {
             return Ok(());
         };
-        if !run_linked(manager, pending, &events, &mut command_rx).await {
+        if !run_linked(manager, pending, &events, &tables, &mut command_rx).await {
             return Ok(());
         }
         let _ = events.send(Event::Error(
@@ -360,11 +375,18 @@ async fn run_linked(
     mut manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
+    tables: &LocalStore,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) -> bool {
-    let events = events.clone();
-    let threads: Threads = Rc::default();
-    if send_conversations(&manager, &threads, &events).await == 0 {
+    let ctx = Ctx {
+        threads: Rc::default(),
+        events: events.clone(),
+        tables: tables.clone(),
+        prefs: Rc::default(),
+        expiring: Rc::default(),
+    };
+    let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
+    if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
         // The answer arrives through `receive` as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
@@ -374,11 +396,8 @@ async fn run_linked(
     }
 
     // In the background, so receiving starts right away.
-    let latest = tokio::task::spawn_local(send_latest_messages(
-        manager.clone(),
-        threads.clone(),
-        events.clone(),
-    ));
+    let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
+    let sweeping = tokio::task::spawn_local(sweep_expired(manager.clone(), ctx.clone()));
 
     let downloads = attachments::download_limit();
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
@@ -386,14 +405,13 @@ async fn run_linked(
     let removed = Rc::new(tokio::sync::Notify::new());
     let receiving = tokio::task::spawn_local(receive(
         manager.clone(),
-        threads.clone(),
-        events.clone(),
+        ctx.clone(),
         avatars,
         removed.clone(),
     ));
 
     for command in pending {
-        if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
+        if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
             let _ = events.send(Event::Error(error));
         }
     }
@@ -401,7 +419,7 @@ async fn run_linked(
         tokio::select! {
             command = command_rx.recv() => match command {
                 Some(command) => {
-                    if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
+                    if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
                         let _ = events.send(Event::Error(error));
                     }
                 }
@@ -411,6 +429,7 @@ async fn run_linked(
         }
     };
     latest.abort();
+    sweeping.abort();
     receiving.abort();
     was_removed
 }
@@ -591,6 +610,7 @@ fn register(threads: &Threads, thread: Thread, title: String, subtitle: String) 
         title,
         is_group,
         subtitle,
+        settings: ChatSettings::default(),
     }
 }
 
@@ -628,9 +648,66 @@ async fn subtitle(manager: &Mgr, thread: &Thread) -> String {
     }
 }
 
-/// Sends all synced contacts and groups; the UI merges them with what it already knows.
-/// Returns the number of contacts.
-async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -> usize {
+/// What the parts of a linked session share.
+#[derive(Clone)]
+struct Ctx {
+    threads: Threads,
+    events: Events,
+    tables: LocalStore,
+    prefs: Rc<Cell<Prefs>>,
+    /// Woken when a disappearing message starts counting down, for `sweep_expired`.
+    expiring: Rc<tokio::sync::Notify>,
+}
+
+/// Privacy preferences; see [`Command::Preferences`].
+#[derive(Clone, Copy)]
+struct Prefs {
+    read_receipts: bool,
+    typing_indicators: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            read_receipts: true,
+            typing_indicators: true,
+        }
+    }
+}
+
+/// The thread a conversation id stands for; see [`conversation_id`].
+fn thread_of(id: &ConversationId) -> Option<Thread> {
+    if let Some(service_id) = id.0.strip_prefix("c:") {
+        return ServiceId::parse_from_service_id_string(service_id).map(Thread::Contact);
+    }
+    let key = hex::decode(id.0.strip_prefix("g:")?).ok()?;
+    Some(Thread::Group(key.try_into().ok()?))
+}
+
+/// The id typing indicators and the like name a group by.
+fn group_identifier(master_key: &[u8; 32]) -> [u8; 32] {
+    GroupSecretParams::derive_from_master_key(GroupMasterKey::new(*master_key))
+        .get_group_identifier()
+}
+
+/// Adds what langis remembers about each conversation, and its disappearing timer.
+async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversation]) {
+    let mut remembered = ctx.tables.conversations().await.unwrap_or_else(|error| {
+        warn!(%error, "failed to read conversation settings");
+        HashMap::new()
+    });
+    for conversation in conversations {
+        conversation.settings = remembered.remove(&conversation.id).unwrap_or_default();
+        if let Some(thread) = thread_of(&conversation.id)
+            && let Ok(Some((timer, _))) = manager.store().expire_timer(&thread).await
+        {
+            conversation.settings.expire_timer = timer;
+        }
+    }
+}
+
+async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
+    let threads = &ctx.threads;
     let store = manager.store();
     let mut all = Vec::new();
     if let Ok(contacts) = store.contacts().await {
@@ -663,45 +740,201 @@ async fn send_conversations(manager: &Mgr, threads: &Threads, events: &Events) -
             all.push(register(threads, Thread::Group(key), group.title, count));
         }
     }
-    let _ = events.send(Event::Conversations(all));
+    with_settings(manager, ctx, &mut all).await;
+    let _ = ctx.events.send(Event::Conversations(all));
     contacts
 }
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
-/// activity and show previews before any history is opened.
-///
-/// The store can only return whole time ranges, so this looks at the last week first and only
-/// reaches further back for quiet conversations, instead of reading every chat's full history.
-async fn send_latest_messages(manager: Mgr, threads: Threads, events: Events) {
-    const DAY: u64 = 24 * 60 * 60 * 1000;
-    let threads: Vec<_> = threads
+/// activity and show previews before any history is opened; then how many messages in each
+/// are unread.
+async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
+    let threads: Vec<_> = ctx
+        .threads
         .borrow()
         .iter()
         .map(|(id, thread)| (id.clone(), thread.clone()))
         .collect();
     let mut names = Names::new();
-    let now = now_millis();
-    'threads: for (id, thread) in threads {
-        for since in [
-            now.saturating_sub(7 * DAY),
-            now.saturating_sub(180 * DAY),
-            0,
-        ] {
-            let Ok(contents) = manager.store().messages(&thread, since..).await else {
-                continue 'threads;
-            };
-            // Newest first; skip receipts and the like.
-            for content in contents.flatten() {
-                if let Some(message) =
-                    to_chat_message(&manager, &mut names, id.clone(), &content).await
-                {
-                    if !events.send(Event::Latest(message)) {
-                        return;
-                    }
-                    continue 'threads;
+    let mut unread = Vec::new();
+    for (id, thread) in threads {
+        let Some(mut latest) = latest_message(&manager, &mut names, &id, &thread).await else {
+            continue;
+        };
+        decorate(&ctx, &id, std::slice::from_mut(&mut latest)).await;
+        let timestamp = latest.timestamp;
+        if !ctx.events.send(Event::Latest(latest)) {
+            return;
+        }
+        match ctx.tables.settings(&id).await {
+            Ok(Some(settings)) => {
+                let count = count_unread(&manager, &thread, settings.last_read).await;
+                if count > 0 {
+                    unread.push((id, count));
                 }
             }
+            // New to langis (first start, or just linked with history): what is there counts
+            // as read, or every chat would start out unread.
+            Ok(None) => {
+                if let Err(error) = ctx.tables.update(&id, |s| s.last_read = timestamp).await {
+                    warn!(%error, "failed to remember a conversation");
+                }
+            }
+            Err(error) => warn!(%error, "failed to read conversation settings"),
         }
+    }
+    let _ = ctx.events.send(Event::Unread(unread));
+}
+
+/// A conversation's newest stored message.
+///
+/// The store can only return whole time ranges, so this looks at the last week first and only
+/// reaches further back for quiet conversations, instead of reading every chat's full history.
+async fn latest_message(
+    manager: &Mgr,
+    names: &mut Names,
+    id: &ConversationId,
+    thread: &Thread,
+) -> Option<ChatMessage> {
+    const DAY: u64 = 24 * 60 * 60 * 1000;
+    let now = now_millis();
+    for since in [
+        now.saturating_sub(7 * DAY),
+        now.saturating_sub(180 * DAY),
+        0,
+    ] {
+        let contents = manager.store().messages(thread, since..).await.ok()?;
+        // Newest first; skip receipts and the like.
+        for content in contents.flatten() {
+            if let Some(message) = to_chat_message(manager, names, id.clone(), &content).await {
+                return Some(message);
+            }
+        }
+    }
+    None
+}
+
+/// Incoming messages in a thread after `last_read`.
+async fn count_unread(manager: &Mgr, thread: &Thread, last_read: u64) -> u32 {
+    let own = own_id(manager);
+    let Ok(contents) = manager.store().messages(thread, last_read + 1..).await else {
+        return 0;
+    };
+    let count = contents
+        .flatten()
+        .filter(|content| {
+            content.metadata.sender != own
+                && matches!(&content.body, ContentBody::DataMessage(data)
+                    if data.reaction.is_none()
+                        && (data.body.is_some() || !data.attachments.is_empty()))
+        })
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// Adds what langis keeps beside the store to messages of one conversation: how far ours got,
+/// earlier versions of edited ones, when disappearing ones go.
+async fn decorate(ctx: &Ctx, id: &ConversationId, messages: &mut [ChatMessage]) {
+    let (deliveries, edits, expiries) = futures::join!(
+        ctx.tables.deliveries(id),
+        ctx.tables.edits(id),
+        ctx.tables.expiries(id),
+    );
+    let (mut deliveries, mut edits, mut expiries) = (
+        deliveries.unwrap_or_default(),
+        edits.unwrap_or_default(),
+        expiries.unwrap_or_default(),
+    );
+    for message in messages {
+        if message.outgoing {
+            message.delivery = deliveries.remove(&message.timestamp).unwrap_or_default();
+        }
+        let reference = message.reference();
+        if let Some(earlier) = edits.remove(&reference) {
+            message.edits = earlier;
+        }
+        message.expires_at = expiries.remove(&reference);
+    }
+}
+
+/// Deletes disappearing messages when their time is up, for the rest of the session.
+async fn sweep_expired(manager: Mgr, ctx: Ctx) {
+    loop {
+        let (due, next) = match ctx.tables.due(now_millis()).await {
+            Ok(found) => found,
+            Err(error) => {
+                warn!(%error, "failed to look for disappearing messages");
+                return;
+            }
+        };
+        let mut gone: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
+        for (conversation, message) in due {
+            if let Some(thread) = thread_of(&conversation) {
+                let mut store = manager.store().clone();
+                if let Err(error) = store.delete_message(&thread, message.timestamp).await {
+                    warn!(%error, "failed to delete a disappearing message");
+                    continue;
+                }
+            }
+            if let Err(error) = ctx.tables.forget_expired(&conversation, &message).await {
+                warn!(%error, "failed to forget a disappearing message");
+                return;
+            }
+            gone.entry(conversation).or_default().push(message);
+        }
+        for (conversation, targets) in gone {
+            if !ctx.events.send(Event::Expired {
+                conversation,
+                targets,
+            }) {
+                return;
+            }
+        }
+        let wait = next.map_or(Duration::from_secs(24 * 3600), |at| {
+            Duration::from_millis(at.saturating_sub(now_millis()))
+        });
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = ctx.expiring.notified() => {}
+        }
+    }
+}
+
+/// Starts the timers of disappearing messages in a conversation, as of `start`: incoming ones
+/// once read, ours once sent.
+async fn start_timers(
+    manager: &Mgr,
+    ctx: &Ctx,
+    conversation: &ConversationId,
+    messages: &[MessageRef],
+    start: u64,
+) {
+    let Some(thread) = thread_of(conversation) else {
+        return;
+    };
+    let mut expiries = Vec::new();
+    for message in messages {
+        let Ok(Some(content)) = manager.store().message(&thread, message.timestamp).await else {
+            continue;
+        };
+        let Some(timer) = data_of(&content)
+            .and_then(|(data, _)| data.expire_timer)
+            .filter(|&t| t > 0)
+        else {
+            continue;
+        };
+        let at = start + u64::from(timer) * 1000;
+        match ctx.tables.set_expiry(conversation, message, at).await {
+            Ok(()) => expiries.push((message.clone(), at)),
+            Err(error) => warn!(%error, "failed to start a disappearing timer"),
+        }
+    }
+    if !expiries.is_empty() {
+        ctx.expiring.notify_one();
+        let _ = ctx.events.send(Event::Expiring {
+            conversation: conversation.clone(),
+            expiries,
+        });
     }
 }
 
@@ -861,8 +1094,20 @@ fn decode_avatar(bytes: &[u8]) -> Option<Picture> {
     })
 }
 
-/// Sends a data message to a 1:1 chat or a group. presage fills in the message's timestamp
-/// from `timestamp`.
+/// What group messages carry to say which group, and in which revision.
+async fn group_context(manager: &Mgr, key: &[u8; 32]) -> GroupContextV2 {
+    // Recipients compare the revision with their group state to spot stale context.
+    let revision = match manager.store().group(*key).await {
+        Ok(Some(group)) => group.revision,
+        _ => 0,
+    };
+    GroupContextV2 {
+        master_key: Some(key.to_vec()),
+        revision: Some(revision),
+        ..Default::default()
+    }
+}
+
 async fn send_data(
     manager: &mut Mgr,
     thread: &Thread,
@@ -872,20 +1117,33 @@ async fn send_data(
     let sent = match thread {
         Thread::Contact(recipient) => manager.send_message(*recipient, message, timestamp).await,
         Thread::Group(key) => {
-            // Recipients compare this with their group state to spot stale context.
-            let revision = match manager.store().group(*key).await {
-                Ok(Some(group)) => group.revision,
-                _ => 0,
-            };
-            message.group_v2 = Some(GroupContextV2 {
-                master_key: Some(key.to_vec()),
-                revision: Some(revision),
-                ..Default::default()
-            });
+            message.group_v2 = Some(group_context(manager, key).await);
             manager.send_message_to_group(key, message, timestamp).await
         }
     };
     sent.map_err(|e| format!("failed to send: {e}"))
+}
+
+/// Replaces the text of our message sent at `target`.
+async fn send_edit(
+    manager: &mut Mgr,
+    thread: &Thread,
+    target: u64,
+    mut message: DataMessage,
+    timestamp: u64,
+) -> Result<(), String> {
+    if let Thread::Group(key) = thread {
+        message.group_v2 = Some(group_context(manager, key).await);
+    }
+    let edit = ContentBody::EditMessage(EditMessage {
+        target_sent_timestamp: Some(target),
+        data_message: Some(message),
+    });
+    let sent = match thread {
+        Thread::Contact(recipient) => manager.send_message(*recipient, edit, timestamp).await,
+        Thread::Group(key) => manager.send_message_to_group(key, edit, timestamp).await,
+    };
+    sent.map_err(|e| format!("failed to edit: {e}"))
 }
 
 fn own_id(manager: &Mgr) -> ServiceId {
@@ -920,8 +1178,7 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
 /// Notifies `removed` (and stops) if Signal no longer accepts this device.
 async fn receive(
     mut manager: Mgr,
-    threads: Threads,
-    events: Events,
+    ctx: Ctx,
     avatars: AvatarFetcher,
     removed: Rc<tokio::sync::Notify>,
 ) {
@@ -954,16 +1211,8 @@ async fn receive(
                     };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(
-                        &manager,
-                        &threads,
-                        &events,
-                        &avatars,
-                        &mut names,
-                        &mut resets,
-                        received,
-                    )
-                    .await
+                    if !handle_received(&manager, &ctx, &avatars, &mut names, &mut resets, received)
+                        .await
                     {
                         return;
                     }
@@ -976,7 +1225,7 @@ async fn receive(
             }
             Err(error) => warn!(%error, "failed to connect to Signal"),
         }
-        if !events.send(Event::Reconnecting) {
+        if !ctx.events.send(Event::Reconnecting) {
             return;
         }
         if reconnect_now {
@@ -1041,18 +1290,18 @@ async fn watch_wakeups(_: Rc<tokio::sync::Notify>) {}
 /// Returns `false` once the UI has gone away.
 async fn handle_received(
     manager: &Mgr,
-    threads: &Threads,
-    events: &Events,
+    ctx: &Ctx,
     avatars: &AvatarFetcher,
     names: &mut Names,
     resets: &mut Resets,
     received: Received,
 ) -> bool {
+    let events = &ctx.events;
     match received {
         Received::QueueEmpty => events.send(Event::Synced),
         Received::Contacts => {
             names.clear();
-            send_conversations(manager, threads, events).await;
+            send_conversations(manager, ctx).await;
             // A newly linked device first learns its contacts here.
             avatars.request();
             true
@@ -1078,8 +1327,7 @@ async fn handle_received(
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
-            let conversation =
-                ensure_conversation(manager, threads, events, Thread::Contact(sender)).await;
+            let conversation = ensure_conversation(manager, ctx, Thread::Contact(sender)).await;
             let name = sender_name(manager, names, sender).await;
             let body = if reset {
                 format!(
@@ -1097,73 +1345,374 @@ async fn handle_received(
                 ..Default::default()
             }))
         }
-        Received::Content(content) => {
-            let Ok(thread) = Thread::try_from(&*content) else {
-                return true;
-            };
-            let id = ensure_conversation(manager, threads, events, thread).await;
-            if let Some((target, reaction, remove)) = to_reaction(manager, names, &content).await {
-                return events.send(Event::Reaction {
-                    conversation: id,
-                    target,
-                    reaction,
-                    remove,
-                });
-            }
-            match to_chat_message(manager, names, id, &content).await {
-                Some(message) => events.send(Event::Message(message)),
-                None => true,
+        Received::Content(content) => handle_content(manager, ctx, names, &content).await,
+    }
+}
+
+/// Returns `false` once the UI has gone away.
+async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &Content) -> bool {
+    let events = &ctx.events;
+    match &content.body {
+        ContentBody::ReceiptMessage(receipt) => return on_receipt(ctx, receipt).await,
+        // Typing in a group names the group differently from other messages.
+        ContentBody::TypingMessage(typing) => {
+            return on_typing(manager, ctx, names, content, typing).await;
+        }
+        ContentBody::SynchronizeMessage(sync) if !sync.read.is_empty() => {
+            on_read_elsewhere(manager, ctx, &sync.read).await;
+        }
+        _ => {}
+    }
+    let Ok(thread) = Thread::try_from(content) else {
+        return true;
+    };
+    let id = ensure_conversation(manager, ctx, thread).await;
+    if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
+        return events.send(Event::Reaction {
+            conversation: id,
+            target,
+            reaction,
+            remove,
+        });
+    }
+    let Some((data, edit)) = data_of(content) else {
+        return true;
+    };
+    let outgoing = is_outgoing(manager, content);
+    let author = if outgoing {
+        own_id(manager)
+    } else {
+        content.metadata.sender
+    };
+    if let Some(Delete {
+        target_sent_timestamp: Some(timestamp),
+    }) = data.delete
+    {
+        let target = MessageRef {
+            author_id: author.service_id_string(),
+            timestamp,
+        };
+        if let Err(error) = ctx.tables.record_deleted(&id, &target).await {
+            warn!(%error, "failed to remember a deletion");
+        }
+        return events.send(Event::Deleted {
+            conversation: id,
+            target,
+        });
+    }
+    let Some(mut message) = to_chat_message(manager, names, id.clone(), content).await else {
+        return true;
+    };
+    if outgoing {
+        // Sent from another device: receipts name only the time, so remember where it went.
+        if let Err(error) = ctx
+            .tables
+            .set_delivery(&id, message.timestamp, Delivery::Sent)
+            .await
+        {
+            warn!(%error, "failed to remember a sent message");
+        }
+        if let ContentBody::SynchronizeMessage(SyncMessage {
+            content:
+                Some(SyncContent::Sent(Sent {
+                    expiration_start_timestamp: Some(start),
+                    ..
+                })),
+            ..
+        }) = &content.body
+        {
+            start_timers(manager, ctx, &id, &[message.reference()], *start).await;
+        }
+    }
+    if edit {
+        let target = message.reference();
+        let edited_at = data.timestamp.unwrap_or_else(now_millis);
+        // The store already holds only the new text.
+        if let Err(error) = ctx.tables.record_edit(&id, &target, edited_at, "").await {
+            warn!(%error, "failed to remember an edit");
+        }
+        message.edits = vec![(edited_at, String::new())];
+        return events.send(Event::Edited {
+            conversation: id,
+            target,
+            message,
+        });
+    }
+    if !outgoing {
+        unarchive(ctx, &id).await;
+    }
+    events.send(Event::Message(message))
+}
+
+/// A new message brings an archived conversation back, unless it is muted (as in Signal).
+async fn unarchive(ctx: &Ctx, id: &ConversationId) {
+    let Ok(Some(settings)) = ctx.tables.settings(id).await else {
+        return;
+    };
+    if !settings.archived || settings.muted(now_millis()) {
+        return;
+    }
+    match ctx.tables.update(id, |s| s.archived = false).await {
+        Ok(settings) => {
+            let _ = ctx.events.send(Event::Settings {
+                conversation: id.clone(),
+                settings,
+            });
+        }
+        Err(error) => warn!(%error, "failed to unarchive a conversation"),
+    }
+}
+
+/// Our messages got further: delivered to or read on someone's phone.
+async fn on_receipt(ctx: &Ctx, receipt: &ReceiptMessage) -> bool {
+    use receipt_message::Type;
+    let delivery = match receipt.r#type() {
+        Type::Delivery => Delivery::Delivered,
+        Type::Read | Type::Viewed => Delivery::Read,
+    };
+    let found = match ctx.tables.conversations_of(&receipt.timestamp).await {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(%error, "failed to look up receipted messages");
+            return true;
+        }
+    };
+    let mut by_conversation: HashMap<ConversationId, Vec<u64>> = HashMap::new();
+    for (conversation, timestamp) in found {
+        if let Err(error) = ctx
+            .tables
+            .set_delivery(&conversation, timestamp, delivery)
+            .await
+        {
+            warn!(%error, "failed to remember a receipt");
+        }
+        by_conversation
+            .entry(conversation)
+            .or_default()
+            .push(timestamp);
+    }
+    by_conversation
+        .into_iter()
+        .all(|(conversation, timestamps)| {
+            ctx.events.send(Event::Delivered {
+                conversation,
+                timestamps,
+                delivery,
+            })
+        })
+}
+
+async fn on_typing(
+    manager: &Mgr,
+    ctx: &Ctx,
+    names: &mut Names,
+    content: &Content,
+    typing: &TypingMessage,
+) -> bool {
+    let sender = content.metadata.sender;
+    if sender == own_id(manager) {
+        return true;
+    }
+    let thread = match &typing.group_id {
+        Some(group_id) => {
+            let threads = ctx.threads.borrow();
+            let group = threads.values().find(
+                |t| matches!(t, Thread::Group(key) if group_identifier(key)[..] == group_id[..]),
+            );
+            match group {
+                Some(thread) => thread.clone(),
+                None => return true,
             }
         }
+        None => Thread::Contact(sender),
+    };
+    let conversation = conversation_id(&thread);
+    if !ctx.threads.borrow().contains_key(&conversation) {
+        return true;
+    }
+    let name = sender_name(manager, names, sender).await;
+    ctx.events.send(Event::Typing {
+        conversation,
+        sender_id: sender.service_id_string(),
+        sender: name,
+        typing: typing.action() == typing_message::Action::Started,
+    })
+}
+
+/// Messages were read on another of our devices.
+async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read]) {
+    let mut read: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
+    for entry in reads {
+        let (Some(sender), Some(timestamp)) = (
+            entry
+                .sender_aci
+                .as_deref()
+                .and_then(ServiceId::parse_from_service_id_string),
+            entry.timestamp,
+        ) else {
+            continue;
+        };
+        let Ok(Some(thread)) = manager
+            .store()
+            .thread_for_sender_and_timestamp(&sender, timestamp)
+            .await
+        else {
+            continue;
+        };
+        read.entry(conversation_id(&thread))
+            .or_default()
+            .push(MessageRef {
+                author_id: sender.service_id_string(),
+                timestamp,
+            });
+    }
+    let now = now_millis();
+    for (conversation, messages) in read {
+        let newest = messages
+            .iter()
+            .map(|m| m.timestamp)
+            .max()
+            .unwrap_or_default();
+        let settings = ctx
+            .tables
+            .update(&conversation, |s| {
+                s.last_read = s.last_read.max(newest);
+                s.marked_unread = false;
+            })
+            .await;
+        match settings {
+            Ok(settings) => {
+                let _ = ctx.events.send(Event::Settings {
+                    conversation: conversation.clone(),
+                    settings,
+                });
+            }
+            Err(error) => warn!(%error, "failed to remember what was read"),
+        }
+        start_timers(manager, ctx, &conversation, &messages, now).await;
     }
 }
 
 /// Registers `thread` and announces it to the UI if it's the first we hear of it.
-async fn ensure_conversation(
-    manager: &Mgr,
-    threads: &Threads,
-    events: &Events,
-    thread: Thread,
-) -> ConversationId {
+async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> ConversationId {
     let id = conversation_id(&thread);
-    if !threads.borrow().contains_key(&id) {
+    if !ctx.threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
         let subtitle = subtitle(manager, &thread).await;
-        let conversation = register(threads, thread, title, subtitle);
+        let mut conversation = register(&ctx.threads, thread, title, subtitle);
+        with_settings(manager, ctx, std::slice::from_mut(&mut conversation)).await;
         info!(title = conversation.title, "new conversation");
-        events.send(Event::Conversations(vec![conversation]));
+        ctx.events.send(Event::Conversations(vec![conversation]));
     }
     id
 }
 
-/// Extracts displayable text; returns `None` for receipts, typing indicators, etc.
-/// `text` with Signal's mention placeholders replaced by "@Name".
-async fn with_mentions(
+/// `text` made readable: mention placeholders become "@Name", and Signal's style ranges move
+/// to its bytes.
+async fn resolve_text(
     manager: &Mgr,
     names: &mut Names,
     text: &str,
-    ranges: &[presage::proto::BodyRange],
-) -> String {
-    use presage::proto::body_range::AssociatedValue;
-    let mut mentions = Vec::new();
+    ranges: &[BodyRange],
+) -> (String, Vec<StyleRange>) {
+    use body_range::{AssociatedValue, Style as WireStyle};
+    let mut wire = Vec::new();
+    let mut mentioned = Vec::new();
     for range in ranges {
-        let who = match &range.associated_value {
-            Some(AssociatedValue::MentionAci(aci)) => ServiceId::parse_from_service_id_string(aci),
+        let value = match &range.associated_value {
+            Some(AssociatedValue::MentionAci(aci)) => ServiceId::parse_from_service_id_string(aci)
+                .map(|who| RangeValue::Mention(who.service_id_string())),
             Some(AssociatedValue::MentionAciBinary(bytes)) => {
                 ServiceId::parse_from_service_id_binary(bytes)
+                    .map(|who| RangeValue::Mention(who.service_id_string()))
             }
-            _ => None,
+            Some(AssociatedValue::Style(style)) => match WireStyle::try_from(*style) {
+                Ok(WireStyle::Bold) => Some(RangeValue::Style(Style::Bold)),
+                Ok(WireStyle::Italic) => Some(RangeValue::Style(Style::Italic)),
+                Ok(WireStyle::Spoiler) => Some(RangeValue::Style(Style::Spoiler)),
+                Ok(WireStyle::Strikethrough) => Some(RangeValue::Style(Style::Strikethrough)),
+                Ok(WireStyle::Monospace) => Some(RangeValue::Style(Style::Monospace)),
+                Ok(WireStyle::None) | Err(_) => None,
+            },
+            None => None,
         };
-        if let Some(who) = who {
+        let Some(value) = value else { continue };
+        if let RangeValue::Mention(who) = &value
+            && let Some(who) = ServiceId::parse_from_service_id_string(who)
+        {
             let name = if who == own_id(manager) {
                 "You".to_string()
             } else {
                 sender_name(manager, names, who).await
             };
-            mentions.push((range.start(), range.length(), name));
+            mentioned.push((range.start(), name));
         }
+        wire.push(WireRange {
+            start: range.start(),
+            length: range.length(),
+            value,
+        });
     }
-    crate::resolve_mentions(text, &mentions)
+    format::decode(text, &wire, &mentioned)
+}
+
+/// Signal's body ranges for text we send.
+fn body_ranges(ranges: Vec<WireRange>) -> Vec<BodyRange> {
+    use body_range::{AssociatedValue, Style as WireStyle};
+    ranges
+        .into_iter()
+        .map(|range| BodyRange {
+            start: Some(range.start),
+            length: Some(range.length),
+            associated_value: Some(match range.value {
+                RangeValue::Mention(aci) => AssociatedValue::MentionAci(aci),
+                RangeValue::Style(style) => AssociatedValue::Style(match style {
+                    Style::Bold => WireStyle::Bold,
+                    Style::Italic => WireStyle::Italic,
+                    Style::Spoiler => WireStyle::Spoiler,
+                    Style::Strikethrough => WireStyle::Strikethrough,
+                    Style::Monospace => WireStyle::Monospace,
+                } as i32),
+            }),
+        })
+        .collect()
+}
+
+/// The data message a content carries: from someone, from us (synced from another device), or
+/// an edit of either; `true` for an edit.
+fn data_of(content: &Content) -> Option<(&DataMessage, bool)> {
+    match &content.body {
+        ContentBody::DataMessage(data) => Some((data, false)),
+        ContentBody::EditMessage(EditMessage {
+            data_message: Some(data),
+            ..
+        }) => Some((data, true)),
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Sent(sent)),
+            ..
+        }) => match sent {
+            Sent {
+                message: Some(data),
+                ..
+            } => Some((data, false)),
+            Sent {
+                edit_message:
+                    Some(EditMessage {
+                        data_message: Some(data),
+                        ..
+                    }),
+                ..
+            } => Some((data, true)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Ours: sent from here (stored with us as the sender) or synced from another device.
+fn is_outgoing(manager: &Mgr, content: &Content) -> bool {
+    matches!(content.body, ContentBody::SynchronizeMessage(_))
+        || content.metadata.sender == own_id(manager)
 }
 
 /// A reaction, from someone else or (synced from the phone) from us.
@@ -1172,18 +1721,10 @@ async fn to_reaction(
     names: &mut Names,
     content: &Content,
 ) -> Option<(MessageRef, Reaction, bool)> {
-    let (data, outgoing) = match &content.body {
-        ContentBody::DataMessage(data) => (data, false),
-        ContentBody::SynchronizeMessage(SyncMessage {
-            content:
-                Some(SyncContent::Sent(Sent {
-                    message: Some(data),
-                    ..
-                })),
-            ..
-        }) => (data, true),
-        _ => return None,
+    let (data, false) = data_of(content)? else {
+        return None;
     };
+    let outgoing = is_outgoing(manager, content);
     let reaction = data.reaction.as_ref()?;
     let target = MessageRef {
         author_id: reaction.target_author_aci.clone()?,
@@ -1209,19 +1750,14 @@ async fn to_chat_message(
     conversation: ConversationId,
     content: &Content,
 ) -> Option<ChatMessage> {
-    let (data, outgoing) = match &content.body {
-        ContentBody::DataMessage(data) => (data, false),
-        ContentBody::SynchronizeMessage(SyncMessage {
-            content:
-                Some(SyncContent::Sent(Sent {
-                    message: Some(data),
-                    ..
-                })),
-            ..
-        }) => (data, true),
-        _ => return None,
+    let (data, edit) = data_of(content)?;
+    let outgoing = is_outgoing(manager, content);
+    let sender = if outgoing {
+        "You".to_string()
+    } else {
+        sender_name(manager, names, content.metadata.sender).await
     };
-    let body = with_mentions(
+    let (mut body, styles) = resolve_text(
         manager,
         names,
         data.body.as_deref().unwrap_or_default(),
@@ -1229,14 +1765,20 @@ async fn to_chat_message(
     )
     .await;
     let attachments = attachments::of_message(data);
+    let timer_update = data.flags() & Flags::ExpirationTimerUpdate as u32 != 0;
+    if timer_update && body.is_empty() {
+        let who = if outgoing { "You" } else { sender.as_str() };
+        body = match data.expire_timer.unwrap_or(0) {
+            0 => format!("⏱ {who} turned off disappearing messages."),
+            seconds => format!(
+                "⏱ {who} set disappearing messages to {}.",
+                crate::format_timer(seconds)
+            ),
+        };
+    }
     if body.is_empty() && attachments.is_empty() {
         return None;
     }
-    let sender = if outgoing {
-        "You".to_string()
-    } else {
-        sender_name(manager, names, content.metadata.sender).await
-    };
     let quote = match &data.quote {
         Some(quote) => {
             let author = match quote
@@ -1250,40 +1792,63 @@ async fn to_chat_message(
             };
             Some(Quote {
                 author,
-                text: with_mentions(
+                text: resolve_text(
                     manager,
                     names,
                     quote.text.as_deref().unwrap_or_default(),
                     &quote.body_ranges,
                 )
-                .await,
+                .await
+                .0,
                 author_id: quote.author_aci.clone().unwrap_or_default(),
                 timestamp: quote.id.unwrap_or_default(),
             })
         }
         None => None,
     };
+    let sender_id = if outgoing {
+        own_id(manager)
+    } else {
+        content.metadata.sender
+    };
     Some(ChatMessage {
         conversation,
-        sender_id: content.metadata.sender.service_id_string(),
+        sender_id: sender_id.service_id_string(),
         sender,
         body,
+        // For an edit, the time of the message it replaces, which identifies it.
         timestamp: content.timestamp(),
         outgoing,
         quote,
         attachments,
-        reactions: Vec::new(),
+        styles,
+        expire_timer: data.expire_timer.filter(|&t| t > 0),
+        // A marker until `decorate` knows the earlier texts.
+        edits: if edit {
+            vec![(data.timestamp.unwrap_or_default(), String::new())]
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
     })
 }
 
 async fn handle(
     manager: &mut Mgr,
-    threads: &Threads,
-    events: &Events,
+    ctx: &Ctx,
     downloads: &Rc<tokio::sync::Semaphore>,
     command: Command,
 ) -> Result<(), String> {
     let servers = manager.registration_data().signal_servers;
+    let events = &ctx.events;
+    let thread = |id: &ConversationId| {
+        ctx.threads
+            .borrow()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "unknown conversation".to_string())
+    };
+    let db = |error: sqlx::Error| format!("failed to save: {error}");
     match command {
         // In the background, so commands keep flowing while files download.
         Command::FetchAttachment(attachment) => {
@@ -1307,7 +1872,7 @@ async fn handle(
         // Only meaningful during the transfer; see `link_with_history`.
         Command::SkipHistory => {}
         Command::LoadHistory(id) => {
-            let Some(thread) = threads.borrow().get(&id).cloned() else {
+            let Ok(thread) = thread(&id) else {
                 return Ok(());
             };
             let contents = manager
@@ -1330,6 +1895,26 @@ async fn handle(
                     messages.push(message);
                 }
             }
+            decorate(ctx, &id, &mut messages).await;
+            // The store keeps nothing of messages deleted for everyone.
+            let own = own_id(manager).service_id_string();
+            for target in ctx.tables.deleted(&id).await.unwrap_or_default() {
+                let outgoing = target.author_id == own;
+                let sender = match ServiceId::parse_from_service_id_string(&target.author_id) {
+                    _ if outgoing => "You".to_string(),
+                    Some(author) => sender_name(manager, &mut names, author).await,
+                    None => String::new(),
+                };
+                messages.push(ChatMessage {
+                    conversation: id.clone(),
+                    sender_id: target.author_id,
+                    sender,
+                    timestamp: target.timestamp,
+                    outgoing,
+                    deleted: true,
+                    ..Default::default()
+                });
+            }
             let _ = events.send(Event::History {
                 conversation: id,
                 messages,
@@ -1341,9 +1926,7 @@ async fn handle(
             emoji,
             remove,
         } => {
-            let Some(thread) = threads.borrow().get(&conversation).cloned() else {
-                return Err("unknown conversation".into());
-            };
+            let thread = thread(&conversation)?;
             let message = DataMessage {
                 reaction: Some(presage::proto::data_message::Reaction {
                     emoji: Some(emoji.clone()),
@@ -1381,15 +1964,17 @@ async fn handle(
             body,
             quote,
             files,
+            styles,
+            mentions,
         } => {
-            let Some(thread) = threads.borrow().get(&conversation).cloned() else {
-                return Err("unknown conversation".into());
-            };
+            let thread = thread(&conversation)?;
             let pointers = attachments::upload(manager, &files).await?;
+            let (text, ranges) = format::encode(&body, &styles, &mentions);
             // presage fills in the data message's timestamp from the one passed here.
             let timestamp = now_millis();
             let message = DataMessage {
-                body: (!body.is_empty()).then(|| body.clone()),
+                body: (!text.is_empty()).then_some(text),
+                body_ranges: body_ranges(ranges),
                 attachments: pointers.clone(),
                 quote: quote
                     .as_ref()
@@ -1402,13 +1987,30 @@ async fn handle(
                 ..Default::default()
             };
             send_data(manager, &thread, message, timestamp).await?;
+            ctx.tables
+                .set_delivery(&conversation, timestamp, Delivery::Sent)
+                .await
+                .map_err(db)?;
+            let own = own_id(manager).service_id_string();
+            let reference = MessageRef {
+                author_id: own.clone(),
+                timestamp,
+            };
+            let timer = match manager.store().expire_timer(&thread).await {
+                Ok(Some((timer, _))) if timer > 0 => Some(timer),
+                _ => None,
+            };
+            let expires_at = timer.map(|timer| timestamp + u64::from(timer) * 1000);
+            if let Some(at) = expires_at {
+                ctx.tables
+                    .set_expiry(&conversation, &reference, at)
+                    .await
+                    .map_err(db)?;
+                ctx.expiring.notify_one();
+            }
             let _ = events.send(Event::Message(ChatMessage {
                 conversation,
-                sender_id: manager
-                    .registration_data()
-                    .service_ids
-                    .aci()
-                    .service_id_string(),
+                sender_id: own,
                 sender: "You".into(),
                 body,
                 timestamp,
@@ -1418,11 +2020,281 @@ async fn handle(
                     .iter()
                     .map(|pointer| attachments::describe(pointer, false))
                     .collect(),
+                styles,
+                expire_timer: timer,
+                expires_at,
                 ..Default::default()
             }));
         }
+        Command::Edit {
+            conversation,
+            target,
+            body,
+            styles,
+        } => {
+            let thread = thread(&conversation)?;
+            // Kept as the earlier version.
+            let previous = match manager.store().message(&thread, target.timestamp).await {
+                Ok(Some(content)) => data_of(&content)
+                    .and_then(|(data, _)| data.body.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            let (text, ranges) = format::encode(&body, &styles, &[]);
+            let timestamp = now_millis();
+            let data = DataMessage {
+                body: Some(text),
+                body_ranges: body_ranges(ranges),
+                timestamp: Some(timestamp),
+                ..Default::default()
+            };
+            send_edit(manager, &thread, target.timestamp, data, timestamp).await?;
+            ctx.tables
+                .record_edit(&conversation, &target, timestamp, &previous)
+                .await
+                .map_err(db)?;
+            let message = ChatMessage {
+                conversation: conversation.clone(),
+                sender_id: target.author_id.clone(),
+                sender: "You".into(),
+                body,
+                timestamp: target.timestamp,
+                outgoing: true,
+                styles,
+                edits: vec![(timestamp, previous)],
+                ..Default::default()
+            };
+            let _ = events.send(Event::Edited {
+                conversation,
+                target,
+                message,
+            });
+        }
+        Command::Delete {
+            conversation,
+            target,
+            for_everyone: true,
+        } => {
+            let thread = thread(&conversation)?;
+            let message = DataMessage {
+                delete: Some(Delete {
+                    target_sent_timestamp: Some(target.timestamp),
+                }),
+                ..Default::default()
+            };
+            send_data(manager, &thread, message, now_millis()).await?;
+            ctx.tables
+                .record_deleted(&conversation, &target)
+                .await
+                .map_err(db)?;
+        }
+        Command::Delete {
+            conversation,
+            target,
+            for_everyone: false,
+        } => {
+            let thread = thread(&conversation)?;
+            let mut store = manager.store().clone();
+            store
+                .delete_message(&thread, target.timestamp)
+                .await
+                .map_err(|e| format!("failed to delete: {e}"))?;
+        }
+        Command::Typing {
+            conversation,
+            typing,
+        } => {
+            if !ctx.prefs.get().typing_indicators {
+                return Ok(());
+            }
+            let thread = thread(&conversation)?;
+            // In the background: it may take a moment, and nobody waits for it.
+            tokio::task::spawn_local(send_typing(manager.clone(), thread, typing));
+        }
+        Command::MarkRead {
+            conversation,
+            messages,
+        } => {
+            let newest = messages
+                .iter()
+                .map(|m| m.timestamp)
+                .max()
+                .unwrap_or_default();
+            ctx.tables
+                .update(&conversation, |s| {
+                    s.last_read = s.last_read.max(newest);
+                    s.marked_unread = false;
+                })
+                .await
+                .map_err(db)?;
+            if messages.is_empty() {
+                return Ok(());
+            }
+            start_timers(manager, ctx, &conversation, &messages, now_millis()).await;
+            let receipts = ctx.prefs.get().read_receipts;
+            tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
+        }
+        Command::MarkUnread {
+            conversation,
+            unread,
+        } => {
+            ctx.tables
+                .update(&conversation, |s| s.marked_unread = unread)
+                .await
+                .map_err(db)?;
+        }
+        Command::SetPins(order) => ctx.tables.set_pins(&order).await.map_err(db)?,
+        Command::Mute {
+            conversation,
+            until,
+        } => {
+            ctx.tables
+                .update(&conversation, |s| s.muted_until = until)
+                .await
+                .map_err(db)?;
+        }
+        Command::Archive {
+            conversation,
+            archived,
+        } => {
+            ctx.tables
+                .update(&conversation, |s| {
+                    s.archived = archived;
+                    if archived {
+                        s.pinned = None;
+                    }
+                })
+                .await
+                .map_err(db)?;
+        }
+        Command::SetTimer {
+            conversation,
+            seconds,
+        } => {
+            let thread = thread(&conversation)?;
+            if matches!(thread, Thread::Group(_)) {
+                return Err("Changing a group's disappearing messages isn't possible yet.".into());
+            }
+            let timestamp = now_millis();
+            let message = DataMessage {
+                flags: Some(Flags::ExpirationTimerUpdate as u32),
+                expire_timer: Some(seconds),
+                ..Default::default()
+            };
+            send_data(manager, &thread, message, timestamp).await?;
+            let body = match seconds {
+                0 => "⏱ You turned off disappearing messages.".to_string(),
+                seconds => format!(
+                    "⏱ You set disappearing messages to {}.",
+                    crate::format_timer(seconds)
+                ),
+            };
+            ctx.tables
+                .update(&conversation, |s| s.expire_timer = seconds)
+                .await
+                .map_err(db)?;
+            let _ = events.send(Event::Message(ChatMessage {
+                conversation,
+                sender_id: own_id(manager).service_id_string(),
+                sender: "You".into(),
+                body,
+                timestamp,
+                outgoing: true,
+                expire_timer: (seconds > 0).then_some(seconds),
+                ..Default::default()
+            }));
+        }
+        Command::Preferences {
+            read_receipts,
+            typing_indicators,
+        } => ctx.prefs.set(Prefs {
+            read_receipts,
+            typing_indicators,
+        }),
     }
     Ok(())
+}
+
+/// Tells a conversation we started or stopped typing.
+async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
+    use typing_message::Action;
+    let timestamp = now_millis();
+    let mut message = TypingMessage {
+        timestamp: Some(timestamp),
+        action: Some(if typing {
+            Action::Started
+        } else {
+            Action::Stopped
+        } as i32),
+        group_id: None,
+    };
+    let sent = match thread {
+        Thread::Contact(recipient) => {
+            manager
+                .send_message(recipient, ContentBody::TypingMessage(message), timestamp)
+                .await
+        }
+        Thread::Group(key) => {
+            message.group_id = Some(group_identifier(&key).to_vec());
+            manager
+                .send_message_to_group(&key, ContentBody::TypingMessage(message), timestamp)
+                .await
+        }
+    };
+    if let Err(error) = sent {
+        debug!(%error, "failed to send a typing indicator");
+    }
+}
+
+/// Tells the senders of `messages` we read them (with `receipts`), and our other devices.
+async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) {
+    let timestamp = now_millis();
+    let own = own_id(&manager);
+    if receipts {
+        let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
+        for message in &messages {
+            by_author
+                .entry(&message.author_id)
+                .or_default()
+                .push(message.timestamp);
+        }
+        for (author, timestamps) in by_author {
+            let Some(author) = ServiceId::parse_from_service_id_string(author) else {
+                continue;
+            };
+            if author == own {
+                continue;
+            }
+            let receipt = ReceiptMessage {
+                r#type: Some(receipt_message::Type::Read as i32),
+                timestamp: timestamps,
+            };
+            if let Err(error) = manager
+                .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+                .await
+            {
+                debug!(%error, "failed to send a read receipt");
+            }
+        }
+    }
+    let read = messages
+        .into_iter()
+        .map(|message| sync_message::Read {
+            sender_aci: Some(message.author_id),
+            timestamp: Some(message.timestamp),
+            ..Default::default()
+        })
+        .collect();
+    let sync = SyncMessage {
+        read,
+        ..Default::default()
+    };
+    if let Err(error) = manager
+        .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
+        .await
+    {
+        debug!(%error, "failed to tell our other devices what was read");
+    }
 }
 
 #[cfg(test)]
