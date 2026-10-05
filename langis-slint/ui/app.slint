@@ -1,4 +1,4 @@
-import { Button, ComboBox, LineEdit, ListView, Palette, ProgressIndicator, Spinner, Switch, TextEdit } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, ListView, Palette, ProgressIndicator, ScrollView, Spinner, Switch, TextEdit } from "std-widgets.slint";
 
 export struct ConversationItem {
     id: string,
@@ -683,119 +683,122 @@ component SettingsPage inherits Rectangle {
             }
             Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
         }
-        HorizontalLayout {
-            alignment: center;
+        ScrollView {
             vertical-stretch: 1;
-            padding-left: 24px;
-            padding-right: 24px;
-            VerticalLayout {
-                preferred-width: 520px;
-                max-width: 520px;
-                padding-top: 24px;
-                spacing: 14px;
-                alignment: start;
+            HorizontalLayout {
+                alignment: center;
+                padding-left: 24px;
+                padding-right: 24px;
+                VerticalLayout {
+                    preferred-width: 520px;
+                    max-width: 520px;
+                    padding-top: 24px;
+                    padding-bottom: 24px;
+                    spacing: 14px;
+                    alignment: start;
 
-                SectionTitle { text: "Appearance"; }
-                SettingRow {
-                    label: "Theme";
-                    // Qt styles (System, Fusion) take their colours from the desktop.
-                    hint: root.widget-style <= 1 ? "The System and Fusion styles follow your desktop's colours." : "";
-                    ComboBox {
-                        enabled: root.widget-style > 1;
-                        width: 200px;
-                        model: ["System", "Light", "Dark"];
-                        current-index <=> root.theme;
-                        selected => { root.changed-settings(); }
+                    SectionTitle { text: "Appearance"; }
+                    SettingRow {
+                        label: "Theme";
+                        // Qt styles (System, Fusion) take their colours from the desktop.
+                        hint: root.widget-style <= 1 ? "The System and Fusion styles follow your desktop's colours." : "";
+                        ComboBox {
+                            enabled: root.widget-style > 1;
+                            width: 200px;
+                            model: ["System", "Light", "Dark"];
+                            current-index <=> root.theme;
+                            selected => { root.changed-settings(); }
+                        }
                     }
-                }
-                SettingRow {
-                    label: "Style";
-                    hint: root.style-note;
-                    ComboBox {
-                        width: 200px;
-                        // In the order of `WidgetStyle::ALL`.
-                        model: ["System", "Fusion", "Fluent", "Material", "Cupertino", "Cosmic"];
-                        current-index <=> root.widget-style;
-                        selected => { root.changed-settings(); }
+                    SettingRow {
+                        label: "Style";
+                        hint: root.style-note;
+                        ComboBox {
+                            width: 200px;
+                            // In the order of `WidgetStyle::ALL`.
+                            model: ["System", "Fusion", "Fluent", "Material", "Cupertino", "Cosmic"];
+                            current-index <=> root.widget-style;
+                            selected => { root.changed-settings(); }
+                        }
                     }
-                }
-                SettingRow {
-                    label: "Text size";
-                    ComboBox {
-                        width: 200px;
-                        model: ["Small", "Default", "Large"];
-                        current-index <=> root.text-size;
-                        selected => { root.changed-settings(); }
+                    SettingRow {
+                        label: "Text size";
+                        ComboBox {
+                            width: 200px;
+                            model: ["Small", "Default", "Large"];
+                            current-index <=> root.text-size;
+                            selected => { root.changed-settings(); }
+                        }
                     }
-                }
-                SettingRow {
-                    label: "Profile pictures";
-                    hint: "Show contacts' and groups' pictures instead of initials.";
-                    Switch {
-                        checked <=> root.show-avatars;
-                        toggled => { root.changed-settings(); }
+                    SettingRow {
+                        label: "Profile pictures";
+                        hint: "Show contacts' and groups' pictures instead of initials.";
+                        Switch {
+                            checked <=> root.show-avatars;
+                            toggled => { root.changed-settings(); }
+                        }
                     }
-                }
 
-                Rectangle { height: 8px; }
-                SectionTitle { text: "Notifications"; }
-                SettingRow {
-                    label: "New messages";
-                    hint: "Notify about messages unless their chat is open in front.";
-                    Switch {
-                        checked <=> root.notifications;
-                        toggled => { root.changed-settings(); }
+                    Rectangle { height: 8px; }
+                    SectionTitle { text: "Notifications"; }
+                    SettingRow {
+                        label: "New messages";
+                        hint: "Notify about messages unless their chat is open in front.";
+                        Switch {
+                            checked <=> root.notifications;
+                            toggled => { root.changed-settings(); }
+                        }
                     }
-                }
-                SettingRow {
-                    label: "Show";
-                    ComboBox {
-                        width: 200px;
-                        enabled: root.notifications;
-                        model: ["Name and message", "Name only", "Nothing"];
-                        current-index <=> root.notification-content;
-                        selected => { root.changed-settings(); }
+                    SettingRow {
+                        label: "Show";
+                        ComboBox {
+                            width: 200px;
+                            enabled: root.notifications;
+                            model: ["Name and message", "Name only", "Nothing"];
+                            current-index <=> root.notification-content;
+                            selected => { root.changed-settings(); }
+                        }
                     }
-                }
 
-                Rectangle { height: 8px; }
-                SectionTitle { text: "Background"; }
-                SettingRow {
-                    label: "Keep running in the tray";
-                    hint: "Closing the window leaves langis in the tray, still receiving messages.";
-                    Switch {
-                        checked <=> root.close-to-tray;
-                        toggled => { root.changed-settings(); }
+                    Rectangle { height: 8px; }
+                    SectionTitle { text: "Background"; }
+                    SettingRow {
+                        label: "Keep running in the tray";
+                        hint: "Closing the window leaves langis in the tray, still receiving messages.";
+                        Switch {
+                            checked <=> root.close-to-tray;
+                            toggled => { root.changed-settings(); }
+                        }
                     }
-                }
-                if root.autostart-supported: SettingRow {
-                    label: "Start with the system";
-                    hint: root.close-to-tray ? "Starts in the tray when you log in." : "Opens langis when you log in.";
-                    Switch {
-                        checked <=> root.start-with-system;
-                        toggled => { root.changed-start-with-system(self.checked); }
+                    if root.autostart-supported: SettingRow {
+                        label: "Start with the system";
+                        hint: root.close-to-tray ? "Starts in the tray when you log in." : "Opens langis when you log in.";
+                        Switch {
+                            checked <=> root.start-with-system;
+                            toggled => { root.changed-start-with-system(self.checked); }
+                        }
                     }
-                }
 
-                Rectangle { height: 8px; }
-                SectionTitle { text: "Account"; }
-                SettingRow {
-                    label: "Account";
-                    Text {
-                        text: root.account;
-                        overflow: elide;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                        color: Palette.foreground.with-alpha(0.7);
+                    Rectangle { height: 8px; }
+                    SectionTitle { text: "Account"; }
+                    SettingRow {
+                        label: "Account";
+                        Text {
+                            text: root.account;
+                            overflow: elide;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            color: Palette.foreground.with-alpha(0.7);
+                        }
                     }
-                }
-                SettingRow {
-                    label: "Device name";
-                    hint: "How this computer appears under Linked devices on your phone.";
-                    Text {
-                        text: root.device-name;
-                        vertical-alignment: center;
-                        color: Palette.foreground.with-alpha(0.7);
+                    SettingRow {
+                        label: "Device name";
+                        hint: "How this computer appears under Linked devices on your phone.";
+                        Text {
+                            text: root.device-name;
+                            vertical-alignment: center;
+                            color: Palette.foreground.with-alpha(0.7);
+                        }
                     }
                 }
             }
