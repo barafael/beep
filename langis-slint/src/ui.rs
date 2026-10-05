@@ -89,6 +89,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let toggle = chat_action(shared, |chat, id, ()| chat.toggle_pin(id));
         move |id| toggle(id, ())
     });
+    window.on_move_pin(chat_action(shared, |chat, id, by| chat.move_pin_by(id, by)));
     window.on_mark_read(chat_action(shared, |chat, id, read: bool| chat.mark_unread(id, !read)));
     window.on_mute(chat_action(shared, |chat, id, seconds: i32| {
         let until = match seconds {
@@ -509,7 +510,8 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     }
 
     if update.conversations {
-        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, images)).collect();
+        let pinned = chat.pinned().len();
+        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, pinned, images)).collect();
         let conversations = window.get_conversations();
         let conversations = vec_model(&conversations);
         // Update in place where possible so the list keeps its scroll position.
@@ -534,7 +536,7 @@ fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
     model.as_any().downcast_ref().expect("models are VecModels, set up in create")
 }
 
-fn conversation_item(view: &ConversationView, images: &Images) -> ConversationItem {
+fn conversation_item(view: &ConversationView, pinned: usize, images: &Images) -> ConversationItem {
     let c = view.conversation;
     ConversationItem {
         id: c.id.0.as_str().into(),
@@ -547,6 +549,8 @@ fn conversation_item(view: &ConversationView, images: &Images) -> ConversationIt
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
+        can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
+        can_move_down: c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned),
         muted: view.muted(),
         marked_unread: view.marked_unread(),
         archived: c.settings.archived,

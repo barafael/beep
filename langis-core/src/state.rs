@@ -1105,6 +1105,13 @@ impl ChatState {
         Some(self.set_pins(pinned))
     }
 
+    /// Moves a pinned conversation `by` places up (negative) or down among the pinned ones.
+    pub fn move_pin_by(&mut self, id: &ConversationId, by: i32) -> Option<Command> {
+        let from = self.pinned().iter().position(|p| p == id)?;
+        let to = from.checked_add_signed(by as isize)?;
+        (to != from && to < self.pinned().len()).then(|| self.move_pin(id, to))?
+    }
+
     fn set_pins(&mut self, pinned: Vec<ConversationId>) -> Command {
         for conversation in &mut self.conversations {
             let position = pinned.iter().position(|p| *p == conversation.id);
@@ -2593,6 +2600,12 @@ mod tests {
         assert_eq!(listed(&state), ["b", "g", "a"]);
         state.toggle_pin(&id("b"));
         assert_eq!(listed(&state), ["g", "a", "b"]);
+        assert!(state.move_pin_by(&id("a"), -1).is_none(), "not pinned");
+        state.toggle_pin(&id("a"));
+        assert!(state.move_pin_by(&id("g"), -1).is_none(), "already first");
+        state.move_pin_by(&id("g"), 1);
+        assert_eq!(listed(&state), ["a", "g", "b"]);
+        state.toggle_pin(&id("a"));
         assert!(state.select_pinned(0).is_some());
         assert_eq!(state.selected().unwrap().id, id("g"));
         assert!(state.select_pinned(1).is_none());
