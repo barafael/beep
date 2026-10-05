@@ -15,32 +15,27 @@ items are independent unless noted.
   disappearing messages (timers, sweeper, 1:1 timer changes), formatting (shortcuts in the
   composer, Signal's body ranges both ways, spoilers), pinned chats (Alt+1…9), mute, archive,
   privacy preferences, message and chat context menus.
+- **M1 rest:** history loaded a page at a time (fork: `messages_before`), @-mentions of group
+  members, moving pinned chats up and down, Note to Self always listed, chat settings read from
+  the storage service (fork: `Manager::storage_service`; a setting is taken over only if it
+  changed on the phone), headless UI tests.
 
 ## M1: remaining
 
-- **History paging.** `LoadHistory` reads a whole conversation. Add a `LIMIT`ed query to the
-  presage fork (newest first, before a timestamp) and load older messages as the list scrolls
-  up.
-- **@-mention picker.** Group members per conversation, a picker on `@` in the composer, and
-  `Mention`s passed with `Command::Send` (the wire encoding is done in `format::encode`).
-- **Pinned chats, the rest.** Drag to reorder (`ChatState::move_pin` exists); sync the first
-  four pins through the storage service once it is written (M2).
-- **Note to Self** always listed, not only once it has messages.
-- **Storage service, reading.** Pull the account record and contact/group records: pins,
-  mutes, archive, blocked, profile sharing. Merge into langis's tables, local changes winning
-  until writing exists.
-- **UI tests** with Slint's testing backend: context menus, archive list, editing, the
-  composer's shortcuts.
 - **Live verification** against a real account: receipts, read sync, typing in groups, our
-  edits and deletions as seen on the phone.
+  edits and deletions as seen on the phone, older pages while scrolled up, mentions as seen on
+  the phone, the storage service read (pins, mutes, archive from the phone).
 
 Known limits to revisit: the earlier text of someone else's edit is lost after a restart
 (presage overwrites the stored message before langis sees it); a group counts as read once any
-member read a message.
+member read a message; pinned chats move by menu, not by dragging (a Slint `ListView` gives no
+drag feedback); the storage service's read-receipt and typing settings and blocked contacts
+aren't taken over yet.
 
 ## M2
 
-- **Storage service, writing**, so pins, mutes, archive and blocks follow to the phone.
+- **Storage service, writing**, so pins (the first four), mutes, archive and blocks follow to
+  the phone; then langis-only changes no longer need protecting from the next read.
 - **Message requests**: accept, delete, block for chats with unknown senders.
 - **Blocking** contacts and groups.
 - **Chat folders** (Signal's chat folders, from the storage service).
