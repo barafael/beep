@@ -2108,6 +2108,16 @@ async fn handle(
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
+        Command::LoadMedia(conversation) => {
+            let Ok(thread) = thread(&conversation) else {
+                return Ok(());
+            };
+            let messages = media(manager, &thread, &conversation).await?;
+            let _ = events.send(Event::Media {
+                conversation,
+                messages,
+            });
+        }
         Command::SearchChat {
             conversation,
             query,
@@ -2305,6 +2315,51 @@ async fn handle(
         Command::Preferences(privacy) => ctx.privacy.set(privacy),
     }
     Ok(())
+}
+
+/// Messages of a thread with attachments (other than a long message's text) or links;
+/// newest first, at most [`MEDIA_MESSAGES`].
+async fn media(
+    manager: &Mgr,
+    thread: &Thread,
+    conversation: &ConversationId,
+) -> Result<Vec<ChatMessage>, String> {
+    const MEDIA_MESSAGES: usize = 2000;
+    const BATCH: u32 = 500;
+    let mut names = Names::new();
+    let mut found = Vec::new();
+    let mut before = None;
+    loop {
+        let batch = manager
+            .store()
+            .messages_before(thread, before, BATCH)
+            .await
+            .map_err(|e| format!("failed to gather media: {e}"))?;
+        for content in &batch {
+            let wanted = data_of(content).is_some_and(|(data, _)| {
+                data.attachments
+                    .iter()
+                    .any(|a| a.content_type.as_deref() != Some(attachments::LONG_TEXT))
+                    || data
+                        .body
+                        .as_deref()
+                        .is_some_and(|body| body.contains("http://") || body.contains("https://"))
+            });
+            if wanted
+                && let Some(message) =
+                    to_chat_message(manager, &mut names, conversation.clone(), content).await
+            {
+                found.push(message);
+                if found.len() == MEDIA_MESSAGES {
+                    return Ok(found);
+                }
+            }
+        }
+        if batch.len() < BATCH as usize {
+            return Ok(found);
+        }
+        before = batch.last().map(stored_at);
+    }
 }
 
 /// Messages of a thread whose text contains `query`, ignoring case; newest first, at most

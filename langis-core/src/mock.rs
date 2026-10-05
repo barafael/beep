@@ -240,6 +240,22 @@ pub fn run(commands: Inbox, events: Events) {
             }
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
+            Ok(Command::LoadMedia(conversation)) => {
+                let mut messages: Vec<_> = history(&conversation, started)
+                    .into_iter()
+                    .filter(|m| {
+                        m.attachments
+                            .iter()
+                            .any(|a| a.kind != AttachmentKind::LongText)
+                            || m.body.contains("https://")
+                    })
+                    .collect();
+                messages.reverse();
+                let _ = events.send(Event::Media {
+                    conversation,
+                    messages,
+                });
+            }
             Ok(Command::SearchChat {
                 conversation,
                 query,

@@ -27,6 +27,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     // The window owns the models; `vec_model` gets them back for updates.
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
+    window.set_media_rows(ModelRc::new(VecModel::<MediaRow>::default()));
+    window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
+    window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
 
     window.window().on_close_requested({
         let shared = shared.clone();
@@ -103,6 +106,25 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_open_media({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            if let Some(window) = window.upgrade() {
+                window.set_media_tab(0);
+            }
+            shared.act(|chat| (chat.open_media(), Update::default()));
+        }
+    });
+    window.on_close_media({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_media();
+                (None, Update::default())
+            });
+        }
+    });
     window.on_open_chat_search({
         let shared = shared.clone();
         move || {
@@ -521,6 +543,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
+    render_media(window, chat, images);
     let search = chat.chat_search();
     window.set_chat_search_open(search.is_some());
     window.set_chat_search_busy(search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()));
@@ -627,6 +650,72 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             window.set_search_text(SharedString::new());
         }
     }
+}
+
+/// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
+/// position. `same` compares rows (nested models compare by identity otherwise).
+fn update_list<T: Clone + 'static>(model: &ModelRc<T>, items: Vec<T>, same: impl Fn(&T, &T) -> bool) {
+    let model = vec_model(model);
+    if model.row_count() != items.len() {
+        model.set_vec(items);
+        return;
+    }
+    for (row, item) in items.into_iter().enumerate() {
+        if !model.row_data(row).is_some_and(|old| same(&old, &item)) {
+            model.set_row_data(row, item);
+        }
+    }
+}
+
+/// The media overview.
+fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
+    const PER_ROW: usize = 4;
+    const TILE: f32 = 110.;
+    let media = chat.media();
+    window.set_media_open(media.is_some());
+    window.set_media_busy(matches!(media, Some(None)));
+    let Some(Some(overview)) = media else {
+        // Nothing left over for the next chat's.
+        vec_model(&window.get_media_rows()).set_vec(Vec::new());
+        vec_model(&window.get_media_files()).set_vec(Vec::new());
+        vec_model(&window.get_media_links()).set_vec(Vec::new());
+        return;
+    };
+    let tile = |a: &Attachment| AttachmentItem {
+        width: TILE,
+        height: TILE,
+        ..attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)
+    };
+    let rows: Vec<MediaRow> = overview
+        .media
+        .chunks(PER_ROW)
+        .map(|row| MediaRow { tiles: ModelRc::new(VecModel::from(row.iter().map(|a| tile(a)).collect::<Vec<_>>())) })
+        .collect();
+    update_list(&window.get_media_rows(), rows, |a, b| {
+        a.tiles.row_count() == b.tiles.row_count() && a.tiles.iter().zip(b.tiles.iter()).all(|(x, y)| x == y)
+    });
+    let files: Vec<SharedItem> = overview
+        .files
+        .iter()
+        .map(|(m, a)| SharedItem {
+            attachment: attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images),
+            url: SharedString::new(),
+            sender: m.sender.as_str().into(),
+            when: state::format_time(m.timestamp).into(),
+        })
+        .collect();
+    update_list(&window.get_media_files(), files, |a, b| a == b);
+    let links: Vec<SharedItem> = overview
+        .links
+        .iter()
+        .map(|(m, url)| SharedItem {
+            url: (*url).into(),
+            sender: m.sender.as_str().into(),
+            when: state::format_time(m.timestamp).into(),
+            ..Default::default()
+        })
+        .collect();
+    update_list(&window.get_media_links(), links, |a, b| a == b);
 }
 
 /// The `VecModel` behind a model set up in [`create`].

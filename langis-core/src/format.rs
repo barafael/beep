@@ -195,6 +195,33 @@ pub fn encode(body: &str, styles: &[StyleRange], mentions: &[Mention]) -> (Strin
     (out, ranges)
 }
 
+/// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
+pub fn find_url(text: &str) -> Option<(usize, usize)> {
+    let start = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| text.find(scheme))
+        .min()?;
+    let tail = &text[start..];
+    let length = tail
+        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+        .unwrap_or(tail.len());
+    let url =
+        tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
+    // Just a scheme is no address.
+    (url.len() > "https://".len()).then_some((start, start + url.len()))
+}
+
+/// The web addresses in `text`, in order.
+pub fn links(text: &str) -> Vec<&str> {
+    let mut links = Vec::new();
+    let mut rest = text;
+    while let Some((start, end)) = find_url(rest) {
+        links.push(&rest[start..end]);
+        rest = &rest[end..];
+    }
+    links
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -293,6 +293,19 @@ pub struct ChatState {
     jump: Option<(usize, u64)>,
     /// The search result shown, marked in the chat.
     highlight: Option<MessageRef>,
+    /// The selected conversation's media, files and links, while shown: `None` inside while
+    /// they are gathered.
+    media: Option<(ConversationId, Option<Vec<ChatMessage>>)>,
+}
+
+/// What [`ChatState::media`] shows on one of its tabs.
+pub struct MediaOverview<'a> {
+    /// Pictures and videos, newest first.
+    pub media: Vec<&'a Attachment>,
+    /// Other files, newest first, with the message they came with.
+    pub files: Vec<(&'a ChatMessage, &'a Attachment)>,
+    /// Web addresses, newest first, with the message they were in.
+    pub links: Vec<(&'a ChatMessage, &'a str)>,
 }
 
 struct ChatSearch {
@@ -630,6 +643,16 @@ impl ChatState {
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::Media {
+                conversation,
+                messages,
+            } => {
+                if let Some((shown, media)) = &mut self.media
+                    && *shown == conversation
+                {
+                    *media = Some(messages);
+                }
+            }
             Event::SearchResults {
                 conversation,
                 query,
@@ -717,6 +740,7 @@ impl ChatState {
             return None;
         }
         if self.selected.as_ref() != Some(id) {
+            self.media = None;
             self.chat_search = None;
             self.pending_jump = None;
             self.highlight = None;
@@ -964,6 +988,50 @@ impl ChatState {
             styles,
             mentions,
         })
+    }
+
+    /// Shows the selected conversation's media, files and links; returns the command that
+    /// gathers them.
+    pub fn open_media(&mut self) -> Option<Command> {
+        let id = self.selected.clone()?;
+        self.media = Some((id.clone(), None));
+        Some(Command::LoadMedia(id))
+    }
+
+    pub fn close_media(&mut self) {
+        self.media = None;
+    }
+
+    /// The media overview, if shown: `Some(None)` while it is gathered.
+    pub fn media(&self) -> Option<Option<MediaOverview<'_>>> {
+        let (_, messages) = self.media.as_ref()?;
+        let Some(messages) = messages else {
+            return Some(None);
+        };
+        let mut overview = MediaOverview {
+            media: Vec::new(),
+            files: Vec::new(),
+            links: Vec::new(),
+        };
+        for message in messages.iter().filter(|m| !m.deleted) {
+            for attachment in &message.attachments {
+                match attachment.kind {
+                    AttachmentKind::Image | AttachmentKind::Video => {
+                        overview.media.push(attachment)
+                    }
+                    AttachmentKind::File | AttachmentKind::Audio | AttachmentKind::VoiceNote => {
+                        overview.files.push((message, attachment))
+                    }
+                    AttachmentKind::Sticker
+                    | AttachmentKind::LongText
+                    | AttachmentKind::ViewOnce => {}
+                }
+            }
+            for link in format::links(&message.body) {
+                overview.links.push((message, link));
+            }
+        }
+        Some(Some(overview))
     }
 
     /// Opens the search in the selected conversation.
@@ -1514,9 +1582,16 @@ impl ChatState {
 
     /// Only attachments of the selected conversation can be asked for.
     fn find_attachment(&self, id: &AttachmentId) -> Option<&Attachment> {
-        self.history
-            .get(self.selected.as_ref()?)?
+        let selected = self.selected.as_ref()?;
+        let shown = self.history.get(selected).into_iter().flatten();
+        // The media overview reaches further back than the loaded history.
+        let gathered = self
+            .media
             .iter()
+            .filter(|(of, _)| of == selected)
+            .flat_map(|(_, media)| media.iter().flatten());
+        shown
+            .chain(gathered)
             .flat_map(|m| &m.attachments)
             .find(|a| &a.id == id)
     }
@@ -3193,5 +3268,30 @@ mod tests {
         let shown = snippet(&long, "needle");
         assert!(shown.starts_with('…') && shown.ends_with('…') && shown.contains("needle"));
         assert!(shown.chars().count() < 140);
+    }
+
+    #[test]
+    fn media_overview_sorts_attachments_and_links() {
+        let mut state = state();
+        state.select(&id("a"));
+        assert!(matches!(state.open_media(), Some(Command::LoadMedia(i)) if i == id("a")));
+        assert!(matches!(state.media(), Some(None)));
+        let photo = with_attachment("a", 3, "p", AttachmentKind::Image);
+        let file = with_attachment("a", 2, "f", AttachmentKind::File);
+        let link = ChatMessage {
+            body: "see https://example.org/x and http://b.c/d".into(),
+            ..message("a", "Ann", 1, false)
+        };
+        state.apply(Event::Media {
+            conversation: id("a"),
+            messages: vec![photo, file, link],
+        });
+        let overview = state.media().unwrap().unwrap();
+        assert_eq!(overview.media.len(), 1);
+        assert_eq!(overview.files.len(), 1);
+        let links: Vec<_> = overview.links.iter().map(|(_, l)| *l).collect();
+        assert_eq!(links, ["https://example.org/x", "http://b.c/d"]);
+        // Older than the loaded history, yet it can be fetched.
+        assert!(state.fetch_attachment(&AttachmentId("p".into())).is_some());
     }
 }

@@ -11,7 +11,7 @@ use langis_core::settings::{Settings, WidgetStyle};
 use langis_core::state::{ChatState, MessagesUpdate, Notice, Screen, Update};
 use langis_core::{
     AttachmentId, Backend, Command, Commands, Config, ConversationId, Event, Picture, QrMatrix,
-    Style, StyleRange,
+    Style, StyleRange, format::find_url,
 };
 use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -661,22 +661,6 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
         }
     }
     markdown
-}
-
-/// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
-fn find_url(text: &str) -> Option<(usize, usize)> {
-    let start = ["https://", "http://"]
-        .iter()
-        .filter_map(|scheme| text.find(scheme))
-        .min()?;
-    let tail = &text[start..];
-    let length = tail
-        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
-        .unwrap_or(tail.len());
-    let url =
-        tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
-    // Just a scheme is no address.
-    (url.len() > "https://".len()).then_some((start, start + url.len()))
 }
 
 /// Opens a link from a message in the browser. Only web addresses: links come from message

@@ -498,6 +498,12 @@ pub enum Event {
         query: String,
         messages: Vec<ChatMessage>,
     },
+    /// A conversation's messages with attachments or links, newest first, answering
+    /// [`Command::LoadMedia`].
+    Media {
+        conversation: ConversationId,
+        messages: Vec<ChatMessage>,
+    },
     /// Unread incoming messages per conversation, counted from the store at start.
     Unread(Vec<(ConversationId, u32)>),
     /// A page of a conversation's stored history, answering [`Command::LoadHistory`]: the
@@ -550,6 +556,9 @@ pub enum Command {
         conversation: ConversationId,
         query: String,
     },
+    /// Gathers a conversation's media, files and links from its whole stored history; see
+    /// [`Event::Media`].
+    LoadMedia(ConversationId),
     /// Sends a copy of a message (its text and attachments) to `conversation`.
     Forward {
         conversation: ConversationId,

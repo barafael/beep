@@ -98,6 +98,20 @@ export struct MessageItem {
     highlighted: bool,
 }
 
+// A row of the media overview's grid.
+export struct MediaRow {
+    tiles: [AttachmentItem],
+}
+
+// A file or link in the media overview, with who sent it when.
+export struct SharedItem {
+    attachment: AttachmentItem,
+    // For links.
+    url: string,
+    sender: string,
+    when: string,
+}
+
 // A message found by searching a chat.
 export struct SearchResult {
     sender: string,
@@ -146,6 +160,8 @@ component ConversationMenu inherits ContextMenuArea {
     callback mute(int);
     callback archive(bool);
     callback set-timer(int);
+    // With `with-timer`: the chat's media, files and links.
+    callback show-media;
     property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
     Menu {
         MenuItem {
@@ -174,6 +190,10 @@ component ConversationMenu inherits ContextMenuArea {
             MenuItem { title: "For 8 hours"; activated => { root.mute(28800); } }
             MenuItem { title: "For 1 week"; activated => { root.mute(604800); } }
             MenuItem { title: "Always"; activated => { root.mute(-1); } }
+        }
+        if root.with-timer: MenuItem {
+            title: "Media, files and links";
+            activated => { root.show-media(); }
         }
         if root.with-timer: Menu {
             title: "Disappearing messages";
@@ -1182,6 +1202,16 @@ export component AppWindow inherits Window {
     in property <string> typing;
     // The composer replaces the text of one of our messages.
     in property <bool> editing;
+    // The open chat's media, files and links.
+    in property <bool> media-open;
+    // Gathering them.
+    in property <bool> media-busy;
+    in property <[MediaRow]> media-rows;
+    in property <[SharedItem]> media-files;
+    in property <[SharedItem]> media-links;
+    in-out property <int> media-tab;
+    callback open-media;
+    callback close-media;
     // Searching the open chat.
     in property <bool> chat-search-open;
     in-out property <string> chat-search-text;
@@ -1539,6 +1569,7 @@ export component AppWindow inherits Window {
                         mute(seconds) => { root.mute(self.id, seconds); }
                         archive(archived) => { root.archive(self.id, archived); }
                         set-timer(seconds) => { root.set-timer(self.id, seconds); }
+                        show-media => { root.open-media(); }
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
                 }
@@ -1706,6 +1737,140 @@ export component AppWindow inherits Window {
                                         text: result.text;
                                         wrap: word-wrap;
                                         color: Palette.foreground.with-alpha(0.8);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.media-open: Rectangle {
+                    background: Palette.background;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            for tab[index] in ["Media", "Files", "Links"]: Rectangle {
+                                width: tab-label.preferred-width + 24px;
+                                height: 32px;
+                                border-radius: 6px;
+                                background: index == root.media-tab ? Palette.accent-background.with-alpha(0.18)
+                                    : tab-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
+                                tab-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.media-tab = index; }
+                                }
+                                tab-label := Text {
+                                    text: tab;
+                                    font-weight: index == root.media-tab ? 600 : 400;
+                                    color: Palette.foreground;
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Button {
+                                text: "Close";
+                                clicked => { root.close-media(); }
+                            }
+                        }
+                        if root.media-busy: HorizontalLayout {
+                            alignment: center;
+                            Spinner {
+                                indeterminate: true;
+                                width: 20px;
+                                height: 20px;
+                            }
+                        }
+                        property <bool> empty: root.media-tab == 0 ? root.media-rows.length == 0
+                            : root.media-tab == 1 ? root.media-files.length == 0 : root.media-links.length == 0;
+                        if !root.media-busy && self.empty: Text {
+                            text: root.media-tab == 0 ? "No photos or videos yet." : root.media-tab == 1 ? "No files yet." : "No links yet.";
+                            horizontal-alignment: center;
+                            color: Palette.foreground.with-alpha(0.6);
+                        }
+                        if root.media-tab == 0: ListView {
+                            vertical-stretch: 1;
+                            for row in root.media-rows: HorizontalLayout {
+                                spacing: 4px;
+                                padding-bottom: 4px;
+                                alignment: start;
+                                for tile in row.tiles: Rectangle {
+                                    width: 110px;
+                                    height: 110px;
+                                    border-radius: 6px;
+                                    clip: true;
+                                    background: Palette.alternate-background;
+                                    init => {
+                                        if tile.fetch { root.fetch-attachment(tile.id); }
+                                    }
+                                    if tile.picture.width > 0: Image {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        source: tile.picture;
+                                        image-fit: cover;
+                                    }
+                                    // Videos (not downloaded for this) and pictures on their way.
+                                    if tile.picture.width == 0: Text {
+                                        text: tile.inline ? "" : "🎞";
+                                        font-size: 1.6rem;
+                                        color: Palette.foreground.with-alpha(0.6);
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.open-attachment(tile.id); }
+                                    }
+                                }
+                            }
+                        }
+                        if root.media-tab == 1: ListView {
+                            vertical-stretch: 1;
+                            for file in root.media-files: VerticalLayout {
+                                padding: 6px;
+                                spacing: 2px;
+                                HorizontalLayout {
+                                    Text {
+                                        text: file.sender;
+                                        font-size: 0.8rem;
+                                        font-weight: 600;
+                                        horizontal-stretch: 1;
+                                        color: Palette.foreground.with-alpha(0.8);
+                                    }
+                                    Text {
+                                        text: file.when;
+                                        font-size: 0.8rem;
+                                        color: Palette.foreground.with-alpha(0.55);
+                                    }
+                                }
+                                AttachmentView {
+                                    item: file.attachment;
+                                    outgoing: false;
+                                    fetch(id) => { root.fetch-attachment(id); }
+                                    save(id) => { root.save-attachment(id); }
+                                    open(id) => { root.open-attachment(id); }
+                                }
+                            }
+                        }
+                        if root.media-tab == 2: ListView {
+                            vertical-stretch: 1;
+                            for link in root.media-links: Rectangle {
+                                height: link-column.preferred-height;
+                                border-radius: 6px;
+                                background: link-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
+                                link-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-link(link.url); }
+                                }
+                                link-column := VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 2px;
+                                    Text {
+                                        text: link.url;
+                                        overflow: elide;
+                                        color: Palette.accent-background;
+                                    }
+                                    Text {
+                                        text: link.sender + " · " + link.when;
+                                        font-size: 0.8rem;
+                                        color: Palette.foreground.with-alpha(0.6);
                                     }
                                 }
                             }
