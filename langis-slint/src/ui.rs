@@ -231,6 +231,10 @@ impl Ui for Window {
         }
     }
 
+    fn visible(&self) -> bool {
+        self.0.window().is_visible()
+    }
+
     /// Slint's public API doesn't offer this yet, but both the Qt and the winit backend keep it
     /// up to date internally.
     fn active(&self) -> bool {

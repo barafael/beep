@@ -6,6 +6,9 @@
 //! | Linux, BSD | the D-Bus name `org.langis.Langis`, called through `org.freedesktop.Application` |
 //! | Windows | a named pipe; connecting to it is the message |
 //! | macOS | the system already starts an app only once |
+//!
+//! The mock backend has a lock of its own (`org.langis.Langis.Mock`): it touches no account, so
+//! it may run next to the real langis, and testing this needs two of it.
 
 /// What starting found.
 pub enum Claim {
@@ -25,9 +28,14 @@ pub struct Primary {
 }
 
 /// Claims langis for this process, or asks the one that already has it to show itself.
-pub fn claim() -> Claim {
+pub fn claim(mock: bool) -> Claim {
+    let id = if mock {
+        "org.langis.Langis.Mock"
+    } else {
+        "org.langis.Langis"
+    };
     let (sender, activations) = async_channel::unbounded();
-    match platform::claim(sender) {
+    match platform::claim(id, sender) {
         Ok(Some(lock)) => Claim::First(Primary {
             activations,
             _lock: lock,
@@ -46,7 +54,6 @@ mod platform {
 
     use zbus::zvariant::{OwnedValue, Value};
 
-    const NAME: &str = "org.langis.Langis";
     const PATH: &str = "/org/langis/Langis";
 
     /// The connection owning the name; the bus releases it when langis ends, however it ends.
@@ -91,20 +98,23 @@ mod platform {
         assert_eq!(activation_token(&platform_data).as_deref(), Some("kwin-42"));
     }
 
-    /// `None` if another langis has the name; it was asked to show itself.
-    pub fn claim(activations: async_channel::Sender<Option<String>>) -> zbus::Result<Option<Lock>> {
+    /// `None` if another langis has the name `id`; it was asked to show itself.
+    pub fn claim(
+        id: &str,
+        activations: async_channel::Sender<Option<String>>,
+    ) -> zbus::Result<Option<Lock>> {
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(PATH, Application(activations))?
             .build()?;
         // Not through the builder's `name`: together with `serve_at`, zbus 5.19 reports success
         // there even when the name is taken.
-        let requested = connection
-            .request_name_with_flags(NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into());
+        let requested =
+            connection.request_name_with_flags(id, zbus::fdo::RequestNameFlags::DoNotQueue.into());
         match requested {
             Ok(_) => Ok(Some(connection)),
             Err(zbus::Error::NameTaken) => {
                 // It is running either way; if it doesn't answer, a second copy still mustn't.
-                if let Err(error) = activate_running() {
+                if let Err(error) = activate_running(id) {
                     tracing::warn!(%error, "langis is already running but didn't answer");
                 }
                 Ok(None)
@@ -113,7 +123,7 @@ mod platform {
         }
     }
 
-    fn activate_running() -> zbus::Result<()> {
+    fn activate_running(id: &str) -> zbus::Result<()> {
         let connection = zbus::blocking::Connection::session()?;
         // Passed on so the running langis may take focus, should it learn to use it.
         let mut platform_data = HashMap::new();
@@ -121,7 +131,7 @@ mod platform {
             platform_data.insert("activation-token", Value::from(token));
         }
         connection.call_method(
-            Some(NAME),
+            Some(id),
             PATH,
             Some("org.freedesktop.Application"),
             "Activate",
@@ -150,16 +160,17 @@ mod platform {
     pub type Lock = ();
 
     /// Pipe names are machine-wide, so each user gets their own.
-    fn pipe_name() -> String {
+    fn pipe_name(id: &str) -> String {
         let user = std::env::var("USERNAME").unwrap_or_default();
-        format!(r"\\.\pipe\org.langis.Langis-{user}")
+        format!(r"\\.\pipe\{id}-{user}")
     }
 
-    /// `None` if another langis has the pipe; it was asked to show itself.
+    /// `None` if another langis has the pipe for `id`; it was asked to show itself.
     pub fn claim(
+        id: &str,
         activations: async_channel::Sender<Option<String>>,
     ) -> windows::core::Result<Option<Lock>> {
-        let name = pipe_name();
+        let name = pipe_name(id);
         // Only the first instance of a pipe may be created with this flag, which makes the
         // pipe itself the lock.
         let pipe = unsafe {
@@ -237,6 +248,7 @@ mod platform {
     pub type Lock = ();
 
     pub fn claim(
+        _: &str,
         _: async_channel::Sender<Option<String>>,
     ) -> Result<Option<Lock>, std::convert::Infallible> {
         Ok(Some(()))

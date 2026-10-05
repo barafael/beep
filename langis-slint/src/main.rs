@@ -78,6 +78,7 @@ pub trait Ui {
     /// Shows the window and brings it to the front, e.g. after a notification or the tray icon
     /// was clicked. See [`Shared::activate`].
     fn raise(&self);
+    fn visible(&self) -> bool;
     /// Whether the window is the active one.
     fn active(&self) -> bool;
     fn geometry(&self) -> (slint::PhysicalPosition, slint::PhysicalSize);
@@ -168,6 +169,14 @@ impl Shared {
     /// Shows the window and brings it to the front. `token` is a Wayland activation token from
     /// whatever asked (a launcher, a notification), which lets the compositor give langis focus.
     fn activate(&self, token: Option<String>) {
+        let Some(ui) = self.ui() else { return };
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if token.is_none() && ui.visible() && !ui.active() {
+            // Without a token, KWin (like other compositors) keeps an open window where it is,
+            // but it does focus one that appears. So the window appears anew, where the
+            // compositor places it.
+            ui.hide();
+        }
         #[cfg(all(unix, not(target_os = "macos")))]
         if let Some(token) = token {
             // Qt's Wayland plugin takes the token from here when the window asks to be
@@ -179,9 +188,7 @@ impl Shared {
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         let _ = token;
-        if let Some(ui) = self.ui() {
-            ui.raise();
-        }
+        ui.raise();
     }
 
     /// Opens the window of a start into the tray after all.
@@ -292,14 +299,8 @@ fn main() -> Result<(), slint::PlatformError> {
         .with_env_filter(logging::from_env())
         .init();
 
-    // Before the backend opens the database. The mock touches no account, so it may run next
-    // to the real langis.
-    let instance = if Backend::mock_requested() {
-        instance::Claim::Unchecked
-    } else {
-        instance::claim()
-    };
-    let instance = match instance {
+    // Before the backend opens the database.
+    let instance = match instance::claim(Backend::mock_requested()) {
         instance::Claim::First(primary) => Some(primary),
         instance::Claim::Second => {
             tracing::info!("langis is already running; showing it instead");
@@ -348,6 +349,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let shared = shared.clone();
         slint::spawn_local(async move {
             while let Ok(token) = activations.recv().await {
+                tracing::info!(token = token.is_some(), "started again; showing the window");
                 shared.activate(token);
             }
         })
@@ -403,7 +405,8 @@ fn main() -> Result<(), slint::PlatformError> {
             while let Ok(first) = events.recv().await {
                 let batch =
                     std::iter::once(first).chain(std::iter::from_fn(|| events.try_recv().ok()));
-                let focused = shared.ui().is_some_and(|ui| ui.active());
+                // Hidden, the window may still count as active to the toolkit.
+                let focused = shared.ui().is_some_and(|ui| ui.visible() && ui.active());
                 let update = {
                     let mut chat = shared.chat.borrow_mut();
                     chat.set_window_focused(focused);
@@ -426,9 +429,10 @@ fn main() -> Result<(), slint::PlatformError> {
     })
     .expect("the event loop is set up");
 
-    // Until "Quit" in the tray, or the window closes where there is no tray. The tray icon keeps
-    // the loop running while the window is hidden.
-    let result = slint::run_event_loop();
+    // Until "Quit" in the tray, or the window closes where there is no tray (`close_requested`).
+    // Not just until no window is shown: the window may be hidden in the tray, or for a moment
+    // while it is shown anew (`activate`).
+    let result = slint::run_event_loop_until_quit();
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
     shutdown.closed();

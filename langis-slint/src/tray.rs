@@ -22,8 +22,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Tray, slint::PlatformError> {
     tray.on_open({
         let shared = Rc::downgrade(shared);
         move || {
-            if let Some(ui) = shared.upgrade().and_then(|shared| shared.ui()) {
-                ui.raise();
+            if let Some(shared) = shared.upgrade() {
+                shared.activate(None);
             }
         }
     });
