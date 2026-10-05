@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use langis_core::settings::{Settings, WidgetStyle};
 use langis_core::state::{ChatState, MessagesUpdate, Notice, Screen, Update};
@@ -144,10 +145,7 @@ impl Shared {
             let screen = chat.screen();
             if matches!(screen, Screen::Password { .. } | Screen::Link(_)) || chat.error().is_some()
             {
-                self.start_hidden.set(false);
-                if let Err(error) = ui.show() {
-                    tracing::warn!(%error, "failed to show the window");
-                }
+                self.stop_hiding();
             } else if matches!(screen, Screen::Chats) {
                 self.start_hidden.set(false);
             }
@@ -165,6 +163,16 @@ impl Shared {
             let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow
+    }
+
+    /// Opens the window of a start into the tray after all.
+    fn stop_hiding(&self) {
+        self.start_hidden.set(false);
+        if let Some(ui) = self.ui()
+            && let Err(error) = ui.show()
+        {
+            tracing::warn!(%error, "failed to show the window");
+        }
     }
 
     fn in_tray(&self) -> bool {
@@ -306,11 +314,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let ui = styles::create(settings.style, &shared)?;
     shared.ui.replace(Some(ui.clone()));
     shared.tray.replace(Some(tray::create(&shared)?));
-    let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && shared.in_tray();
+    let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;
     shared.start_hidden.set(hidden);
     shared.refresh(everything());
     if !hidden {
         ui.show()?;
+    } else if !tray::host_present() {
+        tray::open_unless_host_appears(&shared, Duration::from_secs(10));
     }
 
     // Starting langis again shows this one.
