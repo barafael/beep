@@ -260,6 +260,11 @@ pub struct StyleRange {
     pub style: Style,
 }
 
+/// The mock backend's voice message (a WAV file), e.g. for tests of playing audio.
+pub fn mock_voice_message() -> Vec<u8> {
+    mock::tone_wav()
+}
+
 /// A disappearing-message timer as people say it: "5 minutes", "1 week".
 pub fn format_timer(seconds: u32) -> String {
     const UNITS: [(u32, &str); 5] = [
@@ -479,6 +484,8 @@ pub enum AttachmentContent {
     Picture(Arc<Picture>),
     /// Long message text.
     Text(String),
+    /// Audio and voice messages, as downloaded (decoded by the player).
+    Audio(Arc<[u8]>),
 }
 
 /// Stages of the message history transfer; see [`Event::HistoryTransfer`].

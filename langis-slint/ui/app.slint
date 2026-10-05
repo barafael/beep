@@ -35,6 +35,19 @@ export struct ConversationItem {
     timer-label: string,
 }
 
+// What plays, for the audio rows: set by Rust, read by every row.
+export global Playback {
+    // The attachment playing (or paused); empty if none.
+    in property <string> id;
+    in property <bool> paused;
+    // 0 to 1.
+    in property <float> progress;
+    // E.g. "0:07 / 0:42".
+    in property <string> time;
+    // Play this one (from the start), or pause or carry on if it is the one playing.
+    callback toggle(string);
+}
+
 export struct AttachmentItem {
     id: string,
     // Shown as a picture (photos, stickers); otherwise as a row with a label.
@@ -61,6 +74,8 @@ export struct AttachmentItem {
     caption: string,
     // A video, opened in the desktop's player; `gif` for one meant to loop like a GIF.
     video: bool,
+    // Audio or a voice message, played here.
+    audio: bool,
     gif: bool,
 }
 
@@ -486,14 +501,58 @@ component AttachmentView inherits VerticalLayout {
             color: root.ink.with-alpha(0.7);
         }
     }
+    if root.item.audio: audio-row := HorizontalLayout {
+        property <bool> current: Playback.id == root.item.id;
+        spacing: 8px;
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 18px;
+            background: root.ink.with-alpha(play-touch.has-hover ? 0.25 : 0.15);
+            play-touch := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: audio-row.current && !Playback.paused ? "Pause" : "Play";
+                accessible-action-default => { self.clicked(); }
+                clicked => { Playback.toggle(root.item.id); }
+            }
+            Text {
+                text: audio-row.current && !Playback.paused ? "⏸" : "▶";
+                color: root.ink;
+                font-size: 1rem;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            min-width: 160px;
+            Rectangle {
+                height: 4px;
+                border-radius: 2px;
+                background: root.ink.with-alpha(0.2);
+                Rectangle {
+                    x: 0;
+                    width: parent.width * (audio-row.current ? Playback.progress : 0);
+                    height: parent.height;
+                    border-radius: 2px;
+                    background: root.ink;
+                }
+            }
+            Text {
+                text: audio-row.current ? Playback.time : root.item.label;
+                font-size: 0.8rem;
+                color: root.ink.with-alpha(0.75);
+            }
+        }
+    }
     if root.item.caption != "": Text {
         text: root.item.caption;
         wrap: word-wrap;
         color: root.ink;
     }
-    if !root.item.inline || root.item.can-save: HorizontalLayout {
+    if (!root.item.inline && !root.item.audio) || root.item.can-save: HorizontalLayout {
         spacing: 8px;
-        if !root.item.inline: Text {
+        if !root.item.inline && !root.item.audio: Text {
             text: root.item.label;
             vertical-alignment: center;
             overflow: elide;

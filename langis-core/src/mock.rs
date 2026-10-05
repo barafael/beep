@@ -222,6 +222,9 @@ pub fn run(commands: Inbox, events: Events) {
                         "{} (and the rest)",
                         "A long message ".repeat(20)
                     ))),
+                    AttachmentKind::Audio | AttachmentKind::VoiceNote => {
+                        Ok(AttachmentContent::Audio(tone_wav().into()))
+                    }
                     _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
                 };
                 let _ = events.send(Event::Attachment {
@@ -497,6 +500,35 @@ pub fn run(commands: Inbox, events: Events) {
     }
 }
 
+/// Two seconds of a quiet 440 Hz tone as a WAV file, standing in for a voice message.
+pub fn tone_wav() -> Vec<u8> {
+    const RATE: u32 = 8000;
+    let samples: Vec<i16> = (0..RATE * 2)
+        .map(|i| {
+            let t = i as f32 / RATE as f32;
+            ((t * 440. * std::f32::consts::TAU).sin() * 3000.) as i16
+        })
+        .collect();
+    let data_len = samples.len() as u32 * 2;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
+}
+
 /// A diagonal gradient, standing in for a profile picture.
 fn gradient(side: u32) -> Picture {
     let rgba = (0..side * side)
@@ -625,6 +657,16 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     ago(4),
                     false,
                 )
+            },
+            ChatMessage {
+                attachments: vec![attachment(
+                    "voice",
+                    AttachmentKind::VoiceNote,
+                    "audio/aac",
+                    None,
+                    (0, 0),
+                )],
+                ..message("alice", "Alice", "", ago(1), false)
             },
             ChatMessage {
                 deleted: true,

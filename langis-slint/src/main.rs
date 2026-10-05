@@ -8,14 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use langis_core::settings::{Settings, WidgetStyle};
-use langis_core::state::{ChatState, MessagesUpdate, Notice, Screen, Update};
+use langis_core::state::{AttachmentState, ChatState, MessagesUpdate, Notice, Screen, Update};
 use langis_core::{
-    AttachmentId, Backend, Command, Commands, Config, ConversationId, Event, Picture, QrMatrix,
-    Style, StyleRange, format::find_url,
+    AttachmentContent, AttachmentId, Backend, Command, Commands, Config, ConversationId, Event,
+    Picture, QrMatrix, Style, StyleRange, format::find_url,
 };
 use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+mod audio;
 mod autostart;
 mod clipboard;
 mod instance;
@@ -88,6 +89,8 @@ pub trait Ui {
     fn geometry(&self) -> (slint::PhysicalPosition, slint::PhysicalSize);
     fn take_geometry(&self, geometry: (slint::PhysicalPosition, slint::PhysicalSize));
     fn open_settings(&self);
+    /// What plays: the attachment (empty for nothing), paused, progress 0…1, and the time.
+    fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str);
 }
 
 /// Everything that outlives a window: the chat state, the way to the backend, settings and
@@ -109,6 +112,12 @@ pub struct Shared {
     start_hidden: Cell<bool>,
     /// Redraws when someone typing next counts as stopped, since no event says so.
     typing_timer: slint::Timer,
+    /// Audio and voice messages playing here.
+    player: RefCell<audio::Player>,
+    /// Asked to play once downloaded.
+    pending_play: RefCell<Option<AttachmentId>>,
+    /// Moves the progress of what plays along.
+    playback_timer: slint::Timer,
     /// For callbacks that outlive a call, like `typing_timer`'s.
     me: std::rc::Weak<Shared>,
 }
@@ -184,6 +193,94 @@ impl Shared {
                 );
             }
             None => self.typing_timer.stop(),
+        }
+        // A download asked to play has arrived.
+        let pending = self.pending_play.borrow().clone();
+        if let Some(id) = pending {
+            match chat.attachment(&id) {
+                Some(AttachmentState::Ready(AttachmentContent::Audio(audio))) => {
+                    let audio = audio.clone();
+                    self.pending_play.replace(None);
+                    drop(chat);
+                    self.start_playing(id, audio);
+                }
+                Some(AttachmentState::Failed(_)) => {
+                    self.pending_play.replace(None);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Plays an audio attachment, or pauses or carries on if it is the one playing.
+    fn toggle_playback(&self, id: AttachmentId) {
+        let current = self.player.borrow_mut().state().map(|s| s.id.clone());
+        if current.as_ref() == Some(&id) {
+            self.player.borrow_mut().toggle();
+            self.show_playback();
+            return;
+        }
+        let ready = match self.chat.borrow().attachment(&id) {
+            Some(AttachmentState::Ready(AttachmentContent::Audio(audio))) => Some(audio.clone()),
+            _ => None,
+        };
+        match ready {
+            Some(audio) => self.start_playing(id, audio),
+            None => {
+                self.pending_play.replace(Some(id.clone()));
+                let command = self.chat.borrow_mut().fetch_audio(&id);
+                if let Some(command) = command {
+                    self.commands.send(command);
+                }
+            }
+        }
+    }
+
+    fn start_playing(&self, id: AttachmentId, audio: Arc<[u8]>) {
+        if let Err(error) = self.player.borrow_mut().play(id, audio) {
+            tracing::warn!(%error, "can't play audio");
+            let update = self.chat.borrow_mut().apply(Event::Error(error));
+            self.refresh(update);
+            return;
+        }
+        let me = self.me.clone();
+        self.playback_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(200),
+            move || {
+                if let Some(shared) = me.upgrade() {
+                    shared.show_playback();
+                }
+            },
+        );
+        self.show_playback();
+    }
+
+    /// Shows how far playing got; stops the timer once nothing plays.
+    fn show_playback(&self) {
+        let Some(ui) = self.ui() else { return };
+        let mut player = self.player.borrow_mut();
+        match player.state() {
+            Some(state) => {
+                let progress = state.length.map_or(0., |length| {
+                    (state.position.as_secs_f32() / length.as_secs_f32().max(0.001)).min(1.)
+                });
+                let time = match state.length {
+                    Some(length) => {
+                        format!(
+                            "{} / {}",
+                            audio::clock(state.position),
+                            audio::clock(length)
+                        )
+                    }
+                    None => audio::clock(state.position),
+                };
+                ui.show_playback(&state.id.0, state.paused, progress, &time);
+            }
+            None => {
+                ui.show_playback("", false, 0., "");
+                self.playback_timer.stop();
+            }
         }
     }
 
@@ -363,6 +460,9 @@ fn main() -> Result<(), slint::PlatformError> {
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
         typing_timer: slint::Timer::default(),
+        player: RefCell::default(),
+        pending_play: RefCell::default(),
+        playback_timer: slint::Timer::default(),
         me: me.clone(),
     });
     shared

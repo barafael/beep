@@ -1861,6 +1861,24 @@ impl ChatState {
         Some(Command::FetchAttachment(attachment))
     }
 
+    /// Asks for an audio or voice message of the selected conversation, to play it; `None` if
+    /// it is there or on its way.
+    pub fn fetch_audio(&mut self, id: &AttachmentId) -> Option<Command> {
+        if matches!(
+            self.attachments.get(id),
+            Some(AttachmentState::Loading | AttachmentState::Ready(_))
+        ) {
+            return None;
+        }
+        let attachment = self
+            .find_attachment(id)
+            .filter(|a| matches!(a.kind, AttachmentKind::Audio | AttachmentKind::VoiceNote))?
+            .clone();
+        self.attachments
+            .insert(id.clone(), AttachmentState::Loading);
+        Some(Command::FetchAttachment(attachment))
+    }
+
     /// Saves an attachment of the selected conversation to the downloads folder.
     pub fn save_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
         if matches!(self.saves.get(id), Some(SaveState::Saving)) {

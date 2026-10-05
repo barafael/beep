@@ -169,6 +169,9 @@ pub(crate) async fn fetch(
             AttachmentKind::LongText => Ok(AttachmentContent::Text(
                 String::from_utf8_lossy(&data).into_owned(),
             )),
+            AttachmentKind::Audio | AttachmentKind::VoiceNote => {
+                Ok(AttachmentContent::Audio(data.into()))
+            }
             _ => tokio::task::spawn_blocking(move || decode_picture(&data))
                 .await
                 .map_err(|e| e.to_string())?

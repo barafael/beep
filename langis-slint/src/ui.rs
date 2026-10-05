@@ -439,6 +439,14 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         }
     });
     window.on_open_link(|link| crate::open_link(&link));
+    window.global::<Playback>().on_toggle({
+        let shared = Rc::downgrade(shared);
+        move |id| {
+            if let Some(shared) = shared.upgrade() {
+                shared.toggle_playback(AttachmentId(id.into()));
+            }
+        }
+    });
     window.on_attach({
         let window = window.as_weak();
         move || {
@@ -581,6 +589,14 @@ impl Ui for Window {
 
     fn open_settings(&self) {
         self.0.set_settings_open(true);
+    }
+
+    fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str) {
+        let playback = self.0.global::<Playback>();
+        playback.set_id(id.into());
+        playback.set_paused(paused);
+        playback.set_progress(progress);
+        playback.set_time(time.into());
     }
 }
 
@@ -1243,6 +1259,7 @@ fn attachment_item(
             .unwrap_or_default(),
         caption: attachment.caption.as_deref().unwrap_or_default().into(),
         video: kind == AttachmentKind::Video,
+        audio: matches!(kind, AttachmentKind::Audio | AttachmentKind::VoiceNote),
         gif: attachment.gif,
     }
 }
