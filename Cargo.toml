@@ -30,6 +30,8 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
 
 [profile.release]
-lto = "thin"
+opt-level = 3
+# Whole-program LTO across all crates: slower to build, fastest and smallest binary.
+lto = "fat"
 codegen-units = 1
 strip = true

@@ -22,7 +22,7 @@ pub fn log_filter(rust_log: &str) -> tracing_subscriber::EnvFilter {
 
     let mut filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
-        .parse_lossy(&clamp_plaintext(rust_log));
+        .parse_lossy(clamp_plaintext(rust_log));
     for target in PLAINTEXT_TARGETS {
         filter = filter.add_directive(
             format!("{target}=info")
