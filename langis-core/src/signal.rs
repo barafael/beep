@@ -402,6 +402,7 @@ async fn run_linked(
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
     let sweeping = tokio::task::spawn_local(sweep_expired(manager.clone(), ctx.clone()));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
+    let stories = tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone()));
 
     let downloads = attachments::download_limit();
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
@@ -435,6 +436,7 @@ async fn run_linked(
     latest.abort();
     sweeping.abort();
     following.abort();
+    stories.abort();
     receiving.abort();
     was_removed
 }
@@ -780,8 +782,15 @@ async fn group_conversation(
         .as_ref()
         .map_or(0, |t| t.duration);
     let people = people(manager, names, &group).await;
-    let subtitle = if left {
-        "You left this group".into()
+    // Invited without our profile key: joining is done on the phone for now.
+    let invited = group
+        .pending_members
+        .iter()
+        .any(|m| m.uuid == presage::libsignal_service::prelude::Uuid::from(own));
+    let subtitle = if left && invited {
+        "You're invited to this group: accept on your phone.".into()
+    } else if left {
+        "You aren't a member of this group.".into()
     } else {
         members(group.members.len())
     };
@@ -808,6 +817,42 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
         .flatten()
         .unwrap_or_default();
     let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+}
+
+/// If `context`'s change removed us, drops us from the stored group: presage can't read the
+/// group from the server any more, so its copy would still count us in.
+async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV2) {
+    use presage::libsignal_service::groups_v2::{GroupChange, GroupOperations};
+    use presage::libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams};
+    let own = manager.registration_data().service_ids.aci();
+    let Some(change) = context
+        .group_change
+        .as_deref()
+        .and_then(|bytes| presage::proto::GroupChange::decode(bytes).ok())
+    else {
+        return;
+    };
+    let operations = GroupOperations::new(GroupSecretParams::derive_from_master_key(
+        GroupMasterKey::new(key),
+    ));
+    let Ok(changes) = operations.decrypt_group_change(change) else {
+        return;
+    };
+    let removed = changes
+        .changes
+        .iter()
+        .any(|change| matches!(change, GroupChange::DeleteMember(aci) if *aci == own));
+    let store = manager.store().clone();
+    let Ok(Some(mut group)) = store.group(key).await else {
+        return;
+    };
+    if removed && group.revision < changes.version {
+        group.members.retain(|member| member.aci != own);
+        group.revision = changes.version;
+        if let Err(error) = store.save_group(key, group).await {
+            warn!(%error, "failed to note that we were removed from a group");
+        }
+    }
 }
 
 /// Stories last a day.
@@ -839,9 +884,6 @@ async fn on_story(
         Some(key) => conversation_id(&Thread::Group(key)),
         None => ConversationId::contact(&author.service_id_string()),
     };
-    if !outgoing && is_blocked(ctx, &conversation).await {
-        return;
-    }
     let mut stored = crate::local::StoredStory {
         author: author.service_id_string(),
         timestamp,
@@ -887,6 +929,15 @@ async fn send_stories(manager: &Mgr, ctx: &Ctx) {
     let mut names = Names::new();
     let mut stories = Vec::new();
     for story in stored {
+        // Not from those we block, nor from strangers: watching would send them a receipt.
+        let by_author = ConversationId::contact(&story.author);
+        if !story.outgoing
+            && (is_blocked(ctx, &by_author).await
+                || is_blocked(ctx, &story.conversation).await
+                || is_unanswered_request(ctx, &story.conversation).await)
+        {
+            continue;
+        }
         let author = match ServiceId::parse_from_service_id_string(&story.author) {
             Some(who) => display_name(manager, &mut names, who).await,
             None => String::new(),
@@ -947,14 +998,41 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
     send_sync(&mut manager, sync).await;
 }
 
+/// Why someone can't be put in a group.
+const PHONE_NUMBER_ONLY: &str =
+    "someone chosen is known only by their phone number, which groups here don't support yet";
+
+/// A group member's ACI; `None` for those known only by their phone number (PNI).
+fn member_aci(id: &str) -> Option<presage::libsignal_service::protocol::Aci> {
+    match ServiceId::parse_from_service_id_string(id)? {
+        ServiceId::Aci(aci) => Some(aci),
+        ServiceId::Pni(_) => None,
+    }
+}
+
+/// Refuses to leave a group we are the only admin of, while others are in it: it would be
+/// left without one. Signal's apps ask to choose a new admin first; here it is done by hand.
+async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(), String> {
+    use presage::libsignal_service::groups_v2::Role;
+    let own = manager.registration_data().service_ids.aci();
+    let Ok(Some(group)) = manager.store().group(key).await else {
+        return Ok(());
+    };
+    let admin = |m: &&presage::model::groups::Member| m.role == Role::Administrator;
+    let we_admin = group.members.iter().filter(admin).any(|m| m.aci == own);
+    let other_admin = group.members.iter().filter(admin).any(|m| m.aci != own);
+    let others = group.members.iter().any(|m| m.aci != own);
+    if we_admin && !other_admin && others {
+        return Err("you are the group's only admin: make someone else an admin first".into());
+    }
+    Ok(())
+}
+
 /// A group change for presage; `None` if a member isn't an ACI.
 fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
     use crate::GroupEdit as Edit;
     use presage::manager::GroupEdit as To;
-    let aci = |id: &str| match ServiceId::parse_from_service_id_string(id)? {
-        ServiceId::Aci(aci) => Some(aci),
-        ServiceId::Pni(_) => None,
-    };
+    let aci = member_aci;
     Some(match edit {
         Edit::Title(title) => To::Title(title.trim().to_owned()),
         Edit::Description(description) => To::Description(description.trim().to_owned()),
@@ -1304,6 +1382,14 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
         }
     }
     warn!("the storage service kept changing; trying again later");
+}
+
+/// Takes stories off the list once their day is over, for the rest of the session.
+async fn expire_stories(manager: Mgr, ctx: Ctx) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+        send_stories(&manager, &ctx).await;
+    }
 }
 
 /// Deletes disappearing messages when their time is up, for the rest of the session.
@@ -1884,10 +1970,11 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     let id = ensure_conversation(manager, ctx, thread.clone()).await;
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
-        && data_of(content)
+        && let Some(context) = data_of(content)
             .and_then(|(data, _)| data.group_v2.as_ref())
-            .is_some_and(|context| context.group_change.is_some())
+            .filter(|context| context.group_change.is_some())
     {
+        forget_membership(manager, key, context).await;
         refresh_group(manager, ctx, key).await;
     }
     // Nothing new from blocked chats (what we send from another device still counts).
@@ -1980,6 +2067,19 @@ async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
         .ok()
         .flatten()
         .is_some_and(|s| s.blocked)
+}
+
+/// Whether `id` is a message request not answered yet. Only known once the phone's settings
+/// (which say who was accepted) have been read.
+async fn is_unanswered_request(ctx: &Ctx, id: &ConversationId) -> bool {
+    ctx.tables.storage_version().await.unwrap_or(0) > 0
+        && !ctx
+            .tables
+            .settings(id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.accepted)
 }
 
 /// The conversation a sync message names by ACI (as text or bytes) or group id.
@@ -2730,20 +2830,28 @@ async fn handle_command(
                 ..Default::default()
             };
             manager
-                .send_message_to_group(&key, ContentBody::StoryMessage(message), timestamp)
+                .send_message_to_group(&key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
                 .map_err(|e| format!("failed to post the story: {e}"))?;
             ctx.tables.add_story(&stored).await.map_err(db)?;
             send_stories(manager, ctx).await;
+            // Sending tells our other devices of data messages only; this one they hear of here.
+            let sync = SyncMessage {
+                content: Some(SyncContent::Sent(Sent {
+                    timestamp: Some(timestamp),
+                    story_message: Some(message),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            send_sync(manager, sync).await;
         }
         Command::CreateGroup { title, members } => {
-            let members: Vec<_> = members
+            let members = members
                 .iter()
-                .filter_map(|id| match ServiceId::parse_from_service_id_string(id)? {
-                    ServiceId::Aci(aci) => Some(aci),
-                    ServiceId::Pni(_) => None,
-                })
-                .collect();
+                .map(|id| member_aci(id))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(PHONE_NUMBER_ONLY)?;
             let (key, timestamp) = manager
                 .create_group(title.trim(), &members)
                 .await
@@ -2763,7 +2871,10 @@ async fn handle_command(
             let Thread::Group(key) = thread(&conversation)? else {
                 return Err("not a group".into());
             };
-            let edit = group_edit(edit).ok_or("unknown member")?;
+            let edit = group_edit(edit).ok_or(PHONE_NUMBER_ONLY)?;
+            if matches!(edit, presage::manager::GroupEdit::Leave) {
+                only_admin_check(manager, key).await?;
+            }
             let timestamp = manager
                 .change_group(&key, edit)
                 .await
@@ -2971,15 +3082,8 @@ async fn handle_command(
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
             // Not to unanswered message requests: they'd tell a stranger we read it.
-            let request = ctx.tables.storage_version().await.unwrap_or(0) > 0
-                && !ctx
-                    .tables
-                    .settings(&conversation)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|s| s.accepted);
-            let receipts = ctx.preferences.get().read_receipts && !request;
+            let receipts = ctx.preferences.get().read_receipts
+                && !is_unanswered_request(ctx, &conversation).await;
             tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
         }
         Command::MarkUnread(conversation) => {

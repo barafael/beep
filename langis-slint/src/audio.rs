@@ -1,5 +1,5 @@
 //! Playing audio and voice messages in the window. One plays at a time; starting another
-//! stops it. The sound device is opened on first use and kept.
+//! stops it. The sound device is opened for each, so one plugged in since is used.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -10,8 +10,6 @@ use rodio::Source as _;
 
 #[derive(Default)]
 pub struct Player {
-    /// Kept open once opened: dropping it silences everything.
-    device: Option<rodio::MixerDeviceSink>,
     current: Option<Playing>,
 }
 
@@ -19,6 +17,8 @@ struct Playing {
     id: AttachmentId,
     player: rodio::Player,
     length: Option<Duration>,
+    /// Open while this plays: dropping it silences it.
+    _device: rodio::MixerDeviceSink,
 }
 
 /// What is playing, for the UI.
@@ -33,17 +33,19 @@ impl Player {
     /// Plays `audio` (a downloaded attachment) from the start.
     pub fn play(&mut self, id: AttachmentId, audio: Arc<[u8]>) -> Result<(), String> {
         self.stop();
-        if self.device.is_none() {
-            let device = rodio::DeviceSinkBuilder::open_default_sink()
-                .map_err(|e| format!("no sound device: {e}"))?;
-            self.device = Some(device);
-        }
-        let device = self.device.as_ref().expect("opened above");
         let decoder = decoder(audio).map_err(|e| format!("this audio can't be played: {e}"))?;
+        let mut device = rodio::DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| format!("no sound device: {e}"))?;
+        device.log_on_drop(false);
         let length = decoder.total_duration();
         let player = rodio::Player::connect_new(device.mixer());
         player.append(decoder);
-        self.current = Some(Playing { id, player, length });
+        self.current = Some(Playing {
+            id,
+            player,
+            length,
+            _device: device,
+        });
         Ok(())
     }
 

@@ -678,17 +678,18 @@ impl ChatState {
                 update.conversations = true;
             }
             Event::Stories(stories) => {
+                // The story shown stays shown, wherever it is in the new list.
+                let shown = self
+                    .current_story()
+                    .map(|(story, _, _)| (story.author_id.clone(), story.timestamp));
                 self.stories = stories;
-                if let Some((id, at)) = &self.story_view {
-                    let count = self
-                        .stories
-                        .iter()
-                        .filter(|s| &s.conversation == id)
-                        .count();
-                    if *at >= count {
-                        self.story_view = None;
-                    }
-                }
+                self.story_view = self.story_view.take().and_then(|(id, _)| {
+                    let (author, timestamp) = shown.as_ref()?;
+                    let at = self
+                        .stories_of(&id)
+                        .position(|s| &s.author_id == author && s.timestamp == *timestamp)?;
+                    Some((id, at))
+                });
                 update.conversations = true;
             }
             Event::GroupCreated(id) => {
@@ -2043,6 +2044,13 @@ impl ChatState {
 
     /// Only attachments of the selected conversation can be asked for.
     fn find_attachment(&self, id: &AttachmentId) -> Option<&Attachment> {
+        // A story's picture, while it is shown.
+        if let Some((story, _, _)) = self.current_story()
+            && let crate::StoryContent::Picture(picture) = &story.content
+            && &picture.id == id
+        {
+            return Some(picture);
+        }
         let selected = self.selected.as_ref()?;
         let shown = self.history.get(selected).into_iter().flatten();
         // The media overview reaches further back than the loaded history.
@@ -2051,13 +2059,6 @@ impl ChatState {
             .iter()
             .filter(|(of, _)| of == selected)
             .flat_map(|(_, media)| media.iter().flatten());
-        // A story's picture, while it is shown.
-        if let Some((story, _, _)) = self.current_story()
-            && let crate::StoryContent::Picture(picture) = &story.content
-            && &picture.id == id
-        {
-            return Some(picture);
-        }
         shown
             .chain(gathered)
             .flat_map(|m| {
@@ -4049,5 +4050,20 @@ mod tests {
                 .is_none(),
             "groups only"
         );
+        // When an older story expires, the one shown stays shown.
+        state.open_story(&id("a"));
+        state.step_story(1);
+        assert_eq!(state.current_story().unwrap().0.timestamp, 20);
+        state.apply(Event::Stories(vec![
+            story("ann", "a", 20, true),
+            story("bob", "g", 30, true),
+        ]));
+        assert_eq!(
+            state.current_story().map(|(s, at, count)| (s.timestamp, at, count)),
+            Some((20, 0, 1))
+        );
+        // Once it expires too, the viewer closes.
+        state.apply(Event::Stories(vec![story("bob", "g", 30, true)]));
+        assert!(state.current_story().is_none());
     }
 }

@@ -215,6 +215,8 @@ impl Shared {
     /// Plays an audio attachment, or pauses or carries on if it is the one playing.
     fn toggle_playback(&self, id: AttachmentId) {
         let current = self.player.borrow_mut().state().map(|s| s.id.clone());
+        // Whatever was waiting to download is no longer wanted.
+        self.pending_play.replace(None);
         if current.as_ref() == Some(&id) {
             self.player.borrow_mut().toggle();
             self.show_playback();
@@ -227,8 +229,14 @@ impl Shared {
         match ready {
             Some(audio) => self.start_playing(id, audio),
             None => {
-                self.pending_play.replace(Some(id.clone()));
                 let command = self.chat.borrow_mut().fetch_audio(&id);
+                let loading = matches!(
+                    self.chat.borrow().attachment(&id),
+                    Some(AttachmentState::Loading)
+                );
+                if loading {
+                    self.pending_play.replace(Some(id));
+                }
                 if let Some(command) = command {
                     self.commands.send(command);
                 }
@@ -258,9 +266,13 @@ impl Shared {
 
     /// Shows how far playing got; stops the timer once nothing plays.
     fn show_playback(&self) {
-        let Some(ui) = self.ui() else { return };
         let mut player = self.player.borrow_mut();
-        match player.state() {
+        let state = player.state();
+        if state.is_none() {
+            self.playback_timer.stop();
+        }
+        let Some(ui) = self.ui() else { return };
+        match state {
             Some(state) => {
                 let progress = state.length.map_or(0., |length| {
                     (state.position.as_secs_f32() / length.as_secs_f32().max(0.001)).min(1.)
@@ -277,10 +289,7 @@ impl Shared {
                 };
                 ui.show_playback(&state.id.0, state.paused, progress, &time);
             }
-            None => {
-                ui.show_playback("", false, 0., "");
-                self.playback_timer.stop();
-            }
+            None => ui.show_playback("", false, 0., ""),
         }
     }
 

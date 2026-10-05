@@ -232,8 +232,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             let Some(window) = window.upgrade() else { return };
             let text = window.get_story_text().to_string();
             let at = window.get_story_group().max(0) as usize;
+            let group = window.get_story_group_ids().row_data(at).map(|id| ConversationId(id.into()));
             let sent = shared.act(|chat| {
-                let group = chat.story_groups().get(at).map(|c| c.id.clone());
                 let command = group.and_then(|g| chat.send_story(&g, langis_core::NewStory::Text(text)));
                 (command, Update::default())
             });
@@ -264,8 +264,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         move |path| {
             let Some(window) = window.upgrade() else { return };
             let at = window.get_story_group().max(0) as usize;
+            let group = window.get_story_group_ids().row_data(at).map(|id| ConversationId(id.into()));
             shared.act(|chat| {
-                let group = chat.story_groups().get(at).map(|c| c.id.clone());
                 let story = langis_core::NewStory::Picture(std::path::PathBuf::from(path.as_str()));
                 (group.and_then(|g| chat.send_story(&g, story)), Update::default())
             });
@@ -1091,9 +1091,20 @@ fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
         })
         .collect();
     update_list(&window.get_story_rings(), rings, |a, b| a == b);
-    let groups: Vec<SharedString> = chat.story_groups().iter().map(|c| c.title.as_str().into()).collect();
-    if window.get_story_groups().row_count() != groups.len() {
-        window.set_story_groups(ModelRc::new(VecModel::from(groups)));
+    // Rebuilt when the groups or their names change; the choice stays with its group.
+    let groups = chat.story_groups();
+    let ids: Vec<ConversationId> = groups.iter().map(|c| c.id.clone()).collect();
+    let titles: Vec<SharedString> = groups.iter().map(|c| c.title.as_str().into()).collect();
+    let offered: Vec<SharedString> = window.get_story_group_ids().iter().collect();
+    if !offered.iter().map(SharedString::as_str).eq(ids.iter().map(|id| id.0.as_str()))
+        || !window.get_story_groups().iter().eq(titles.iter().cloned())
+    {
+        let chosen = offered.get(window.get_story_group().max(0) as usize);
+        let at = chosen.and_then(|c| ids.iter().position(|id| id.0 == c.as_str())).unwrap_or(0);
+        let ids: Vec<SharedString> = ids.iter().map(|id| id.0.as_str().into()).collect();
+        window.set_story_groups(ModelRc::new(VecModel::from(titles)));
+        window.set_story_group_ids(ModelRc::new(VecModel::from(ids)));
+        window.set_story_group(at as i32);
     }
     let story = match chat.current_story() {
         Some((story, at, count)) => {

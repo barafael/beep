@@ -1594,6 +1594,8 @@ export component AppWindow inherits Window {
     in property <StoryItem> story;
     in property <int> unviewed-stories;
     in property <[string]> story-groups;
+    // Their ids, in the same order.
+    in property <[string]> story-group-ids;
     in-out property <int> story-group;
     in-out property <string> story-text;
     callback open-stories;
@@ -2795,7 +2797,7 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         padding: 14px;
                         Text {
-                            text: "You left this group. You can read it, but not write to it.";
+                            text: root.conversations[root.selected].subtitle;
                             wrap: word-wrap;
                             horizontal-alignment: center;
                             horizontal-stretch: 1;
