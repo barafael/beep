@@ -536,6 +536,13 @@ pub enum Command {
         /// People mentioned: where "@Name" stands in `body` (bytes), and who it is.
         mentions: Vec<Mention>,
     },
+    /// Sends a copy of a message (its text and attachments) to `conversation`.
+    Forward {
+        conversation: ConversationId,
+        body: String,
+        styles: Vec<StyleRange>,
+        attachments: Vec<Attachment>,
+    },
     /// Downloads an attachment and opens it with the desktop's default app for its type.
     OpenAttachment(Attachment),
     /// We started or stopped typing in a conversation.

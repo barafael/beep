@@ -138,3 +138,28 @@ fn clicking_a_mention_candidate_picks_it() {
     assert_eq!(picked.get(), Some(1));
     assert_eq!(window.get_mention_candidates().row_count(), 2);
 }
+
+#[test]
+fn forwarding_goes_to_the_clicked_chat() {
+    let (window, _messages) = window_with_messages(3);
+    let to = Rc::new(std::cell::RefCell::new(None));
+    window.on_forward_to({
+        let to = to.clone();
+        move |id| *to.borrow_mut() = Some(id)
+    });
+    let target = |id: &str, title: &str| ConversationItem {
+        id: id.into(),
+        title: title.into(),
+        ..Default::default()
+    };
+    window.set_forward_targets(ModelRc::new(VecModel::from(vec![
+        target("b", "Bob"),
+        target("c", "Carol"),
+    ])));
+    window.set_forwarding(true);
+    settle(&window);
+    find(&window, "Carol")
+        .expect("listed")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(to.borrow().as_deref(), Some("c"));
+}

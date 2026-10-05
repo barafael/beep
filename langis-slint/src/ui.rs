@@ -103,6 +103,34 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    window.on_forward({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| {
+                chat.start_forward(index as usize);
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_forward_to({
+        let shared = shared.clone();
+        move |id| {
+            shared.act(|chat| (chat.forward_to(&ConversationId(id.into())), Update::default()));
+        }
+    });
+    window.on_forward_filter_edited({
+        let shared = shared.clone();
+        move || shared.refresh(Update::default())
+    });
+    window.on_cancel_forward({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.cancel_forward();
+                (None, Update::default())
+            });
+        }
+    });
     window.on_pick_mention({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -463,6 +491,22 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
+    window.set_forwarding(chat.forwarding());
+    if chat.forwarding() {
+        let targets: Vec<_> = chat
+            .forward_targets(&window.get_forward_filter())
+            .into_iter()
+            .map(|c| ConversationItem {
+                id: c.id.0.as_str().into(),
+                title: c.title.as_str().into(),
+                initials: state::initials(&c.title).into(),
+                avatar_color: avatar_color(&c.id),
+                avatar: chat.avatar(&c.id).map(|a| images.avatar(&c.id, a)).unwrap_or_default(),
+                ..Default::default()
+            })
+            .collect();
+        window.set_forward_targets(ModelRc::new(VecModel::from(targets)));
+    }
     let (archived, archived_unread) = chat.archived();
     window.set_archived_count(archived as i32);
     window.set_archived_unread(archived_unread as i32);
@@ -602,6 +646,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         expires: m.expires_at.map(|at| state::format_remaining(at, now_millis())).unwrap_or_default().into(),
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,
+        can_forward: ChatState::can_forward(m),
     }
 }
 

@@ -2098,54 +2098,35 @@ async fn handle(
             styles,
             mentions,
         } => {
-            let thread = thread(&conversation)?;
             let pointers = attachments::upload(manager, &files).await?;
-            let (text, ranges) = format::encode(&body, &styles, &mentions);
-            // presage fills in the data message's timestamp from the one passed here.
-            let timestamp = now_millis();
-            let message = DataMessage {
-                body: (!text.is_empty()).then_some(text),
-                body_ranges: body_ranges(ranges),
-                attachments: pointers.clone(),
-                quote: quote
-                    .as_ref()
-                    .map(|quote| presage::proto::data_message::Quote {
-                        id: Some(quote.timestamp),
-                        author_aci: Some(quote.author_id.clone()),
-                        text: Some(quote.text.clone()),
-                        ..Default::default()
-                    }),
-                ..Default::default()
-            };
-            send_data(manager, &thread, message, timestamp).await?;
-            ctx.tables
-                .set_delivery(&conversation, timestamp, Delivery::Sent)
-                .await
-                .map_err(db)?;
-            let own = own_id(manager).service_id_string();
-            // presage sent it with the thread's timer.
-            let timer = expire_timer(manager, &thread).await;
-            let reference = MessageRef {
-                author_id: own.clone(),
-                timestamp,
-            };
-            let _ = events.send(Event::Message(ChatMessage {
-                conversation: conversation.clone(),
-                sender_id: own,
-                sender: "You".into(),
+            let outgoing = Outgoing {
                 body,
-                timestamp,
-                outgoing: true,
-                quote,
-                attachments: pointers
-                    .iter()
-                    .map(|pointer| attachments::describe(pointer, false))
-                    .collect(),
                 styles,
-                expire_timer: (timer > 0).then_some(timer),
-                ..Default::default()
-            }));
-            start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
+                mentions,
+                quote,
+                pointers,
+            };
+            send_new(manager, ctx, conversation, outgoing).await?;
+        }
+        // The attachments are already on the CDN; their pointers work for anyone.
+        Command::Forward {
+            conversation,
+            body,
+            styles,
+            attachments,
+        } => {
+            let pointers = attachments
+                .iter()
+                .filter_map(attachments::pointer)
+                .collect();
+            let outgoing = Outgoing {
+                body,
+                styles,
+                mentions: Vec::new(),
+                quote: None,
+                pointers,
+            };
+            send_new(manager, ctx, conversation, outgoing).await?;
         }
         Command::Edit {
             conversation,
@@ -2309,6 +2290,84 @@ async fn handle(
         }
         Command::Preferences(privacy) => ctx.privacy.set(privacy),
     }
+    Ok(())
+}
+
+/// A new message of ours, ready to go (attachments uploaded).
+struct Outgoing {
+    body: String,
+    styles: Vec<StyleRange>,
+    mentions: Vec<crate::Mention>,
+    quote: Option<Quote>,
+    pointers: Vec<presage::proto::AttachmentPointer>,
+}
+
+/// Sends a new message and shows it; remembers it for receipts and starts its timer.
+async fn send_new(
+    manager: &mut Mgr,
+    ctx: &Ctx,
+    conversation: ConversationId,
+    outgoing: Outgoing,
+) -> Result<(), String> {
+    let Outgoing {
+        body,
+        styles,
+        mentions,
+        quote,
+        pointers,
+    } = outgoing;
+    let thread = ctx
+        .threads
+        .borrow()
+        .get(&conversation)
+        .cloned()
+        .ok_or("unknown conversation")?;
+    let (text, ranges) = format::encode(&body, &styles, &mentions);
+    // presage fills in the data message's timestamp from the one passed here.
+    let timestamp = now_millis();
+    let message = DataMessage {
+        body: (!text.is_empty()).then_some(text),
+        body_ranges: body_ranges(ranges),
+        attachments: pointers.clone(),
+        quote: quote
+            .as_ref()
+            .map(|quote| presage::proto::data_message::Quote {
+                id: Some(quote.timestamp),
+                author_aci: Some(quote.author_id.clone()),
+                text: Some(quote.text.clone()),
+                ..Default::default()
+            }),
+        ..Default::default()
+    };
+    send_data(manager, &thread, message, timestamp).await?;
+    ctx.tables
+        .set_delivery(&conversation, timestamp, Delivery::Sent)
+        .await
+        .map_err(|e| format!("failed to save: {e}"))?;
+    let own = own_id(manager).service_id_string();
+    // presage sent it with the thread's timer.
+    let timer = expire_timer(manager, &thread).await;
+    let reference = MessageRef {
+        author_id: own.clone(),
+        timestamp,
+    };
+    let _ = ctx.events.send(Event::Message(ChatMessage {
+        conversation: conversation.clone(),
+        sender_id: own,
+        sender: "You".into(),
+        body,
+        timestamp,
+        outgoing: true,
+        quote,
+        attachments: pointers
+            .iter()
+            .map(|pointer| attachments::describe(pointer, false))
+            .collect(),
+        styles,
+        expire_timer: (timer > 0).then_some(timer),
+        ..Default::default()
+    }));
+    start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
     Ok(())
 }
 

@@ -93,6 +93,7 @@ export struct MessageItem {
     can-edit: bool,
     // The first message that came after the chat was last read.
     first-unread: bool,
+    can-forward: bool,
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -462,6 +463,7 @@ component Bubble inherits Rectangle {
     callback delete(bool);
     callback copy-text(string);
     callback reveal;
+    callback forward;
 
     // Outgoing bubbles use the accent colour: white text reads on any style's accent.
     property <color> ink: item.outgoing ? white : Palette.alternate-foreground;
@@ -703,6 +705,10 @@ component Bubble inherits Rectangle {
             if item.text != "": MenuItem {
                 title: "Copy text";
                 activated => { root.copy-text(item.text); }
+            }
+            if item.can-forward: MenuItem {
+                title: "Forward…";
+                activated => { root.forward(); }
             }
             if item.can-edit: MenuItem {
                 title: "Edit";
@@ -1165,6 +1171,14 @@ export component AppWindow inherits Window {
     in property <string> typing;
     // The composer replaces the text of one of our messages.
     in property <bool> editing;
+    // Choosing where to forward a message to.
+    in property <bool> forwarding;
+    in property <[ConversationItem]> forward-targets;
+    in-out property <string> forward-filter;
+    callback forward(int);
+    callback forward-to(string);
+    callback cancel-forward;
+    callback forward-filter-edited;
     // Group members matching the "@…" the draft ends with.
     in property <[string]> mention-candidates;
     callback pick-mention(int);
@@ -1550,6 +1564,10 @@ export component AppWindow inherits Window {
                         delete(everyone) => { root.delete(index, everyone); }
                         copy-text(text) => { root.copy-text(text); }
                         reveal => { root.reveal(index); }
+                        forward => {
+                            root.forward-filter = "";
+                            root.forward(index);
+                        }
                     }
                 }
 
@@ -1784,6 +1802,75 @@ export component AppWindow inherits Window {
                             enabled: root.can-send;
                             clicked => { root.send(root.draft); composer.focus(); }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Choosing where to forward a message to, over everything else.
+    if root.forwarding: Rectangle {
+        background: #0008;
+        TouchArea {
+            clicked => { root.cancel-forward(); }
+        }
+        Rectangle {
+            width: min(420px, parent.width - 32px);
+            height: min(520px, parent.height - 32px);
+            border-radius: 12px;
+            background: Palette.background;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #0006;
+            // Clicks inside don't close it.
+            TouchArea {}
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: "Forward to…";
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                }
+                LineEdit {
+                    placeholder-text: "Search";
+                    text <=> root.forward-filter;
+                    init => { self.focus(); }
+                    edited => { root.forward-filter-edited(); }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for target in root.forward-targets: Rectangle {
+                        height: 48px;
+                        border-radius: 6px;
+                        background: target-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                        target-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.forward-to(target.id); }
+                        }
+                        HorizontalLayout {
+                            padding: 6px;
+                            spacing: 10px;
+                            Avatar {
+                                width: 36px;
+                                initials: target.initials;
+                                tint: target.avatar-color;
+                                picture: target.avatar;
+                            }
+                            Text {
+                                text: target.title;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                color: Palette.foreground;
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.cancel-forward(); }
                     }
                 }
             }

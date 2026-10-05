@@ -280,6 +280,8 @@ pub struct ChatState {
     revealed: HashSet<MessageRef>,
     /// People picked to mention in the draft; their "@Name" becomes a mention when sent.
     draft_mentions: Vec<Person>,
+    /// The message being forwarded, while its target is chosen.
+    forwarding: Option<ChatMessage>,
 }
 
 struct Typist {
@@ -775,6 +777,11 @@ impl ChatState {
         std::mem::take(&mut self.notifications.pending)
     }
 
+    /// A conversation's picture, if known.
+    pub fn avatar(&self, id: &ConversationId) -> Option<&Arc<Picture>> {
+        self.avatars.get(id)
+    }
+
     pub fn conversation(&self, id: &ConversationId) -> Option<&Conversation> {
         self.conversations.iter().find(|c| &c.id == id)
     }
@@ -922,6 +929,74 @@ impl ChatState {
             files: std::mem::take(&mut self.staged),
             styles,
             mentions,
+        })
+    }
+
+    /// Whether a message can be forwarded: not deleted, not view-once.
+    pub fn can_forward(message: &ChatMessage) -> bool {
+        !message.deleted
+            && message.timer_change.is_none()
+            && !message
+                .attachments
+                .iter()
+                .any(|a| a.kind == AttachmentKind::ViewOnce)
+    }
+
+    /// Starts forwarding the `index`th message of [`ChatState::messages`]; the target is chosen
+    /// next, from [`ChatState::forward_targets`].
+    pub fn start_forward(&mut self, index: usize) -> bool {
+        let message = self.messages().nth(index).map(|view| view.message.clone());
+        self.forwarding = message.filter(Self::can_forward);
+        self.forwarding.is_some()
+    }
+
+    pub fn forwarding(&self) -> bool {
+        self.forwarding.is_some()
+    }
+
+    pub fn cancel_forward(&mut self) {
+        self.forwarding = None;
+    }
+
+    /// Where a message can be forwarded to: chats whose title contains `filter`, in list order.
+    pub fn forward_targets(&self, filter: &str) -> Vec<&Conversation> {
+        let filter = filter.trim().to_lowercase();
+        self.conversations
+            .iter()
+            .filter(|c| {
+                if filter.is_empty() {
+                    // As in the chat list, without the archive split.
+                    c.is_group || c.note_to_self || self.last_of(&c.id).is_some()
+                } else {
+                    c.title.to_lowercase().contains(&filter)
+                }
+            })
+            .collect()
+    }
+
+    /// Forwards the message being forwarded to `id`.
+    pub fn forward_to(&mut self, id: &ConversationId) -> Option<Command> {
+        self.conversation(id)?;
+        let message = self.forwarding.take()?;
+        // A long message's full text, once fetched, goes as the body; until then, the
+        // attachment holding it goes along.
+        let (body, styles, attachments) = match self.full_text(&message) {
+            Some(text) => (
+                text.to_owned(),
+                Vec::new(),
+                message
+                    .attachments
+                    .into_iter()
+                    .filter(|a| a.kind != AttachmentKind::LongText)
+                    .collect(),
+            ),
+            None => (message.body, message.styles, message.attachments),
+        };
+        Some(Command::Forward {
+            conversation: id.clone(),
+            body,
+            styles,
+            attachments,
         })
     }
 
@@ -2883,5 +2958,33 @@ mod tests {
         assert!(state.load_older().is_none());
         let first = state.messages().next().unwrap().message;
         assert_eq!((first.timestamp, first.reactions.len()), (10, 1));
+    }
+
+    #[test]
+    fn forwarding_sends_a_copy_to_the_chosen_chat() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.apply(Event::Message(message("g", "Bob", 20, false)));
+        state.select(&id("a"));
+        assert!(state.start_forward(0));
+        let titles: Vec<_> = state
+            .forward_targets("")
+            .iter()
+            .map(|c| c.id.0.clone())
+            .collect();
+        assert_eq!(titles, ["g", "a"]);
+        assert_eq!(state.forward_targets("G").len(), 1);
+        let Some(Command::Forward {
+            conversation, body, ..
+        }) = state.forward_to(&id("g"))
+        else {
+            panic!("forwards");
+        };
+        assert_eq!(
+            (conversation, body),
+            (id("g"), "Ann at 10\nsecond line".into())
+        );
+        assert!(!state.forwarding());
+        assert!(state.forward_to(&id("g")).is_none(), "once");
     }
 }

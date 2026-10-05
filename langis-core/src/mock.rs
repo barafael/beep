@@ -240,6 +240,18 @@ pub fn run(commands: Inbox, events: Events) {
             }
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
+            Ok(Command::Forward {
+                conversation,
+                body,
+                styles,
+                attachments,
+            }) => {
+                let _ = events.send(Event::Message(ChatMessage {
+                    attachments,
+                    styles,
+                    ..message(&conversation.0, "You", &body, now_millis(), true)
+                }));
+            }
             Ok(Command::Send {
                 conversation,
                 body,

@@ -93,6 +93,11 @@ fn id(pointer: &AttachmentPointer) -> AttachmentId {
     })
 }
 
+/// The Signal attachment pointer behind an attachment, e.g. to send it on.
+pub(crate) fn pointer(attachment: &Attachment) -> Option<AttachmentPointer> {
+    AttachmentPointer::decode(&*attachment.pointer).ok()
+}
+
 /// Downloads and decrypts an attachment; see [`decrypt`].
 async fn download(servers: SignalServers, attachment: &Attachment) -> Result<Vec<u8>, String> {
     let pointer = AttachmentPointer::decode(&*attachment.pointer)
