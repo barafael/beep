@@ -79,6 +79,12 @@ pub(crate) fn describe(pointer: &AttachmentPointer, view_once: bool) -> Attachme
         size: pointer.size().into(),
         width: pointer.width(),
         height: pointer.height(),
+        blurhash: pointer.blur_hash.clone().filter(|hash| !hash.is_empty()),
+        caption: pointer
+            .caption
+            .clone()
+            .filter(|caption| !caption.is_empty()),
+        gif: pointer.flags() & Flags::Gif as u32 != 0,
         pointer: pointer.encode_to_vec().into(),
     }
 }

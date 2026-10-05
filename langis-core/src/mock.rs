@@ -592,6 +592,26 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 )
             },
             ChatMessage {
+                attachments: vec![Attachment {
+                    caption: Some("Ferris at the meetup".into()),
+                    ..attachment(
+                        "video",
+                        AttachmentKind::Video,
+                        "video/mp4",
+                        None,
+                        (640, 360),
+                    )
+                }],
+                ..message("rust", "Dana", "", ago(117), false)
+            },
+            ChatMessage {
+                attachments: vec![Attachment {
+                    gif: true,
+                    ..attachment("gif", AttachmentKind::Video, "video/mp4", None, (300, 300))
+                }],
+                ..message("rust", "Eve", "", ago(117), false)
+            },
+            ChatMessage {
                 attachments: vec![attachment(
                     "sticker",
                     AttachmentKind::Sticker,
@@ -621,6 +641,11 @@ fn attachment(
         size: 245_760,
         width,
         height,
+        // A BlurHash of a sunset, for every picture and video.
+        blurhash: matches!(kind, AttachmentKind::Image | AttachmentKind::Video)
+            .then(|| "LKO2?U%2Tw=w]~RBVZRi};RPxuwH".into()),
+        caption: None,
+        gif: false,
         pointer: Arc::from(Vec::new()),
     }
 }

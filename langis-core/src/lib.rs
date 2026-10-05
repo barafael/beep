@@ -379,6 +379,11 @@ pub struct Attachment {
     /// In pixels, if the sender said; 0 otherwise.
     pub width: u32,
     pub height: u32,
+    /// A blurred stand-in to show before it's downloaded (a BlurHash), if the sender made one.
+    pub blurhash: Option<String>,
+    pub caption: Option<String>,
+    /// A video meant to loop silently, as GIFs are sent in Signal.
+    pub gif: bool,
     /// Where and how to download it, opaque to UIs (an encoded Signal attachment pointer).
     pub(crate) pointer: Arc<[u8]>,
 }

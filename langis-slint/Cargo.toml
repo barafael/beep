@@ -30,6 +30,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pictures and files pasted into the composer (`clipboard.rs`).
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 png = "0.18"
+# Blurred stand-ins for pictures and videos not downloaded yet.
+blurhash = "0.2"
 
 [build-dependencies]
 slint-build = "1.18"

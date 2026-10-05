@@ -994,7 +994,7 @@ fn attachment_item(
     images: &Images,
 ) -> AttachmentItem {
     let kind = attachment.kind;
-    let inline = matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker);
+    let inline = matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::Video);
     let picture = match download {
         Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => Some(picture),
         _ => None,
@@ -1039,5 +1039,13 @@ fn attachment_item(
         status: status.into(),
         can_retry: failed.is_some() && state::shown_inline(kind),
         can_save: !matches!(kind, AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker),
+        placeholder: attachment
+            .blurhash
+            .as_deref()
+            .map(|hash| images.blur(hash, w as u32, h as u32))
+            .unwrap_or_default(),
+        caption: attachment.caption.as_deref().unwrap_or_default().into(),
+        video: kind == AttachmentKind::Video,
+        gif: attachment.gif,
     }
 }

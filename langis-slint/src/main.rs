@@ -499,11 +499,35 @@ fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
 pub struct Images {
     avatars: ImageCache<ConversationId>,
     attachments: ImageCache<AttachmentId>,
+    /// Decoded BlurHashes, by hash.
+    blurs: RefCell<HashMap<String, Image>>,
     /// The "Profile pictures" setting.
     avatars_enabled: Cell<bool>,
 }
 
 impl Images {
+    /// A small blurred picture for a BlurHash, with the shape of `width` × `height`; empty if
+    /// the hash is invalid.
+    fn blur(&self, hash: &str, width: u32, height: u32) -> Image {
+        if let Some(image) = self.blurs.borrow().get(hash) {
+            return image.clone();
+        }
+        // Blurred anyway: a few dozen pixels are plenty, scaled up by the UI.
+        let (w, h) = if width >= height {
+            (32, (32 * height / width.max(1)).clamp(4, 32))
+        } else {
+            ((32 * width / height.max(1)).clamp(4, 32), 32)
+        };
+        let image = match blurhash::decode(hash, w, h, 1.0) {
+            Ok(rgba) => Image::from_rgba8(SharedPixelBuffer::clone_from_slice(&rgba, w, h)),
+            Err(_) => Image::default(),
+        };
+        self.blurs
+            .borrow_mut()
+            .insert(hash.to_owned(), image.clone());
+        image
+    }
+
     /// Empty when pictures are turned off.
     fn avatar(&self, id: &ConversationId, avatar: &Arc<Picture>) -> Image {
         if !self.avatars_enabled.get() {

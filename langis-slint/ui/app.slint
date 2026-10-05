@@ -51,6 +51,13 @@ export struct AttachmentItem {
     // The download failed; clicking the picture's place asks again.
     can-retry: bool,
     can-save: bool,
+    // Blurred, shown until the picture is there (and for videos, which aren't downloaded to
+    // be shown); empty if the sender made none.
+    placeholder: image,
+    caption: string,
+    // A video, opened in the desktop's player; `gif` for one meant to loop like a GIF.
+    video: bool,
+    gif: bool,
 }
 
 export struct ReactionItem {
@@ -373,18 +380,41 @@ component AttachmentView inherits VerticalLayout {
         border-radius: 8px;
         clip: true;
         background: root.ink.with-alpha(0.08);
+        if root.item.picture.width == 0 && root.item.placeholder.width > 0: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.item.placeholder;
+            image-fit: cover;
+        }
         if root.item.picture.width > 0: Image {
             width: parent.width;
             height: parent.height;
             source: root.item.picture;
             image-fit: contain;
         }
+        // Videos play in the desktop's player.
+        if root.item.video: Rectangle {
+            width: 48px;
+            height: 48px;
+            border-radius: 24px;
+            background: #0008;
+            Text {
+                text: root.item.gif ? "GIF" : "▶";
+                font-size: root.item.gif ? 0.9rem : 1.3rem;
+                font-weight: 700;
+                color: white;
+            }
+        }
+        if root.item.video: TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(root.item.id); }
+        }
         // Full size in the desktop's image viewer.
         if root.item.picture.width > 0: TouchArea {
             mouse-cursor: pointer;
             clicked => { root.open(root.item.id); }
         }
-        if root.item.picture.width == 0 && root.item.status == "": Spinner {
+        if root.item.picture.width == 0 && root.item.status == "" && !root.item.video: Spinner {
             indeterminate: true;
             width: 24px;
             height: 24px;
@@ -401,6 +431,11 @@ component AttachmentView inherits VerticalLayout {
             font-size: 0.8rem;
             color: root.ink.with-alpha(0.7);
         }
+    }
+    if root.item.caption != "": Text {
+        text: root.item.caption;
+        wrap: word-wrap;
+        color: root.ink;
     }
     if !root.item.inline || root.item.can-save: HorizontalLayout {
         spacing: 8px;
@@ -2044,11 +2079,24 @@ export component AppWindow inherits Window {
                                         source: tile.picture;
                                         image-fit: cover;
                                     }
-                                    // Videos (not downloaded for this) and pictures on their way.
-                                    if tile.picture.width == 0: Text {
-                                        text: tile.inline ? "" : "🎞";
-                                        font-size: 1.6rem;
-                                        color: Palette.foreground.with-alpha(0.6);
+                                    // Pictures on their way, and videos (not downloaded for this).
+                                    if tile.picture.width == 0 && tile.placeholder.width > 0: Image {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        source: tile.placeholder;
+                                        image-fit: cover;
+                                    }
+                                    if tile.video: Rectangle {
+                                        width: 36px;
+                                        height: 36px;
+                                        border-radius: 18px;
+                                        background: #0008;
+                                        Text {
+                                            text: tile.gif ? "GIF" : "▶";
+                                            font-size: tile.gif ? 0.75rem : 1rem;
+                                            font-weight: 700;
+                                            color: white;
+                                        }
                                     }
                                     TouchArea {
                                         mouse-cursor: pointer;

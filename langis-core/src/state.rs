@@ -2381,6 +2381,9 @@ mod tests {
             size: 1,
             width: 0,
             height: 0,
+            blurhash: None,
+            caption: None,
+            gif: false,
             pointer: Arc::from(Vec::new()),
         };
         ChatMessage {
