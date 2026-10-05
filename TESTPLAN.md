@@ -6,6 +6,9 @@ should happen. Note anything that differs, with the log (`RUST_LOG=langis=debug`
 
 ## Before you start
 
+- The build needs the libsignal-service-rs clone with the group calls next to this repository:
+  `git clone https://github.com/whisperfish/libsignal-service-rs ../libsignal-service-rs`, then
+  check out its local branch `langis/groups` (it exists only in the clone on this machine).
 - Build and run: `cargo run --release -p langis-slint`.
 - Have your phone at hand, and ideally a second person (or a second Signal account) who can
   write to you, react, edit and delete. A small test group with them helps for the group checks.
@@ -74,7 +77,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    on their phone.
 3. Have them send one: its timer starts when you read it.
 4. Change the timer on the phone: langis shows the notice and the new timer in the header.
-5. Group chats: changing the timer from langis says it isn't possible yet (that comes with M3).
+5. Group chats: see 3.1.
 
 ### 1.6 Formatting
 
@@ -230,3 +233,68 @@ after each.
 1. With a screen reader (Orca): moving through the chat list reads each chat as one item
    (name, unread count, last message); buttons say what they do; Enter or the reader's default
    action opens a chat.
+
+---
+
+## 3. M3
+
+Groups are best tested in a new group made for it, with one or two people who know they are
+part of a test. Every change below reaches all members' phones.
+
+### 3.1 Groups
+
+1. **+** above the chat list → pick two people → name the group → **Create**.
+   - The group opens; it reads "You created the group." On their phones the group appears with
+     both of you as members, and they can write to it; their messages arrive in langis.
+   - On **your** phone the group appears too.
+2. Group details (click its name) → change the **name**, then the **description**.
+   - Notices "You changed the group name to …" here, and the change on every phone.
+3. Chat ⋮ → **Disappearing messages → 1 minute** in the group.
+   - A notice here and on every phone; messages then disappear for everyone.
+4. Details → **Add members** → pick someone.
+   - "You added …"; the new member sees the group and its name, and can write.
+5. Member ⋮ → **Make admin**, then **Remove as admin**: their role changes on the phones.
+6. Member ⋮ → **Remove from group**: they are gone from the member list, here and on the
+   phones; they can no longer write to it.
+7. Changes by others: have someone rename the group, add or remove someone, change the timer
+   on their phone.
+   - langis shows a notice for each ("Alice changed the group name to …") and the new state.
+8. Restart langis: the notices of 1–7 are still there.
+9. A group where you are not an admin and only admins may edit (set on the phone): langis says
+   the change failed (the error shows), and nothing changes.
+10. **Leave group** while you are its only admin: langis asks you to make someone else an admin
+    first. Do that (5), then **Leave group** (details, confirm with "Really leave?").
+    - A banner says you aren't a member; the composer is gone. On the others' phones you left
+      the group.
+11. Have someone remove you from a group.
+    - The notice "… removed You." and the same banner; you can no longer write to it.
+12. Have someone who doesn't have your profile key yet add you to a group (it invites you).
+    - The group says you're invited and to accept on your phone; accept there, and langis
+      lets you write once the next group message arrives.
+13. With one member's phone off or unreachable, rename a group: the change still goes through
+    here and for the others (no error), and that member sees it later.
+
+### 3.2 Voice messages and audio
+
+1. Have someone send a voice message from their phone (hold the mic button).
+   - It shows as a row with ▶ and its length. Click ▶: it plays, the bar fills, the time counts
+     up. ⏸ pauses, ▶ goes on.
+2. Start another voice message while one plays: the first stops.
+3. An audio file sent as an attachment (MP3, M4A, Ogg): plays the same way.
+4. No sound device (e.g. pulled headphones with nothing else): a short error, no crash.
+
+### 3.3 Stories
+
+1. Have someone post a story on their phone (text, then a photo), visible to you.
+   - ◎ above the chat list gets a dot. Click it: their ring is listed with the time.
+2. Click the ring: the story shows full size; ‹ › move between their stories, Esc
+   closes the story, Esc again the list.
+   - On **their** phone your view is counted (if you send read receipts / view receipts are on).
+   - On **your** phone the story counts as viewed too.
+3. A story posted to a group you are in shows under the group's name.
+4. Your own stories posted on the phone show in the list too, without sending yourself receipts.
+5. **New story** (bottom of the list): pick a test group, type text, **Post**.
+   - It appears in the group's stories on the members' phones, with the text on a blue
+     background, and on your phone under "My stories".
+6. **Photo…** → pick a picture → it is posted the same way, as a photo story.
+7. 24 hours after posting, stories are gone from the list (also after restarting).

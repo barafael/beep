@@ -58,9 +58,21 @@ Remaining:
 
 ## M3
 
-- **Group management**: create groups, add and remove members, change name, picture,
-  description and the disappearing-messages timer. Needs a fork of libsignal-service-rs for
-  group changes.
-- **Stories**: receive and view first, then send.
-- **Voice messages**: playback (symphonia + cpal); recording later, as it depends on audio
-  input across desktops.
+Done: group management (create a group, rename it, description, disappearing-messages timer,
+add and remove members, make and unmake admins, leave; group changes from others show as
+notices), playing audio and voice messages in the window (AAC, MP4, MP3, Ogg, FLAC, WAV via
+rodio), stories (received ones viewed for 24 hours with viewed receipts; text and photo stories
+posted to groups).
+
+Group changes need calls libsignal-service-rs lacks: a local clone with them (branch
+`langis/groups`) is patched in from `../libsignal-service-rs`, and the presage fork uses them.
+
+Remaining:
+
+- **Live verification** of all of M3 against a real account (TESTPLAN.md §3).
+- **Not done:** the group picture; accepting a group invitation here (it is done on the
+  phone); adding people known only by phone number; group invite links and join requests; recording voice
+  messages (audio input across desktops); posting to My Story or custom story lists (the
+  audience needs care: distribution lists live in the storage service); replying to and
+  reacting to stories; a seek bar for audio.
+- **Upstream** the libsignal-service-rs changes, then drop the `[patch]`.
