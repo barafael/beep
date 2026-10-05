@@ -13,6 +13,8 @@ mod import;
 #[cfg(feature = "signal")]
 mod local;
 mod mock;
+#[cfg(feature = "signal")]
+mod preview;
 mod qr;
 pub mod settings;
 #[cfg(feature = "signal")]
@@ -141,6 +143,9 @@ pub struct Privacy {
     pub read_receipts: bool,
     /// Show others when we are typing.
     pub typing_indicators: bool,
+    /// Add a preview of the first link to messages we send. The linked site then sees our
+    /// address, so it is off unless turned on.
+    pub link_previews: bool,
 }
 
 impl Default for Privacy {
@@ -148,6 +153,7 @@ impl Default for Privacy {
         Self {
             read_receipts: true,
             typing_indicators: true,
+            link_previews: false,
         }
     }
 }
@@ -260,6 +266,8 @@ pub struct ChatMessage {
     pub expire_timer: Option<u32>,
     /// It is the notice that the conversation's timer changed, to this many seconds.
     pub timer_change: Option<u32>,
+    /// A preview of the link in it, if the sender made one.
+    pub preview: Option<LinkPreview>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
 }
@@ -277,6 +285,15 @@ impl ChatMessage {
     pub fn is(&self, target: &MessageRef) -> bool {
         self.timestamp == target.timestamp && self.sender_id == target.author_id
     }
+}
+
+/// What a link in a message points to, as the sender's app found it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkPreview {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    pub image: Option<Attachment>,
 }
 
 /// Identifies a message the way Signal does: its author and sent time.

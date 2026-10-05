@@ -3666,6 +3666,7 @@ dependencies = [
  "qrcode",
  "reqwest",
  "reqwest-websocket",
+ "rustls",
  "sha2 0.10.9",
  "sqlx",
  "tempfile",

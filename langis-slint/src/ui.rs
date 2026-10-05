@@ -510,6 +510,7 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
     window.set_close_to_tray(settings.close_to_tray);
     window.set_read_receipts(settings.privacy.read_receipts);
     window.set_typing_indicators(settings.privacy.typing_indicators);
+    window.set_link_previews(settings.privacy.link_previews);
     window.set_autostart_supported(crate::autostart::SUPPORTED);
     window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
@@ -539,6 +540,7 @@ fn read_settings(window: &AppWindow) -> Settings {
         privacy: langis_core::Privacy {
             read_receipts: window.get_read_receipts(),
             typing_indicators: window.get_typing_indicators(),
+            link_previews: window.get_link_previews(),
         },
     }
 }
@@ -957,6 +959,27 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,
         can_forward: ChatState::can_forward(m),
+        preview_url: m.preview.as_ref().map_or("", |p| p.url.as_str()).into(),
+        preview_title: m.preview.as_ref().map_or("", |p| p.title.as_str()).into(),
+        preview_description: m.preview.as_ref().map_or("", |p| p.description.as_str()).into(),
+        preview_site: m
+            .preview
+            .as_ref()
+            .and_then(|p| p.url.strip_prefix("https://")?.split('/').next())
+            .unwrap_or_default()
+            .into(),
+        has_preview_image: m.preview.as_ref().is_some_and(|p| p.image.is_some()),
+        preview_image: m
+            .preview
+            .as_ref()
+            .and_then(|p| p.image.as_ref())
+            .map(|a| {
+                let item = attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images);
+                // A preview's picture stays small.
+                let scale = (150. / item.height.max(1.)).min(1.);
+                AttachmentItem { can_save: false, width: item.width * scale, height: item.height * scale, ..item }
+            })
+            .unwrap_or_default(),
         highlighted: view.highlighted,
     }
 }

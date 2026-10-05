@@ -217,6 +217,51 @@ pub(crate) async fn save(
 /// Signal's limit for a single attachment.
 const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
+/// How an upload of `data` is described to Signal.
+fn spec(
+    name: String,
+    content_type: String,
+    data: &[u8],
+) -> presage::libsignal_service::sender::AttachmentSpec {
+    // Receivers lay out pictures before downloading them, so they want the size.
+    let (width, height) = if content_type.starts_with("image/") {
+        image::ImageReader::new(std::io::Cursor::new(data))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok())
+            .map_or((None, None), |(w, h)| (Some(w), Some(h)))
+    } else {
+        (None, None)
+    };
+    presage::libsignal_service::sender::AttachmentSpec {
+        content_type,
+        length: data.len(),
+        file_name: Some(name),
+        preview: None,
+        voice_note: None,
+        borderless: None,
+        width,
+        height,
+        caption: None,
+        blur_hash: None,
+    }
+}
+
+/// Uploads bytes that aren't a file, e.g. a link preview's picture.
+pub(crate) async fn upload_bytes(
+    manager: &crate::signal::Mgr,
+    name: &str,
+    content_type: &str,
+    data: Vec<u8>,
+) -> Result<AttachmentPointer, String> {
+    let spec = spec(name.to_owned(), content_type.to_owned(), &data);
+    manager
+        .upload_attachment(spec, data)
+        .await
+        .map_err(|e| format!("failed to upload: {e}"))?
+        .map_err(|e| format!("failed to upload: {e}"))
+}
+
 /// Uploads `files` for sending, as the pointers to put in the message.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
@@ -240,28 +285,7 @@ pub(crate) async fn upload(
             .first_or_octet_stream()
             .essence_str()
             .to_owned();
-        // Receivers lay out pictures before downloading them, so they want the size.
-        let (width, height) = if content_type.starts_with("image/") {
-            image::ImageReader::new(std::io::Cursor::new(&data))
-                .with_guessed_format()
-                .ok()
-                .and_then(|reader| reader.into_dimensions().ok())
-                .map_or((None, None), |(w, h)| (Some(w), Some(h)))
-        } else {
-            (None, None)
-        };
-        let spec = presage::libsignal_service::sender::AttachmentSpec {
-            content_type,
-            length: data.len(),
-            file_name: Some(name),
-            preview: None,
-            voice_note: None,
-            borderless: None,
-            width,
-            height,
-            caption: None,
-            blur_hash: None,
-        };
+        let spec = spec(name, content_type, &data);
         uploads.push((spec, data));
     }
     let results = manager

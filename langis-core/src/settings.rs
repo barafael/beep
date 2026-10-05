@@ -163,6 +163,8 @@ impl Settings {
                 ("read_receipts", "false") => settings.privacy.read_receipts = false,
                 ("typing_indicators", "true") => settings.privacy.typing_indicators = true,
                 ("typing_indicators", "false") => settings.privacy.typing_indicators = false,
+                ("link_previews", "true") => settings.privacy.link_previews = true,
+                ("link_previews", "false") => settings.privacy.link_previews = false,
                 _ => {}
             }
         }
@@ -188,13 +190,14 @@ impl Settings {
         format!(
             "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {notification_content}\nclose_to_tray = {}\n\
-             read_receipts = {}\ntyping_indicators = {}\n",
+             read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\n",
             self.style.key(),
             self.show_avatars,
             self.notifications,
             self.close_to_tray,
             self.privacy.read_receipts,
-            self.privacy.typing_indicators
+            self.privacy.typing_indicators,
+            self.privacy.link_previews
         )
     }
 }
@@ -222,6 +225,7 @@ mod tests {
                 privacy: crate::Privacy {
                     read_receipts: false,
                     typing_indicators: false,
+                    link_previews: true,
                 },
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);

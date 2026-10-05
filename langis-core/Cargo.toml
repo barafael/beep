@@ -14,7 +14,7 @@ signal = [
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
-    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket",
+    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket", "dep:rustls",
 ]
 
 [dependencies]
@@ -51,6 +51,8 @@ tempfile = { version = "3", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 # Same version as libsignal-service; only to download the history archive through its `PushService`.
 reqwest = { version = "0.13", default-features = false, optional = true }
+# The TLS crypto provider for link previews' requests; the one libsignal-service installs.
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 jiff = "0.2"
 async-channel = "2"
 

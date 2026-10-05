@@ -2091,6 +2091,20 @@ async fn to_chat_message(
         styles,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
+        preview: data.preview.first().and_then(|preview| {
+            Some(crate::LinkPreview {
+                url: preview
+                    .url
+                    .clone()
+                    .filter(|url| url.starts_with("https://"))?,
+                title: preview.title.clone().unwrap_or_default(),
+                description: preview.description.clone().unwrap_or_default(),
+                image: preview
+                    .image
+                    .as_ref()
+                    .map(|pointer| attachments::describe(pointer, false)),
+            })
+        }),
         edited_at: edit.then(|| data.timestamp.unwrap_or_default()),
         ..Default::default()
     })
@@ -2240,12 +2254,18 @@ async fn handle(
             mentions,
         } => {
             let pointers = attachments::upload(manager, &files).await?;
+            let preview = if ctx.privacy.get().link_previews {
+                link_preview(manager, &body).await
+            } else {
+                None
+            };
             let outgoing = Outgoing {
                 body,
                 styles,
                 mentions,
                 quote,
                 pointers,
+                preview,
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
@@ -2317,6 +2337,7 @@ async fn handle(
                 mentions: Vec::new(),
                 quote: None,
                 pointers,
+                preview: None,
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
@@ -2673,6 +2694,8 @@ struct Outgoing {
     mentions: Vec<crate::Mention>,
     quote: Option<Quote>,
     pointers: Vec<presage::proto::AttachmentPointer>,
+    /// The preview of a link in it, as sent and as shown.
+    preview: Option<(presage::proto::Preview, crate::LinkPreview)>,
 }
 
 /// Sends a new message and shows it; remembers it for receipts and starts its timer.
@@ -2688,7 +2711,9 @@ async fn send_new(
         mentions,
         quote,
         pointers,
+        preview,
     } = outgoing;
+    let (sent_preview, shown_preview) = preview.unzip();
     let thread = ctx
         .threads
         .borrow()
@@ -2702,6 +2727,7 @@ async fn send_new(
         body: (!text.is_empty()).then_some(text),
         body_ranges: body_ranges(ranges),
         attachments: pointers.clone(),
+        preview: sent_preview.into_iter().collect(),
         quote: quote
             .as_ref()
             .map(|quote| presage::proto::data_message::Quote {
@@ -2757,10 +2783,49 @@ async fn send_new(
             .collect(),
         styles,
         expire_timer: (timer > 0).then_some(timer),
+        preview: shown_preview,
         ..Default::default()
     }));
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
     Ok(())
+}
+
+/// A preview of the first https link in `body`, its picture uploaded; `None` if there is no
+/// link or the page says nothing about itself.
+async fn link_preview(
+    manager: &Mgr,
+    body: &str,
+) -> Option<(presage::proto::Preview, crate::LinkPreview)> {
+    let url = format::links(body)
+        .into_iter()
+        .find(|link| link.starts_with("https://"))?
+        .to_owned();
+    let page = crate::preview::fetch_page(&url).await?;
+    let mut pointer = None;
+    if let Some(image) = &page.image
+        && let Some((bytes, content_type)) = crate::preview::fetch_image(image).await
+    {
+        match attachments::upload_bytes(manager, "preview", &content_type, bytes).await {
+            Ok(uploaded) => pointer = Some(uploaded),
+            Err(error) => debug!(%error, "couldn't upload a link preview's picture"),
+        }
+    }
+    let shown = crate::LinkPreview {
+        url: url.clone(),
+        title: page.title.clone(),
+        description: page.description.clone(),
+        image: pointer
+            .as_ref()
+            .map(|pointer| attachments::describe(pointer, false)),
+    };
+    let sent = presage::proto::Preview {
+        url: Some(url),
+        title: Some(page.title),
+        description: (!page.description.is_empty()).then_some(page.description),
+        image: pointer,
+        date: None,
+    };
+    Some((sent, shown))
 }
 
 /// Tells our other devices about something done here.

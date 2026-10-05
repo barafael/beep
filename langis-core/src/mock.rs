@@ -503,6 +503,29 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 ..message("alice", "You", "See the moon rising tonight", ago(6), true)
             },
             ChatMessage {
+                preview: Some(crate::LinkPreview {
+                    url: "https://www.rust-lang.org/".into(),
+                    title: "Rust Programming Language".into(),
+                    description:
+                        "A language empowering everyone to build reliable and efficient software."
+                            .into(),
+                    image: Some(attachment(
+                        "preview",
+                        AttachmentKind::Image,
+                        "image/png",
+                        None,
+                        (1200, 630),
+                    )),
+                }),
+                ..message(
+                    "alice",
+                    "Alice",
+                    "Have you seen https://www.rust-lang.org/ lately?",
+                    ago(4),
+                    false,
+                )
+            },
+            ChatMessage {
                 deleted: true,
                 ..message("alice", "Alice", "", ago(3), false)
             },

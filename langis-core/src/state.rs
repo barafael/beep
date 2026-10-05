@@ -1721,7 +1721,10 @@ impl ChatState {
             .flat_map(|(_, media)| media.iter().flatten());
         shown
             .chain(gathered)
-            .flat_map(|m| &m.attachments)
+            .flat_map(|m| {
+                let preview = m.preview.iter().filter_map(|p| p.image.as_ref());
+                m.attachments.iter().chain(preview)
+            })
             .find(|a| &a.id == id)
     }
 
