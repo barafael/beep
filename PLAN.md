@@ -34,23 +34,24 @@ aren't taken over yet.
 
 ## M2
 
-- **Storage service, writing**, so pins (the first four), mutes, archive and blocks follow to
-  the phone; then langis-only changes no longer need protecting from the next read.
-- **Message requests**: accept, delete, block for chats with unknown senders.
-- **Blocking** contacts and groups.
-- **Chat folders** (Signal's chat folders, from the storage service).
-- **Contact details**: profile, safety number and verification, a notice when a safety number
-  changes (needs the presage fork to report identity changes).
-- **Group details**: members, description, invite link (read only until M3).
-- **Forwarding** messages and attachments.
-- **Search in a chat**, jumping to results.
-- **Media overview** per chat: photos, files, links.
-- **Stickers**: show installed packs, send them.
-- **Link previews**, opt-in.
-- **Paste and drop** files and images into the composer.
-- **Media polish**: blurhash placeholders, animated GIFs, video thumbnails, captions.
-- **Keyboard shortcuts** beyond Alt+1…9 (search, next unread, close chat).
-- **Accessibility**: labels and focus order for screen readers.
+Done: message requests (Accept / Delete / Block, synced with other devices), blocking (block list
+synced both ways), chat folders read from the phone as tabs, contact details with safety
+numbers, group details, forwarding, search in a chat (whole history, jumps to the result),
+media overview (media, files, links), sending stickers from installed packs, link previews
+(shown; sending opt-in), pasting and dropping files, blurred previews, video tiles and captions,
+keyboard shortcuts, screen-reader labels.
+
+Remaining:
+
+- **Storage service, writing**, so pins (the first four), mutes, archive, blocks, folders and
+  accepted requests follow to the phone; then langis-only changes no longer need protecting
+  from the next read. Records must be changed in their bytes, field by field: prost drops
+  fields it doesn't know, and rewriting a record would delete newer settings on the phone.
+- **Not done within the items above:** marking a safety number verified; a notice when a
+  contact's safety number changes (needs the presage fork to report identity changes);
+  creating and editing folders (needs storage writing); animated GIFs and real video
+  thumbnails (need a video decoder; they open in the desktop's player); a sticker picker
+  test that sees the stickers (the testing backend doesn't lay out popups).
 
 ## M3
 
