@@ -51,6 +51,9 @@ pub struct Conversation {
     /// A line under the title: a phone number, a group's size, "Messages to yourself".
     pub subtitle: String,
     pub settings: ChatSettings,
+    /// Disappearing messages: seconds a message lasts once read (incoming) or sent; 0 is off.
+    /// Signal keeps it with the contact or group, and every change comes as a message.
+    pub expire_timer: u32,
 }
 
 /// What langis remembers about a conversation besides its messages.
@@ -65,13 +68,44 @@ pub struct ChatSettings {
     pub last_read: u64,
     /// Marked unread by hand.
     pub marked_unread: bool,
-    /// Disappearing messages: seconds a message lasts once read (incoming) or sent; 0 is off.
-    pub expire_timer: u32,
 }
 
 impl ChatSettings {
     pub fn muted(&self, now: u64) -> bool {
         self.muted_until.is_some_and(|until| until > now)
+    }
+
+    /// Archived chats aren't pinned, and pinned ones aren't archived.
+    pub fn set_archived(&mut self, archived: bool) {
+        self.archived = archived;
+        if archived {
+            self.pinned = None;
+        }
+    }
+
+    pub fn set_pinned(&mut self, position: Option<u32>) {
+        self.pinned = position;
+        if position.is_some() {
+            self.archived = false;
+        }
+    }
+}
+
+/// Privacy preferences the backend acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Privacy {
+    /// Tell senders when their messages were read.
+    pub read_receipts: bool,
+    /// Show others when we are typing.
+    pub typing_indicators: bool,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Self {
+            read_receipts: true,
+            typing_indicators: true,
+        }
     }
 }
 
@@ -121,25 +155,6 @@ pub struct StyleRange {
     pub style: Style,
 }
 
-/// Replaces the placeholders Signal puts where a mention goes (U+FFFC) with "@Name".
-/// `mentions` are `(start, length, name)` in UTF-16 code units, as Signal counts them. A
-/// placeholder without one (e.g. from history imported before mentions were) reads "@…".
-pub fn resolve_mentions(body: &str, mentions: &[(u32, u32, String)]) -> String {
-    let ranges: Vec<_> = mentions
-        .iter()
-        .map(|(start, length, _)| format::WireRange {
-            start: *start,
-            length: *length,
-            value: format::RangeValue::Mention(String::new()),
-        })
-        .collect();
-    let names: Vec<_> = mentions
-        .iter()
-        .map(|(start, _, name)| (*start, name.clone()))
-        .collect();
-    format::decode(body, &ranges, &names).0
-}
-
 /// A disappearing-message timer as people say it: "5 minutes", "1 week".
 pub fn format_timer(seconds: u32) -> String {
     const UNITS: [(u32, &str); 5] = [
@@ -156,6 +171,17 @@ pub fn format_timer(seconds: u32) -> String {
     match seconds / size {
         1 => format!("1 {unit}"),
         n => format!("{n} {unit}s"),
+    }
+}
+
+/// What a message changing the disappearing-message timer says, `who` being "You" or a name.
+pub fn timer_notice(who: &str, seconds: u32) -> String {
+    match seconds {
+        0 => format!("⏱ {who} turned off disappearing messages."),
+        seconds => format!(
+            "⏱ {who} set disappearing messages to {}.",
+            format_timer(seconds)
+        ),
     }
 }
 
@@ -176,7 +202,10 @@ pub struct ChatMessage {
     pub reactions: Vec<Reaction>,
     /// For our own messages.
     pub delivery: Delivery,
-    /// Earlier versions, oldest first, with when they were replaced; empty if never edited.
+    /// When it was last edited, if it was.
+    pub edited_at: Option<u64>,
+    /// Earlier versions known here, oldest first, with when they were replaced. Others' edits
+    /// replace the stored text, so this can be shorter than the history, or empty.
     pub edits: Vec<(u64, String)>,
     /// Deleted for everyone: shown as such, without content.
     pub deleted: bool,
@@ -185,6 +214,8 @@ pub struct ChatMessage {
     pub expires_at: Option<u64>,
     /// Its disappearing timer in seconds, if it has one.
     pub expire_timer: Option<u32>,
+    /// It is the notice that the conversation's timer changed, to this many seconds.
+    pub timer_change: Option<u32>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
 }
@@ -196,6 +227,11 @@ impl ChatMessage {
             author_id: self.sender_id.clone(),
             timestamp: self.timestamp,
         }
+    }
+
+    /// Whether `target` refers to this message.
+    pub fn is(&self, target: &MessageRef) -> bool {
+        self.timestamp == target.timestamp && self.sender_id == target.author_id
     }
 }
 
@@ -226,11 +262,7 @@ pub(crate) fn apply_reaction(
     reaction: Reaction,
     remove: bool,
 ) -> bool {
-    let Some(message) = messages
-        .iter_mut()
-        .rev()
-        .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
-    else {
+    let Some(message) = messages.iter_mut().rev().find(|m| m.is(target)) else {
         return false;
     };
     let before = message.reactions.len();
@@ -490,16 +522,14 @@ pub enum Command {
         typing: bool,
     },
     /// These incoming messages were seen: tells their senders (if read receipts are on) and
-    /// our other devices, and starts disappearing timers.
+    /// our other devices, and starts the timers of those that disappear (seconds).
     MarkRead {
         conversation: ConversationId,
         messages: Vec<MessageRef>,
+        expiring: Vec<(MessageRef, u32)>,
     },
-    /// Marks a conversation unread by hand, or clears that.
-    MarkUnread {
-        conversation: ConversationId,
-        unread: bool,
-    },
+    /// Marks a conversation unread by hand (reading it clears that; see `MarkRead`).
+    MarkUnread(ConversationId),
     /// Replaces the text of one of our messages.
     Edit {
         conversation: ConversationId,
@@ -529,11 +559,7 @@ pub enum Command {
         conversation: ConversationId,
         seconds: u32,
     },
-    /// Privacy preferences the backend acts on.
-    Preferences {
-        read_receipts: bool,
-        typing_indicators: bool,
-    },
+    Preferences(Privacy),
     /// Reacts to a message with `emoji`, or takes our reaction back.
     React {
         conversation: ConversationId,

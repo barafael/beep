@@ -56,7 +56,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         move |id| {
             shared.act(|chat| {
                 let command = chat.select(&ConversationId(id.into()));
-                let update = Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() };
+                let update = Update::reset();
                 (command, update)
             });
         }
@@ -85,17 +85,23 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| (chat.draft_changed(&text), Update::default()));
         }
     });
-    window.on_conversation_action({
-        let shared = shared.clone();
-        move |id, action| {
-            let id = ConversationId(id.into());
-            shared.act(|chat| {
-                let command = conversation_action(chat, &id, &action);
-                // Archiving or marking unread closes the chat.
-                (command, Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() })
-            });
-        }
+    window.on_toggle_pin({
+        let toggle = chat_action(shared, |chat, id, ()| chat.toggle_pin(id));
+        move |id| toggle(id, ())
     });
+    window.on_mark_read(chat_action(shared, |chat, id, read: bool| chat.mark_unread(id, !read)));
+    window.on_mute(chat_action(shared, |chat, id, seconds: i32| {
+        let until = match seconds {
+            0 => None,
+            ..0 => Some(u64::MAX),
+            seconds => Some(now_millis() + seconds as u64 * 1000),
+        };
+        chat.mute(id, until)
+    }));
+    window.on_archive(chat_action(shared, |chat, id, archived| chat.archive(id, archived)));
+    window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
+        chat.set_timer(id, u32::try_from(seconds).ok()?)
+    }));
     window.on_show_archived({
         let shared = shared.clone();
         move |show| {
@@ -112,7 +118,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| match chat.select_pinned(n - 1) {
                 Some(command) => {
                     found = true;
-                    (command, Update { conversations: true, messages: MessagesUpdate::Reset, ..Update::default() })
+                    (command, Update::reset())
                 }
                 None => (None, Update::default()),
             });
@@ -346,8 +352,8 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         NotificationContent::Nothing => 2,
     });
     window.set_close_to_tray(settings.close_to_tray);
-    window.set_read_receipts(settings.read_receipts);
-    window.set_typing_indicators(settings.typing_indicators);
+    window.set_read_receipts(settings.privacy.read_receipts);
+    window.set_typing_indicators(settings.privacy.typing_indicators);
     window.set_autostart_supported(crate::autostart::SUPPORTED);
     window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
@@ -374,31 +380,23 @@ fn read_settings(window: &AppWindow) -> Settings {
             _ => NotificationContent::NameAndMessage,
         },
         close_to_tray: window.get_close_to_tray(),
-        read_receipts: window.get_read_receipts(),
-        typing_indicators: window.get_typing_indicators(),
+        privacy: langis_core::Privacy {
+            read_receipts: window.get_read_receipts(),
+            typing_indicators: window.get_typing_indicators(),
+        },
     }
 }
 
-/// See `ConversationMenu` in app.slint.
-fn conversation_action(chat: &mut ChatState, id: &ConversationId, action: &str) -> Option<langis_core::Command> {
-    let seconds = |prefix: &str| action.strip_prefix(prefix).and_then(|s| s.parse::<u64>().ok());
-    match action {
-        "pin" | "unpin" => chat.toggle_pin(id),
-        "read" => chat.mark_unread(id, false),
-        "unread" => chat.mark_unread(id, true),
-        "unmute" => chat.mute(id, None),
-        "mute:forever" => chat.mute(id, Some(u64::MAX)),
-        "archive" => chat.archive(id, true),
-        "unarchive" => chat.archive(id, false),
-        _ => {
-            if let Some(seconds) = seconds("mute:") {
-                chat.mute(id, Some(now_millis() + seconds * 1000))
-            } else if let Some(seconds) = seconds("timer:") {
-                chat.set_timer(id, u32::try_from(seconds).ok()?)
-            } else {
-                None
-            }
-        }
+/// A handler for one of `ConversationMenu`'s actions (app.slint), which take the conversation
+/// id first. Archiving or marking unread may close the chat, so everything is redrawn.
+fn chat_action<A>(
+    shared: &Rc<Shared>,
+    action: impl Fn(&mut ChatState, &ConversationId, A) -> Option<langis_core::Command> + 'static,
+) -> impl Fn(SharedString, A) + 'static {
+    let shared = shared.clone();
+    move |id, argument| {
+        let id = ConversationId(id.into());
+        shared.act(|chat| (action(chat, &id, argument), Update::reset()));
     }
 }
 
@@ -518,8 +516,8 @@ fn conversation_item(view: &ConversationView, images: &Images) -> ConversationIt
         marked_unread: view.marked_unread(),
         archived: c.settings.archived,
         typing: state::typing_label(&view.typing).into(),
-        timer: c.settings.expire_timer as i32,
-        timer_label: langis_core::format_timer(c.settings.expire_timer).into(),
+        timer: c.expire_timer as i32,
+        timer_label: langis_core::format_timer(c.expire_timer).into(),
     }
 }
 
@@ -538,14 +536,8 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
         sender: m.sender.as_str().into(),
-        body: if m.deleted {
-            crate::rich_text("This message was deleted.", &[], false)
-        } else {
-            // A long message's fetched text has no formatting of its own.
-            let styles = if view.body == m.body { &m.styles[..] } else { &[] };
-            crate::rich_text(view.body, styles, view.revealed)
-        },
-        has_body: m.deleted || !view.body.is_empty(),
+        body: crate::rich_text(view.body, view.styles, view.revealed),
+        has_body: !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
@@ -567,11 +559,10 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
             (true, Delivery::Delivered) => 2,
             (true, Delivery::Read) => 3,
         },
-        edited: !m.edits.is_empty(),
+        edited: m.edited_at.is_some(),
         deleted: m.deleted,
         expires: m.expires_at.map(|at| state::format_remaining(at, now_millis())).unwrap_or_default().into(),
         can_edit: chat.can_edit(m),
-        can_delete_for_everyone: chat.can_delete_for_everyone(m),
         first_unread: view.first_unread,
     }
 }

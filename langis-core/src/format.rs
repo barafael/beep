@@ -234,6 +234,24 @@ mod tests {
     }
 
     #[test]
+    fn mentions_become_names_counting_utf16() {
+        let mention = |start| WireRange {
+            start,
+            length: 1,
+            value: RangeValue::Mention("x".into()),
+        };
+        let decoded = decode(
+            "Hi \u{FFFC}, see you",
+            &[mention(3)],
+            &[(3, "Alice".into())],
+        );
+        assert_eq!(decoded.0, "Hi @Alice, see you");
+        // An emoji before the mention takes two UTF-16 units.
+        let decoded = decode("🎉 \u{FFFC}!", &[mention(3)], &[(3, "Bob".into())]);
+        assert_eq!(decoded.0, "🎉 @Bob!");
+    }
+
+    #[test]
     fn unknown_mentions_read_as_ellipsis() {
         let ranges = [WireRange {
             start: 3,

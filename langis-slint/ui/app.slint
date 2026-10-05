@@ -86,8 +86,8 @@ export struct MessageItem {
     deleted: bool,
     // Time left until it disappears, e.g. "5m"; empty if it doesn't.
     expires: string,
+    // Ours and recent enough to edit or delete for everyone.
     can-edit: bool,
-    can-delete-for-everyone: bool,
     // The first message that came after the chat was last read.
     first-unread: bool,
 }
@@ -119,32 +119,36 @@ component Avatar inherits Rectangle {
 }
 
 // What can be done with a conversation, in its context menu and the chat header's menu.
-// `action` gets "pin", "unpin", "read", "unread", "mute:<seconds>", "mute:forever", "unmute",
-// "archive", "unarchive" or "timer:<seconds>".
 component ConversationMenu inherits ContextMenuArea {
     in property <ConversationItem> item;
     // With the disappearing-messages timer (the chat header's menu).
     in property <bool> with-timer;
-    callback action(string);
+    callback toggle-pin;
+    callback mark-read(bool);
+    // For this many seconds; -1 for good, 0 to unmute.
+    callback mute(int);
+    callback archive(bool);
+    callback set-timer(int);
+    property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
     Menu {
         MenuItem {
             title: root.item.pinned ? "Unpin" : "Pin";
-            activated => { root.action(root.item.pinned ? "unpin" : "pin"); }
+            activated => { root.toggle-pin(); }
         }
         MenuItem {
-            title: root.item.unread > 0 || root.item.marked-unread ? "Mark as read" : "Mark as unread";
-            activated => { root.action(root.item.unread > 0 || root.item.marked-unread ? "read" : "unread"); }
+            title: root.unread ? "Mark as read" : "Mark as unread";
+            activated => { root.mark-read(root.unread); }
         }
         if root.item.muted: MenuItem {
             title: "Unmute";
-            activated => { root.action("unmute"); }
+            activated => { root.mute(0); }
         }
         if !root.item.muted: Menu {
             title: "Mute";
-            MenuItem { title: "For 1 hour"; activated => { root.action("mute:3600"); } }
-            MenuItem { title: "For 8 hours"; activated => { root.action("mute:28800"); } }
-            MenuItem { title: "For 1 week"; activated => { root.action("mute:604800"); } }
-            MenuItem { title: "Always"; activated => { root.action("mute:forever"); } }
+            MenuItem { title: "For 1 hour"; activated => { root.mute(3600); } }
+            MenuItem { title: "For 8 hours"; activated => { root.mute(28800); } }
+            MenuItem { title: "For 1 week"; activated => { root.mute(604800); } }
+            MenuItem { title: "Always"; activated => { root.mute(-1); } }
         }
         if root.with-timer: Menu {
             title: "Disappearing messages";
@@ -159,13 +163,13 @@ component ConversationMenu inherits ContextMenuArea {
                 { label: "4 weeks", seconds: 2419200 },
             ]: MenuItem {
                 title: (choice.seconds == root.item.timer ? "✓ " : "") + choice.label;
-                activated => { root.action("timer:" + choice.seconds); }
+                activated => { root.set-timer(choice.seconds); }
             }
         }
         MenuSeparator {}
         MenuItem {
             title: root.item.archived ? "Unarchive" : "Archive";
-            activated => { root.action(root.item.archived ? "unarchive" : "archive"); }
+            activated => { root.archive(!root.item.archived); }
         }
     }
 }
@@ -174,7 +178,11 @@ component ConversationRow inherits Rectangle {
     in property <ConversationItem> item;
     in property <bool> selected;
     callback clicked;
-    callback action(string);
+    // See `ConversationMenu`.
+    callback toggle-pin;
+    callback mark-read(bool);
+    callback mute(int);
+    callback archive(bool);
 
     height: 64px;
     border-radius: 6px;
@@ -261,7 +269,10 @@ component ConversationRow inherits Rectangle {
     // On top: it takes only right clicks, so left clicks still reach the row.
     ConversationMenu {
         item: root.item;
-        action(action) => { root.action(action); }
+        toggle-pin => { root.toggle-pin(); }
+        mark-read(read) => { root.mark-read(read); }
+        mute(seconds) => { root.mute(seconds); }
+        archive(archived) => { root.archive(archived); }
     }
 }
 
@@ -661,13 +672,13 @@ component Bubble inherits Rectangle {
     }
 
     // On top: it takes only right clicks.
-    if !item.deleted: ContextMenuArea {
+    ContextMenuArea {
         Menu {
-            MenuItem {
+            if !item.deleted: MenuItem {
                 title: "Reply";
                 activated => { root.reply(); }
             }
-            MenuItem {
+            if !item.deleted: MenuItem {
                 title: "React…";
                 activated => { picker.show(); }
             }
@@ -679,22 +690,14 @@ component Bubble inherits Rectangle {
                 title: "Edit";
                 activated => { root.edit(); }
             }
-            MenuSeparator {}
+            if !item.deleted: MenuSeparator {}
             MenuItem {
                 title: "Delete for me";
                 activated => { root.delete(false); }
             }
-            if item.can-delete-for-everyone: MenuItem {
+            if item.can-edit: MenuItem {
                 title: "Delete for everyone";
                 activated => { root.delete(true); }
-            }
-        }
-    }
-    if item.deleted: ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "Delete for me";
-                activated => { root.delete(false); }
             }
         }
     }
@@ -1120,8 +1123,12 @@ export component AppWindow inherits Window {
     in-out property <string> search-text;
     callback fetch-attachment(string);
     callback save-attachment(string);
-    // See `ConversationMenu`.
-    callback conversation-action(string, string);
+    // See `ConversationMenu`; each takes the conversation's id first.
+    callback toggle-pin(string);
+    callback mark-read(string, bool);
+    callback mute(string, int);
+    callback archive(string, bool);
+    callback set-timer(string, int);
     callback show-archived(bool);
     callback edit(int);
     callback delete(int, bool);
@@ -1320,7 +1327,10 @@ export component AppWindow inherits Window {
                                     root.settings-open = false;
                                     root.select(item.id);
                                 }
-                                action(action) => { root.conversation-action(item.id, action); }
+                                toggle-pin => { root.toggle-pin(item.id); }
+                                mark-read(read) => { root.mark-read(item.id, read); }
+                                mute(seconds) => { root.mute(item.id, seconds); }
+                                archive(archived) => { root.archive(item.id, archived); }
                             }
                         }
                     }
@@ -1448,7 +1458,12 @@ export component AppWindow inherits Window {
                     chat-menu := ConversationMenu {
                         item: root.conversations[root.selected];
                         with-timer: true;
-                        action(action) => { root.conversation-action(root.conversations[root.selected].id, action); }
+                        property <string> id: root.conversations[root.selected].id;
+                        toggle-pin => { root.toggle-pin(self.id); }
+                        mark-read(read) => { root.mark-read(self.id, read); }
+                        mute(seconds) => { root.mute(self.id, seconds); }
+                        archive(archived) => { root.archive(self.id, archived); }
+                        set-timer(seconds) => { root.set-timer(self.id, seconds); }
                     }
                     Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
                 }

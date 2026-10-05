@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use sqlx::{
     Row as _, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
 
 use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
@@ -28,14 +28,28 @@ fn key(conversation: &ConversationId, message: &MessageRef) -> (String, String, 
     )
 }
 
-fn settings_of(row: &sqlx::sqlite::SqliteRow) -> ChatSettings {
+/// The message whose author and time are in the columns from `first` on.
+fn message_at(row: &SqliteRow, first: usize) -> MessageRef {
+    MessageRef {
+        author_id: row.get(first),
+        timestamp: row.get::<i64, _>(first + 1) as u64,
+    }
+}
+
+/// The columns [`settings_of`] reads, in its order, after the conversation id.
+macro_rules! settings {
+    () => {
+        "id, pinned, muted_until, archived, last_read, marked_unread"
+    };
+}
+
+fn settings_of(row: &SqliteRow) -> ChatSettings {
     ChatSettings {
         pinned: row.get::<Option<i64>, _>(1).map(|p| p as u32),
         muted_until: row.get::<Option<i64>, _>(2).map(|m| m as u64),
         archived: row.get::<i64, _>(3) != 0,
         last_read: row.get::<i64, _>(4) as u64,
         marked_unread: row.get::<i64, _>(5) != 0,
-        expire_timer: row.get::<i64, _>(6) as u32,
     }
 }
 
@@ -46,8 +60,7 @@ const SCHEMA: &[&str] = &[
         muted_until INTEGER,
         archived INTEGER NOT NULL DEFAULT 0,
         last_read INTEGER NOT NULL DEFAULT 0,
-        marked_unread INTEGER NOT NULL DEFAULT 0,
-        expire_timer INTEGER NOT NULL DEFAULT 0
+        marked_unread INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS langis_delivery (
         conversation TEXT NOT NULL,
@@ -55,6 +68,8 @@ const SCHEMA: &[&str] = &[
         state INTEGER NOT NULL,
         PRIMARY KEY (conversation, ts)
     )",
+    // Receipts name only the time.
+    "CREATE INDEX IF NOT EXISTS langis_delivery_ts ON langis_delivery (ts)",
     "CREATE TABLE IF NOT EXISTS langis_edit (
         conversation TEXT NOT NULL,
         author TEXT NOT NULL,
@@ -76,6 +91,7 @@ const SCHEMA: &[&str] = &[
         expires_at INTEGER NOT NULL,
         PRIMARY KEY (conversation, author, ts)
     )",
+    "CREATE INDEX IF NOT EXISTS langis_expiry_at ON langis_expiry (expires_at)",
 ];
 
 impl LocalStore {
@@ -95,11 +111,9 @@ impl LocalStore {
     pub(crate) async fn conversations(
         &self,
     ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
-        let rows = sqlx::query(
-            "SELECT id, pinned, muted_until, archived, last_read, marked_unread, expire_timer FROM langis_conversation",
-        )
-        .fetch_all(&self.db)
-        .await?;
+        let rows = sqlx::query(concat!("SELECT ", settings!(), " FROM langis_conversation"))
+            .fetch_all(&self.db)
+            .await?;
         Ok(rows
             .iter()
             .map(|row| (ConversationId(row.get(0)), settings_of(row)))
@@ -111,9 +125,11 @@ impl LocalStore {
         &self,
         id: &ConversationId,
     ) -> Result<Option<ChatSettings>, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT id, pinned, muted_until, archived, last_read, marked_unread, expire_timer FROM langis_conversation WHERE id = ?",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            settings!(),
+            " FROM langis_conversation WHERE id = ?"
+        ))
         .bind(&id.0)
         .fetch_optional(&self.db)
         .await?;
@@ -130,8 +146,8 @@ impl LocalStore {
         change(&mut state);
         sqlx::query(
             "INSERT OR REPLACE INTO langis_conversation
-                (id, pinned, muted_until, archived, last_read, marked_unread, expire_timer)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (id, pinned, muted_until, archived, last_read, marked_unread)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id.0)
         .bind(state.pinned.map(i64::from))
@@ -139,10 +155,50 @@ impl LocalStore {
         .bind(state.archived as i64)
         .bind(state.last_read as i64)
         .bind(state.marked_unread as i64)
-        .bind(i64::from(state.expire_timer))
         .execute(&self.db)
         .await?;
         Ok(state)
+    }
+
+    /// Incoming messages up to `newest` were read, and the conversation no longer marked
+    /// unread. One statement: this runs for nearly every message in an open chat.
+    pub(crate) async fn mark_read(
+        &self,
+        id: &ConversationId,
+        newest: u64,
+    ) -> Result<ChatSettings, sqlx::Error> {
+        let row = sqlx::query(concat!(
+            "INSERT INTO langis_conversation (id, last_read) VALUES (?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                last_read = max(last_read, excluded.last_read), marked_unread = 0
+             RETURNING ",
+            settings!()
+        ))
+        .bind(&id.0)
+        .bind(newest as i64)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(settings_of(&row))
+    }
+
+    /// Takes a conversation out of the archive unless it is muted at `now`; its settings if
+    /// that changed anything.
+    pub(crate) async fn unarchive_unless_muted(
+        &self,
+        id: &ConversationId,
+        now: u64,
+    ) -> Result<Option<ChatSettings>, sqlx::Error> {
+        let row = sqlx::query(concat!(
+            "UPDATE langis_conversation SET archived = 0
+             WHERE id = ? AND archived = 1 AND (muted_until IS NULL OR muted_until <= ?)
+             RETURNING ",
+            settings!()
+        ))
+        .bind(&id.0)
+        .bind(now.min(i64::MAX as u64) as i64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.as_ref().map(settings_of))
     }
 
     /// Pins exactly `order`, in that order; everything else is unpinned.
@@ -151,8 +207,9 @@ impl LocalStore {
         sqlx::query("UPDATE langis_conversation SET pinned = NULL")
             .execute(&mut *tx)
             .await?;
+        // As `ChatSettings::set_pinned`: pinned chats aren't archived.
         for (position, id) in order.iter().enumerate() {
-            sqlx::query("INSERT INTO langis_conversation (id, pinned) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned")
+            sqlx::query("INSERT INTO langis_conversation (id, pinned) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned, archived = 0")
                 .bind(&id.0)
                 .bind(position as i64)
                 .execute(&mut *tx)
@@ -169,16 +226,29 @@ impl LocalStore {
         ts: u64,
         delivery: Delivery,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO langis_delivery (conversation, ts, state) VALUES (?, ?, ?)
-             ON CONFLICT(conversation, ts) DO UPDATE SET state = max(state, excluded.state)",
-        )
-        .bind(&conversation.0)
-        .bind(ts as i64)
-        .bind(delivery as i64)
-        .execute(&self.db)
-        .await
-        .map(drop)
+        self.set_deliveries(&[(conversation.clone(), ts)], delivery)
+            .await
+    }
+
+    /// [`LocalStore::set_delivery`] for several messages, in one transaction.
+    pub(crate) async fn set_deliveries(
+        &self,
+        messages: &[(ConversationId, u64)],
+        delivery: Delivery,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.db.begin().await?;
+        for (conversation, ts) in messages {
+            sqlx::query(
+                "INSERT INTO langis_delivery (conversation, ts, state) VALUES (?, ?, ?)
+                 ON CONFLICT(conversation, ts) DO UPDATE SET state = max(state, excluded.state)",
+            )
+            .bind(&conversation.0)
+            .bind(*ts as i64)
+            .bind(delivery as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
     }
 
     /// Delivery states of our messages in a conversation, by timestamp.
@@ -252,12 +322,8 @@ impl LocalStore {
             .await?;
         let mut edits: HashMap<MessageRef, Vec<(u64, String)>> = HashMap::new();
         for row in rows {
-            let message = MessageRef {
-                author_id: row.get(0),
-                timestamp: row.get::<i64, _>(1) as u64,
-            };
             edits
-                .entry(message)
+                .entry(message_at(&row, 0))
                 .or_default()
                 .push((row.get::<i64, _>(2) as u64, row.get(3)));
         }
@@ -290,31 +356,27 @@ impl LocalStore {
             .bind(&conversation.0)
             .fetch_all(&self.db)
             .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| MessageRef {
-                author_id: row.get(0),
-                timestamp: row.get::<i64, _>(1) as u64,
-            })
-            .collect())
+        Ok(rows.iter().map(|row| message_at(row, 0)).collect())
     }
 
-    /// When a disappearing message goes; set once (the first start counts).
-    pub(crate) async fn set_expiry(
+    /// When disappearing messages go; set once each (the first start counts).
+    pub(crate) async fn set_expiries(
         &self,
         conversation: &ConversationId,
-        message: &MessageRef,
-        expires_at: u64,
+        expiries: &[(MessageRef, u64)],
     ) -> Result<(), sqlx::Error> {
-        let (conversation, author, ts) = key(conversation, message);
-        sqlx::query("INSERT OR IGNORE INTO langis_expiry (conversation, author, ts, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(conversation)
-            .bind(author)
-            .bind(ts)
-            .bind(expires_at as i64)
-            .execute(&self.db)
-            .await
-            .map(drop)
+        let mut tx = self.db.begin().await?;
+        for (message, expires_at) in expiries {
+            let (conversation, author, ts) = key(conversation, message);
+            sqlx::query("INSERT OR IGNORE INTO langis_expiry (conversation, author, ts, expires_at) VALUES (?, ?, ?, ?)")
+                .bind(conversation)
+                .bind(author)
+                .bind(ts)
+                .bind(*expires_at as i64)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
     }
 
     /// Expiry times in a conversation.
@@ -329,15 +391,7 @@ impl LocalStore {
                 .await?;
         Ok(rows
             .into_iter()
-            .map(|row| {
-                (
-                    MessageRef {
-                        author_id: row.get(0),
-                        timestamp: row.get::<i64, _>(1) as u64,
-                    },
-                    row.get::<i64, _>(2) as u64,
-                )
-            })
+            .map(|row| (message_at(&row, 0), row.get::<i64, _>(2) as u64))
             .collect())
     }
 
@@ -352,15 +406,7 @@ impl LocalStore {
                 .fetch_all(&self.db)
                 .await?
                 .into_iter()
-                .map(|row| {
-                    (
-                        ConversationId(row.get(0)),
-                        MessageRef {
-                            author_id: row.get(1),
-                            timestamp: row.get::<i64, _>(2) as u64,
-                        },
-                    )
-                })
+                .map(|row| (ConversationId(row.get(0)), message_at(&row, 1)))
                 .collect();
         let next: Option<i64> =
             sqlx::query("SELECT min(expires_at) FROM langis_expiry WHERE expires_at > ?")
@@ -371,26 +417,28 @@ impl LocalStore {
         Ok((due, next.map(|n| n as u64)))
     }
 
-    /// Forgets an expired message; it is gone from the store too.
+    /// Forgets expired messages, in one transaction; they are gone from the store too.
     pub(crate) async fn forget_expired(
         &self,
-        conversation: &ConversationId,
-        message: &MessageRef,
+        messages: &[(ConversationId, MessageRef)],
     ) -> Result<(), sqlx::Error> {
-        let (conversation, author, ts) = key(conversation, message);
-        for statement in [
-            "DELETE FROM langis_expiry WHERE conversation = ? AND author = ? AND ts = ?",
-            "DELETE FROM langis_edit WHERE conversation = ? AND author = ? AND ts = ?",
-            "DELETE FROM langis_deleted WHERE conversation = ? AND author = ? AND ts = ?",
-        ] {
-            sqlx::query(statement)
-                .bind(&conversation)
-                .bind(&author)
-                .bind(ts)
-                .execute(&self.db)
-                .await?;
+        let mut tx = self.db.begin().await?;
+        for (conversation, message) in messages {
+            let (conversation, author, ts) = key(conversation, message);
+            for statement in [
+                "DELETE FROM langis_expiry WHERE conversation = ? AND author = ? AND ts = ?",
+                "DELETE FROM langis_edit WHERE conversation = ? AND author = ? AND ts = ?",
+                "DELETE FROM langis_deleted WHERE conversation = ? AND author = ? AND ts = ?",
+            ] {
+                sqlx::query(statement)
+                    .bind(&conversation)
+                    .bind(&author)
+                    .bind(ts)
+                    .execute(&mut *tx)
+                    .await?;
+            }
         }
-        Ok(())
+        tx.commit().await
     }
 }
 
@@ -442,6 +490,21 @@ mod tests {
             local.set_pins(std::slice::from_ref(&a)).await.unwrap();
             let states = local.conversations().await.unwrap();
             assert_eq!((states[&a].pinned, states[&b].pinned), (Some(0), None));
+
+            // Reading and unarchiving touch only their own columns.
+            local.update(&b, |s| s.set_archived(true)).await.unwrap();
+            let read = local.mark_read(&b, 40).await.unwrap();
+            assert_eq!((read.last_read, read.archived), (40, true));
+            assert_eq!(local.mark_read(&b, 30).await.unwrap().last_read, 40);
+            let back = local.unarchive_unless_muted(&b, 0).await.unwrap();
+            assert!(back.is_some_and(|s| !s.archived));
+            assert_eq!(local.unarchive_unless_muted(&b, 0).await.unwrap(), None);
+            local.update(&a, |s| s.set_archived(true)).await.unwrap();
+            assert_eq!(
+                local.unarchive_unless_muted(&a, 0).await.unwrap(),
+                None,
+                "muted"
+            );
         });
     }
 
@@ -478,16 +541,17 @@ mod tests {
             local.record_deleted(&a, &m).await.unwrap();
             assert_eq!(local.deleted(&a).await.unwrap(), std::slice::from_ref(&m));
 
-            local.set_expiry(&a, &m, 100).await.unwrap();
-            local.set_expiry(&a, &m, 500).await.unwrap(); // the first start counts
+            local.set_expiries(&a, &[(m.clone(), 100)]).await.unwrap();
+            // The first start counts.
+            let bob = reference("bob", 11);
             local
-                .set_expiry(&a, &reference("bob", 11), 200)
+                .set_expiries(&a, &[(m.clone(), 500), (bob, 200)])
                 .await
                 .unwrap();
             let (due, next) = local.due(150).await.unwrap();
             assert_eq!(due, [(a.clone(), m.clone())]);
             assert_eq!(next, Some(200));
-            local.forget_expired(&a, &m).await.unwrap();
+            local.forget_expired(&due).await.unwrap();
             assert!(local.edits(&a).await.unwrap().is_empty());
             assert_eq!(local.due(150).await.unwrap().0, []);
         });

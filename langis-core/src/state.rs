@@ -11,7 +11,7 @@ use crate::settings::NotificationContent;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Event, HistoryTransfer, MessageRef, Password, Picture,
-    QrMatrix, Quote, apply_reaction, format, now_millis,
+    QrMatrix, Quote, StyleRange, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -49,6 +49,16 @@ pub struct Update {
 }
 
 impl Update {
+    /// The chat list and the open chat's messages need redrawing, e.g. after another chat was
+    /// opened or this one closed.
+    pub fn reset() -> Self {
+        Self {
+            conversations: true,
+            messages: MessagesUpdate::Reset,
+            ..Self::default()
+        }
+    }
+
     /// Combines updates from several events applied in a row.
     pub fn merge(self, other: Self) -> Self {
         Self {
@@ -116,7 +126,7 @@ impl ConversationView<'_> {
             return String::new();
         };
         if message.deleted {
-            return "This message was deleted.".into();
+            return DELETED.into();
         }
         let body = match message.body.lines().next() {
             Some(line) => line.to_string(),
@@ -151,8 +161,11 @@ pub struct MessageView<'a> {
     pub message: &'a ChatMessage,
     /// Show the sender's name above the message (incoming group messages, first of a run).
     pub show_sender: bool,
-    /// The message text: its full text if it is long and that has been fetched.
+    /// The message text: its full text if it is long and that has been fetched; [`DELETED`]
+    /// if it was deleted.
     pub body: &'a str,
+    /// The formatting of `body` (none for a fetched long text).
+    pub styles: &'a [StyleRange],
     /// "Today", "Yesterday", "Monday", "Oct 2": set on the first message of each day.
     pub day: Option<String>,
     /// Messages by the same person within a few minutes form a run, drawn close together.
@@ -165,6 +178,9 @@ pub struct MessageView<'a> {
     /// Its spoilers were clicked open.
     pub revealed: bool,
 }
+
+/// What a message deleted for everyone shows instead.
+pub const DELETED: &str = "This message was deleted.";
 
 /// Messages further apart than this start a new run, even from the same person.
 const RUN_GAP_MS: u64 = 5 * 60 * 1000;
@@ -352,8 +368,10 @@ impl ChatState {
                 self.loaded.insert(conversation.clone());
                 let history = self.history.entry(conversation.clone()).or_default();
                 let mut added = false;
+                // The stored history is complete (delivery, edits, …); it replaces what came
+                // before it, e.g. the bare newest message from `Event::Latest`.
                 for message in messages {
-                    added |= insert(history, message).is_some();
+                    added |= upsert(history, message);
                 }
                 if added {
                     self.sort_conversations();
@@ -383,10 +401,10 @@ impl ChatState {
                     return update;
                 };
                 let appended = pos + 1 == history.len();
-                // Every message carries the conversation's current timer.
-                let timer = history[pos].expire_timer.unwrap_or(0);
-                if let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id) {
-                    conversation.settings.expire_timer = timer;
+                if let Some(timer) = history[pos].timer_change
+                    && let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id)
+                {
+                    conversation.expire_timer = timer;
                 }
                 if let Some(typists) = self.typing.get_mut(&id) {
                     let sender_id = &history[pos].sender_id;
@@ -427,13 +445,16 @@ impl ChatState {
                 let Some(history) = self.history.get_mut(&conversation) else {
                     return update;
                 };
+                let mut changed = false;
                 for message in history
                     .iter_mut()
-                    .filter(|m| m.outgoing && timestamps.contains(&m.timestamp))
+                    .filter(|m| m.outgoing && m.delivery < delivery)
+                    .filter(|m| timestamps.contains(&m.timestamp))
                 {
-                    message.delivery = message.delivery.max(delivery);
+                    message.delivery = delivery;
+                    changed = true;
                 }
-                update.rows = self.selected.as_ref() == Some(&conversation);
+                update.rows = changed && self.selected.as_ref() == Some(&conversation);
             }
             Event::Typing {
                 conversation,
@@ -460,10 +481,12 @@ impl ChatState {
                 if let Some(old) = self.find_message(&conversation, &target) {
                     // The backend may not know the text before (incoming edits replace it in
                     // the store); here it is known.
-                    let edited_at = message.edits.last().map_or_else(now_millis, |e| e.0);
-                    let mut edits = std::mem::take(&mut old.edits);
-                    edits.push((edited_at, std::mem::take(&mut old.body)));
-                    message.edits = edits;
+                    let edited_at = message.edited_at.unwrap_or_else(now_millis);
+                    message.edited_at = Some(edited_at);
+                    message.edits = std::mem::take(&mut old.edits);
+                    message
+                        .edits
+                        .push((edited_at, std::mem::take(&mut old.body)));
                     // Known by its original time; what reacted to it still applies.
                     message.timestamp = old.timestamp;
                     message.reactions = std::mem::take(&mut old.reactions);
@@ -519,20 +542,14 @@ impl ChatState {
                     return update;
                 };
                 let read_further = settings.last_read > existing.settings.last_read;
-                // The timer follows the messages, not these settings.
-                existing.settings = ChatSettings {
-                    expire_timer: existing.settings.expire_timer,
-                    ..settings
-                };
+                existing.settings = settings;
                 if read_further {
                     // Read on another device: what is still unread is what came after.
                     let last_read = existing.settings.last_read;
-                    let unread = self.history.get(&conversation).map_or(0, |history| {
-                        history
-                            .iter()
-                            .filter(|m| !m.outgoing && m.timestamp > last_read)
-                            .count()
-                    });
+                    let unread = self
+                        .history
+                        .get(&conversation)
+                        .map_or(0, |history| unread_after(history, last_read).count());
                     match unread {
                         0 => {
                             self.unread.remove(&conversation);
@@ -570,7 +587,7 @@ impl ChatState {
         self.history
             .get_mut(conversation)?
             .iter_mut()
-            .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+            .find(|m| m.is(target))
     }
 
     /// The selected conversation is in front of the user: its messages count as read.
@@ -586,24 +603,27 @@ impl ChatState {
         self.unread.remove(&id);
         let conversation = self.conversations.iter_mut().find(|c| c.id == id)?;
         let settings = &mut conversation.settings;
-        let messages: Vec<MessageRef> = self
+        let unread: Vec<&ChatMessage> = self
             .history
             .get(&id)
-            .into_iter()
-            .flatten()
-            .filter(|m| !m.outgoing && m.timestamp > settings.last_read)
-            .map(ChatMessage::reference)
-            .collect();
-        if messages.is_empty() && !settings.marked_unread {
+            .map(|history| unread_after(history, settings.last_read).collect())
+            .unwrap_or_default();
+        if unread.is_empty() && !settings.marked_unread {
             return None;
         }
         settings.marked_unread = false;
-        if let Some(newest) = messages.iter().map(|m| m.timestamp).max() {
+        if let Some(newest) = unread.iter().map(|m| m.timestamp).max() {
             settings.last_read = newest;
         }
+        let expiring = unread
+            .iter()
+            .filter_map(|m| Some((m.reference(), m.expire_timer?)))
+            .collect();
+        let messages = unread.iter().map(|m| m.reference()).collect();
         Some(Command::MarkRead {
             conversation: id,
             messages,
+            expiring,
         })
     }
 
@@ -802,11 +822,7 @@ impl ChatState {
         self.editing = None;
         self.read_mark = None;
         self.staged.clear();
-        Update {
-            conversations: true,
-            messages: MessagesUpdate::Reset,
-            ..Update::default()
-        }
+        Update::reset()
     }
 
     /// Turns composer text into a send command for the selected conversation.
@@ -883,14 +899,11 @@ impl ChatState {
 
     /// Our own message that is still there and recent enough; Signal allows editing as long as
     /// deleting for everyone.
+    /// Also whether it can be deleted for everyone: the same rule.
     pub fn can_edit(&self, message: &ChatMessage) -> bool {
         message.outgoing
             && !message.deleted
             && now_millis().saturating_sub(message.timestamp) < DELETE_FOR_EVERYONE_MS
-    }
-
-    pub fn can_delete_for_everyone(&self, message: &ChatMessage) -> bool {
-        self.can_edit(message)
     }
 
     pub fn cancel_edit(&mut self) {
@@ -903,7 +916,7 @@ impl ChatState {
         self.history
             .get(self.selected.as_ref()?)?
             .iter()
-            .find(|m| m.timestamp == target.timestamp && m.sender_id == target.author_id)
+            .find(|m| m.is(target))
     }
 
     /// Deletes the `index`th message of [`ChatState::messages`] here, or for everyone.
@@ -911,7 +924,7 @@ impl ChatState {
         let Some(message) = self.messages().nth(index).map(|v| v.message) else {
             return (None, Update::default());
         };
-        if for_everyone && !self.can_delete_for_everyone(message) {
+        if for_everyone && !self.can_edit(message) {
             return (None, Update::default());
         }
         let target = message.reference();
@@ -921,22 +934,18 @@ impl ChatState {
         }
         let history = self.history.get_mut(&conversation).expect("shown");
         if for_everyone {
-            if let Some(message) = history.iter_mut().find(|m| m.reference() == target) {
+            if let Some(message) = history.iter_mut().find(|m| m.is(&target)) {
                 tombstone(message);
             }
         } else {
-            history.retain(|m| m.reference() != target);
+            history.retain(|m| !m.is(&target));
         }
         let command = Command::Delete {
             conversation,
             target,
             for_everyone,
         };
-        let update = Update {
-            conversations: true,
-            messages: MessagesUpdate::Reset,
-            ..Update::default()
-        };
+        let update = Update::reset();
         (Some(command), update)
     }
 
@@ -975,8 +984,6 @@ impl ChatState {
                 pinned.push(id.clone());
             }
         }
-        // Pinning brings an archived chat back.
-        self.change_settings(id, |s| s.archived = false);
         Some(self.set_pins(pinned))
     }
 
@@ -991,10 +998,9 @@ impl ChatState {
 
     fn set_pins(&mut self, pinned: Vec<ConversationId>) -> Command {
         for conversation in &mut self.conversations {
-            conversation.settings.pinned = pinned
-                .iter()
-                .position(|p| *p == conversation.id)
-                .map(|i| i as u32);
+            let position = pinned.iter().position(|p| *p == conversation.id);
+            // Pinning brings an archived chat back.
+            conversation.settings.set_pinned(position.map(|i| i as u32));
         }
         self.sort_conversations();
         Command::SetPins(pinned)
@@ -1017,12 +1023,7 @@ impl ChatState {
     }
 
     pub fn archive(&mut self, id: &ConversationId, archived: bool) -> Option<Command> {
-        self.change_settings(id, |s| {
-            s.archived = archived;
-            if archived {
-                s.pinned = None;
-            }
-        })?;
+        self.change_settings(id, |s| s.set_archived(archived))?;
         if archived && self.selected.as_ref() == Some(id) {
             self.deselect();
         }
@@ -1041,15 +1042,13 @@ impl ChatState {
         if self.selected.as_ref() == Some(id) {
             self.deselect();
         }
-        Some(Command::MarkUnread {
-            conversation: id.clone(),
-            unread: true,
-        })
+        Some(Command::MarkUnread(id.clone()))
     }
 
     /// Sets how long new messages in a conversation last (seconds; 0 for good).
     pub fn set_timer(&mut self, id: &ConversationId, seconds: u32) -> Option<Command> {
-        self.change_settings(id, |s| s.expire_timer = seconds)?;
+        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        conversation.expire_timer = seconds;
         Some(Command::SetTimer {
             conversation: id.clone(),
             seconds,
@@ -1307,9 +1306,8 @@ impl ChatState {
         // Not in chats never read here: everything would be "new".
         let read_mark = self.read_mark.filter(|&mark| mark > 0);
         let first_unread = read_mark.and_then(|mark| {
-            history
-                .iter()
-                .position(|m| !m.outgoing && m.timestamp > mark)
+            let first = unread_after(history, mark).next()?;
+            history.iter().position(|m| std::ptr::eq(m, first))
         });
         let same_run = |a: &ChatMessage, b: &ChatMessage| {
             a.sender_id == b.sender_id
@@ -1325,7 +1323,17 @@ impl ChatState {
             MessageView {
                 message,
                 show_sender: group && !message.outgoing && first_of_run,
-                body: self.full_text(message).unwrap_or(&message.body),
+                body: match (message.deleted, self.full_text(message)) {
+                    (true, _) => DELETED,
+                    (false, Some(text)) => text,
+                    (false, None) => &message.body,
+                },
+                // A fetched long text has no formatting of its own.
+                styles: if message.deleted || self.full_text(message).is_some() {
+                    &[]
+                } else {
+                    &message.styles
+                },
                 day: new_day.then(|| day_label(message.timestamp, &now)),
                 first_of_run,
                 last_of_run: next.is_none_or(|n| !same_run(message, n)),
@@ -1416,6 +1424,28 @@ fn tombstone(message: &mut ChatMessage) {
 /// Signal identifies a message by its author and sent timestamp.
 fn message_key(message: &ChatMessage) -> (u64, &str) {
     (message.timestamp, &message.sender_id)
+}
+
+/// Incoming messages after `last_read`.
+fn unread_after(history: &[ChatMessage], last_read: u64) -> impl Iterator<Item = &ChatMessage> {
+    history
+        .iter()
+        .filter(move |m| !m.outgoing && m.timestamp > last_read)
+}
+
+/// Inserts in order, or replaces the message if it is already there; returns whether it was
+/// new.
+fn upsert(history: &mut Vec<ChatMessage>, message: ChatMessage) -> bool {
+    match history.binary_search_by(|m| message_key(m).cmp(&message_key(&message))) {
+        Ok(pos) => {
+            history[pos] = message;
+            false
+        }
+        Err(pos) => {
+            history.insert(pos, message);
+            true
+        }
+    }
 }
 
 /// Inserts in order unless already present; returns the new position.
@@ -1999,23 +2029,6 @@ mod tests {
     }
 
     #[test]
-    fn mentions_become_names_counting_utf16() {
-        let body = "Hi \u{FFFC}, see you";
-        assert_eq!(
-            crate::resolve_mentions(body, &[(3, 1, "Alice".into())]),
-            "Hi @Alice, see you"
-        );
-        // An emoji before the mention takes two UTF-16 units.
-        let body = "🎉 \u{FFFC}!";
-        assert_eq!(
-            crate::resolve_mentions(body, &[(3, 1, "Bob".into())]),
-            "🎉 @Bob!"
-        );
-        assert_eq!(crate::resolve_mentions("plain", &[]), "plain");
-        assert_eq!(crate::resolve_mentions("hi \u{FFFC}", &[]), "hi @…");
-    }
-
-    #[test]
     fn list_times_and_day_labels_get_coarser_with_age() {
         let now: jiff::Zoned = "2026-10-05T12:00:00[Europe/Berlin]".parse().unwrap();
         let at = |s: &str| {
@@ -2341,7 +2354,7 @@ mod tests {
         let commands = state.take_commands();
         assert!(matches!(
             &commands[..],
-            [Command::MarkRead { conversation, messages }]
+            [Command::MarkRead { conversation, messages, .. }]
                 if *conversation == id("a") && messages.len() == 2
         ));
         assert_eq!(state.unread_total(), 0);
@@ -2475,7 +2488,7 @@ mod tests {
         state.take_commands();
         assert!(matches!(
             state.mark_unread(&id("a"), true),
-            Some(Command::MarkUnread { unread: true, .. })
+            Some(Command::MarkUnread(_))
         ));
         assert!(state.selected().is_none());
         assert_eq!(state.unread_total(), 1);
@@ -2513,7 +2526,7 @@ mod tests {
             target: target.clone(),
             message: ChatMessage {
                 body: "better".into(),
-                edits: vec![(50, String::new())],
+                edited_at: Some(50),
                 ..message("a", "You", 10, true)
             },
         });

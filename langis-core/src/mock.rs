@@ -95,6 +95,7 @@ pub fn run(commands: Inbox, events: Events) {
                 muted_until: (id == "bob").then_some(u64::MAX),
                 ..ChatSettings::default()
             },
+            expire_timer: if id == "alice" { 3600 } else { 0 },
         })
         .collect();
     let _ = events.send(Event::Conversations(conversations));
@@ -125,12 +126,12 @@ pub fn run(commands: Inbox, events: Events) {
                 | Command::SkipHistory
                 | Command::Typing { .. }
                 | Command::MarkRead { .. }
-                | Command::MarkUnread { .. }
+                | Command::MarkUnread(_)
                 | Command::SetPins(_)
                 | Command::Mute { .. }
                 | Command::Archive { .. }
                 | Command::SetTimer { .. }
-                | Command::Preferences { .. },
+                | Command::Preferences(_),
             ) => {}
             Ok(Command::Edit {
                 conversation,
@@ -140,7 +141,7 @@ pub fn run(commands: Inbox, events: Events) {
             }) => {
                 let message = ChatMessage {
                     styles,
-                    edits: vec![(now_millis(), "(the earlier text)".into())],
+                    edited_at: Some(now_millis()),
                     ..message(&conversation.0, "You", &body, target.timestamp, true)
                 };
                 let _ = events.send(Event::Edited {
@@ -379,6 +380,7 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                         style: Style::Italic,
                     },
                 ],
+                edited_at: Some(ago(5)),
                 edits: vec![(ago(5), "Look at the stars tonight".into())],
                 delivery: Delivery::Delivered,
                 ..message("alice", "You", "See the moon rising tonight", ago(6), true)

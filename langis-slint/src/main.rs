@@ -104,8 +104,10 @@ pub struct Shared {
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
     /// e.g. for the password, until the chats are there.
     start_hidden: Cell<bool>,
-    /// When someone typing next counts as stopped; no event says so, so a timer redraws then.
-    typing_until: Cell<Option<u64>>,
+    /// Redraws when someone typing next counts as stopped, since no event says so.
+    typing_timer: slint::Timer,
+    /// For callbacks that outlive a call, like `typing_timer`'s.
+    me: std::rc::Weak<Shared>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,15 +163,25 @@ impl Shared {
         for command in chat.take_commands() {
             self.commands.send(command);
         }
-        self.typing_until.set(chat.typing_expires());
-    }
-
-    /// Tells the backend the privacy preferences in `settings`.
-    fn send_preferences(&self, settings: &Settings) {
-        self.commands.send(Command::Preferences {
-            read_receipts: settings.read_receipts,
-            typing_indicators: settings.typing_indicators,
-        });
+        match chat.typing_expires() {
+            Some(at) => {
+                let wait = at.saturating_sub(langis_core::now_millis()) + 50;
+                let me = self.me.clone();
+                self.typing_timer.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(wait),
+                    move || {
+                        if let Some(shared) = me.upgrade() {
+                            shared.refresh(Update {
+                                conversations: true,
+                                ..Update::default()
+                            });
+                        }
+                    },
+                );
+            }
+            None => self.typing_timer.stop(),
+        }
     }
 
     /// Closing the window leaves langis running in the tray, to keep receiving messages, unless
@@ -233,7 +245,7 @@ impl Shared {
             tracing::warn!(%error, "failed to save settings");
         }
         let previous = self.settings.replace(settings.clone());
-        self.send_preferences(&settings);
+        self.commands.send(Command::Preferences(settings.privacy));
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_shown(settings.close_to_tray);
         }
@@ -334,7 +346,7 @@ fn main() -> Result<(), slint::PlatformError> {
     images.avatars_enabled.set(settings.show_avatars);
     let mut chat = ChatState::default();
     chat.set_notifications(settings.notifications, settings.notification_content);
-    let shared = Rc::new(Shared {
+    let shared = Rc::new_cyclic(|me| Shared {
         chat: RefCell::new(chat),
         images,
         notifier,
@@ -345,25 +357,10 @@ fn main() -> Result<(), slint::PlatformError> {
         ui: RefCell::default(),
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
-        typing_until: Cell::default(),
+        typing_timer: slint::Timer::default(),
+        me: me.clone(),
     });
-    shared.send_preferences(&settings);
-    let typing_timer = slint::Timer::default();
-    typing_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), {
-        let shared = shared.clone();
-        move || {
-            if shared
-                .typing_until
-                .get()
-                .is_some_and(|at| at <= langis_core::now_millis())
-            {
-                shared.refresh(Update {
-                    conversations: true,
-                    ..Update::default()
-                });
-            }
-        }
-    });
+    shared.commands.send(Command::Preferences(settings.privacy));
 
     let ui = styles::create(settings.style, &shared)?;
     shared.ui.replace(Some(ui.clone()));
