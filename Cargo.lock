@@ -3691,6 +3691,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "directories",
+ "i-slint-backend-testing",
  "i-slint-core",
  "langis-core",
  "langis-notify",

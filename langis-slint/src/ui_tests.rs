@@ -1,0 +1,140 @@
+//! The window's own behaviour, on Slint's headless testing backend: what the Slint code does
+//! with the properties Rust sets and the input it gets. (The fluent style, since the native one
+//! needs Qt.)
+
+use std::cell::Cell;
+use std::rc::Rc;
+
+use i_slint_backend_testing::ElementHandle;
+use slint::platform::PointerEventButton;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+
+use crate::styles::fluent::{AppWindow, ConversationItem, MessageItem, Screen};
+
+fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 500.));
+    window.set_screen(Screen::Chats);
+    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+        id: "a".into(),
+        title: "Ann".into(),
+        ..Default::default()
+    }])));
+    window.set_selected(0);
+    let messages = Rc::new(VecModel::from(
+        (0..count)
+            .map(|n| message(&format!("Message {n}")))
+            .collect::<Vec<_>>(),
+    ));
+    window.set_messages(messages.clone().into());
+    window.show().unwrap();
+    settle(&window);
+    (window, messages)
+}
+
+fn message(text: &str) -> MessageItem {
+    MessageItem {
+        body: slint::StyledText::from_plain_text(text),
+        has_body: true,
+        text: text.into(),
+        first: true,
+        last: true,
+        ..Default::default()
+    }
+}
+
+/// Lets layouts, change handlers and timers catch up. Nothing renders here, so the tree is
+/// visited each round instead, which makes lists create the rows they show.
+fn settle(window: &AppWindow) {
+    for _ in 0..20 {
+        let _ = ElementHandle::find_by_accessible_label(window, "").count();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+        slint::platform::update_timers_and_animations();
+    }
+}
+
+fn find(window: &AppWindow, label: &str) -> Option<ElementHandle> {
+    ElementHandle::find_by_accessible_label(window, label).next()
+}
+
+/// Scrolls the message list by `pixels` (positive is towards older messages).
+fn scroll(window: &AppWindow, pixels: f32) {
+    ElementHandle::find_by_element_id(window, "AppWindow::message-list")
+        .next()
+        .expect("a chat is open")
+        .scroll(0., pixels);
+    settle(window);
+}
+
+/// The newest of "Message 0" … "Message {count - 1}" on screen.
+fn newest_shown(window: &AppWindow, count: usize) -> Option<(usize, ElementHandle)> {
+    (0..count)
+        .rev()
+        .find_map(|n| Some((n, find(window, &format!("Message {n}"))?)))
+}
+
+#[test]
+fn scrolling_to_the_top_asks_for_older_messages() {
+    let (window, _messages) = window_with_messages(60);
+    let asked = Rc::new(Cell::new(0));
+    window.on_load_older({
+        let asked = asked.clone();
+        move || asked.set(asked.get() + 1)
+    });
+    // Opened at the newest messages; nothing older is asked for yet.
+    let (newest, _) = newest_shown(&window, 60).expect("messages are shown");
+    assert!(newest >= 55, "opened at message {newest}");
+    assert_eq!(asked.get(), 0);
+    for _ in 0..40 {
+        scroll(&window, 400.);
+    }
+    assert!(find(&window, "Message 0").is_some(), "scrolled to the top");
+    assert!(asked.get() > 0);
+}
+
+#[test]
+fn older_messages_put_in_above_leave_the_view_in_place() {
+    let (window, messages) = window_with_messages(60);
+    // Away from the bottom, so the list no longer follows new messages.
+    for _ in 0..6 {
+        scroll(&window, 300.);
+    }
+    let label = (20..60)
+        .map(|n| format!("Message {n}"))
+        .find(|label| find(&window, label).is_some())
+        .expect("something is shown");
+    let before = find(&window, &label).unwrap().absolute_position().y;
+    for n in 0..10 {
+        messages.insert(n, message(&format!("Older {n}")));
+    }
+    settle(&window);
+    let after = find(&window, &label)
+        .expect("still shown")
+        .absolute_position()
+        .y;
+    assert!(
+        (after - before).abs() < 2.,
+        "moved from {before} to {after}"
+    );
+}
+
+#[test]
+fn clicking_a_mention_candidate_picks_it() {
+    let (window, _messages) = window_with_messages(3);
+    let picked = Rc::new(Cell::new(None));
+    window.on_pick_mention({
+        let picked = picked.clone();
+        move |index| picked.set(Some(index))
+    });
+    let names: Vec<SharedString> = vec!["Ann".into(), "Andrea".into()];
+    window.set_mention_candidates(ModelRc::new(VecModel::from(names)));
+    settle(&window);
+    find(&window, "@Andrea")
+        .expect("listed")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(picked.get(), Some(1));
+    assert_eq!(window.get_mention_candidates().row_count(), 2);
+}

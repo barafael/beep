@@ -483,8 +483,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             }
         }
         MessagesUpdate::Prepended(n) => {
-            // Rows keep their place on screen; see `message-list` in app.slint.
-            window.set_prepending(true);
+            // The list keeps what is on screen in place.
             let items: Vec<_> = chat.messages().take(n + 1).map(|m| message_item(&m, chat, images)).collect();
             for (row, item) in items.into_iter().enumerate() {
                 if row < n {

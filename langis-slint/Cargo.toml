@@ -62,3 +62,7 @@ windows = { version = "0.62", features = [
 ] }
 # The autostart entry (`autostart.rs`).
 windows-registry = "0.6"
+
+[dev-dependencies]
+# Slint's headless backend for the UI tests in `src/ui_tests.rs`; the version slint pins.
+i-slint-backend-testing = "=1.18.1"

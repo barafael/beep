@@ -12,8 +12,13 @@ fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("run by cargo"));
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("run by cargo"));
     let input = manifest.join("ui/app.slint");
+    // The UI tests (`src/ui_tests.rs`) find elements in the fluent window, which needs debug
+    // info in its generated code; only there, and only in debug builds.
+    let debug = std::env::var("PROFILE").is_ok_and(|profile| profile == "debug");
     for style in STYLES {
-        let config = slint_build::CompilerConfiguration::new().with_style(style.into());
+        let config = slint_build::CompilerConfiguration::new()
+            .with_style(style.into())
+            .with_debug_info(debug && style == "fluent");
         let dependencies = slint_build::compile_with_output_path(
             &input,
             out.join(format!("app_{style}.rs")),

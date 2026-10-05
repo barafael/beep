@@ -21,6 +21,8 @@ mod instance;
 mod logging;
 mod shutdown;
 mod tray;
+#[cfg(test)]
+mod ui_tests;
 
 /// The UI, compiled once per Slint widget style (see `build.rs`). Slint fixes the style when it
 /// compiles, so switching styles means switching between these: each includes `ui.rs`.
