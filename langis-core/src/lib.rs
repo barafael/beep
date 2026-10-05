@@ -64,6 +64,23 @@ pub struct Conversation {
     pub note_to_self: bool,
     /// A group's other members, who can be mentioned.
     pub members: Vec<Person>,
+    /// A group we are an administrator of.
+    pub admin: bool,
+    /// A group we are no longer in: it can be read, not written to.
+    pub left: bool,
+}
+
+/// A change to a group; see [`Command::EditGroup`]. Members are service IDs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupEdit {
+    Title(String),
+    /// Empty clears it.
+    Description(String),
+    AddMembers(Vec<String>),
+    RemoveMember(String),
+    /// Makes a member an administrator, or takes that back.
+    SetAdmin(String, bool),
+    Leave,
 }
 
 /// More about a conversation, for its details page; see [`Command::LoadDetails`].
@@ -599,6 +616,8 @@ pub enum Event {
         conversation: ConversationId,
         messages: Vec<ChatMessage>,
     },
+    /// A group made with [`Command::CreateGroup`] is there.
+    GroupCreated(ConversationId),
     /// The chat folders, in their order (replacing those known before).
     Folders(Vec<ChatFolder>),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
@@ -659,6 +678,17 @@ pub enum Command {
     SearchChat {
         conversation: ConversationId,
         query: String,
+    },
+    /// Makes a group with us as its administrator and these members (service IDs); see
+    /// [`Event::GroupCreated`].
+    CreateGroup {
+        title: String,
+        members: Vec<String>,
+    },
+    /// Changes a group: its name, description or members, or leaves it.
+    EditGroup {
+        conversation: ConversationId,
+        edit: GroupEdit,
     },
     /// Gathers the installed sticker packs; see [`Event::StickerPacks`].
     LoadStickers,

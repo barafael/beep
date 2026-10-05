@@ -749,15 +749,7 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     all.push(note_to_self);
     if let Ok(groups) = store.groups().await {
         for (key, group) in groups.flatten() {
-            let count = members(group.members.len());
-            let timer = group
-                .disappearing_messages_timer
-                .as_ref()
-                .map_or(0, |t| t.duration);
-            let people = people(manager, &mut names, &group).await;
-            let mut conversation = register(threads, Thread::Group(key), group.title, count, timer);
-            conversation.members = people;
-            all.push(conversation);
+            all.push(group_conversation(manager, threads, &mut names, key, group).await);
         }
     }
     with_settings(ctx, &mut all).await;
@@ -766,6 +758,168 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
         let _ = ctx.events.send(Event::Folders(folders));
     }
     contacts
+}
+
+/// A group as a conversation, registered: title, members, our role, timer.
+async fn group_conversation(
+    manager: &Mgr,
+    threads: &Threads,
+    names: &mut Names,
+    key: [u8; 32],
+    group: presage::model::groups::Group,
+) -> Conversation {
+    use presage::libsignal_service::groups_v2::Role;
+    let own = manager.registration_data().service_ids.aci();
+    let us = group.members.iter().find(|m| m.aci == own);
+    let left = us.is_none();
+    let admin = us.is_some_and(|m| m.role == Role::Administrator);
+    let timer = group
+        .disappearing_messages_timer
+        .as_ref()
+        .map_or(0, |t| t.duration);
+    let people = people(manager, names, &group).await;
+    let subtitle = if left {
+        "You left this group".into()
+    } else {
+        members(group.members.len())
+    };
+    let mut conversation = register(threads, Thread::Group(key), group.title, subtitle, timer);
+    conversation.members = people;
+    conversation.admin = admin;
+    conversation.left = left;
+    conversation
+}
+
+/// Tells the UI how a group is now, e.g. after a change.
+async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
+    let Ok(Some(group)) = manager.store().group(key).await else {
+        return;
+    };
+    let mut conversation =
+        group_conversation(manager, &ctx.threads, &mut Names::new(), key, group).await;
+    let id = conversation.id.clone();
+    conversation.settings = ctx
+        .tables
+        .settings(&id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+}
+
+/// A group change for presage; `None` if a member isn't an ACI.
+fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
+    use crate::GroupEdit as Edit;
+    use presage::manager::GroupEdit as To;
+    let aci = |id: &str| match ServiceId::parse_from_service_id_string(id)? {
+        ServiceId::Aci(aci) => Some(aci),
+        ServiceId::Pni(_) => None,
+    };
+    Some(match edit {
+        Edit::Title(title) => To::Title(title.trim().to_owned()),
+        Edit::Description(description) => To::Description(description.trim().to_owned()),
+        Edit::AddMembers(members) => {
+            To::AddMembers(members.iter().map(|m| aci(m)).collect::<Option<_>>()?)
+        }
+        Edit::RemoveMember(member) => To::RemoveMember(aci(&member)?),
+        Edit::SetAdmin(member, admin) => To::SetAdmin(aci(&member)?, admin),
+        Edit::Leave => To::Leave,
+    })
+}
+
+/// Shows a message we stored ourselves (e.g. a group change), as it will read after a restart.
+async fn show_stored(
+    manager: &Mgr,
+    ctx: &Ctx,
+    conversation: &ConversationId,
+    thread: &Thread,
+    timestamp: u64,
+) {
+    if let Ok(Some(content)) = manager.store().message(thread, timestamp).await
+        && let Some(message) =
+            to_chat_message(manager, &mut Names::new(), conversation.clone(), &content).await
+    {
+        let _ = ctx.events.send(Event::Message(message));
+    }
+}
+
+/// What a group change says, from the change itself (decrypted with the group's key), and the
+/// timer it sets, if it does. `editor` is who made it.
+async fn group_notice(
+    manager: &Mgr,
+    names: &mut Names,
+    context: &GroupContextV2,
+    editor: &str,
+) -> Option<(String, Option<u32>)> {
+    use presage::libsignal_service::groups_v2::{GroupChange, GroupOperations, Role};
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    use presage::libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams};
+    let key: [u8; 32] = context.master_key.clone()?.try_into().ok()?;
+    let Some(bytes) = &context.group_change else {
+        // A group's first message, from whoever made it.
+        return (context.revision == Some(0)).then(|| {
+            let text = if editor == "You" {
+                "You created the group.".to_string()
+            } else {
+                format!("{editor} added you to the group.")
+            };
+            (text, None)
+        });
+    };
+    let change = presage::proto::GroupChange::decode(&bytes[..]).ok()?;
+    let operations = GroupOperations::new(GroupSecretParams::derive_from_master_key(
+        GroupMasterKey::new(key),
+    ));
+    let changes = operations.decrypt_group_change(change).ok()?;
+    let editor_id = ServiceId::Aci(changes.editor);
+    let editor = display_name(manager, names, editor_id).await;
+    let mut lines = Vec::new();
+    let mut timer = None;
+    for change in changes.changes {
+        let line = match change {
+            GroupChange::NewMember(member) => {
+                let name = display_name(manager, names, ServiceId::Aci(member.aci)).await;
+                if ServiceId::Aci(member.aci) == editor_id {
+                    format!("{editor} joined the group.")
+                } else {
+                    format!("{editor} added {name}.")
+                }
+            }
+            GroupChange::DeleteMember(aci) => {
+                let name = display_name(manager, names, ServiceId::Aci(aci)).await;
+                if ServiceId::Aci(aci) == editor_id {
+                    format!("{name} left the group.")
+                } else {
+                    format!("{editor} removed {name}.")
+                }
+            }
+            GroupChange::ModifyMemberRole { aci, role } => {
+                let name = display_name(manager, names, ServiceId::Aci(aci)).await;
+                if role == Role::Administrator {
+                    format!("{editor} made {name} an admin.")
+                } else {
+                    format!("{editor} took {name}'s admin rights.")
+                }
+            }
+            GroupChange::NewPendingMember(_) => format!("{editor} invited someone."),
+            GroupChange::PromotePendingMember { address, .. } => {
+                let name = display_name(manager, names, address).await;
+                format!("{name} joined the group.")
+            }
+            GroupChange::Title(title) => format!("{editor} named the group “{title}”."),
+            GroupChange::Description(_) => format!("{editor} changed the group's description."),
+            GroupChange::Avatar(_) => format!("{editor} changed the group's picture."),
+            GroupChange::Timer(t) => {
+                let seconds = t.map_or(0, |t| t.duration);
+                timer = Some(seconds);
+                crate::timer_notice(&editor, seconds)
+            }
+            _ => continue,
+        };
+        lines.push(line);
+    }
+    (!lines.is_empty()).then(|| (lines.join("\n"), timer))
 }
 
 /// A group's members other than us, by name.
@@ -1570,7 +1724,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     let Ok(thread) = Thread::try_from(content) else {
         return true;
     };
-    let id = ensure_conversation(manager, ctx, thread).await;
+    let id = ensure_conversation(manager, ctx, thread.clone()).await;
+    // presage has taken over a group change by now; show the group as it is.
+    if let Thread::Group(key) = thread
+        && data_of(content)
+            .and_then(|(data, _)| data.group_v2.as_ref())
+            .is_some_and(|context| context.group_change.is_some())
+    {
+        refresh_group(manager, ctx, key).await;
+    }
     // Nothing new from blocked chats (what we send from another device still counts).
     if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
         return true;
@@ -1900,13 +2062,21 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
         let subtitle = subtitle(manager, &thread).await;
         let timer = expire_timer(manager, &thread).await;
         let group = match &thread {
-            Thread::Group(key) => manager.store().group(*key).await.ok().flatten(),
+            Thread::Group(key) => manager
+                .store()
+                .group(*key)
+                .await
+                .ok()
+                .flatten()
+                .map(|group| (*key, group)),
             Thread::Contact(_) => None,
         };
-        let mut conversation = register(&ctx.threads, thread, title, subtitle, timer);
-        if let Some(group) = group {
-            conversation.members = people(manager, &mut Names::new(), &group).await;
-        }
+        let mut conversation = match group {
+            Some((key, group)) => {
+                group_conversation(manager, &ctx.threads, &mut Names::new(), key, group).await
+            }
+            None => register(&ctx.threads, thread, title, subtitle, timer),
+        };
         conversation.settings = ctx
             .tables
             .settings(&id)
@@ -2085,12 +2255,21 @@ async fn to_chat_message(
     )
     .await;
     let attachments = attachments::of_message(data);
-    let timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0)
+    let mut timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0)
         .then(|| data.expire_timer.unwrap_or(0));
     if let Some(seconds) = timer_change
         && body.is_empty()
     {
         body = crate::timer_notice(&sender, seconds);
+    }
+    // A change to the group: what it says.
+    if body.is_empty()
+        && attachments::of_message(data).is_empty()
+        && let Some(context) = &data.group_v2
+        && let Some((notice, timer)) = group_notice(manager, names, context, &sender).await
+    {
+        body = notice;
+        timer_change = timer_change.or(timer);
     }
     if body.is_empty() && attachments.is_empty() {
         return None;
@@ -2337,6 +2516,41 @@ async fn handle_command(
             };
             send_new(manager, ctx, conversation, outgoing).await?;
         }
+        Command::CreateGroup { title, members } => {
+            let members: Vec<_> = members
+                .iter()
+                .filter_map(|id| match ServiceId::parse_from_service_id_string(id)? {
+                    ServiceId::Aci(aci) => Some(aci),
+                    ServiceId::Pni(_) => None,
+                })
+                .collect();
+            let (key, timestamp) = manager
+                .create_group(title.trim(), &members)
+                .await
+                .map_err(|e| format!("failed to create the group: {e}"))?;
+            let thread = Thread::Group(key);
+            let id = ensure_conversation(manager, ctx, thread.clone()).await;
+            // Ours, so not a request.
+            ctx.tables
+                .update(&id, |s| s.accepted = true)
+                .await
+                .map_err(db)?;
+            refresh_group(manager, ctx, key).await;
+            show_stored(manager, ctx, &id, &thread, timestamp).await;
+            let _ = events.send(Event::GroupCreated(id));
+        }
+        Command::EditGroup { conversation, edit } => {
+            let Thread::Group(key) = thread(&conversation)? else {
+                return Err("not a group".into());
+            };
+            let edit = group_edit(edit).ok_or("unknown member")?;
+            let timestamp = manager
+                .change_group(&key, edit)
+                .await
+                .map_err(|e| format!("failed to change the group: {e}"))?;
+            refresh_group(manager, ctx, key).await;
+            show_stored(manager, ctx, &conversation, &Thread::Group(key), timestamp).await;
+        }
         Command::LoadStickers => {
             let packs = sticker_packs(manager).await;
             let _ = events.send(Event::StickerPacks(packs));
@@ -2578,8 +2792,15 @@ async fn handle_command(
             seconds,
         } => {
             let thread = thread(&conversation)?;
-            if matches!(thread, Thread::Group(_)) {
-                return Err("Changing a group's disappearing messages isn't possible yet.".into());
+            if let Thread::Group(key) = thread {
+                let edit = presage::manager::GroupEdit::Timer(seconds);
+                let timestamp = manager
+                    .change_group(&key, edit)
+                    .await
+                    .map_err(|e| format!("failed to change the group: {e}"))?;
+                refresh_group(manager, ctx, key).await;
+                show_stored(manager, ctx, &conversation, &thread, timestamp).await;
+                return Ok(());
             }
             let timestamp = now_millis();
             let message = DataMessage {

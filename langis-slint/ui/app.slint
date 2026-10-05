@@ -17,6 +17,10 @@ export struct ConversationItem {
     // A message request, waiting for Accept, Delete or Block.
     request: bool,
     blocked: bool,
+    // A group we're no longer in.
+    left: bool,
+    // A group: we may manage it (name, members).
+    group: bool,
     // Among the pinned ones.
     can-move-up: bool,
     can-move-down: bool,
@@ -116,8 +120,20 @@ export struct MessageItem {
     has-preview-image: bool,
 }
 
+// Someone to choose for a group.
+export struct CandidateItem {
+    id: string,
+    title: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    chosen: bool,
+}
+
 // A group member on the details page.
 export struct MemberItem {
+    // Their service ID.
+    id: string,
     name: string,
     initials: string,
     color: color,
@@ -1430,6 +1446,25 @@ export component AppWindow inherits Window {
     in property <[MemberItem]> details-members;
     callback open-details;
     callback close-details;
+    // Changing the open group from its details page.
+    callback rename-group(string);
+    callback describe-group(string);
+    callback set-member-admin(string, bool);
+    callback remove-member(string);
+    callback leave-group;
+    // Choosing people for a new group, or to add to the open one.
+    in property <bool> group-draft-open;
+    in property <bool> group-draft-new;
+    in-out property <string> group-draft-name;
+    in-out property <string> group-draft-filter;
+    in property <[CandidateItem]> group-candidates;
+    in property <int> group-draft-chosen;
+    callback open-new-group;
+    callback open-add-members;
+    callback toggle-candidate(string);
+    callback group-draft-edited;
+    callback finish-group-draft;
+    callback close-group-draft;
     // The open chat's media, files and links.
     in property <bool> media-open;
     // Gathering them.
@@ -1582,6 +1617,19 @@ export component AppWindow inherits Window {
                             color: Palette.foreground;
                         }
                         Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center;
+                            HoverButton {
+                                symbol: "+";
+                                label: "New group";
+                                shown: true;
+                                clicked => {
+                                    root.group-draft-name = "";
+                                    root.group-draft-filter = "";
+                                    root.open-new-group();
+                                }
+                            }
+                        }
                         settings-button := Rectangle {
                             width: 28px;
                             height: 28px;
@@ -2188,6 +2236,55 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
+                                if root.conversations[root.selected].group && !root.conversations[root.selected].left: VerticalLayout {
+                                    spacing: 6px;
+                                    SectionTitle { text: "Group"; }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        name-field := LineEdit {
+                                            placeholder-text: "Name";
+                                            text: root.conversations[root.selected].title;
+                                            accepted => { root.rename-group(self.text); }
+                                        }
+                                        Button {
+                                            text: "Rename";
+                                            clicked => { root.rename-group(name-field.text); }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        description-field := LineEdit {
+                                            placeholder-text: "Description";
+                                            text: root.details-description;
+                                            accepted => { root.describe-group(self.text); }
+                                        }
+                                        Button {
+                                            text: "Save";
+                                            clicked => { root.describe-group(description-field.text); }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        Button {
+                                            text: "Add members…";
+                                            clicked => {
+                                                root.group-draft-filter = "";
+                                                root.open-add-members();
+                                            }
+                                        }
+                                        leave-button := Button {
+                                            property <bool> sure;
+                                            text: self.sure ? "Really leave?" : "Leave group";
+                                            clicked => {
+                                                if self.sure {
+                                                    root.leave-group();
+                                                }
+                                                self.sure = !self.sure;
+                                            }
+                                        }
+                                    }
+                                }
                                 if root.details-members.length > 0: VerticalLayout {
                                     spacing: 4px;
                                     SectionTitle { text: root.details-members.length + " members"; }
@@ -2211,6 +2308,29 @@ export component AppWindow inherits Window {
                                             font-size: 0.8rem;
                                             vertical-alignment: center;
                                             color: Palette.foreground.with-alpha(0.6);
+                                        }
+                                        // Not for ourselves, nor where we're no longer in the group.
+                                        if member.name != "You" && !root.conversations[root.selected].left: VerticalLayout {
+                                            alignment: center;
+                                            HoverButton {
+                                                symbol: "⋮";
+                                                label: "Manage " + member.name;
+                                                shown: true;
+                                                clicked => { member-menu.show({ x: self.x - 160px, y: self.y + self.height }); }
+                                            }
+                                            member-menu := ContextMenuArea {
+                                                enabled: false;
+                                                Menu {
+                                                    MenuItem {
+                                                        title: member.admin ? "Take admin rights" : "Make admin";
+                                                        activated => { root.set-member-admin(member.id, !member.admin); }
+                                                    }
+                                                    MenuItem {
+                                                        title: "Remove from group";
+                                                        activated => { root.remove-member(member.id); }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2545,6 +2665,19 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                if root.conversations[root.selected].left: Rectangle {
+                    background: Palette.alternate-background;
+                    HorizontalLayout {
+                        padding: 14px;
+                        Text {
+                            text: "You left this group. You can read it, but not write to it.";
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground.with-alpha(0.75);
+                        }
+                    }
+                }
                 if root.conversations[root.selected].blocked: Rectangle {
                     background: Palette.alternate-background;
                     HorizontalLayout {
@@ -2565,7 +2698,7 @@ export component AppWindow inherits Window {
                 }
                 // Not for requests and blocked chats: they get their bar above instead.
                 Rectangle {
-                    property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked;
+                    property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked || root.conversations[root.selected].left;
                     height: self.hidden ? 0px : composer-row.preferred-height;
                     clip: true;
                 composer-row := HorizontalLayout {
@@ -2801,6 +2934,105 @@ export component AppWindow inherits Window {
                 font-size: 1.3rem;
                 font-weight: 600;
                 color: Palette.accent-background;
+            }
+        }
+    }
+
+    // Choosing people for a new group, or to add to the open one.
+    if root.group-draft-open: Rectangle {
+        background: #0008;
+        TouchArea {
+            clicked => { root.close-group-draft(); }
+        }
+        Rectangle {
+            width: min(420px, parent.width - 32px);
+            height: min(560px, parent.height - 32px);
+            border-radius: 12px;
+            background: Palette.background;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #0006;
+            TouchArea {}
+            VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: root.group-draft-new ? "New group" : "Add members";
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                }
+                if root.group-draft-new: LineEdit {
+                    placeholder-text: "Group name";
+                    text <=> root.group-draft-name;
+                    init => { self.focus(); }
+                    edited => { root.group-draft-edited(); }
+                }
+                LineEdit {
+                    placeholder-text: "Search contacts";
+                    text <=> root.group-draft-filter;
+                    edited => { root.group-draft-edited(); }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for candidate in root.group-candidates: Rectangle {
+                        height: 48px;
+                        border-radius: 6px;
+                        background: candidate-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                        candidate-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            accessible-role: checkbox;
+                            accessible-label: candidate.title;
+                            accessible-checked: candidate.chosen;
+                            accessible-action-default => { self.clicked(); }
+                            clicked => { root.toggle-candidate(candidate.id); }
+                        }
+                        HorizontalLayout {
+                            padding: 6px;
+                            spacing: 10px;
+                            Avatar {
+                                width: 36px;
+                                initials: candidate.initials;
+                                tint: candidate.color;
+                                picture: candidate.avatar;
+                            }
+                            Text {
+                                text: candidate.title;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                color: Palette.foreground;
+                            }
+                            Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 11px;
+                                border-width: 2px;
+                                border-color: candidate.chosen ? Palette.accent-background : Palette.border;
+                                background: candidate.chosen ? Palette.accent-background : transparent;
+                                if candidate.chosen: Text {
+                                    text: "✓";
+                                    color: white;
+                                    font-weight: 700;
+                                }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.close-group-draft(); }
+                    }
+                    Button {
+                        text: root.group-draft-new ? "Create" : "Add";
+                        primary: true;
+                        enabled: root.group-draft-new ? root.group-draft-name != "" : root.group-draft-chosen > 0;
+                        clicked => { root.finish-group-draft(); }
+                    }
+                }
             }
         }
     }

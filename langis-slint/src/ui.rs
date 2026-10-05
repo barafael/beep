@@ -28,6 +28,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
     window.set_media_rows(ModelRc::new(VecModel::<MediaRow>::default()));
+    window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
 
@@ -122,6 +123,82 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
+    let edit_selected = |shared: &Rc<Shared>, edit: fn(String, bool) -> langis_core::GroupEdit| {
+        let shared = shared.clone();
+        move |text: SharedString, flag: bool| {
+            shared.act(|chat| {
+                let id = chat.selected().map(|c| c.id.clone());
+                (id.and_then(|id| chat.edit_group(&id, edit(text.to_string(), flag))), Update::default())
+            });
+        }
+    };
+    window.on_rename_group({
+        let edit = edit_selected(shared, |text, _| langis_core::GroupEdit::Title(text));
+        move |text| edit(text, false)
+    });
+    window.on_describe_group({
+        let edit = edit_selected(shared, |text, _| langis_core::GroupEdit::Description(text));
+        move |text| edit(text, false)
+    });
+    window.on_set_member_admin(edit_selected(shared, langis_core::GroupEdit::SetAdmin));
+    window.on_remove_member({
+        let edit = edit_selected(shared, |id, _| langis_core::GroupEdit::RemoveMember(id));
+        move |id| edit(id, false)
+    });
+    window.on_leave_group({
+        let edit = edit_selected(shared, |_, _| langis_core::GroupEdit::Leave);
+        move || edit(SharedString::new(), false)
+    });
+    window.on_open_new_group({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.open_group_draft(None);
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_open_add_members({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                let id = chat.selected().map(|c| c.id.clone());
+                chat.open_group_draft(id);
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_toggle_candidate({
+        let shared = shared.clone();
+        move |id| {
+            shared.act(|chat| {
+                chat.toggle_group_member(&ConversationId(id.into()));
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_group_draft_edited({
+        let shared = shared.clone();
+        move || shared.refresh(Update::default())
+    });
+    window.on_finish_group_draft({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            let Some(window) = window.upgrade() else { return };
+            let name = window.get_group_draft_name();
+            shared.act(|chat| (chat.finish_group_draft(&name), Update::default()));
+        }
+    });
+    window.on_close_group_draft({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_group_draft();
+                (None, Update::default())
+            });
+        }
+    });
     window.on_open_details({
         let shared = shared.clone();
         move || {
@@ -616,7 +693,9 @@ fn shortcut(shared: &Rc<Shared>, window: &AppWindow, key: &str, control: bool, a
 /// Esc closes what is open, the innermost first.
 fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
     let mut chat = shared.chat.borrow_mut();
-    if chat.forwarding() {
+    if chat.group_draft().is_some() {
+        chat.close_group_draft();
+    } else if chat.forwarding() {
         chat.cancel_forward();
     } else if chat.details().is_some() {
         chat.close_details();
@@ -721,6 +800,25 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         })
         .unwrap_or_default();
     window.set_search_results(ModelRc::new(VecModel::from(results)));
+    let draft = chat.group_draft();
+    window.set_group_draft_open(draft.is_some());
+    if let Some((new, chosen)) = draft {
+        window.set_group_draft_new(new);
+        window.set_group_draft_chosen(chosen.len() as i32);
+        let candidates: Vec<CandidateItem> = chat
+            .group_candidates(&window.get_group_draft_filter())
+            .into_iter()
+            .map(|c| CandidateItem {
+                id: c.id.0.as_str().into(),
+                title: c.title.as_str().into(),
+                initials: state::initials(&c.title).into(),
+                color: avatar_color(&c.id),
+                avatar: chat.avatar(&c.id).map(|a| images.avatar(&c.id, a)).unwrap_or_default(),
+                chosen: chosen.contains(&c.id),
+            })
+            .collect();
+        update_list(&window.get_group_candidates(), candidates, |a, b| a == b);
+    }
     window.set_forwarding(chat.forwarding());
     if chat.forwarding() {
         let targets: Vec<_> = chat
@@ -896,6 +994,7 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
         .map(|(person, admin)| {
             let id = ConversationId::contact(&person.service_id);
             MemberItem {
+                id: person.service_id.as_str().into(),
                 name: person.name.as_str().into(),
                 initials: state::initials(&person.name).into(),
                 color: avatar_color(&id),
@@ -977,6 +1076,8 @@ fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, i
         pinned: view.pinned(),
         request: chat.is_request(c),
         blocked: c.settings.blocked,
+        left: c.left,
+        group: c.is_group,
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
         can_move_down: c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned),
         muted: view.muted(),

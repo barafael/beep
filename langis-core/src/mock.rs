@@ -103,6 +103,8 @@ pub fn run(commands: Inbox, events: Events) {
             },
             expire_timer: if id == "alice" { 3600 } else { 0 },
             note_to_self: id == "me",
+            admin: is_group,
+            left: false,
             members: if is_group {
                 ["Carol", "Dana", "Eve", "Ferris"]
                     .map(|name| Person {
@@ -258,6 +260,63 @@ pub fn run(commands: Inbox, events: Events) {
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
             Ok(Command::Block { .. }) => {}
+            Ok(Command::CreateGroup { title, members }) => {
+                let id = ConversationId(format!("group-{}", now_millis()));
+                let conversation = Conversation {
+                    id: id.clone(),
+                    title,
+                    is_group: true,
+                    subtitle: format!("{} members", members.len() + 1),
+                    members: members
+                        .iter()
+                        .map(|m| Person {
+                            service_id: m.clone(),
+                            name: m.clone(),
+                        })
+                        .collect(),
+                    admin: true,
+                    settings: ChatSettings {
+                        accepted: true,
+                        ..ChatSettings::default()
+                    },
+                    ..Conversation::default()
+                };
+                let _ = events.send(Event::Conversations(vec![conversation]));
+                let _ = events.send(Event::GroupCreated(id.clone()));
+                let _ = events.send(Event::Message(message(
+                    &id.0,
+                    "You",
+                    "You created the group.",
+                    now_millis(),
+                    true,
+                )));
+            }
+            Ok(Command::EditGroup { conversation, edit }) => {
+                let notice = match edit {
+                    crate::GroupEdit::Title(title) => format!("You named the group “{title}”."),
+                    crate::GroupEdit::Description(_) => {
+                        "You changed the group's description.".into()
+                    }
+                    crate::GroupEdit::AddMembers(members) => {
+                        format!("You added {}.", members.join(", "))
+                    }
+                    crate::GroupEdit::RemoveMember(member) => format!("You removed {member}."),
+                    crate::GroupEdit::SetAdmin(member, true) => {
+                        format!("You made {member} an admin.")
+                    }
+                    crate::GroupEdit::SetAdmin(member, false) => {
+                        format!("You took {member}'s admin rights.")
+                    }
+                    crate::GroupEdit::Leave => "You left the group.".into(),
+                };
+                let _ = events.send(Event::Message(message(
+                    &conversation.0,
+                    "You",
+                    &notice,
+                    now_millis(),
+                    true,
+                )));
+            }
             Ok(Command::LoadStickers) => {
                 // One pack of gradients standing in for stickers.
                 let stickers = ["😀", "🦀", "👍", "🎉", "❤️", "🙈"]

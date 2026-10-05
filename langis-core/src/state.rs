@@ -304,6 +304,8 @@ pub struct ChatState {
     /// The phone's chat folders, and the one shown (`None` for all chats).
     folders: Vec<crate::ChatFolder>,
     folder: Option<usize>,
+    /// Choosing people for a new group, or to add to one.
+    group_draft: Option<GroupDraft>,
     /// The installed sticker packs, once asked for: `Some(None)` while they are gathered.
     sticker_packs: Option<Option<Vec<crate::StickerPack>>>,
 }
@@ -316,6 +318,13 @@ pub struct MediaOverview<'a> {
     pub files: Vec<(&'a ChatMessage, &'a Attachment)>,
     /// Web addresses, newest first, with the message they were in.
     pub links: Vec<(&'a ChatMessage, &'a str)>,
+}
+
+/// See [`ChatState::open_group_draft`].
+struct GroupDraft {
+    /// The group they are added to; `None` for a new one.
+    adding_to: Option<ConversationId>,
+    chosen: Vec<ConversationId>,
 }
 
 struct ChatSearch {
@@ -653,6 +662,12 @@ impl ChatState {
                 self.sort_conversations();
                 update.conversations = true;
             }
+            Event::GroupCreated(id) => {
+                if let Some(command) = self.select(&id) {
+                    self.queued.push(command);
+                }
+                update = update.merge(Update::reset());
+            }
             Event::Folders(folders) => {
                 self.folders = folders;
                 self.folder = self.folder.filter(|&at| at < self.folders.len());
@@ -968,7 +983,7 @@ impl ChatState {
         self.synced
             && self
                 .selected()
-                .is_some_and(|c| !c.settings.blocked && !self.is_request(c))
+                .is_some_and(|c| !c.settings.blocked && !c.left && !self.is_request(c))
             && (!text.trim().is_empty() || !self.staged.is_empty())
     }
 
@@ -1090,6 +1105,116 @@ impl ChatState {
             conversation: conversation.id.clone(),
             pack: pack.to_owned(),
             sticker,
+        })
+    }
+
+    /// Starts choosing people for a new group, or to add to `adding_to`.
+    pub fn open_group_draft(&mut self, adding_to: Option<ConversationId>) {
+        self.group_draft = Some(GroupDraft {
+            adding_to,
+            chosen: Vec::new(),
+        });
+    }
+
+    pub fn close_group_draft(&mut self) {
+        self.group_draft = None;
+    }
+
+    /// Chooses someone for the group, or unchooses them.
+    pub fn toggle_group_member(&mut self, id: &ConversationId) {
+        if let Some(draft) = &mut self.group_draft {
+            match draft.chosen.iter().position(|c| c == id) {
+                Some(at) => {
+                    draft.chosen.remove(at);
+                }
+                None => draft.chosen.push(id.clone()),
+            }
+        }
+    }
+
+    /// While choosing: whether it is for a new group, and who is chosen.
+    pub fn group_draft(&self) -> Option<(bool, &[ConversationId])> {
+        let draft = self.group_draft.as_ref()?;
+        Some((draft.adding_to.is_none(), &draft.chosen))
+    }
+
+    /// Makes the new group named `title`, or adds the chosen people to the group.
+    pub fn finish_group_draft(&mut self, title: &str) -> Option<Command> {
+        let draft = self.group_draft.as_ref()?;
+        let command = match draft.adding_to.clone() {
+            None => self.create_group(title, &draft.chosen.clone())?,
+            Some(group) => {
+                let members = draft
+                    .chosen
+                    .iter()
+                    .filter_map(|id| id.0.strip_prefix("c:"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if members.is_empty() {
+                    return None;
+                }
+                self.edit_group(&group, crate::GroupEdit::AddMembers(members))?
+            }
+        };
+        self.group_draft = None;
+        Some(command)
+    }
+
+    /// People who can be chosen: contacts whose name contains `filter`, without those
+    /// already in the group being added to.
+    pub fn group_candidates(&self, filter: &str) -> Vec<&Conversation> {
+        let filter = filter.trim().to_lowercase();
+        let already: Vec<String> = self
+            .group_draft
+            .as_ref()
+            .and_then(|draft| self.conversation(draft.adding_to.as_ref()?))
+            .map(|group| {
+                group
+                    .members
+                    .iter()
+                    .map(|p| format!("c:{}", p.service_id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut candidates: Vec<&Conversation> = self
+            .conversations
+            .iter()
+            .filter(|c| !c.is_group && !c.note_to_self && !c.settings.blocked)
+            .filter(|c| !already.contains(&c.id.0))
+            .filter(|c| c.title.to_lowercase().contains(&filter))
+            .collect();
+        candidates.sort_by_cached_key(|c| c.title.to_lowercase());
+        candidates
+    }
+
+    /// Makes a group named `title` with these contacts.
+    pub fn create_group(&mut self, title: &str, members: &[ConversationId]) -> Option<Command> {
+        let title = title.trim();
+        if title.is_empty() || !self.synced {
+            return None;
+        }
+        let members = members
+            .iter()
+            .filter_map(|id| id.0.strip_prefix("c:"))
+            .map(str::to_owned)
+            .collect();
+        Some(Command::CreateGroup {
+            title: title.to_owned(),
+            members,
+        })
+    }
+
+    /// Changes a group.
+    pub fn edit_group(&mut self, id: &ConversationId, edit: crate::GroupEdit) -> Option<Command> {
+        let group = self.conversation(id).filter(|c| c.is_group && !c.left)?;
+        if let crate::GroupEdit::Title(title) = &edit
+            && (title.trim().is_empty() || title.trim() == group.title)
+        {
+            return None;
+        }
+        Some(Command::EditGroup {
+            conversation: id.clone(),
+            edit,
         })
     }
 
@@ -3604,5 +3729,92 @@ mod tests {
         state.show_folder(Some(1));
         state.apply(Event::Folders(Vec::new()));
         assert_eq!(state.folder(), None);
+    }
+
+    #[test]
+    fn groups_are_made_and_changed() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![
+            conversation("c:ann", false),
+            conversation("c:bob", false),
+        ]));
+        let names: Vec<_> = state
+            .group_candidates("")
+            .iter()
+            .map(|c| c.id.0.clone())
+            .collect();
+        assert_eq!(names, ["a", "c:ann", "c:bob"]);
+        assert!(
+            state.create_group("  ", &[id("c:ann")]).is_none(),
+            "needs a name"
+        );
+        assert!(matches!(
+            state.create_group("Climbing", &[id("c:ann")]),
+            Some(Command::CreateGroup { title, members }) if title == "Climbing" && members == ["ann"]
+        ));
+        // The new group opens.
+        state.apply(Event::Conversations(vec![conversation("g:new", true)]));
+        state.apply(Event::GroupCreated(id("g:new")));
+        assert_eq!(state.selected().unwrap().id, id("g:new"));
+        assert!(
+            state
+                .edit_group(&id("g:new"), crate::GroupEdit::Title("g:new".into()))
+                .is_none()
+        );
+        assert!(
+            state
+                .edit_group(&id("g:new"), crate::GroupEdit::Leave)
+                .is_some()
+        );
+        // Once left, read only.
+        state.apply(Event::Conversations(vec![Conversation {
+            left: true,
+            ..conversation("g:new", true)
+        }]));
+        assert!(!state.can_compose("hi"));
+        assert!(
+            state
+                .edit_group(&id("g:new"), crate::GroupEdit::Leave)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn people_are_chosen_for_a_group() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![
+            conversation("c:ann", false),
+            conversation("c:bob", false),
+            Conversation {
+                members: vec![Person {
+                    service_id: "ann".into(),
+                    name: "Ann".into(),
+                }],
+                ..conversation("g:club", true)
+            },
+        ]));
+        state.open_group_draft(None);
+        state.toggle_group_member(&id("c:ann"));
+        state.toggle_group_member(&id("c:bob"));
+        state.toggle_group_member(&id("c:bob"));
+        assert!(matches!(state.group_draft(), Some((true, [chosen])) if *chosen == id("c:ann")));
+        assert!(matches!(
+            state.finish_group_draft("Club"),
+            Some(Command::CreateGroup { members, .. }) if members == ["ann"]
+        ));
+        assert!(state.group_draft().is_none());
+        // Adding to a group: its members aren't offered again.
+        state.open_group_draft(Some(id("g:club")));
+        let offered: Vec<_> = state
+            .group_candidates("")
+            .iter()
+            .map(|c| c.id.0.clone())
+            .collect();
+        assert_eq!(offered, ["a", "c:bob"]);
+        state.toggle_group_member(&id("c:bob"));
+        assert!(matches!(
+            state.finish_group_draft(""),
+            Some(Command::EditGroup { edit: crate::GroupEdit::AddMembers(m), .. }) if m == ["bob"]
+        ));
     }
 }
