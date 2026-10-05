@@ -12,7 +12,7 @@ default = ["signal"]
 signal = [
     "dep:tracing", "dep:presage", "dep:presage-store-sqlite", "dep:tokio", "dep:futures",
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
-    "dep:keyring-core", "dep:zbus-secret-service-keyring-store",
+    "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
     "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket",
 ]
@@ -58,6 +58,8 @@ async-channel = "2"
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"], optional = true }
+# Hears logind say the computer woke from sleep, to reconnect at once (`signal::receive`).
+zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = { version = "1", optional = true }

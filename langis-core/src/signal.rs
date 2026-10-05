@@ -914,7 +914,9 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
 }
 
 /// Receives messages for the rest of the session, reconnecting with exponential backoff
-/// whenever the connection drops (sleep, network changes, server timeouts).
+/// whenever the connection drops (sleep, network changes, server timeouts), and at once when
+/// the computer wakes from sleep: the old connection may look alive for minutes until a
+/// keepalive fails, and a pending retry may be up to a minute away.
 /// Notifies `removed` (and stops) if Signal no longer accepts this device.
 async fn receive(
     mut manager: Mgr,
@@ -927,11 +929,29 @@ async fn receive(
     let mut names = Names::new();
     let mut resets = Resets::new();
     let mut backoff = Duration::from_secs(1);
+    let woke = Rc::new(tokio::sync::Notify::new());
+    let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
+    // Stops watching when receiving stops.
+    let _watching = AbortOnDrop(watching);
     loop {
+        let mut reconnect_now = false;
         match manager.receive_messages().await {
             Ok(messages) => {
                 pin_mut!(messages);
-                while let Some(received) = messages.next().await {
+                loop {
+                    // Only between messages, so one is never handled halfway.
+                    let received = tokio::select! {
+                        received = messages.next() => received,
+                        () = woke.notified() => {
+                            info!("woke from sleep; reconnecting to Signal");
+                            reconnect_now = true;
+                            break;
+                        }
+                    };
+                    let Some(received) = received else {
+                        info!("connection to Signal closed");
+                        break;
+                    };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
                     if !handle_received(
@@ -948,7 +968,6 @@ async fn receive(
                         return;
                     }
                 }
-                info!("connection to Signal closed");
             }
             Err(error) if removed_from_account(&error) => {
                 warn!(%error, "Signal no longer accepts this device");
@@ -960,10 +979,64 @@ async fn receive(
         if !events.send(Event::Reconnecting) {
             return;
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        if reconnect_now {
+            backoff = Duration::from_secs(1);
+            continue;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
+            () = woke.notified() => {
+                info!("woke from sleep; reconnecting to Signal");
+                backoff = Duration::from_secs(1);
+            }
+        }
     }
 }
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Notifies `woke` each time the computer wakes from sleep, as logind announces it. Ends
+/// quietly where there is no logind (the backoff still reconnects, just later).
+#[cfg(all(unix, not(target_os = "macos")))]
+async fn watch_wakeups(woke: Rc<tokio::sync::Notify>) {
+    #[zbus::proxy(
+        interface = "org.freedesktop.login1.Manager",
+        default_service = "org.freedesktop.login1",
+        default_path = "/org/freedesktop/login1"
+    )]
+    trait Login {
+        /// `true` before sleeping, `false` after waking.
+        #[zbus(signal)]
+        fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
+    }
+
+    let watch = async {
+        let connection = zbus::Connection::system().await?;
+        let mut signals = LoginProxy::new(&connection)
+            .await?
+            .receive_prepare_for_sleep()
+            .await?;
+        while let Some(signal) = signals.next().await {
+            if !signal.args()?.start {
+                woke.notify_one();
+            }
+        }
+        zbus::Result::Ok(())
+    };
+    if let Err(error) = watch.await {
+        debug!(%error, "can't tell when the computer wakes from sleep");
+    }
+}
+
+/// Elsewhere only the backoff reconnects after sleep.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+async fn watch_wakeups(_: Rc<tokio::sync::Notify>) {}
 
 /// Returns `false` once the UI has gone away.
 async fn handle_received(
