@@ -3689,6 +3689,7 @@ name = "langis-slint"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "directories",
  "i-slint-core",
  "langis-core",
  "langis-notify",
@@ -3699,6 +3700,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
+ "windows-registry",
  "zbus",
 ]
 

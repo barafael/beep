@@ -32,6 +32,17 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         move || shared.close_requested()
     });
+    window.on_start_with_system_changed({
+        let window = window.as_weak();
+        move |enabled| {
+            if let Err(error) = crate::autostart::set(enabled) {
+                tracing::warn!(%error, "failed to change starting with the system");
+            }
+            if let Some(window) = window.upgrade() {
+                window.set_start_with_system(crate::autostart::enabled());
+            }
+        }
+    });
     window.on_select({
         let shared = shared.clone();
         move |id| {
@@ -246,6 +257,9 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         NotificationContent::NameOnly => 1,
         NotificationContent::Nothing => 2,
     });
+    window.set_close_to_tray(settings.close_to_tray);
+    window.set_autostart_supported(crate::autostart::SUPPORTED);
+    window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
 }
 
@@ -269,6 +283,7 @@ fn read_settings(window: &AppWindow) -> Settings {
             2 => NotificationContent::Nothing,
             _ => NotificationContent::NameAndMessage,
         },
+        close_to_tray: window.get_close_to_tray(),
     }
 }
 

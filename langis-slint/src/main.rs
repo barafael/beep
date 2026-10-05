@@ -7,13 +7,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use langis_core::settings::{Settings, WidgetStyle};
-use langis_core::state::{ChatState, MessagesUpdate, Notice, Update};
+use langis_core::state::{ChatState, MessagesUpdate, Notice, Screen, Update};
 use langis_core::{
     AttachmentId, Backend, Command, Commands, Config, ConversationId, Event, Picture, QrMatrix,
 };
 use langis_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+mod autostart;
 mod instance;
 mod logging;
 mod tray;
@@ -96,6 +97,9 @@ pub struct Shared {
     qt_style_at_start: QtStyle,
     ui: RefCell<Option<Rc<dyn Ui>>>,
     tray: RefCell<Option<tray::Tray>>,
+    /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
+    /// e.g. for the password, until the chats are there.
+    start_hidden: Cell<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,19 +139,35 @@ impl Shared {
         let Some(ui) = self.ui() else { return };
         let mut chat = self.chat.borrow_mut();
         ui.render(&chat, &self.images, update);
+        if self.start_hidden.get() {
+            let screen = chat.screen();
+            if matches!(screen, Screen::Password { .. } | Screen::Link(_)) || chat.error().is_some()
+            {
+                self.start_hidden.set(false);
+                if let Err(error) = ui.show() {
+                    tracing::warn!(%error, "failed to show the window");
+                }
+            } else if matches!(screen, Screen::Chats) {
+                self.start_hidden.set(false);
+            }
+        }
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
         }
         deliver_notices(&self.notifier, &mut chat);
     }
 
-    /// Closing the window leaves langis running in the tray, to keep receiving messages. Where
-    /// nothing shows tray icons, it quits instead.
+    /// Closing the window leaves langis running in the tray, to keep receiving messages, unless
+    /// that is turned off or nothing shows tray icons.
     fn close_requested(&self) -> slint::CloseRequestResponse {
-        if !tray::host_present() {
+        if !self.in_tray() {
             let _ = slint::quit_event_loop();
         }
         slint::CloseRequestResponse::HideWindow
+    }
+
+    fn in_tray(&self) -> bool {
+        self.settings.borrow().close_to_tray && tray::host_present()
     }
 
     /// Why the chosen style isn't showing yet, if it isn't.
@@ -163,6 +183,9 @@ impl Shared {
             tracing::warn!(%error, "failed to save settings");
         }
         let previous = self.settings.replace(settings.clone());
+        if let Some(tray) = &*self.tray.borrow() {
+            tray.set_shown(settings.close_to_tray);
+        }
         let rebuild =
             self.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars;
         self.act(|chat| {
@@ -275,13 +298,18 @@ fn main() -> Result<(), slint::PlatformError> {
         qt_style_at_start,
         ui: RefCell::default(),
         tray: RefCell::default(),
+        start_hidden: Cell::new(false),
     });
 
     let ui = styles::create(settings.style, &shared)?;
     shared.ui.replace(Some(ui.clone()));
     shared.tray.replace(Some(tray::create(&shared)?));
+    let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && shared.in_tray();
+    shared.start_hidden.set(hidden);
     shared.refresh(everything());
-    ui.show()?;
+    if !hidden {
+        ui.show()?;
+    }
 
     // Starting langis again shows this one.
     if let Some(instance) = &instance {

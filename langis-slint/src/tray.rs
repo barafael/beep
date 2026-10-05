@@ -13,6 +13,7 @@ pub use generated::Tray;
 /// Puts langis in the tray: clicking the icon opens the window, its menu also quits.
 pub fn create(shared: &Rc<Shared>) -> Result<Tray, slint::PlatformError> {
     let tray = Tray::new()?;
+    tray.set_shown(shared.settings.borrow().close_to_tray);
     tray.on_open({
         let shared = Rc::downgrade(shared);
         move || {

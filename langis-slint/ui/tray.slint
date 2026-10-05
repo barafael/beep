@@ -3,12 +3,15 @@
 
 export component Tray inherits SystemTrayIcon {
     in property <int> unread;
+    // The "Keep running in the tray" setting.
+    in property <bool> shown: true;
 
     callback open();
     callback quit();
 
     icon: @image-url("../assets/langis.svg");
     title: "langis";
+    visible: root.shown;
     tooltip: unread == 0 ? "langis" : unread == 1 ? "langis — 1 unread message" : "langis — \{unread} unread messages";
     clicked => { root.open(); }
 

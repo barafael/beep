@@ -87,6 +87,8 @@ pub struct Settings {
     /// Desktop notifications for incoming messages.
     pub notifications: bool,
     pub notification_content: NotificationContent,
+    /// Closing the window leaves langis running in the tray, still receiving messages.
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -98,6 +100,7 @@ impl Default for Settings {
             show_avatars: true,
             notifications: true,
             notification_content: NotificationContent::default(),
+            close_to_tray: true,
         }
     }
 }
@@ -152,6 +155,8 @@ impl Settings {
                 ("notification_content", "nothing") => {
                     settings.notification_content = NotificationContent::Nothing
                 }
+                ("close_to_tray", "true") => settings.close_to_tray = true,
+                ("close_to_tray", "false") => settings.close_to_tray = false,
                 _ => {}
             }
         }
@@ -176,10 +181,11 @@ impl Settings {
         };
         format!(
             "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
-             notification_content = {notification_content}\n",
+             notification_content = {notification_content}\nclose_to_tray = {}\n",
             self.style.key(),
             self.show_avatars,
-            self.notifications
+            self.notifications,
+            self.close_to_tray
         )
     }
 }
@@ -203,6 +209,7 @@ mod tests {
                 show_avatars: false,
                 notifications: false,
                 notification_content: NotificationContent::NameOnly,
+                close_to_tray: false,
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }
