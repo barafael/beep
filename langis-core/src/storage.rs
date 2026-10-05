@@ -286,6 +286,457 @@ fn merge(
     changed
 }
 
+// -- Writing ---------------------------------------------------------------------------------
+
+/// How a write to the storage service went.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Written {
+    /// Nothing differed from what the phone has.
+    Nothing,
+    /// This many records were changed.
+    Records(usize),
+    /// The phone changed something since the last read: read, then try again.
+    Stale,
+    /// No storage key yet.
+    NoKey,
+}
+
+/// Signal shows at most this many pinned chats.
+const MAX_PINS: usize = 4;
+
+/// Writes what was changed here (pins, mutes, archive, blocks, accepted requests) to the
+/// storage service. Records are changed in their bytes, field by field, so fields langis
+/// doesn't know stay as the phone wrote them; and only on top of the version langis last read.
+pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, String> {
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    let Some((service, key)) = manager
+        .storage_access()
+        .await
+        .map_err(|e| format!("failed to reach the storage service: {e}"))?
+    else {
+        return Ok(Written::NoKey);
+    };
+    let key: [u8; 32] = Vec::from(key)
+        .try_into()
+        .map_err(|_| "a storage key has 32 bytes".to_string())?;
+    let client = Client::new(service).await?;
+    let (manifest, manifest_bytes) = client.manifest(&key).await?;
+    if manifest.version != tables.storage_version().await.map_err(db)? {
+        return Ok(Written::Stale);
+    }
+    let local = tables.conversations().await.map_err(db)?;
+    let before = tables.remote().await.map_err(db)?;
+    let pins = wanted_pins(&local);
+    let pins_changed = pins != pinned_order(&before);
+    let changed: HashMap<&ConversationId, ChatSettings> = local
+        .iter()
+        .filter_map(|(id, settings)| {
+            // Pins are written apart, to the account record.
+            let remote = ChatSettings {
+                pinned: None,
+                ..before.get(id).cloned().unwrap_or_default()
+            };
+            let wanted = wanted(settings, &remote);
+            (wanted != remote).then_some((id, wanted))
+        })
+        .collect();
+    if changed.is_empty() && !pins_changed {
+        return Ok(Written::Nothing);
+    }
+
+    let ikm = (!manifest.record_ikm.is_empty()).then_some(&manifest.record_ikm[..]);
+    let keys: Vec<Vec<u8>> = manifest
+        .identifiers
+        .iter()
+        .filter(|id| {
+            matches!(
+                id.r#type(),
+                identifier::Type::Contact | identifier::Type::Groupv2 | identifier::Type::Account
+            )
+        })
+        .map(|id| id.raw.clone())
+        .collect();
+    let mut replaced: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut inserted = Vec::new();
+    let mut remote_after = before.clone();
+    for batch in keys.chunks(BATCH) {
+        for (raw_id, plaintext) in client.read_raw(&key, batch.to_vec(), ikm).await? {
+            let Ok(record) = presage::proto::StorageRecord::decode(&*plaintext) else {
+                continue;
+            };
+            let edited = match record.record {
+                Some(Record::Contact(contact)) => {
+                    let aci = ServiceId::parse_from_service_id_string(&contact.aci)
+                        .or_else(|| ServiceId::parse_from_service_id_binary(&contact.aci_binary));
+                    let Some(id) = aci.map(|aci| ConversationId::contact(&aci.service_id_string()))
+                    else {
+                        continue;
+                    };
+                    changed.get(&id).and_then(|wanted| {
+                        let edited = crate::wire::edit_message(&plaintext, 1, |c| {
+                            set_flags(c, wanted, [9, 10, 11, 12, 13])
+                        })?;
+                        remote_after.insert(id.clone(), wanted.clone());
+                        Some(edited)
+                    })
+                }
+                Some(Record::GroupV2(group)) => {
+                    let id = ConversationId(format!("g:{}", hex::encode(&group.master_key)));
+                    changed.get(&id).and_then(|wanted| {
+                        let edited = crate::wire::edit_message(&plaintext, 3, |g| {
+                            set_flags(g, wanted, [2, 3, 4, 5, 6])
+                        })?;
+                        remote_after.insert(id.clone(), wanted.clone());
+                        Some(edited)
+                    })
+                }
+                Some(Record::Account(_)) if pins_changed => {
+                    let entries: Vec<Vec<u8>> = pins.iter().filter_map(pinned_entry).collect();
+                    crate::wire::edit_message(&plaintext, 4, |account| {
+                        crate::wire::set_repeated(account, 14, &entries)
+                    })
+                }
+                _ => None,
+            };
+            let Some(edited) = edited else { continue };
+            let new_id: [u8; 16] = rand::random();
+            inserted.push(presage::proto::StorageItem {
+                key: new_id.to_vec(),
+                value: encrypt(&item_key(&key, &new_id, ikm), &edited),
+            });
+            replaced.push((raw_id, new_id.to_vec()));
+        }
+    }
+    if replaced.is_empty() {
+        // The changes concern chats the phone keeps no record of.
+        return Ok(Written::Nothing);
+    }
+    for (id, settings) in remote_after.iter_mut() {
+        settings.pinned = pins.iter().position(|p| p == id).map(|at| at as u32);
+    }
+
+    let version = manifest.version + 1;
+    let device = u32::from(manager.device_id());
+    let next = next_manifest(&manifest_bytes, version, device, &replaced)?;
+    let operation = presage::proto::WriteOperation {
+        manifest: Some(presage::proto::StorageManifest {
+            version,
+            value: encrypt(&manifest_key(&key, version), &next),
+        }),
+        insert_item: inserted,
+        delete_key: replaced.iter().map(|(old, _)| old.clone()).collect(),
+        clear_all: false,
+    };
+    if !client.write(&operation).await? {
+        return Ok(Written::Stale);
+    }
+    tables
+        .set_remote(&remote_after, version)
+        .await
+        .map_err(db)?;
+    info!(
+        records = replaced.len(),
+        version, "wrote to the storage service"
+    );
+    Ok(Written::Records(replaced.len()))
+}
+
+/// The manifest after replacing records: changed in its bytes (version, source device, and the
+/// replaced records' identifiers), so what langis doesn't know of it stays; checked by reading
+/// it back as the phone will. ManifestRecord: version 1, identifiers 2, sourceDevice 3;
+/// Identifier: raw 1.
+fn next_manifest(
+    manifest: &[u8],
+    version: u64,
+    device: u32,
+    replaced: &[(Vec<u8>, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    let before = presage::proto::ManifestRecord::decode(manifest)
+        .map_err(|_| "invalid storage manifest".to_string())?;
+    let next = crate::wire::set_varint(manifest, 1, version)
+        .and_then(|m| crate::wire::set_varint(&m, 3, u64::from(device)))
+        .and_then(|m| {
+            crate::wire::edit_each(&m, 2, |identifier| {
+                let raw = presage::proto::manifest_record::Identifier::decode(identifier)
+                    .ok()?
+                    .raw;
+                let (_, new) = replaced.iter().find(|(old, _)| *old == raw)?;
+                crate::wire::set_bytes(identifier, 1, new)
+            })
+        })
+        .ok_or("the storage manifest couldn't be changed")?;
+    let check = presage::proto::ManifestRecord::decode(&*next)
+        .map_err(|_| "the changed storage manifest is invalid".to_string())?;
+    let written: Vec<&Vec<u8>> = check.identifiers.iter().map(|id| &id.raw).collect();
+    let adds_up = check.version == version
+        && check.source_device == device
+        && check.record_ikm == before.record_ikm
+        && check.identifiers.len() == before.identifiers.len()
+        && replaced
+            .iter()
+            .all(|(old, new)| !written.contains(&old) && written.contains(&new));
+    if !adds_up {
+        return Err("the changed storage manifest doesn't add up; not writing it".into());
+    }
+    Ok(next)
+}
+
+/// What the storage service should say for a chat: what langis says, except that langis
+/// never takes back what the phone accepted (`accepted` only adds).
+fn wanted(local: &ChatSettings, remote: &ChatSettings) -> ChatSettings {
+    ChatSettings {
+        archived: local.archived,
+        marked_unread: local.marked_unread,
+        muted_until: local.muted_until,
+        blocked: local.blocked,
+        accepted: local.accepted || remote.accepted,
+        ..ChatSettings::default()
+    }
+}
+
+/// Sets blocked, whitelisted, archived, marked unread and muted-until, given their field
+/// numbers in this kind of record.
+fn set_flags(
+    record: &[u8],
+    wanted: &ChatSettings,
+    [blocked, whitelisted, archived, unread, muted]: [u64; 5],
+) -> Option<Vec<u8>> {
+    let muted_until = wanted
+        .muted_until
+        .map_or(0, |until| until.min(i64::MAX as u64));
+    let record = crate::wire::set_varint(record, blocked, u64::from(wanted.blocked))?;
+    let record = crate::wire::set_varint(&record, whitelisted, u64::from(wanted.accepted))?;
+    let record = crate::wire::set_varint(&record, archived, u64::from(wanted.archived))?;
+    let record = crate::wire::set_varint(&record, unread, u64::from(wanted.marked_unread))?;
+    crate::wire::set_varint(&record, muted, muted_until)
+}
+
+/// The chats pinned here, in order, as many as Signal shows.
+fn wanted_pins(local: &HashMap<ConversationId, ChatSettings>) -> Vec<ConversationId> {
+    let mut pins = pinned_order(local);
+    pins.truncate(MAX_PINS);
+    pins
+}
+
+fn pinned_order(map: &HashMap<ConversationId, ChatSettings>) -> Vec<ConversationId> {
+    let mut pins: Vec<(u32, &ConversationId)> = map
+        .iter()
+        .filter_map(|(id, s)| Some((s.pinned?, id)))
+        .collect();
+    pins.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
+    pins.into_iter().map(|(_, id)| id.clone()).collect()
+}
+
+/// An account record's entry for a pinned chat, encoded.
+fn pinned_entry(id: &ConversationId) -> Option<Vec<u8>> {
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    use presage::proto::account_record::{PinnedConversation, pinned_conversation};
+    let identifier = if let Some(service_id) = id.0.strip_prefix("c:") {
+        Pinned::Contact(pinned_conversation::Contact {
+            service_id: service_id.to_owned(),
+            ..Default::default()
+        })
+    } else {
+        Pinned::GroupMasterKey(hex::decode(id.0.strip_prefix("g:")?).ok()?)
+    };
+    Some(
+        PinnedConversation {
+            identifier: Some(identifier),
+        }
+        .encode_to_vec(),
+    )
+}
+
+/// Requests to the storage service with its own credentials.
+struct Client {
+    service: presage::libsignal_service::push_service::PushService,
+    auth: presage::libsignal_service::push_service::HttpAuth,
+}
+
+impl Client {
+    async fn new(
+        service: presage::libsignal_service::push_service::PushService,
+    ) -> Result<Self, String> {
+        use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
+        #[derive(serde::Deserialize)]
+        struct Auth {
+            username: String,
+            password: String,
+        }
+        let auth: Auth = service
+            .request(
+                reqwest::Method::GET,
+                Endpoint::service("/v1/storage/auth"),
+                HttpAuthOverride::NoOverride,
+            )
+            .map_err(|e| format!("storage service: {e}"))?
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| format!("storage service: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("storage service: {e}"))?;
+        Ok(Self {
+            service,
+            auth: presage::libsignal_service::push_service::HttpAuth {
+                username: auth.username,
+                password: auth.password,
+            },
+        })
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
+        self.service
+            .request(
+                method,
+                Endpoint::storage(path.to_owned()),
+                HttpAuthOverride::Identified(self.auth.clone()),
+            )
+            .map_err(|e| format!("storage service: {e}"))
+    }
+
+    /// The manifest, decoded and as its bytes (to change those).
+    async fn manifest(
+        &self,
+        key: &[u8; 32],
+    ) -> Result<(presage::proto::ManifestRecord, Vec<u8>), String> {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        let bytes = self
+            .request(reqwest::Method::GET, "/v1/storage/manifest")?
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| format!("storage manifest: {e}"))?
+            .bytes()
+            .await
+            .map_err(|e| format!("storage manifest: {e}"))?;
+        let manifest = presage::proto::StorageManifest::decode(bytes)
+            .map_err(|_| "invalid storage manifest".to_string())?;
+        let plaintext = decrypt(&manifest_key(key, manifest.version), &manifest.value)?;
+        let record = presage::proto::ManifestRecord::decode(&*plaintext)
+            .map_err(|_| "invalid storage manifest".to_string())?;
+        Ok((record, plaintext))
+    }
+
+    /// Records by id, decrypted but not decoded.
+    async fn read_raw(
+        &self,
+        key: &[u8; 32],
+        ids: Vec<Vec<u8>>,
+        ikm: Option<&[u8]>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        let body = presage::proto::ReadOperation { read_key: ids }.encode_to_vec();
+        let bytes = self
+            .request(reqwest::Method::PUT, "/v1/storage/read")?
+            .header("Content-Type", "application/x-protobuf")
+            .body(body)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| format!("storage records: {e}"))?
+            .bytes()
+            .await
+            .map_err(|e| format!("storage records: {e}"))?;
+        let items = presage::proto::StorageItems::decode(bytes)
+            .map_err(|_| "invalid storage records".to_string())?;
+        items
+            .items
+            .into_iter()
+            .map(|item| {
+                let plaintext = decrypt(&item_key(key, &item.key, ikm), &item.value)?;
+                Ok((item.key, plaintext))
+            })
+            .collect()
+    }
+
+    /// Writes; `false` if the manifest changed meanwhile (409).
+    async fn write(&self, operation: &presage::proto::WriteOperation) -> Result<bool, String> {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        let response = self
+            .request(reqwest::Method::PUT, "/v1/storage")?
+            .header("Content-Type", "application/x-protobuf")
+            .body(operation.encode_to_vec())
+            .send()
+            .await
+            .map_err(|e| format!("storage write: {e}"))?;
+        if response.status() == reqwest::StatusCode::CONFLICT {
+            return Ok(false);
+        }
+        response
+            .error_for_status()
+            .map_err(|e| format!("storage write: {e}"))?;
+        Ok(true)
+    }
+}
+
+// The storage service's cipher (as libsignal-service has it): AES-256-GCM over
+// `iv (12 bytes) || ciphertext || tag`, the manifest keyed by HMAC of its version, items by
+// HKDF of the manifest's record IKM, or HMAC of their id on older accounts.
+
+const IV_LEN: usize = 12;
+const ITEM_KEY_INFO_PREFIX: &[u8] = b"20240801_SIGNAL_STORAGE_SERVICE_ITEM_";
+
+fn manifest_key(storage_key: &[u8; 32], version: u64) -> [u8; 32] {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac =
+        Hmac::<storage_sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
+    mac.update(b"Manifest_");
+    mac.update(version.to_string().as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+fn item_key(storage_key: &[u8; 32], raw_id: &[u8], ikm: Option<&[u8]>) -> [u8; 32] {
+    use base64::Engine as _;
+    use hmac::{Hmac, KeyInit, Mac};
+    match ikm {
+        Some(ikm) => {
+            let hkdf = hkdf::Hkdf::<storage_sha2::Sha256>::new(None, ikm);
+            let mut key = [0u8; 32];
+            hkdf.expand_multi_info(&[ITEM_KEY_INFO_PREFIX, raw_id], &mut key)
+                .expect("32 bytes is a valid length");
+            key
+        }
+        None => {
+            let mut mac =
+                Hmac::<storage_sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
+            mac.update(b"Item_");
+            mac.update(
+                base64::engine::general_purpose::STANDARD
+                    .encode(raw_id)
+                    .as_bytes(),
+            );
+            mac.finalize().into_bytes().into()
+        }
+    }
+}
+
+fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, String> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    let (iv, ciphertext) = blob
+        .split_first_chunk::<IV_LEN>()
+        .ok_or("invalid storage blob")?;
+    Aes256Gcm::new(key.into())
+        .decrypt(iv.into(), ciphertext)
+        .map_err(|_| "invalid storage blob".to_string())
+}
+
+fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    let iv: [u8; IV_LEN] = rand::random();
+    let ciphertext = Aes256Gcm::new(key.into())
+        .encrypt((&iv).into(), plaintext)
+        .expect("AES-GCM encryption doesn't fail");
+    [&iv[..], &ciphertext].concat()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +798,120 @@ mod tests {
         let later = map(&[("b", pinned(0))]);
         let changed: HashMap<_, _> = merge(&local, &now, &later).into_iter().collect();
         assert_eq!(changed[&id("a")].pinned, None);
+    }
+
+    /// The cipher here must be libsignal-service's, both ways.
+    #[test]
+    fn cipher_matches_libsignal_service() {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        use presage::libsignal_service::{StorageService, master_key::StorageServiceKey};
+        let key = [7u8; 32];
+        let theirs = StorageServiceKey::from_slice(&key).unwrap();
+        let manifest = presage::proto::ManifestRecord {
+            version: 12,
+            source_device: 2,
+            identifiers: Vec::new(),
+            record_ikm: vec![3; 32],
+        };
+        let sealed = StorageService::encrypt_manifest(&theirs, &manifest);
+        let opened = decrypt(&manifest_key(&key, sealed.version), &sealed.value).unwrap();
+        assert_eq!(opened, manifest.encode_to_vec());
+        let ours = presage::proto::StorageManifest {
+            version: 12,
+            value: encrypt(&manifest_key(&key, 12), &manifest.encode_to_vec()),
+        };
+        assert_eq!(
+            StorageService::decrypt_manifest(&theirs, &ours).unwrap(),
+            manifest
+        );
+
+        let record = presage::proto::StorageRecord {
+            record: Some(Record::Contact(presage::proto::ContactRecord {
+                aci: "x".into(),
+                archived: true,
+                ..Default::default()
+            })),
+        };
+        let id = vec![9u8; 16];
+        for ikm in [None, Some(&[4u8; 32][..])] {
+            let item = StorageService::encrypt_item(&theirs, id.clone(), &record, ikm);
+            let opened = decrypt(&item_key(&key, &id, ikm), &item.value).unwrap();
+            assert_eq!(opened, record.encode_to_vec());
+            let ours = presage::proto::StorageItem {
+                key: id.clone(),
+                value: encrypt(&item_key(&key, &id, ikm), &record.encode_to_vec()),
+            };
+            assert_eq!(
+                StorageService::decrypt_item(&theirs, &ours, ikm).unwrap(),
+                record
+            );
+        }
+    }
+
+    #[test]
+    fn only_settings_that_differ_are_wanted() {
+        let remote = ChatSettings {
+            accepted: true,
+            archived: true,
+            ..ChatSettings::default()
+        };
+        let local = ChatSettings {
+            last_read: 99,
+            pinned: Some(0),
+            ..ChatSettings::default()
+        };
+        // Unarchived here; accepted on the phone stays accepted.
+        let wanted = wanted(&local, &remote);
+        assert!(!wanted.archived && wanted.accepted);
+        assert_eq!((wanted.last_read, wanted.pinned), (0, None));
+        let mut pins = HashMap::new();
+        for (at, id) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            pins.insert(
+                ConversationId((*id).into()),
+                ChatSettings {
+                    pinned: Some(at as u32),
+                    ..ChatSettings::default()
+                },
+            );
+        }
+        let wanted: Vec<_> = wanted_pins(&pins).iter().map(|id| id.0.clone()).collect();
+        assert_eq!(wanted, ["a", "b", "c", "d"], "Signal shows four");
+        assert!(pinned_entry(&ConversationId("g:zz".into())).is_none());
+    }
+
+    #[test]
+    fn manifests_change_only_what_they_must() {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        use presage::proto::{ManifestRecord, manifest_record::Identifier};
+        let id = |raw: u8, kind: identifier::Type| Identifier {
+            raw: vec![raw; 16],
+            r#type: kind as i32,
+        };
+        let manifest = ManifestRecord {
+            version: 7,
+            source_device: 1,
+            identifiers: vec![
+                id(1, identifier::Type::Contact),
+                id(2, identifier::Type::Account),
+                id(3, identifier::Type::ChatFolder),
+            ],
+            record_ikm: vec![5; 32],
+        };
+        let mut bytes = manifest.encode_to_vec();
+        // A field from a newer Signal: number 9, varint 42.
+        bytes.extend_from_slice(&[9 << 3, 42]);
+        let replaced = vec![(vec![1; 16], vec![8; 16])];
+        let next = next_manifest(&bytes, 8, 3, &replaced).unwrap();
+        let read = ManifestRecord::decode(&*next).unwrap();
+        assert_eq!((read.version, read.source_device), (8, 3));
+        let raws: Vec<u8> = read.identifiers.iter().map(|i| i.raw[0]).collect();
+        assert_eq!(raws, [8, 2, 3]);
+        assert_eq!(read.identifiers[0].r#type(), identifier::Type::Contact);
+        assert!(
+            next.windows(2).any(|w| w == [9 << 3, 42]),
+            "the newer field stays"
+        );
+        // An id that isn't in the manifest: refused.
+        assert!(next_manifest(&bytes, 8, 3, &[(vec![6; 16], vec![9; 16])]).is_err());
     }
 }

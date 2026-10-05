@@ -248,7 +248,8 @@ impl Shared {
             tracing::warn!(%error, "failed to save settings");
         }
         let previous = self.settings.replace(settings.clone());
-        self.commands.send(Command::Preferences(settings.privacy));
+        self.commands
+            .send(Command::Preferences(settings.preferences));
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_shown(settings.close_to_tray);
         }
@@ -364,7 +365,9 @@ fn main() -> Result<(), slint::PlatformError> {
         typing_timer: slint::Timer::default(),
         me: me.clone(),
     });
-    shared.commands.send(Command::Preferences(settings.privacy));
+    shared
+        .commands
+        .send(Command::Preferences(settings.preferences));
 
     let ui = styles::create(settings.style, &shared)?;
     shared.ui.replace(Some(ui.clone()));

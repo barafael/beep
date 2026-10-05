@@ -530,9 +530,10 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         NotificationContent::Nothing => 2,
     });
     window.set_close_to_tray(settings.close_to_tray);
-    window.set_read_receipts(settings.privacy.read_receipts);
-    window.set_typing_indicators(settings.privacy.typing_indicators);
-    window.set_link_previews(settings.privacy.link_previews);
+    window.set_read_receipts(settings.preferences.read_receipts);
+    window.set_typing_indicators(settings.preferences.typing_indicators);
+    window.set_link_previews(settings.preferences.link_previews);
+    window.set_sync_to_phone(settings.preferences.sync_to_phone);
     window.set_autostart_supported(crate::autostart::SUPPORTED);
     window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
@@ -559,10 +560,11 @@ fn read_settings(window: &AppWindow) -> Settings {
             _ => NotificationContent::NameAndMessage,
         },
         close_to_tray: window.get_close_to_tray(),
-        privacy: langis_core::Privacy {
+        preferences: langis_core::Preferences {
             read_receipts: window.get_read_receipts(),
             typing_indicators: window.get_typing_indicators(),
             link_previews: window.get_link_previews(),
+            sync_to_phone: window.get_sync_to_phone(),
         },
     }
 }

@@ -1066,6 +1066,7 @@ component SettingsPage inherits Rectangle {
     in-out property <bool> read-receipts;
     in-out property <bool> typing-indicators;
     in-out property <bool> link-previews;
+    in-out property <bool> sync-to-phone;
     in property <string> account;
     in property <string> device-name;
     callback changed-settings;
@@ -1268,6 +1269,14 @@ component SettingsPage inherits Rectangle {
                         }
                     }
                     SettingRow {
+                        label: "Sync chat settings to your phone";
+                        hint: "Pinned, muted, archived and blocked chats and accepted requests changed here go to your phone too. Off: they stay on this computer, and changes on the phone still come here.";
+                        Switch {
+                            checked <=> root.sync-to-phone;
+                            toggled => { root.changed-settings(); }
+                        }
+                    }
+                    SettingRow {
                         label: "Device name";
                         hint: "How this computer appears under Linked devices on your phone.";
                         Text {
@@ -1325,6 +1334,7 @@ export component AppWindow inherits Window {
     in-out property <bool> read-receipts: true;
     in-out property <bool> typing-indicators: true;
     in-out property <bool> link-previews;
+    in-out property <bool> sync-to-phone;
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -1769,6 +1779,7 @@ export component AppWindow inherits Window {
                 read-receipts <=> root.read-receipts;
                 typing-indicators <=> root.typing-indicators;
                 link-previews <=> root.link-previews;
+                sync-to-phone <=> root.sync-to-phone;
                 account: root.account;
                 device-name: root.device-name;
                 changed-settings => { root.settings-changed(); }

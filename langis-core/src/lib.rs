@@ -26,6 +26,8 @@ mod storage;
 mod transfer;
 #[cfg(feature = "signal")]
 mod vault;
+#[cfg(feature = "signal")]
+mod wire;
 
 pub use qr::QrMatrix;
 
@@ -168,9 +170,9 @@ impl ChatSettings {
     }
 }
 
-/// Privacy preferences the backend acts on.
+/// Preferences the backend acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Privacy {
+pub struct Preferences {
     /// Tell senders when their messages were read.
     pub read_receipts: bool,
     /// Show others when we are typing.
@@ -178,14 +180,18 @@ pub struct Privacy {
     /// Add a preview of the first link to messages we send. The linked site then sees our
     /// address, so it is off unless turned on.
     pub link_previews: bool,
+    /// Write pins, mutes, the archive, blocks and accepted requests back to the storage
+    /// service, so the phone (and other devices) get them.
+    pub sync_to_phone: bool,
 }
 
-impl Default for Privacy {
+impl Default for Preferences {
     fn default() -> Self {
         Self {
             read_receipts: true,
             typing_indicators: true,
             link_previews: false,
+            sync_to_phone: false,
         }
     }
 }
@@ -730,7 +736,7 @@ pub enum Command {
         conversation: ConversationId,
         seconds: u32,
     },
-    Preferences(Privacy),
+    Preferences(Preferences),
     /// Reacts to a message with `emoji`, or takes our reaction back.
     React {
         conversation: ConversationId,

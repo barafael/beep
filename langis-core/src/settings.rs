@@ -89,7 +89,7 @@ pub struct Settings {
     pub notification_content: NotificationContent,
     /// Closing the window leaves langis running in the tray, still receiving messages.
     pub close_to_tray: bool,
-    pub privacy: crate::Privacy,
+    pub preferences: crate::Preferences,
 }
 
 impl Default for Settings {
@@ -102,7 +102,7 @@ impl Default for Settings {
             notifications: true,
             notification_content: NotificationContent::default(),
             close_to_tray: true,
-            privacy: crate::Privacy::default(),
+            preferences: crate::Preferences::default(),
         }
     }
 }
@@ -159,12 +159,14 @@ impl Settings {
                 }
                 ("close_to_tray", "true") => settings.close_to_tray = true,
                 ("close_to_tray", "false") => settings.close_to_tray = false,
-                ("read_receipts", "true") => settings.privacy.read_receipts = true,
-                ("read_receipts", "false") => settings.privacy.read_receipts = false,
-                ("typing_indicators", "true") => settings.privacy.typing_indicators = true,
-                ("typing_indicators", "false") => settings.privacy.typing_indicators = false,
-                ("link_previews", "true") => settings.privacy.link_previews = true,
-                ("link_previews", "false") => settings.privacy.link_previews = false,
+                ("read_receipts", "true") => settings.preferences.read_receipts = true,
+                ("read_receipts", "false") => settings.preferences.read_receipts = false,
+                ("typing_indicators", "true") => settings.preferences.typing_indicators = true,
+                ("typing_indicators", "false") => settings.preferences.typing_indicators = false,
+                ("link_previews", "true") => settings.preferences.link_previews = true,
+                ("link_previews", "false") => settings.preferences.link_previews = false,
+                ("sync_to_phone", "true") => settings.preferences.sync_to_phone = true,
+                ("sync_to_phone", "false") => settings.preferences.sync_to_phone = false,
                 _ => {}
             }
         }
@@ -190,14 +192,15 @@ impl Settings {
         format!(
             "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {notification_content}\nclose_to_tray = {}\n\
-             read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\n",
+             read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
             self.style.key(),
             self.show_avatars,
             self.notifications,
             self.close_to_tray,
-            self.privacy.read_receipts,
-            self.privacy.typing_indicators,
-            self.privacy.link_previews
+            self.preferences.read_receipts,
+            self.preferences.typing_indicators,
+            self.preferences.link_previews,
+            self.preferences.sync_to_phone
         )
     }
 }
@@ -222,10 +225,11 @@ mod tests {
                 notifications: false,
                 notification_content: NotificationContent::NameOnly,
                 close_to_tray: false,
-                privacy: crate::Privacy {
+                preferences: crate::Preferences {
                     read_receipts: false,
                     typing_indicators: false,
                     link_previews: true,
+                    sync_to_phone: true,
                 },
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);

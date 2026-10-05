@@ -40,7 +40,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     ChatMessage, ChatSettings, Command, Config, Conversation, ConversationId, Delivery, Event,
-    Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, Privacy, QrMatrix, Quote,
+    Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, Preferences, QrMatrix, Quote,
     Reaction, Style, StyleRange, apply_reaction, attachments,
     format::{self, RangeValue, WireRange},
     local::LocalStore,
@@ -382,7 +382,7 @@ async fn run_linked(
         threads: Rc::default(),
         events: events.clone(),
         tables: tables.clone(),
-        privacy: Rc::default(),
+        preferences: Rc::default(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
     };
@@ -666,7 +666,7 @@ struct Ctx {
     threads: Threads,
     events: Events,
     tables: LocalStore,
-    privacy: Rc<Cell<Privacy>>,
+    preferences: Rc<Cell<Preferences>>,
     /// Woken when a disappearing message starts counting down, for `sweep_expired`.
     expiring: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
@@ -951,15 +951,21 @@ async fn decorate(ctx: &Ctx, id: &ConversationId, messages: &mut [ChatMessage]) 
 
 /// Takes over chat settings from the phone's storage service now, and each time the phone
 /// says they changed, for the rest of the session.
-async fn follow_storage(manager: Mgr, ctx: Ctx) {
+async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
     const RETRY: Duration = Duration::from_secs(5 * 60);
+    // Changes made here come in bursts (pinning, reordering); write them together.
+    const SETTLE: Duration = Duration::from_secs(2);
     loop {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
             Ok(known) => {
                 if known && !ctx.events.send(Event::StorageRead) {
                     return;
                 }
+                if known && ctx.preferences.get().sync_to_phone {
+                    write_storage(&mut manager, &ctx).await;
+                }
                 ctx.storage_changed.notified().await;
+                tokio::time::sleep(SETTLE).await;
             }
             // E.g. offline at the start; try again later.
             Err(error) => {
@@ -971,6 +977,40 @@ async fn follow_storage(manager: Mgr, ctx: Ctx) {
             }
         }
     }
+}
+
+/// Writes what changed here to the storage service, reading first when the phone changed
+/// something meanwhile; then tells our other devices to fetch it.
+async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
+    use crate::storage::Written;
+    for _ in 0..3 {
+        match crate::storage::push(manager, &ctx.tables).await {
+            Ok(Written::Stale) => {
+                if let Err(error) = crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
+                    warn!(%error, "failed to read the storage service");
+                    return;
+                }
+            }
+            Ok(Written::Records(_)) => {
+                use sync_message::fetch_latest::Type;
+                let latest = sync_message::FetchLatest {
+                    r#type: Some(Type::StorageManifest as i32),
+                };
+                let sync = SyncMessage {
+                    content: Some(SyncContent::FetchLatest(latest)),
+                    ..Default::default()
+                };
+                send_sync(manager, sync).await;
+                return;
+            }
+            Ok(Written::Nothing | Written::NoKey) => return,
+            Err(error) => {
+                warn!(%error, "failed to write to the storage service");
+                return;
+            }
+        }
+    }
+    warn!("the storage service kept changing; trying again later");
 }
 
 /// Deletes disappearing messages when their time is up, for the rest of the session.
@@ -2119,6 +2159,30 @@ async fn handle(
     downloads: &Rc<tokio::sync::Semaphore>,
     command: Command,
 ) -> Result<(), String> {
+    // Chat settings the phone keeps too: write them there, if that is wanted.
+    let to_storage = matches!(
+        command,
+        Command::SetPins(_)
+            | Command::Mute { .. }
+            | Command::Archive { .. }
+            | Command::MarkUnread(_)
+            | Command::Block { .. }
+            | Command::Respond { .. }
+            | Command::Preferences(_)
+    );
+    let result = handle_command(manager, ctx, downloads, command).await;
+    if to_storage && ctx.preferences.get().sync_to_phone {
+        ctx.storage_changed.notify_one();
+    }
+    result
+}
+
+async fn handle_command(
+    manager: &mut Mgr,
+    ctx: &Ctx,
+    downloads: &Rc<tokio::sync::Semaphore>,
+    command: Command,
+) -> Result<(), String> {
     let servers = manager.registration_data().signal_servers;
     let events = &ctx.events;
     let thread = |id: &ConversationId| {
@@ -2257,7 +2321,7 @@ async fn handle(
             mentions,
         } => {
             let pointers = attachments::upload(manager, &files).await?;
-            let preview = if ctx.privacy.get().link_previews {
+            let preview = if ctx.preferences.get().link_previews {
                 link_preview(manager, &body).await
             } else {
                 None
@@ -2447,7 +2511,7 @@ async fn handle(
             conversation,
             typing,
         } => {
-            if !ctx.privacy.get().typing_indicators {
+            if !ctx.preferences.get().typing_indicators {
                 return Ok(());
             }
             let thread = thread(&conversation)?;
@@ -2481,7 +2545,7 @@ async fn handle(
                     .ok()
                     .flatten()
                     .is_some_and(|s| s.accepted);
-            let receipts = ctx.privacy.get().read_receipts && !request;
+            let receipts = ctx.preferences.get().read_receipts && !request;
             tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
         }
         Command::MarkUnread(conversation) => {
@@ -2536,7 +2600,7 @@ async fn handle(
                 ..Default::default()
             }));
         }
-        Command::Preferences(privacy) => ctx.privacy.set(privacy),
+        Command::Preferences(preferences) => ctx.preferences.set(preferences),
     }
     Ok(())
 }

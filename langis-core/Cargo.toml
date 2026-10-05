@@ -14,7 +14,7 @@ signal = [
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
-    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket", "dep:rustls",
+    "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket", "dep:rustls", "dep:aes-gcm", "dep:hmac", "dep:hkdf", "dep:storage-sha2", "dep:base64", "dep:rand", "dep:serde",
 ]
 
 [dependencies]
@@ -53,6 +53,14 @@ chrono = { version = "0.4", default-features = false, features = ["std"], option
 reqwest = { version = "0.13", default-features = false, optional = true }
 # The TLS crypto provider for link previews' requests; the one libsignal-service installs.
 rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
+# Writing the storage service (`storage.rs`): its cipher, as libsignal-service has it.
+aes-gcm = { version = "0.11", optional = true }
+hmac = { version = "0.13", optional = true }
+hkdf = { version = "0.13", optional = true }
+storage-sha2 = { package = "sha2", version = "0.11", optional = true }
+base64 = { version = "0.23", optional = true }
+rand = { version = "0.9", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 jiff = "0.2"
 async-channel = "2"
 
