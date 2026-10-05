@@ -314,7 +314,7 @@ async fn session(
     });
 
     let paths = Paths::new()?;
-    let linked = match Manager::load_registered(store.clone()).await {
+    let mut linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) if !paths.transfer_marker().exists() => {
             let account = display_number(&manager.registration_data().phone_number);
             let _ = events.send(Event::Linked { account });
@@ -327,18 +327,42 @@ async fn session(
                     .into(),
             ));
             reset(store.clone(), &paths).await?;
-            link_with_history(store, &config, &events, &mut command_rx, &paths).await?
+            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
         }
         Err(PresageError::NotYetRegisteredError) => {
-            link_with_history(store, &config, &events, &mut command_rx, &paths).await?
+            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
         }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
-    // `None`: the UI went away while linking.
-    let Some((mut manager, pending)) = linked else {
-        return Ok(());
-    };
+    // Runs until the UI goes away; if Signal removes this device meanwhile, links it again.
+    loop {
+        // `None`: the UI went away while linking.
+        let Some((manager, pending)) = linked else {
+            return Ok(());
+        };
+        if !run_linked(manager, pending, &events, &mut command_rx).await {
+            return Ok(());
+        }
+        let _ = events.send(Event::Error(
+            "This device was removed from your Signal account, so it can't send or receive any more. \
+             Scan the code to link it again; the messages here are kept."
+                .into(),
+        ));
+        // Linking clears the dead registration; the conversations stay.
+        linked =
+            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?;
+    }
+}
 
+/// Runs a linked session: syncs, receives and handles commands. Returns `false` once the UI
+/// has gone away, `true` if Signal removed this device and it has to be linked again.
+async fn run_linked(
+    mut manager: Mgr,
+    pending: Vec<Command>,
+    events: &Events,
+    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+) -> bool {
+    let events = events.clone();
     let threads: Threads = Rc::default();
     if send_conversations(&manager, &threads, &events).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
@@ -350,7 +374,7 @@ async fn session(
     }
 
     // In the background, so receiving starts right away.
-    tokio::task::spawn_local(send_latest_messages(
+    let latest = tokio::task::spawn_local(send_latest_messages(
         manager.clone(),
         threads.clone(),
         events.clone(),
@@ -359,11 +383,13 @@ async fn session(
     let downloads = attachments::download_limit();
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
-    tokio::task::spawn_local(receive(
+    let removed = Rc::new(tokio::sync::Notify::new());
+    let receiving = tokio::task::spawn_local(receive(
         manager.clone(),
         threads.clone(),
         events.clone(),
         avatars,
+        removed.clone(),
     ));
 
     for command in pending {
@@ -371,12 +397,37 @@ async fn session(
             let _ = events.send(Event::Error(error));
         }
     }
-    while let Some(command) = command_rx.recv().await {
-        if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
-            let _ = events.send(Event::Error(error));
+    let was_removed = loop {
+        tokio::select! {
+            command = command_rx.recv() => match command {
+                Some(command) => {
+                    if let Err(error) = handle(&mut manager, &threads, &events, &downloads, command).await {
+                        let _ = events.send(Event::Error(error));
+                    }
+                }
+                None => break false,
+            },
+            () = removed.notified() => break true,
         }
+    };
+    latest.abort();
+    receiving.abort();
+    was_removed
+}
+
+/// Whether Signal refuses this device's credentials: it was removed from the account (the
+/// server answers 403, or 401), so retrying can't help.
+fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
+    use presage::libsignal_service::push_service::ServiceError;
+    use reqwest_websocket::{Error as WsError, HandshakeError};
+    match error {
+        PresageError::ServiceError(ServiceError::Unauthorized) => true,
+        PresageError::ServiceError(ServiceError::WsError(error)) => matches!(
+            &**error,
+            WsError::Handshake(HandshakeError::UnexpectedStatusCode(status)) if matches!(status.as_u16(), 401 | 403)
+        ),
+        _ => false,
     }
-    Ok(())
 }
 
 /// Links this device and, if the user chose so on the phone, transfers the message history.
@@ -864,7 +915,14 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
 
 /// Receives messages for the rest of the session, reconnecting with exponential backoff
 /// whenever the connection drops (sleep, network changes, server timeouts).
-async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: AvatarFetcher) {
+/// Notifies `removed` (and stops) if Signal no longer accepts this device.
+async fn receive(
+    mut manager: Mgr,
+    threads: Threads,
+    events: Events,
+    avatars: AvatarFetcher,
+    removed: Rc<tokio::sync::Notify>,
+) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
     let mut resets = Resets::new();
@@ -891,6 +949,11 @@ async fn receive(mut manager: Mgr, threads: Threads, events: Events, avatars: Av
                     }
                 }
                 info!("connection to Signal closed");
+            }
+            Err(error) if removed_from_account(&error) => {
+                warn!(%error, "Signal no longer accepts this device");
+                removed.notify_one();
+                return;
             }
             Err(error) => warn!(%error, "failed to connect to Signal"),
         }
@@ -1292,6 +1355,28 @@ async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_refused_credentials_mean_the_device_was_removed() {
+        use presage::libsignal_service::push_service::ServiceError;
+        use reqwest_websocket::{Error as WsError, HandshakeError};
+        let refused = |status: u16| {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            PresageError::ServiceError(ServiceError::WsError(Box::new(WsError::Handshake(
+                HandshakeError::UnexpectedStatusCode(status),
+            ))))
+        };
+        assert!(removed_from_account(&refused(403)));
+        assert!(removed_from_account(&refused(401)));
+        assert!(!removed_from_account(&refused(500)));
+        assert!(!removed_from_account(&refused(429)));
+        assert!(removed_from_account(&PresageError::ServiceError(
+            ServiceError::Unauthorized
+        )));
+        assert!(!removed_from_account(&PresageError::ServiceError(
+            ServiceError::Timeout { reason: "slow" }
+        )));
+    }
 
     /// Counted in characters: seven accented letters are too short even though they take
     /// fourteen bytes, and eight are enough.

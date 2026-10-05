@@ -3649,6 +3649,7 @@ dependencies = [
  "protobuf",
  "qrcode",
  "reqwest",
+ "reqwest-websocket",
  "sha2 0.10.9",
  "sqlx",
  "tempfile",
