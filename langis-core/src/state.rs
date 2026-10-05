@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::settings::NotificationContent;
+use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, Command,
     Conversation, ConversationId, Event, HistoryTransfer, Password, Picture, QrMatrix, Quote,
@@ -722,11 +723,7 @@ impl ChatState {
     /// Messages of the selected conversation, oldest first.
     pub fn messages(&self) -> impl ExactSizeIterator<Item = MessageView<'_>> {
         let group = self.selected().is_some_and(|c| c.is_group);
-        let history = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.history.get(id))
-            .map_or(&[][..], Vec::as_slice);
+        let history = self.selected_history();
         let now = jiff::Zoned::now();
         let same_run = |a: &ChatMessage, b: &ChatMessage| {
             a.sender_id == b.sender_id
@@ -754,6 +751,24 @@ impl ChatState {
                 },
             }
         })
+    }
+
+    /// The selected conversation's history counted per `span`; see [`timeline::buckets`].
+    /// Bucket indexes point into [`ChatState::messages`].
+    pub fn activity(&self, span: timeline::Span) -> Vec<timeline::Bucket> {
+        timeline::buckets(self.selected_history(), span)
+    }
+
+    /// The span that suits an overview of the selected conversation.
+    pub fn activity_span(&self) -> timeline::Span {
+        timeline::Span::fitting(self.selected_history())
+    }
+
+    fn selected_history(&self) -> &[ChatMessage] {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.history.get(id))
+            .map_or(&[][..], Vec::as_slice)
     }
 
     /// The `n` most recent messages of the selected conversation, oldest first, for

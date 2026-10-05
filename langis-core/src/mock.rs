@@ -353,8 +353,94 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 ..message("rust", "Carol", "", ago(116), false)
             },
         ],
+        "bob" => years_of_bob(started),
         _ => Vec::new(),
     }
+}
+
+/// About four years with Bob, busy at times and silent for one: a long history for the
+/// activity strip. Made up the same way every time.
+fn years_of_bob(started: u64) -> Vec<ChatMessage> {
+    const DAY: u64 = 24 * 60 * 60 * 1000;
+    // (from days ago, until days ago, messages a day)
+    const SEASONS: &[(u64, u64, f32)] = &[
+        (1460, 1300, 6.0),
+        (1300, 1100, 0.5),
+        (1100, 1000, 15.0),
+        (1000, 620, 0.0),
+        (620, 400, 3.0),
+        (400, 380, 25.0),
+        (380, 60, 1.0),
+        (60, 1, 8.0),
+    ];
+    const LINES: &[&str] = &[
+        "Morning!",
+        "Did you see that?",
+        "Haha, yes",
+        "On my way",
+        "Let's do Friday",
+        "Can't tonight, sorry",
+        "Look at this",
+        "😂",
+        "Sounds good",
+        "How was it?",
+    ];
+    // A small LCG: enough to look irregular, and the same on every run.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut random = move |below: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % below.max(1)
+    };
+    let today = started - started % DAY;
+    let mut messages = Vec::new();
+    for &(from, until, rate) in SEASONS {
+        for days_ago in (until..from).rev() {
+            let n = if rate >= 1.0 {
+                random(2 * rate as u64 + 1)
+            } else {
+                u64::from(random(100) < (rate * 100.0) as u64)
+            };
+            for _ in 0..n {
+                let timestamp = today - days_ago * DAY + (8 * 60 + random(15 * 60)) * 60_000;
+                let outgoing = random(2) == 0;
+                let (sender, line) = if outgoing {
+                    ("You", true)
+                } else {
+                    ("Bob", false)
+                };
+                let mut m = message(
+                    "bob",
+                    sender,
+                    LINES[random(LINES.len() as u64) as usize],
+                    timestamp,
+                    line,
+                );
+                let id = format!("bob-{}", messages.len());
+                match random(60) {
+                    0..4 => m.attachments.push(attachment(
+                        &id,
+                        AttachmentKind::Image,
+                        "image/jpeg",
+                        None,
+                        (800, 600),
+                    )),
+                    4 => m.attachments.push(attachment(
+                        &id,
+                        AttachmentKind::File,
+                        "application/pdf",
+                        Some("tickets.pdf"),
+                        (0, 0),
+                    )),
+                    _ => {}
+                }
+                messages.push(m);
+            }
+        }
+    }
+    messages.sort_by_key(|m| m.timestamp);
+    messages
 }
 
 fn attachment(

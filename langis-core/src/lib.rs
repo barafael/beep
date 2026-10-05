@@ -15,6 +15,7 @@ pub mod settings;
 #[cfg(feature = "signal")]
 mod signal;
 pub mod state;
+pub mod timeline;
 #[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]

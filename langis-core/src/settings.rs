@@ -87,6 +87,10 @@ pub struct Settings {
     /// Desktop notifications for incoming messages.
     pub notifications: bool,
     pub notification_content: NotificationContent,
+    /// A strip beside a chat showing when it was active. Off unless chosen.
+    pub show_activity: bool,
+    /// A button above a chat opening a year-by-year calendar of it. Off unless chosen.
+    pub show_calendar: bool,
     /// Closing the window leaves langis running in the tray, still receiving messages.
     pub close_to_tray: bool,
 }
@@ -100,6 +104,8 @@ impl Default for Settings {
             show_avatars: true,
             notifications: true,
             notification_content: NotificationContent::default(),
+            show_activity: false,
+            show_calendar: false,
             close_to_tray: true,
         }
     }
@@ -155,6 +161,10 @@ impl Settings {
                 ("notification_content", "nothing") => {
                     settings.notification_content = NotificationContent::Nothing
                 }
+                ("show_activity", "true") => settings.show_activity = true,
+                ("show_activity", "false") => settings.show_activity = false,
+                ("show_calendar", "true") => settings.show_calendar = true,
+                ("show_calendar", "false") => settings.show_calendar = false,
                 ("close_to_tray", "true") => settings.close_to_tray = true,
                 ("close_to_tray", "false") => settings.close_to_tray = false,
                 _ => {}
@@ -181,10 +191,13 @@ impl Settings {
         };
         format!(
             "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
-             notification_content = {notification_content}\nclose_to_tray = {}\n",
+             notification_content = {notification_content}\nshow_activity = {}\nshow_calendar = {}\n\
+             close_to_tray = {}\n",
             self.style.key(),
             self.show_avatars,
             self.notifications,
+            self.show_activity,
+            self.show_calendar,
             self.close_to_tray
         )
     }
@@ -209,6 +222,8 @@ mod tests {
                 show_avatars: false,
                 notifications: false,
                 notification_content: NotificationContent::NameOnly,
+                show_activity: true,
+                show_calendar: true,
                 close_to_tray: false,
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
