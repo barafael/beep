@@ -1057,6 +1057,34 @@ component SettingsPage inherits Rectangle {
                     }
 
                     Rectangle { height: 8px; }
+                    SectionTitle { text: "Keyboard shortcuts"; }
+                    for shortcut in [
+                        { keys: "Ctrl+K", what: "Search chats" },
+                        { keys: "Ctrl+F", what: "Search this chat" },
+                        { keys: "Alt+↑ / Alt+↓", what: "Previous / next chat" },
+                        { keys: "Alt+Shift+↓", what: "Next unread chat" },
+                        { keys: "Alt+1 … Alt+9", what: "Pinned chats" },
+                        { keys: "↑", what: "Edit your last message (in an empty composer)" },
+                        { keys: "Shift+Enter", what: "New line" },
+                        { keys: "Ctrl+V", what: "Paste text, a picture or files" },
+                        { keys: "Esc", what: "Close, or stop replying or editing" },
+                    ]: HorizontalLayout {
+                        spacing: 16px;
+                        Text {
+                            text: shortcut.keys;
+                            min-width: 140px;
+                            font-weight: 600;
+                            color: Palette.foreground;
+                        }
+                        Text {
+                            text: shortcut.what;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground.with-alpha(0.7);
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
                     SectionTitle { text: "Account"; }
                     SettingRow {
                         label: "Account";
@@ -1192,8 +1220,6 @@ export component AppWindow inherits Window {
     callback delete(int, bool);
     callback reveal(int);
     callback cancel-edit;
-    // Alt+1…9 (the key's text): opens that pinned chat; whether there is one.
-    callback pinned-shortcut(string) -> bool;
     // How many chats are archived, and how many of those have unread messages.
     in property <int> archived-count;
     in property <int> archived-unread;
@@ -1225,6 +1251,13 @@ export component AppWindow inherits Window {
     // Scroll the open chat to this row once `jump-serial` changes.
     in property <int> jump-row;
     in property <int> jump-serial;
+    // A key pressed anywhere (its text, and whether Control, Alt and Shift were held): whether
+    // it was a shortcut, which Rust then carried out.
+    callback shortcut(string, bool, bool, bool) -> bool;
+    // Ctrl+K asks the chat list's search field to take the focus by changing this.
+    in property <int> focus-search-request;
+    // ↑ in an empty composer: edit our last message.
+    callback edit-last;
     // Ctrl+V in the composer: attaches a copied picture or files; `false` if the clipboard holds
     // neither, and the text is pasted as usual.
     callback paste() -> bool;
@@ -1250,6 +1283,16 @@ export component AppWindow inherits Window {
         clipboard.copy();
     }
 
+    // Shortcuts that work wherever the focus is; see `shortcut`.
+    FocusScope {
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+    capture-key-pressed(event) => {
+        if root.shortcut(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift) {
+            return accept;
+        }
+        return reject;
+    }
     VerticalLayout {
         if root.error != "": Rectangle {
             height: 36px;
@@ -1373,6 +1416,8 @@ export component AppWindow inherits Window {
                         LineEdit {
                             placeholder-text: "Search or start a chat";
                             text <=> root.search-text;
+                            property <int> focus-request: root.focus-search-request;
+                            changed focus-request => { self.focus(); }
                             edited(text) => { root.search(text); }
                         }
                     }
@@ -2094,21 +2139,11 @@ export component AppWindow inherits Window {
                                     if root.can-send { root.send(root.draft); }
                                     return accept;
                                 }
-                                if event.text == Key.Escape && root.editing {
-                                    root.cancel-edit();
-                                    root.draft = "";
-                                    return accept;
-                                }
                                 if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste() {
                                     return accept;
                                 }
-                                if event.modifiers.control && (event.text == "f" || event.text == "F") {
-                                    root.chat-search-text = "";
-                                    root.open-chat-search();
-                                    return accept;
-                                }
-                                // Alt+1…9 opens the pinned chats.
-                                if event.modifiers.alt && root.pinned-shortcut(event.text) {
+                                if event.text == Key.UpArrow && root.draft == "" {
+                                    root.edit-last();
                                     return accept;
                                 }
                                 return reject;
@@ -2217,5 +2252,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
     }
 }

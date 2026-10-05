@@ -207,21 +207,23 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| (None, chat.show_archived(show)));
         }
     });
-    window.on_pinned_shortcut({
+    window.on_shortcut({
         let shared = shared.clone();
-        move |key| {
-            let Some(n) = key.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) else {
-                return false;
-            };
-            let mut found = false;
-            shared.act(|chat| match chat.select_pinned(n - 1) {
-                Some(command) => {
-                    found = true;
-                    (command, Update::reset())
-                }
-                None => (None, Update::default()),
-            });
-            found
+        let window = window.as_weak();
+        move |key, control, alt, shift| {
+            let Some(window) = window.upgrade() else { return false };
+            shortcut(&shared, &window, &key, control, alt, shift)
+        }
+    });
+    window.on_edit_last({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            let text = shared.chat.borrow_mut().edit_last();
+            if let (Some(text), Some(window)) = (text, window.upgrade()) {
+                window.set_draft(text.into());
+                shared.refresh(Update::default());
+            }
         }
     });
     window.on_edit({
@@ -508,6 +510,79 @@ fn read_settings(window: &AppWindow) -> Settings {
             typing_indicators: window.get_typing_indicators(),
         },
     }
+}
+
+/// Carries out the shortcut for a key pressed anywhere in the window; whether it was one.
+fn shortcut(shared: &Rc<Shared>, window: &AppWindow, key: &str, control: bool, alt: bool, shift: bool) -> bool {
+    use slint::platform::Key;
+    let is = |k: Key| key.chars().eq(std::iter::once(char::from(k)));
+    let open = |f: &dyn Fn(&mut ChatState) -> Option<Option<langis_core::Command>>| {
+        let mut done = false;
+        shared.act(|chat| match f(chat) {
+            Some(command) => {
+                done = true;
+                (command, Update::reset())
+            }
+            None => (None, Update::default()),
+        });
+        done
+    };
+    match (control, alt, shift) {
+        (true, false, false) if key.eq_ignore_ascii_case("k") => {
+            window.set_settings_open(false);
+            window.set_focus_search_request(window.get_focus_search_request() + 1);
+            true
+        }
+        (true, false, false) if key.eq_ignore_ascii_case("f") => {
+            if shared.chat.borrow().selected().is_none() {
+                return false;
+            }
+            window.set_chat_search_text(SharedString::new());
+            shared.act(|chat| {
+                chat.open_chat_search();
+                (None, Update::default())
+            });
+            true
+        }
+        (false, true, false) if is(Key::DownArrow) => open(&|chat| chat.select_relative(1)),
+        (false, true, false) if is(Key::UpArrow) => open(&|chat| chat.select_relative(-1)),
+        (false, true, true) if is(Key::DownArrow) => open(&|chat| chat.select_next_unread()),
+        (false, true, false) => match key.parse::<usize>() {
+            Ok(n @ 1..=9) => open(&|chat| chat.select_pinned(n - 1)),
+            _ => false,
+        },
+        (false, false, false) if is(Key::Escape) => escape(shared, window),
+        _ => false,
+    }
+}
+
+/// Esc closes what is open, the innermost first.
+fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
+    let mut chat = shared.chat.borrow_mut();
+    if chat.forwarding() {
+        chat.cancel_forward();
+    } else if chat.media().is_some() {
+        chat.close_media();
+    } else if chat.chat_search().is_some() {
+        chat.close_chat_search();
+    } else if chat.editing().is_some() {
+        chat.cancel_edit();
+        window.set_draft(SharedString::new());
+    } else if chat.replying().is_some() {
+        chat.cancel_reply();
+    } else if window.get_settings_open() {
+        window.set_settings_open(false);
+    } else if window.get_narrow() && chat.selected().is_some() {
+        let update = chat.deselect();
+        drop(chat);
+        shared.refresh(update);
+        return true;
+    } else {
+        return false;
+    }
+    drop(chat);
+    shared.refresh(Update::default());
+    true
 }
 
 /// A handler for one of `ConversationMenu`'s actions (app.slint), which take the conversation

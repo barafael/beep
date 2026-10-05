@@ -199,3 +199,48 @@ fn clicking_a_search_result_shows_it() {
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(shown.get(), Some(1));
 }
+
+#[test]
+fn shortcuts_reach_rust_from_the_composer() {
+    use slint::platform::{Key, WindowEvent};
+    let (window, _messages) = window_with_messages(3);
+    let pressed = Rc::new(std::cell::RefCell::new(Vec::new()));
+    window.on_shortcut({
+        let pressed = pressed.clone();
+        move |key, control, alt, shift| {
+            pressed
+                .borrow_mut()
+                .push((key.to_string(), control, alt, shift));
+            key == "k"
+        }
+    });
+    // Typing in the composer.
+    ElementHandle::find_by_element_id(&window, "AppWindow::composer")
+        .next()
+        .expect("composer")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    let key = |text: SharedString| {
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    };
+    let control = SharedString::from(char::from(Key::Control));
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: control.clone(),
+    });
+    key("k".into());
+    window
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text: control });
+    key("x".into());
+    settle(&window);
+    let pressed = pressed.borrow();
+    assert!(pressed.contains(&("k".into(), true, false, false)));
+    // Not a shortcut: it reaches the composer.
+    assert!(pressed.contains(&("x".into(), false, false, false)));
+    assert_eq!(window.get_draft(), "x");
+}

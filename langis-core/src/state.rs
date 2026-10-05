@@ -1393,6 +1393,46 @@ impl ChatState {
         Some(self.select(&id))
     }
 
+    /// Opens the chat `by` places below (positive) or above the selected one in the list.
+    pub fn select_relative(&mut self, by: isize) -> Option<Option<Command>> {
+        let listed: Vec<ConversationId> = self.listed().map(|c| c.id.clone()).collect();
+        let to = match self.selected_index() {
+            Some(at) => at.checked_add_signed(by)?,
+            None if by > 0 => 0,
+            None => return None,
+        };
+        let id = listed.get(to)?.clone();
+        Some(self.select(&id))
+    }
+
+    /// Opens the next chat below the selected one (wrapping around) with unread messages.
+    pub fn select_next_unread(&mut self) -> Option<Option<Command>> {
+        let listed: Vec<ConversationId> = self.listed().map(|c| c.id.clone()).collect();
+        let start = self.selected_index().map_or(0, |at| at + 1);
+        let id = (0..listed.len())
+            .map(|i| &listed[(start + i) % listed.len()])
+            .find(|id| {
+                self.unread.contains_key(*id)
+                    || self
+                        .conversation(id)
+                        .is_some_and(|c| c.settings.marked_unread)
+            })?
+            .clone();
+        Some(self.select(&id))
+    }
+
+    /// Starts editing our newest message in the selected chat, if it can still be edited;
+    /// returns its text for the composer.
+    pub fn edit_last(&mut self) -> Option<String> {
+        let index = self
+            .messages()
+            .enumerate()
+            .filter(|(_, view)| view.message.outgoing)
+            .last()
+            .map(|(index, _)| index)?;
+        self.edit(index)
+    }
+
     /// Mutes until `until` (ms; `u64::MAX` for good), or unmutes.
     pub fn mute(&mut self, id: &ConversationId, until: Option<u64>) -> Option<Command> {
         self.change_settings(id, |s| s.muted_until = until)?;
@@ -3293,5 +3333,25 @@ mod tests {
         assert_eq!(links, ["https://example.org/x", "http://b.c/d"]);
         // Older than the loaded history, yet it can be fetched.
         assert!(state.fetch_attachment(&AttachmentId("p".into())).is_some());
+    }
+
+    #[test]
+    fn moving_between_chats() {
+        let mut state = state();
+        state.apply(Event::Conversations(vec![conversation("b", false)]));
+        for (chat, ts) in [("a", 30), ("b", 20), ("g", 10)] {
+            state.apply(Event::Message(message(chat, "Ann", ts, false)));
+        }
+        state.select_relative(1);
+        assert_eq!(state.selected().unwrap().id, id("a"));
+        state.select_relative(1);
+        assert_eq!(state.selected().unwrap().id, id("b"));
+        assert!(state.select_relative(5).is_none());
+        state.select_relative(-1);
+        assert_eq!(state.selected().unwrap().id, id("a"));
+        // "a" and "b" were read by opening them; "g" is still unread.
+        state.select_next_unread();
+        assert_eq!(state.selected().unwrap().id, id("g"));
+        assert!(state.select_next_unread().is_none());
     }
 }
