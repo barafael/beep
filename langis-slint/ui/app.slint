@@ -650,13 +650,19 @@ component SettingsPage inherits Rectangle {
     in-out property <bool> notifications;
     in-out property <int> notification-content;
     in-out property <bool> close-to-tray;
+    // Whether the desktop shows tray icons; without, closing the window quits.
+    in property <bool> tray-available: true;
     in property <bool> autostart-supported;
     in-out property <bool> start-with-system;
     in property <string> account;
     in property <string> device-name;
     callback changed-settings;
     callback changed-start-with-system(bool);
+    callback opened;
     callback close;
+
+    // Shown only while open, so this runs each time it opens.
+    init => { root.opened(); }
 
     VerticalLayout {
         Rectangle {
@@ -764,15 +770,18 @@ component SettingsPage inherits Rectangle {
                     SectionTitle { text: "Background"; }
                     SettingRow {
                         label: "Keep running in the tray";
-                        hint: "Closing the window leaves langis in the tray, still receiving messages.";
+                        hint: root.tray-available
+                            ? "Closing the window leaves langis in the tray, still receiving messages."
+                            : "Your desktop doesn't show tray icons, so closing the window quits langis.";
                         Switch {
+                            enabled: root.tray-available;
                             checked <=> root.close-to-tray;
                             toggled => { root.changed-settings(); }
                         }
                     }
                     if root.autostart-supported: SettingRow {
                         label: "Start with the system";
-                        hint: root.close-to-tray ? "Starts in the tray when you log in." : "Opens langis when you log in.";
+                        hint: root.close-to-tray && root.tray-available ? "Starts in the tray when you log in." : "Opens langis when you log in.";
                         Switch {
                             checked <=> root.start-with-system;
                             toggled => { root.changed-start-with-system(self.checked); }
@@ -842,6 +851,7 @@ export component AppWindow inherits Window {
     in-out property <bool> show-avatars: true;
     in-out property <bool> notifications: true;
     in-out property <bool> close-to-tray: true;
+    in property <bool> tray-available: true;
     in property <bool> autostart-supported;
     in-out property <bool> start-with-system;
     in-out property <int> notification-content;
@@ -872,6 +882,7 @@ export component AppWindow inherits Window {
     callback unlock(string, string);
     callback settings-changed;
     callback start-with-system-changed(bool);
+    callback settings-opened;
     callback skip-history;
     callback search(string);
     callback open-attachment(string);
@@ -1054,12 +1065,14 @@ export component AppWindow inherits Window {
                 notifications <=> root.notifications;
                 notification-content <=> root.notification-content;
                 close-to-tray <=> root.close-to-tray;
+                tray-available: root.tray-available;
                 autostart-supported: root.autostart-supported;
                 start-with-system <=> root.start-with-system;
                 account: root.account;
                 device-name: root.device-name;
                 changed-settings => { root.settings-changed(); }
                 changed-start-with-system(enabled) => { root.start-with-system-changed(enabled); }
+                opened => { root.settings-opened(); }
                 close => { root.settings-open = false; }
             }
 

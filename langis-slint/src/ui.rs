@@ -32,6 +32,14 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         move || shared.close_requested()
     });
+    window.on_settings_opened({
+        let window = window.as_weak();
+        move || {
+            if let Some(window) = window.upgrade() {
+                window.set_tray_available(crate::tray::host_present());
+            }
+        }
+    });
     window.on_start_with_system_changed({
         let window = window.as_weak();
         move |enabled| {
