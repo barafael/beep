@@ -285,6 +285,14 @@ component ConversationRow inherits Rectangle {
     background: selected ? Palette.accent-background.with-alpha(0.18)
         : touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
 
+    accessible-role: list-item;
+    accessible-label: item.title
+        + (item.unread > 0 ? ", " + item.unread + " unread" : item.marked-unread ? ", unread" : "")
+        + (item.request ? ", message request" : "")
+        + (item.pinned ? ", pinned" : "") + (item.muted ? ", muted" : "")
+        + ", " + (item.typing != "" ? item.typing : item.preview);
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
@@ -427,11 +435,17 @@ component AttachmentView inherits VerticalLayout {
             }
         }
         if root.item.video: TouchArea {
+            accessible-role: button;
+            accessible-label: "Play video";
+            accessible-action-default => { self.clicked(); }
             mouse-cursor: pointer;
             clicked => { root.open(root.item.id); }
         }
         // Full size in the desktop's image viewer.
         if root.item.picture.width > 0: TouchArea {
+            accessible-role: button;
+            accessible-label: "Open picture";
+            accessible-action-default => { self.clicked(); }
             mouse-cursor: pointer;
             clicked => { root.open(root.item.id); }
         }
@@ -441,6 +455,9 @@ component AttachmentView inherits VerticalLayout {
             height: 24px;
         }
         if root.item.picture.width == 0 && root.item.can-retry: TouchArea {
+            accessible-role: button;
+            accessible-label: "Download again";
+            accessible-action-default => { self.clicked(); }
             mouse-cursor: pointer;
             clicked => { root.fetch(root.item.id); }
         }
@@ -468,6 +485,9 @@ component AttachmentView inherits VerticalLayout {
             color: root.ink;
         }
         if !root.item.inline && root.item.can-save: open-touch := TouchArea {
+            accessible-role: button;
+            accessible-label: "Open " + root.item.label;
+            accessible-action-default => { self.clicked(); }
             width: open-label.preferred-width;
             mouse-cursor: pointer;
             clicked => { root.open(root.item.id); }
@@ -488,6 +508,9 @@ component AttachmentView inherits VerticalLayout {
             color: root.ink.with-alpha(0.7);
         }
         if root.item.can-save: save-touch := TouchArea {
+            accessible-role: button;
+            accessible-label: "Save " + root.item.label;
+            accessible-action-default => { self.clicked(); }
             width: save-label.preferred-width;
             mouse-cursor: pointer;
             clicked => { root.save(root.item.id); }
@@ -505,7 +528,12 @@ component AttachmentView inherits VerticalLayout {
 component HoverButton inherits Rectangle {
     in property <bool> shown;
     in property <string> symbol;
+    // What it does, for screen readers.
+    in property <string> label;
     callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
     width: 28px;
     height: 28px;
     border-radius: 14px;
@@ -517,6 +545,7 @@ component HoverButton inherits Rectangle {
     }
     Text {
         text: root.symbol;
+        accessible-role: none;
         font-size: 1.1rem;
         color: Palette.foreground.with-alpha(0.6);
     }
@@ -541,6 +570,9 @@ component ReactionPicker inherits PopupWindow {
                 border-radius: 16px;
                 background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
                 touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "React with " + emoji;
+                    accessible-action-default => { self.clicked(); }
                     mouse-cursor: pointer;
                     clicked => { root.picked(emoji); }
                 }
@@ -555,11 +587,13 @@ component HoverButtons inherits HorizontalLayout {
     callback react;
     callback reply;
     HoverButton {
+        label: "React";
         symbol: "☺";
         shown: root.shown;
         clicked => { root.react(); }
     }
     HoverButton {
+        label: "Reply";
         symbol: "↩";
         shown: root.shown;
         clicked => { root.reply(); }
@@ -718,6 +752,9 @@ component Bubble inherits Rectangle {
                             border-radius: 8px;
                             background: root.ink.with-alpha(0.1);
                             preview-touch := TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Open link " + item.preview-url;
+                                accessible-action-default => { self.clicked(); }
                                 mouse-cursor: pointer;
                                 clicked => { root.open-link(item.preview-url); }
                             }
@@ -821,6 +858,9 @@ component Bubble inherits Rectangle {
                         border-width: 1px;
                         border-color: reaction.mine ? Palette.accent-background : Palette.border;
                         TouchArea {
+                            accessible-role: button;
+                            accessible-label: reaction.emoji + " " + reaction.count + (reaction.mine ? ", yours" : "");
+                            accessible-action-default => { self.clicked(); }
                             mouse-cursor: pointer;
                             clicked => { root.react(reaction.emoji); }
                         }
@@ -1468,6 +1508,9 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                 }
                 TouchArea {
+                    accessible-role: button;
+                    accessible-label: "Dismiss";
+                    accessible-action-default => { self.clicked(); }
                     width: 28px;
                     clicked => { root.dismiss-error(); }
                     Text { text: "✕"; color: white; }
@@ -1510,6 +1553,9 @@ export component AppWindow inherits Window {
                         padding-bottom: 8px;
                         spacing: 8px;
                         if root.showing-archived: TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Back to chats";
+                            accessible-action-default => { self.clicked(); }
                             width: 24px;
                             mouse-cursor: pointer;
                             clicked => { root.show-archived(false); }
@@ -1534,6 +1580,9 @@ export component AppWindow inherits Window {
                             background: root.settings-open ? Palette.accent-background.with-alpha(0.18)
                                 : settings-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
                             settings-touch := TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Settings";
+                                accessible-action-default => { self.clicked(); }
                                 clicked => { root.settings-open = !root.settings-open; }
                             }
                             Text {
@@ -1594,6 +1643,9 @@ export component AppWindow inherits Window {
                             background: root.folder == -1 ? Palette.accent-background.with-alpha(0.18)
                                 : all-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                             all-touch := TouchArea {
+                                accessible-role: AccessibleRole.tab;
+                                accessible-label: "All chats";
+                                accessible-action-default => { self.clicked(); }
                                 mouse-cursor: pointer;
                                 clicked => { root.show-folder(-1); }
                             }
@@ -1611,6 +1663,9 @@ export component AppWindow inherits Window {
                             background: root.folder == index ? Palette.accent-background.with-alpha(0.18)
                                 : folder-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                             folder-touch := TouchArea {
+                                accessible-role: AccessibleRole.tab;
+                                accessible-label: name;
+                                accessible-action-default => { self.clicked(); }
                                 mouse-cursor: pointer;
                                 clicked => { root.show-folder(index); }
                             }
@@ -1630,6 +1685,9 @@ export component AppWindow inherits Window {
                             border-radius: 6px;
                             background: archive-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                             archive-touch := TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Archived chats, " + root.archived-count;
+                                accessible-action-default => { self.clicked(); }
                                 mouse-cursor: pointer;
                                 clicked => { root.show-archived(true); }
                             }
@@ -1747,6 +1805,9 @@ export component AppWindow inherits Window {
                     height: 60px;
                     // The chat's picture and name open its details; the buttons, above, don't.
                     TouchArea {
+                        accessible-role: button;
+                        accessible-label: "Details of " + root.conversations[root.selected].title;
+                        accessible-action-default => { self.clicked(); }
                         mouse-cursor: pointer;
                         clicked => { root.open-details(); }
                     }
@@ -1755,6 +1816,9 @@ export component AppWindow inherits Window {
                         padding-right: 16px;
                         spacing: 12px;
                         if root.narrow: TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Back";
+                            accessible-action-default => { self.clicked(); }
                             width: 36px;
                             mouse-cursor: pointer;
                             clicked => { root.back(); }
@@ -1800,6 +1864,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             HoverButton {
+                                label: "Search this chat";
                                 symbol: "🔍";
                                 shown: true;
                                 clicked => {
@@ -1811,6 +1876,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             alignment: center;
                             HoverButton {
+                                label: "More";
                                 symbol: "⋮";
                                 shown: true;
                                 clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
@@ -1974,6 +2040,9 @@ export component AppWindow inherits Window {
                                 border-radius: 6px;
                                 background: result-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                                 result-touch := TouchArea {
+                                    accessible-role: list-item;
+                                    accessible-label: result.sender + ", " + result.when + ": " + result.text;
+                                    accessible-action-default => { self.clicked(); }
                                     mouse-cursor: pointer;
                                     clicked => { root.show-result(index); }
                                 }
@@ -2152,6 +2221,9 @@ export component AppWindow inherits Window {
                                 background: index == root.media-tab ? Palette.accent-background.with-alpha(0.18)
                                     : tab-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                                 tab-touch := TouchArea {
+                                    accessible-role: AccessibleRole.tab;
+                                    accessible-label: tab;
+                                    accessible-action-default => { self.clicked(); }
                                     mouse-cursor: pointer;
                                     clicked => { root.media-tab = index; }
                                 }
@@ -2223,6 +2295,9 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                     TouchArea {
+                                        accessible-role: button;
+                                        accessible-label: tile.video ? "Play video" : "Open picture";
+                                        accessible-action-default => { self.clicked(); }
                                         mouse-cursor: pointer;
                                         clicked => { root.open-attachment(tile.id); }
                                     }
@@ -2264,6 +2339,9 @@ export component AppWindow inherits Window {
                                 border-radius: 6px;
                                 background: link-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                                 link-touch := TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Open link " + link.url;
+                                    accessible-action-default => { self.clicked(); }
                                     mouse-cursor: pointer;
                                     clicked => { root.open-link(link.url); }
                                 }
@@ -2300,6 +2378,9 @@ export component AppWindow inherits Window {
                             background: mention-touch.has-hover ? Palette.foreground.with-alpha(0.1)
                                 : index == 0 ? Palette.accent-background.with-alpha(0.15) : transparent;
                             mention-touch := TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Mention " + name;
+                                accessible-action-default => { self.clicked(); }
                                 mouse-cursor: pointer;
                                 clicked => {
                                     root.pick-mention(index);
@@ -2336,6 +2417,9 @@ export component AppWindow inherits Window {
                             color: Palette.foreground;
                         }
                         TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Stop editing";
+                            accessible-action-default => { self.clicked(); }
                             width: 28px;
                             mouse-cursor: pointer;
                             clicked => {
@@ -2374,6 +2458,9 @@ export component AppWindow inherits Window {
                             }
                         }
                         TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Stop replying";
+                            accessible-action-default => { self.clicked(); }
                             width: 28px;
                             mouse-cursor: pointer;
                             clicked => { root.cancel-reply(); }
@@ -2406,6 +2493,9 @@ export component AppWindow inherits Window {
                                 color: Palette.foreground;
                             }
                             TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Remove " + name;
+                                accessible-action-default => { self.clicked(); }
                                 width: 14px;
                                 mouse-cursor: pointer;
                                 clicked => { root.unstage(index); }
@@ -2475,6 +2565,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         alignment: end;
                         HoverButton {
+                            label: "Attach files";
                             symbol: "📎";
                             shown: true;
                             clicked => { root.attach(); }
@@ -2483,6 +2574,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         alignment: end;
                         HoverButton {
+                            label: "Stickers";
                             symbol: "▦";
                             shown: true;
                             clicked => {
@@ -2516,6 +2608,9 @@ export component AppWindow inherits Window {
                                             background: index == root.sticker-pack ? Palette.accent-background.with-alpha(0.18)
                                                 : pack-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
                                             pack-touch := TouchArea {
+                                                accessible-role: AccessibleRole.tab;
+                                                accessible-label: title;
+                                                accessible-action-default => { self.clicked(); }
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     root.sticker-pack = index;
@@ -2553,6 +2648,9 @@ export component AppWindow inherits Window {
                                                 border-radius: 8px;
                                                 background: tile-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
                                                 tile-touch := TouchArea {
+                                                    accessible-role: button;
+                                                    accessible-label: "Send sticker " + tile.emoji;
+                                                    accessible-action-default => { self.clicked(); }
                                                     mouse-cursor: pointer;
                                                     clicked => {
                                                         root.send-sticker(tile.pack, tile.id);
@@ -2577,6 +2675,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         alignment: end;
                         HoverButton {
+                            label: "Emoji";
                             symbol: "☺";
                             shown: true;
                             clicked => { emoji-picker.show(); }
@@ -2604,6 +2703,9 @@ export component AppWindow inherits Window {
                                     border-radius: 6px;
                                     background: emoji-touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
                                     emoji-touch := TouchArea {
+                                        accessible-role: button;
+                                        accessible-label: "Insert " + emoji;
+                                        accessible-action-default => { self.clicked(); }
                                         mouse-cursor: pointer;
                                         clicked => {
                                             root.draft = root.draft + emoji;
@@ -2729,6 +2831,9 @@ export component AppWindow inherits Window {
                         border-radius: 6px;
                         background: target-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
                         target-touch := TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Forward to " + target.title;
+                            accessible-action-default => { self.clicked(); }
                             mouse-cursor: pointer;
                             clicked => { root.forward-to(target.id); }
                         }

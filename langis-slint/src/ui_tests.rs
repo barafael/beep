@@ -255,7 +255,7 @@ fn the_sticker_button_asks_for_the_packs() {
         let opened = opened.clone();
         move || opened.set(true)
     });
-    find(&window, "▦")
+    find(&window, "Stickers")
         .expect("sticker button")
         .mock_single_click(PointerEventButton::Left);
     settle(&window);
@@ -267,4 +267,28 @@ fn the_sticker_button_asks_for_the_packs() {
         1,
         "the picker is open"
     );
+}
+
+/// Screen readers hear a chat row as one item that says what matters, and can open it.
+#[test]
+fn chat_rows_speak_for_themselves() {
+    let (window, _messages) = window_with_messages(3);
+    let selected = Rc::new(std::cell::RefCell::new(None));
+    window.on_select({
+        let selected = selected.clone();
+        move |id| *selected.borrow_mut() = Some(id)
+    });
+    window.set_selected(-1);
+    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+        id: "b".into(),
+        title: "Bob".into(),
+        unread: 2,
+        muted: true,
+        preview: "See you".into(),
+        ..Default::default()
+    }])));
+    settle(&window);
+    let row = find(&window, "Bob, 2 unread, muted, See you").expect("one item says it all");
+    row.invoke_accessible_default_action();
+    assert_eq!(selected.borrow().as_deref(), Some("b"));
 }
