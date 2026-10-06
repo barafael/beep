@@ -6,9 +6,6 @@ should happen. Note anything that differs, with the log (`RUST_LOG=langis=debug`
 
 ## Before you start
 
-- The build needs the libsignal-service-rs clone with the group calls next to this repository:
-  `git clone https://github.com/whisperfish/libsignal-service-rs ../libsignal-service-rs`, then
-  check out its local branch `langis/groups` (it exists only in the clone on this machine).
 - Build and run: `cargo run --release -p langis-slint`.
 - Have your phone at hand, and ideally a second person (or a second Signal account) who can
   write to you, react, edit and delete. A small test group with them helps for the group checks.

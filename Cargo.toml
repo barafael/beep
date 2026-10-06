@@ -30,11 +30,11 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
 
 # Group changes (creating groups, adding and removing members, …) aren't in libsignal-service
-# yet. Until they are published, a local clone with them (branch langis/groups) stands in for
-# the revision presage uses: clone https://github.com/whisperfish/libsignal-service-rs next to
-# this repository and check out that branch.
+# yet; our fork has them (branch langis/groups, on the revision presage uses). Offered upstream
+# as whisperfish/libsignal-service-rs, branch groups-v2-changes of the fork; drop this once
+# they land and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { path = "../libsignal-service-rs" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "f85742f81287f04ba183a2977606e19ff34d7ec1" }
 
 [profile.release]
 opt-level = 3

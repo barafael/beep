@@ -36,14 +36,13 @@ done when every check is ✅ or has an issue noted here.
 
 ## 2. Make the build stand on its own
 
-The group changes in libsignal-service-rs live only in a local clone (`../libsignal-service-rs`,
-branch `langis/groups`), so langis builds on this machine only.
+Done in part: the group changes to libsignal-service-rs are on our fork
+(`barafael/libsignal-service-rs`, branch `langis/groups`), which langis uses by revision, so a
+fresh checkout builds. They are offered upstream as a draft pull request (branch
+`groups-v2-changes`, on upstream main).
 
-1. Push that branch to a fork (as with presage: `barafael/libsignal-service-rs`) and point the
-   `[patch]` at it by revision, so a fresh checkout builds.
-2. Offer the changes upstream (whisperfish/libsignal-service-rs) as a pull request — your
-   call; until they land, the fork stays.
-3. A CI job (build, test, clippy) on every push, so a broken build shows at once.
+Left: follow the pull request through review; once it lands and presage takes it up, drop
+the `[patch]`. A CI job (build, test, clippy) later.
 
 ## 3. M4: close the gaps M1–M3 left
 
