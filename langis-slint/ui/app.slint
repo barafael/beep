@@ -1021,6 +1021,330 @@ component Bubble inherits Rectangle {
     }
 }
 
+// One entry of the activity strip: a week or a month, or a long silence folded into one.
+// Positions are fractions of the strip's height.
+export struct ActivityItem {
+    y: float,
+    height: float,
+    // 0–1 each, on a square-root scale so quiet weeks still show next to busy ones.
+    mine: float,
+    others: float,
+    media: bool,
+    quiet: bool,
+    // Set where a new year begins.
+    year: string,
+    label: string,
+    summary: string,
+    // Indexes into the messages: its first, and one past its last.
+    first: int,
+    end: int,
+}
+
+// When a chat was active, from its first message at the top to now at the bottom: others'
+// messages left of the centre line, ours right of it, a dot where photos or videos were shared.
+component ActivityStrip inherits Rectangle {
+    in property <[ActivityItem]> items;
+    // The messages in view, marked on the strip.
+    in property <int> top;
+    in property <int> bottom;
+    callback jump(int);
+    property <int> hovered: -1;
+    property <length> centre: 38px;
+    property <length> reach: 11px;
+    width: 56px;
+    background: Palette.alternate-background;
+
+    for item[i] in root.items: Rectangle {
+        y: item.y * root.height;
+        height: item.height * root.height;
+        // Thin rows touch; thicker ones keep a hairline apart.
+        property <length> bar-height: max(1px, self.height - (self.height >= 3px ? 1px : 0px));
+        if item.first <= root.bottom && item.end > root.top: Rectangle {
+            x: root.centre - root.reach - 3px;
+            width: 2 * root.reach + 6px;
+            background: Palette.accent-background.with-alpha(0.2);
+        }
+        if item.quiet: Text {
+            x: root.centre - self.width / 2;
+            text: "⋯";
+            font-size: 0.75rem;
+            vertical-alignment: center;
+            color: Palette.foreground.with-alpha(0.45);
+        }
+        if !item.quiet: Rectangle {
+            x: root.centre - item.others * root.reach;
+            y: 0;
+            width: item.others * root.reach;
+            height: parent.bar-height;
+            background: Palette.foreground.with-alpha(0.45);
+        }
+        if !item.quiet: Rectangle {
+            x: root.centre;
+            y: 0;
+            width: item.mine * root.reach;
+            height: parent.bar-height;
+            background: Palette.accent-background;
+        }
+        if item.media: Rectangle {
+            x: root.width - 6px;
+            y: (parent.height - self.height) / 2;
+            width: 4px;
+            height: 4px;
+            border-radius: 2px;
+            background: Palette.foreground.with-alpha(0.6);
+        }
+        if item.year != "": Text {
+            x: 3px;
+            y: 0;
+            text: item.year;
+            font-size: 0.65rem;
+            color: Palette.foreground.with-alpha(0.6);
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.jump(item.first); }
+            changed has-hover => {
+                if self.has-hover {
+                    root.hovered = i;
+                } else if root.hovered == i {
+                    root.hovered = -1;
+                }
+            }
+        }
+    }
+    Rectangle { width: 1px; x: 0; background: Palette.border; }
+
+    // What the hovered entry holds, over the messages to the left.
+    if root.hovered >= 0 && root.hovered < root.items.length: Rectangle {
+        x: -self.width - 6px;
+        y: clamp(root.items[root.hovered].y * root.height - 6px, 0px, root.height - self.height);
+        width: tip.preferred-width;
+        height: tip.preferred-height;
+        border-radius: 6px;
+        background: Palette.background;
+        border-width: 1px;
+        border-color: Palette.border;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #0003;
+        tip := VerticalLayout {
+            padding: 6px;
+            padding-left: 10px;
+            padding-right: 10px;
+            Text {
+                text: root.items[root.hovered].label;
+                font-size: 0.85rem;
+                font-weight: 600;
+                color: Palette.foreground;
+            }
+            Text {
+                text: root.items[root.hovered].summary;
+                font-size: 0.8rem;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+        }
+    }
+}
+
+// A day of the activity calendar, in a year's grid of weeks (columns) and weekdays (rows).
+export struct DayCell {
+    column: int,
+    row: int,
+    // 0 for none, up to 1 for the busiest day of the chat.
+    level: float,
+    label: string,
+    summary: string,
+    // Index of its first message; only days with messages can be opened.
+    first: int,
+    active: bool,
+    // Before the chat began, or still to come: drawn fainter than a day without messages.
+    outside: bool,
+}
+
+export struct CalendarYear {
+    year: string,
+    summary: string,
+    // Without messages: a line instead of a grid.
+    quiet: bool,
+    days: [DayCell],
+    // Each month's first column, January first.
+    months: [int],
+}
+
+// A chat year by year, a cell per day, coloured by how much was written.
+component ActivityCalendar inherits Rectangle {
+    in property <[CalendarYear]> years;
+    in property <string> summary;
+    callback jump(int);
+    callback close;
+    background: Palette.background;
+    property <length> gap: 2px;
+    property <length> labels: 30px;
+    // As large as fits 53 weeks, within reason.
+    property <length> cell: clamp((root.width - 32px - root.labels) / 53 - root.gap, 5px, 13px);
+    property <string> tip-label;
+    property <string> tip-summary;
+    property <length> tip-x;
+    property <length> tip-y;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 16px;
+            padding-bottom: 8px;
+            spacing: 12px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                Text {
+                    text: "Activity";
+                    font-size: 1.05rem;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                }
+                Text {
+                    text: root.summary;
+                    font-size: 0.85rem;
+                    wrap: word-wrap;
+                    color: Palette.foreground.with-alpha(0.65);
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: "Back to chat";
+                    clicked => { root.close(); }
+                }
+            }
+        }
+        Flickable {
+            vertical-stretch: 1;
+            content-height: content.preferred-height;
+            content-width: self.width;
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 18px;
+                alignment: start;
+                for year in root.years: VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        Text {
+                            text: year.year;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+                        Text {
+                            text: year.summary;
+                            font-size: 0.85rem;
+                            vertical-alignment: center;
+                            color: Palette.foreground.with-alpha(0.65);
+                        }
+                    }
+                    if !year.quiet: Rectangle {
+                        height: 16px + 7 * (root.cell + root.gap);
+                        width: root.labels + 53 * (root.cell + root.gap);
+                        for column[m] in year.months: Text {
+                            x: root.labels + column * (root.cell + root.gap);
+                            y: 0;
+                            text: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m];
+                            font-size: 0.7rem;
+                            color: Palette.foreground.with-alpha(0.6);
+                        }
+                        for name[row] in ["Mon", "", "Wed", "", "Fri", "", ""]: Text {
+                            x: 0;
+                            y: 16px + row * (root.cell + root.gap) + (root.cell - self.height) / 2;
+                            text: name;
+                            font-size: 0.65rem;
+                            color: Palette.foreground.with-alpha(0.6);
+                        }
+                        for day in year.days: Rectangle {
+                            x: root.labels + day.column * (root.cell + root.gap);
+                            y: 16px + day.row * (root.cell + root.gap);
+                            width: root.cell;
+                            height: root.cell;
+                            border-radius: 2px;
+                            background: day.outside ? Palette.foreground.with-alpha(0.025)
+                                : day.level <= 0 ? Palette.foreground.with-alpha(0.07)
+                                : Palette.accent-background.with-alpha(0.3 + 0.7 * day.level);
+                            border-width: touch.has-hover && day.active ? 1px : 0px;
+                            border-color: Palette.foreground;
+                            touch := TouchArea {
+                                enabled: day.active;
+                                mouse-cursor: pointer;
+                                clicked => { root.jump(day.first); }
+                                changed has-hover => {
+                                    if self.has-hover {
+                                        root.tip-label = day.label;
+                                        root.tip-summary = day.summary;
+                                        root.tip-x = parent.absolute-position.x - root.absolute-position.x;
+                                        root.tip-y = parent.absolute-position.y - root.absolute-position.y;
+                                    } else if root.tip-label == day.label {
+                                        root.tip-label = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Legend.
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    Text {
+                        text: "Less";
+                        font-size: 0.75rem;
+                        vertical-alignment: center;
+                        color: Palette.foreground.with-alpha(0.6);
+                    }
+                    for level in [0, 0.25, 0.5, 0.75, 1]: Rectangle {
+                        width: 11px;
+                        height: 11px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 2px;
+                        background: level <= 0 ? Palette.foreground.with-alpha(0.07)
+                            : Palette.accent-background.with-alpha(0.3 + 0.7 * level);
+                    }
+                    Text {
+                        text: "More";
+                        font-size: 0.75rem;
+                        vertical-alignment: center;
+                        color: Palette.foreground.with-alpha(0.6);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.tip-label != "": Rectangle {
+        x: clamp(root.tip-x - self.width / 2, 4px, root.width - self.width - 4px);
+        y: root.tip-y - self.height - 6px;
+        width: tip.preferred-width;
+        height: tip.preferred-height;
+        border-radius: 6px;
+        background: Palette.background;
+        border-width: 1px;
+        border-color: Palette.border;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #0003;
+        tip := VerticalLayout {
+            padding: 6px;
+            padding-left: 10px;
+            padding-right: 10px;
+            Text {
+                text: root.tip-label;
+                font-size: 0.85rem;
+                font-weight: 600;
+                color: Palette.foreground;
+            }
+            Text {
+                text: root.tip-summary;
+                font-size: 0.8rem;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+        }
+    }
+}
+
 component PasswordScreen inherits Rectangle {
     // Choosing a password for a new database, rather than unlocking an existing one.
     in property <bool> new;
@@ -1159,6 +1483,8 @@ component SettingsPage inherits Rectangle {
     in-out property <bool> show-avatars;
     in-out property <bool> notifications;
     in-out property <int> notification-content;
+    in-out property <bool> show-activity;
+    in-out property <bool> show-calendar;
     in-out property <bool> close-to-tray;
     // Whether the desktop shows tray icons; without, closing the window quits.
     in property <bool> tray-available: true;
@@ -1255,6 +1581,25 @@ component SettingsPage inherits Rectangle {
                         hint: "Show contacts' and groups' pictures instead of initials.";
                         Switch {
                             checked <=> root.show-avatars;
+                            toggled => { root.changed-settings(); }
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
+                    SectionTitle { text: "Chats"; }
+                    SettingRow {
+                        label: "Activity strip";
+                        hint: "A bar beside each chat showing when you wrote, and how much. Click it to jump there.";
+                        Switch {
+                            checked <=> root.show-activity;
+                            toggled => { root.changed-settings(); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Activity calendar";
+                        hint: "A button above each chat opens a calendar of it, year by year. Click a day to go there.";
+                        Switch {
+                            checked <=> root.show-calendar;
                             toggled => { root.changed-settings(); }
                         }
                     }
@@ -1436,6 +1781,16 @@ export component AppWindow inherits Window {
     in-out property <bool> typing-indicators: true;
     in-out property <bool> link-previews;
     in-out property <bool> sync-to-phone;
+    in-out property <bool> show-activity;
+    // The open chat's activity strip; empty while the strip is off.
+    in property <[ActivityItem]> activity;
+    in-out property <bool> show-calendar;
+    // The open chat's calendar, filled when it opens.
+    in-out property <bool> calendar-open;
+    in property <[CalendarYear]> calendar;
+    in property <string> calendar-summary;
+    callback open-calendar;
+    changed selected => { root.calendar-open = false; }
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -1947,6 +2302,8 @@ export component AppWindow inherits Window {
                 show-avatars <=> root.show-avatars;
                 notifications <=> root.notifications;
                 notification-content <=> root.notification-content;
+                show-activity <=> root.show-activity;
+                show-calendar <=> root.show-calendar;
                 close-to-tray <=> root.close-to-tray;
                 tray-available: root.tray-available;
                 autostart-supported: root.autostart-supported;
@@ -2047,6 +2404,33 @@ export component AppWindow inherits Window {
                                 color: Palette.foreground.with-alpha(0.6);
                             }
                         }
+                        if root.show-calendar: Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 6px;
+                            background: root.calendar-open ? Palette.accent-background.with-alpha(0.18)
+                                : calendar-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                            calendar-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if root.calendar-open {
+                                        root.calendar-open = false;
+                                    } else {
+                                        root.open-calendar();
+                                    }
+                                }
+                            }
+                            // A tiny calendar grid.
+                            for i in 9: Rectangle {
+                                x: 8px + mod(i, 3) * 6px;
+                                y: 8px + floor(i / 3) * 6px;
+                                width: 4px;
+                                height: 4px;
+                                border-radius: 1px;
+                                background: Palette.foreground.with-alpha(mod(i * 5, 7) / 9 + 0.25);
+                            }
+                        }
                         VerticalLayout {
                             alignment: center;
                             HoverButton {
@@ -2091,87 +2475,110 @@ export component AppWindow inherits Window {
                     height: 3px;
                 }
 
-                Rectangle {
-                vertical-stretch: 1;
-                message-list := ListView {
-                    width: parent.width;
-                    height: parent.height;
-                    // Follow new messages only while the newest one is in view, so reading
-                    // older messages isn't interrupted. Opening a chat starts at the bottom.
-                    property <bool> follow: true;
-                    property <int> conversation: root.selected;
-                    changed conversation => { self.follow = true; }
-                    // Jumping to a search result: rows have different heights and are only
-                    // measured once shown, so the place is estimated from the average and
-                    // corrected a few times as they are.
-                    property <int> jump-serial: root.jump-serial;
-                    property <int> settling;
-                    function scroll-to-jump() {
-                        if root.messages.length > 0 {
-                            self.content-y = max(self.visible-height - self.content-height,
-                                min(0px, self.visible-height / 3
-                                    - root.jump-row * self.content-height / root.messages.length));
+                chat-area := Rectangle {
+                    vertical-stretch: 1;
+                    // By position in the list: rows differ in height, so it lands near, not on.
+                    function jump(index: int) {
+                        message-list.content-y = max(message-list.visible-height - message-list.content-height,
+                            -index * message-list.content-height / max(1, root.messages.length));
+                        message-list.follow = message-list.content-y <= message-list.visible-height - message-list.content-height + 8px;
+                    }
+                    HorizontalLayout {
+                        message-list := ListView {
+                            // Follow new messages only while the newest one is in view, so reading
+                            // older messages isn't interrupted. Opening a chat starts at the bottom.
+                            property <bool> follow: true;
+                            property <int> conversation: root.selected;
+                            changed conversation => { self.follow = true; }
+                            // Jumping to a search result: rows have different heights and are only
+                            // measured once shown, so the place is estimated from the average and
+                            // corrected a few times as they are.
+                            property <int> jump-serial: root.jump-serial;
+                            property <int> settling;
+                            function scroll-to-jump() {
+                                if root.messages.length > 0 {
+                                    self.content-y = max(self.visible-height - self.content-height,
+                                        min(0px, self.visible-height / 3
+                                            - root.jump-row * self.content-height / root.messages.length));
+                                }
+                            }
+                            changed jump-serial => {
+                                self.follow = false;
+                                self.settling = 6;
+                                self.scroll-to-jump();
+                            }
+                            // Only the user's own scrolling decides; content growing (pictures arriving,
+                            // rows being measured) moves the viewport too and must not stop following.
+                            scrolled => {
+                                self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
+                                if self.content-y > -self.visible-height / 2 {
+                                    root.load-older();
+                                }
+                            }
+                            changed content-height => {
+                                // Older messages put in above don't move what is shown: the list
+                                // keeps its first visible row in place by itself.
+                                if self.follow {
+                                    self.content-y = min(0px, self.visible-height - self.content-height);
+                                }
+                                // Nothing to scroll yet: there may be more before.
+                                if self.content-height < self.visible-height {
+                                    root.load-older();
+                                }
+                                if self.settling > 0 {
+                                    self.settling -= 1;
+                                    self.scroll-to-jump();
+                                }
+                            }
+                            // E.g. the reply bar opening below.
+                            changed visible-height => {
+                                if self.follow {
+                                    self.content-y = min(0px, self.visible-height - self.content-height);
+                                }
+                            }
+                            for item[index] in root.messages: Bubble {
+                                item: item;
+                                reply => {
+                                    root.reply(index);
+                                    composer.focus();
+                                }
+                                max-bubble-width: message-list.visible-width * 0.7;
+                                fetch-attachment(id) => { root.fetch-attachment(id); }
+                                save-attachment(id) => { root.save-attachment(id); }
+                                open-attachment(id) => { root.open-attachment(id); }
+                                open-link(link) => { root.open-link(link); }
+                                react(emoji) => { root.react(index, emoji); }
+                                edit => {
+                                    root.edit(index);
+                                    composer.focus();
+                                }
+                                delete(everyone) => { root.delete(index, everyone); }
+                                copy-text(text) => { root.copy-text(text); }
+                                reveal => { root.reveal(index); }
+                                forward => {
+                                    root.forward-filter = "";
+                                    root.forward(index);
+                                }
+                            }
+                        }
+                        if root.activity.length > 1: ActivityStrip {
+                            items: root.activity;
+                            // The average row: the list knows only its estimated total height.
+                            property <length> row-height: max(1px, message-list.content-height / max(1, root.messages.length));
+                            top: floor(-message-list.content-y / self.row-height);
+                            bottom: floor((message-list.visible-height - message-list.content-y) / self.row-height);
+                            jump(index) => { chat-area.jump(index); }
                         }
                     }
-                    changed jump-serial => {
-                        self.follow = false;
-                        self.settling = 6;
-                        self.scroll-to-jump();
-                    }
-                    // Only the user's own scrolling decides; content growing (pictures arriving,
-                    // rows being measured) moves the viewport too and must not stop following.
-                    scrolled => {
-                        self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
-                        if self.content-y > -self.visible-height / 2 {
-                            root.load-older();
+                    if root.calendar-open: ActivityCalendar {
+                        years: root.calendar;
+                        summary: root.calendar-summary;
+                        close => { root.calendar-open = false; }
+                        jump(index) => {
+                            root.calendar-open = false;
+                            chat-area.jump(index);
                         }
                     }
-                    changed content-height => {
-                        // Older messages put in above don't move what is shown: the list
-                        // keeps its first visible row in place by itself.
-                        if self.follow {
-                            self.content-y = min(0px, self.visible-height - self.content-height);
-                        }
-                        // Nothing to scroll yet: there may be more before.
-                        if self.content-height < self.visible-height {
-                            root.load-older();
-                        }
-                        if self.settling > 0 {
-                            self.settling -= 1;
-                            self.scroll-to-jump();
-                        }
-                    }
-                    // E.g. the reply bar opening below.
-                    changed visible-height => {
-                        if self.follow {
-                            self.content-y = min(0px, self.visible-height - self.content-height);
-                        }
-                    }
-                    for item[index] in root.messages: Bubble {
-                        item: item;
-                        reply => {
-                            root.reply(index);
-                            composer.focus();
-                        }
-                        max-bubble-width: message-list.visible-width * 0.7;
-                        fetch-attachment(id) => { root.fetch-attachment(id); }
-                        save-attachment(id) => { root.save-attachment(id); }
-                        open-attachment(id) => { root.open-attachment(id); }
-                        open-link(link) => { root.open-link(link); }
-                        react(emoji) => { root.react(index, emoji); }
-                        edit => {
-                            root.edit(index);
-                            composer.focus();
-                        }
-                        delete(everyone) => { root.delete(index, everyone); }
-                        copy-text(text) => { root.copy-text(text); }
-                        reveal => { root.reveal(index); }
-                        forward => {
-                            root.forward-filter = "";
-                            root.forward(index);
-                        }
-                    }
-                }
                 if root.chat-search-open: Rectangle {
                     background: Palette.background;
                     search-timer := Timer {

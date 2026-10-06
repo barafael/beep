@@ -22,6 +22,7 @@ mod signal;
 pub mod state;
 #[cfg(feature = "signal")]
 mod storage;
+pub mod timeline;
 #[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]

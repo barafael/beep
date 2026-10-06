@@ -8,6 +8,7 @@ use langis_core::state::{
     self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, SaveState,
     Update,
 };
+use langis_core::timeline::{self, Stretch};
 use langis_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
     HistoryTransfer, now_millis,
@@ -469,6 +470,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             window.set_font_scale(settings.text_size.scale());
             shared.apply_settings(settings);
             window.set_style_note(shared.style_note().into());
+            render_activity(&window, &shared.chat.borrow());
         }
     });
     window.on_fetch_attachment({
@@ -508,6 +510,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         move |id| {
             shared.act(|chat| (chat.open_attachment(&AttachmentId(id.into())), Update::default()));
+        }
+    });
+    window.on_open_calendar({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            let Some(window) = window.upgrade() else { return };
+            render_calendar(&window, &shared.chat.borrow());
+            window.set_calendar_open(true);
         }
     });
     window.on_open_link(|link| crate::open_link(&link));
@@ -702,6 +713,8 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
     window.set_autostart_supported(crate::autostart::SUPPORTED);
     window.set_start_with_system(crate::autostart::enabled());
     window.set_font_scale(settings.text_size.scale());
+    window.set_show_activity(settings.show_activity);
+    window.set_show_calendar(settings.show_calendar);
 }
 
 fn read_settings(window: &AppWindow) -> Settings {
@@ -724,6 +737,8 @@ fn read_settings(window: &AppWindow) -> Settings {
             2 => NotificationContent::Nothing,
             _ => NotificationContent::NameAndMessage,
         },
+        show_activity: window.get_show_activity(),
+        show_calendar: window.get_show_calendar(),
         close_to_tray: window.get_close_to_tray(),
         preferences: langis_core::Preferences {
             read_receipts: window.get_read_receipts(),
@@ -968,6 +983,12 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         }
         MessagesUpdate::Reset => {
             messages.set_vec(chat.messages().map(|m| message_item(&m, chat, images)).collect::<Vec<_>>())
+        }
+    }
+    if update.messages != MessagesUpdate::Unchanged {
+        render_activity(window, chat);
+        if window.get_calendar_open() {
+            render_calendar(window, chat);
         }
     }
     // Messages changed in place (downloads, reactions): redraw only rows that differ.
@@ -1222,6 +1243,104 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
         })
         .collect();
     update_list(&window.get_media_links(), links, |a, b| a == b);
+}
+
+/// The open chat's activity strip, or none while it is turned off.
+fn render_activity(window: &AppWindow, chat: &ChatState) {
+    let items = if window.get_show_activity() { activity_items(chat) } else { Vec::new() };
+    window.set_activity(ModelRc::new(VecModel::from(items)));
+}
+
+/// Weeks or months (whichever fit) from top to bottom, long silences folded into a short gap.
+fn activity_items(chat: &ChatState) -> Vec<ActivityItem> {
+    /// Silences of at least this many weeks or months are folded.
+    const FOLD: usize = 6;
+    /// A folded silence is drawn this many times as tall as a week or month.
+    const QUIET_WEIGHT: f32 = 2.0;
+    let span = chat.activity_span();
+    let buckets = chat.activity(span);
+    // Square roots, so a quiet week still shows beside a busy one.
+    let busiest = buckets.iter().map(|b| b.mine.max(b.others)).max().unwrap_or(0).max(1) as f32;
+    let scale = |n: u32| (n as f32 / busiest).sqrt();
+    let stretches = timeline::fold_quiet(buckets, span, FOLD);
+    let weight = |s: &Stretch| if matches!(s, Stretch::Quiet { .. }) { QUIET_WEIGHT } else { 1.0 };
+    let total: f32 = stretches.iter().map(weight).sum();
+    let count = chat.messages().len();
+    let mut y = 0.0;
+    let mut year = None;
+    stretches
+        .iter()
+        .enumerate()
+        .map(|(i, stretch)| {
+            let height = weight(stretch) / total;
+            let end = stretches.get(i + 1).map_or(count, Stretch::first);
+            let mut item = ActivityItem { y, height, first: stretch.first() as i32, end: end as i32, ..Default::default() };
+            y += height;
+            match stretch {
+                Stretch::Active(bucket) => {
+                    if year != Some(bucket.start.year()) {
+                        year = Some(bucket.start.year());
+                        item.year = bucket.start.year().to_string().into();
+                    }
+                    item.mine = scale(bucket.mine);
+                    item.others = scale(bucket.others);
+                    item.media = bucket.media > 0;
+                    item.label = bucket.label(span).into();
+                    item.summary = bucket.summary().into();
+                }
+                Stretch::Quiet { from, until, .. } => {
+                    item.quiet = true;
+                    item.label = format!("{} – {}", from.strftime("%B %Y"), until.strftime("%B %Y")).into();
+                    item.summary = Stretch::quiet_summary(*from, *until).into();
+                }
+            }
+            item
+        })
+        .collect()
+}
+
+/// The open chat's calendar: a grid of days per year, newest year first.
+fn render_calendar(window: &AppWindow, chat: &ChatState) {
+    let days = chat.activity(timeline::Span::Day);
+    let busiest = days.iter().map(|d| d.messages()).max().unwrap_or(0).max(1) as f32;
+    let mut summary = days.first().map(|d| d.start.strftime("Since %B %Y · ").to_string()).unwrap_or_default();
+    summary.push_str(&timeline::Bucket::total(&days).summary());
+    let years: Vec<CalendarYear> = timeline::calendar(&days)
+        .into_iter()
+        .rev()
+        .map(|year| {
+            if year.total.messages() == 0 {
+                return CalendarYear { year: year.year.to_string().into(), summary: "No messages".into(), quiet: true, ..Default::default() };
+            }
+            let cells: Vec<DayCell> = year
+                .days
+                .into_iter()
+                .map(|day| {
+                    let n = day.bucket.map_or(0, |b| b.messages());
+                    DayCell {
+                        column: day.column.into(),
+                        row: day.row.into(),
+                        level: if n == 0 { 0.0 } else { (n as f32 / busiest).sqrt() },
+                        label: day.label.into(),
+                        summary: day.bucket.map_or_else(|| "No messages".into(), |b| b.summary()).into(),
+                        first: day.bucket.map_or(0, |b| b.first as i32),
+                        active: n > 0,
+                        outside: day.bucket.is_none(),
+                    }
+                })
+                .collect();
+            let months: Vec<i32> = year.months.iter().map(|&c| c.into()).collect();
+            CalendarYear {
+                year: year.year.to_string().into(),
+                summary: format!("{} · {}% from you", year.total.summary(), year.total.mine_percent()).into(),
+                quiet: false,
+                days: ModelRc::new(VecModel::from(cells)),
+                months: ModelRc::new(VecModel::from(months)),
+            }
+        })
+        .collect();
+    window.set_calendar_summary(summary.into());
+    window.set_calendar(ModelRc::new(VecModel::from(years)));
 }
 
 /// The `VecModel` behind a model set up in [`create`].
