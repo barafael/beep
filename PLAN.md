@@ -1,78 +1,78 @@
 # Plan
 
 What is left to make langis a full Signal client on the desktop. Payments and calls are out
-of scope, and so is upstreaming the presage fork. Milestones go roughly in order; within one,
-items are independent unless noted.
+of scope. Steps go in order: each builds on the one before.
 
-## Done
+## Where it stands
 
-- Linking with message history transfer (45 days of attachments), relinking when the device
-  is removed, encrypted store (keyring or password), tray, single instance, notifications,
-  several widget styles and themes.
-- **M1 core and UI:** read state (receipts sent, read synced with the phone both ways, unread
-  counts that survive restarts, "New messages" line, mark read or unread), delivery and read
-  ticks, typing indicators both ways, edits and deletions for everyone (sent and received),
-  disappearing messages (timers, sweeper, 1:1 timer changes), formatting (shortcuts in the
-  composer, Signal's body ranges both ways, spoilers), pinned chats (Alt+1…9), mute, archive,
-  privacy preferences, message and chat context menus.
-- **M1 rest:** history loaded a page at a time (fork: `messages_before`), @-mentions of group
-  members, moving pinned chats up and down, Note to Self always listed, chat settings read from
-  the storage service (fork: `Manager::storage_service`; a setting is taken over only if it
-  changed on the phone), headless UI tests.
+- **Base:** linking with message history transfer (45 days of attachments), relinking when the
+  device is removed, encrypted store (keyring or password), tray, single instance,
+  notifications, several widget styles and themes.
+- **M1 (done):** read state and receipts, delivery ticks, typing indicators, edits and
+  deletions, disappearing messages, formatting, mentions, pinned / muted / archived chats,
+  history a page at a time, Note to Self, chat settings read from the storage service.
+- **M2 (done):** message requests, blocking, chat folders (read), details and safety numbers,
+  forwarding, search in a chat, media overview, stickers, link previews, paste and drop, blurred
+  previews, keyboard shortcuts, screen-reader labels; chat settings written back to the storage
+  service (opt-in).
+- **M3 (done):** group management (create, rename, description, timer, members, admins,
+  leave; others' changes as notices), audio and voice message playback, stories (viewed with
+  receipts for 24 hours; text and photo stories posted to groups). Reviewed twice; the fixes
+  are in.
 
-## M1: remaining
+None of M1–M3 has been checked against a real account yet. Everything below waits for that.
 
-- **Live verification** against a real account: receipts, read sync, typing in groups, our
-  edits and deletions as seen on the phone, older pages while scrolled up, mentions as seen on
-  the phone, the storage service read (pins, mutes, archive from the phone).
+## 1. Verify on a real account
 
-Known limits to revisit: the earlier text of someone else's edit is lost after a restart
-(presage overwrites the stored message before langis sees it); a group counts as read once any
-member read a message; pinned chats move by menu, not by dragging (a Slint `ListView` gives no
-drag feedback); the storage service's read-receipt and typing settings and blocked contacts
-aren't taken over yet.
+Go through TESTPLAN.md, in this order, and note each result there:
 
-## M2
+1. §1 (M1) and §2 except 2.13: mostly reading and sending; little can go wrong.
+2. §3 (M3) in a group made for testing, with people who know it is a test.
+3. §2.13 last, one change at a time: it writes to the account's shared settings.
 
-Done: message requests (Accept / Delete / Block, synced with other devices), blocking (block list
-synced both ways), chat folders read from the phone as tabs, contact details with safety
-numbers, group details, forwarding, search in a chat (whole history, jumps to the result),
-media overview (media, files, links), sending stickers from installed packs, link previews
-(shown; sending opt-in), pasting and dropping files, blurred previews, video tiles and captions,
-keyboard shortcuts, screen-reader labels.
+Then fix what fails, most harmful first (anything that loses messages, misleads about who
+reads what, or changes the phone's settings unasked). Re-run the affected checks. This step is
+done when every check is ✅ or has an issue noted here.
 
-Also done: writing chat settings back to the storage service (opt-in, Settings → Account):
-records and manifest changed in their bytes so unknown fields survive, written only on top of
-the version last read, conflicts read and retried.
+## 2. Make the build stand on its own
 
-Remaining:
+The group changes in libsignal-service-rs live only in a local clone (`../libsignal-service-rs`,
+branch `langis/groups`), so langis builds on this machine only.
 
-- **Live verification** of all of M2 against a real account, the storage write above all: try
-  it with one change (e.g. pin a chat) and check the phone before relying on it.
-- **Not done within the items above:** marking a safety number verified; a notice when a
-  contact's safety number changes (needs the presage fork to report identity changes);
-  creating and editing folders (folder records aren't written yet); new storage records for
-  chats the phone has none for (only existing records are changed); animated GIFs and real video
-  thumbnails (need a video decoder; they open in the desktop's player); a sticker picker
-  test that sees the stickers (the testing backend doesn't lay out popups).
+1. Push that branch to a fork (as with presage: `barafael/libsignal-service-rs`) and point the
+   `[patch]` at it by revision, so a fresh checkout builds.
+2. Offer the changes upstream (whisperfish/libsignal-service-rs) as a pull request — your
+   call; until they land, the fork stays.
+3. A CI job (build, test, clippy) on every push, so a broken build shows at once.
 
-## M3
+## 3. M4: close the gaps M1–M3 left
 
-Done: group management (create a group, rename it, description, disappearing-messages timer,
-add and remove members, make and unmake admins, leave; group changes from others show as
-notices), playing audio and voice messages in the window (AAC, MP4, MP3, Ogg, FLAC, WAV via
-rodio), stories (received ones viewed for 24 hours with viewed receipts; text and photo stories
-posted to groups).
+By how much they matter, most first:
 
-Group changes need calls libsignal-service-rs lacks: a local clone with them (branch
-`langis/groups`) is patched in from `../libsignal-service-rs`, and the presage fork uses them.
+- **Safety numbers:** a notice when a contact's safety number changes, and marking it
+  verified. Needs the presage fork to report identity changes. This is about trust, so it
+  comes first.
+- **Groups:** accepting an invitation here (now done on the phone); adding people known only
+  by phone number (invite them by PNI); retrying a change that clashed with someone else's;
+  the group picture; invite links and join requests.
+- **Storage service:** records for chats the phone has none for (only existing records are
+  changed now); writing folders (create, edit); taking over the read-receipt and typing
+  settings.
+- **Stories:** posting to My Story and custom lists (their audiences are distribution lists
+  in the storage service, so this needs the storage write to be proven first); replies and
+  reactions; removing stories their author deleted; Signal's own setting for story receipts
+  (they follow read receipts now).
+- **Media:** recording voice messages (audio input across desktops); a seek bar; animated
+  GIFs and video thumbnails (need a video decoder).
+- **Known limits from M1:** the earlier text of someone else's edit is lost after a restart
+  (presage overwrites the stored message first); a group counts as read once any member read a
+  message; pinned chats move by menu, not by dragging.
+- **Tests:** a sticker picker test that sees the stickers (the testing backend doesn't lay
+  out popups).
 
-Remaining:
+## 4. Ready for others
 
-- **Live verification** of all of M3 against a real account (TESTPLAN.md §3).
-- **Not done:** the group picture; accepting a group invitation here (it is done on the
-  phone); adding people known only by phone number; group invite links and join requests; recording voice
-  messages (audio input across desktops); posting to My Story or custom story lists (the
-  audience needs care: distribution lists live in the storage service); replying to and
-  reacting to stories; a seek bar for audio.
-- **Upstream** the libsignal-service-rs changes, then drop the `[patch]`.
+- Packaging (`packaging/linux`) checked on a clean system, with the build from step 2.
+- Large accounts: start-up time, memory and scrolling with years of history.
+- A screen-reader pass with Orca through the main tasks.
+- A way to collect logs for bug reports without message content in them.
