@@ -604,6 +604,20 @@ impl ChatState {
                     message.reactions = std::mem::take(&mut old.reactions);
                     message.delivery = old.delivery;
                     message.expires_at = message.expires_at.or(old.expires_at);
+                    // An edit changes the text; Signal's clients can't take attachments or
+                    // a quote away with one, so a backend that reports only the text keeps
+                    // them.
+                    if message.attachments.is_empty() {
+                        message.attachments = std::mem::take(&mut old.attachments);
+                    }
+                    message.quote = message.quote.or_else(|| old.quote.take());
+                    // The preview too, as long as its link is still in the text.
+                    if message.preview.is_none()
+                        && let Some(preview) = old.preview.take()
+                        && format::links(&message.body).contains(&preview.url.as_str())
+                    {
+                        message.preview = Some(preview);
+                    }
                     *old = message;
                     update.rows = self.selected.as_ref() == Some(&conversation);
                     update.conversations = true;
@@ -876,10 +890,12 @@ impl ChatState {
     }
 
     /// Answers a conversation that needn't be the selected one, e.g. from a notification.
-    /// Counts as reading it.
+    /// Counts as reading it. Under the same conditions as the composer: not while catching
+    /// up, nor to blocked chats, left groups or unanswered requests (writing would accept
+    /// one, and hand the stranger our profile).
     pub fn reply(&mut self, id: &ConversationId, text: &str) -> Option<Command> {
         let body = text.trim();
-        if body.is_empty() || self.conversation(id).is_none() {
+        if body.is_empty() || !self.conversation(id).is_some_and(|c| self.can_write_to(c)) {
             return None;
         }
         if let Some(command) = self.mark_read(id.clone()) {
@@ -1011,11 +1027,19 @@ impl ChatState {
     /// Whether [`ChatState::compose`] would send `text`: not to blocked chats or unanswered
     /// requests.
     pub fn can_compose(&self, text: &str) -> bool {
-        self.synced
-            && self
-                .selected()
-                .is_some_and(|c| !c.settings.blocked && !c.left && !self.is_request(c))
+        self.selected().is_some_and(|c| self.can_write_to(c))
             && (!text.trim().is_empty() || !self.staged.is_empty())
+    }
+
+    /// Whether anything may be sent to `conversation` now: once caught up, and not to a
+    /// blocked chat, a group we left, or a message request not answered yet. Every way of
+    /// sending (composing, replying from a notification, forwarding, stickers, reactions)
+    /// goes by this.
+    pub fn can_write_to(&self, conversation: &Conversation) -> bool {
+        self.synced
+            && !conversation.settings.blocked
+            && !conversation.left
+            && !self.is_request(conversation)
     }
 
     /// Adds files to send with the next message.
@@ -1129,7 +1153,7 @@ impl ChatState {
     /// Sends a sticker to the selected conversation.
     pub fn send_sticker(&mut self, pack: &str, sticker: u32) -> Option<Command> {
         let conversation = self.selected()?;
-        if !self.synced || conversation.settings.blocked || self.is_request(conversation) {
+        if !self.can_write_to(conversation) {
             return None;
         }
         Some(Command::SendSticker {
@@ -1587,7 +1611,9 @@ impl ChatState {
 
     /// Forwards the message being forwarded to `id`.
     pub fn forward_to(&mut self, id: &ConversationId) -> Option<Command> {
-        self.conversation(id)?;
+        if !self.conversation(id).is_some_and(|c| self.can_write_to(c)) {
+            return None;
+        }
         let message = self.forwarding.take()?;
         // A long message's full text, once fetched, goes as the body; until then, the
         // attachment holding it goes along.
@@ -1957,7 +1983,11 @@ impl ChatState {
     /// Reacts to the `index`th message of [`ChatState::messages`] with `emoji`; reacting with
     /// the emoji we already put there takes it back.
     pub fn react(&self, index: usize, emoji: &str) -> Option<Command> {
-        let conversation = self.selected.clone()?;
+        let conversation = self.selected()?;
+        if !self.can_write_to(conversation) {
+            return None;
+        }
+        let conversation = conversation.id.clone();
         let message = self.messages().nth(index)?.message;
         let ours = message.reactions.iter().find(|r| r.outgoing);
         Some(Command::React {
@@ -2733,6 +2763,53 @@ mod tests {
         assert_eq!(state.take_notices(), [Notice::Withdraw(a)]);
     }
 
+    /// A reply from a notification goes by the composer's rules: it would otherwise accept a
+    /// message request (and share our profile key), write to a blocked chat, or be attempted
+    /// while catching up.
+    #[test]
+    fn replying_follows_the_composers_rules() {
+        let mut state = notifying();
+        let a = ConversationId("a".into());
+        state.apply(Event::Message(message("a", "Alice", 1, false)));
+        // An unanswered request, once the phone's settings are known.
+        state.apply(Event::StorageRead);
+        assert!(state.reply(&a, "hi").is_none());
+        state.apply(Event::Settings {
+            conversation: a.clone(),
+            settings: ChatSettings {
+                accepted: true,
+                ..ChatSettings::default()
+            },
+        });
+        assert!(state.reply(&a, "hi").is_some());
+        state.apply(Event::Settings {
+            conversation: a.clone(),
+            settings: ChatSettings {
+                accepted: true,
+                blocked: true,
+                ..ChatSettings::default()
+            },
+        });
+        assert!(state.reply(&a, "hi").is_none());
+        // Reconnecting: nothing goes out until caught up again.
+        let mut state = notifying();
+        state.apply(Event::Message(message("a", "Alice", 1, false)));
+        state.apply(Event::Reconnecting);
+        assert!(state.reply(&a, "hi").is_none());
+        state.apply(Event::Synced);
+        assert!(state.reply(&a, "hi").is_some());
+        // A group we left.
+        let mut state = notifying();
+        let g = ConversationId("g".into());
+        state.apply(Event::Conversations(vec![Conversation {
+            left: true,
+            ..conversation("g", true)
+        }]));
+        assert!(state.reply(&g, "hi").is_none());
+        state.select(&g);
+        assert!(state.react(0, "👍").is_none());
+    }
+
     #[test]
     fn incoming_message_moves_conversation_up_and_counts_unread() {
         let mut state = state();
@@ -2788,6 +2865,45 @@ mod tests {
         // Opening it still fetches the full history.
         assert!(
             matches!(state.select(&id), Some(Command::LoadHistory { conversation: i, before: None }) if i == id)
+        );
+    }
+
+    /// Signal's edits change the text; a backend reporting only the text doesn't lose the
+    /// photo (or quote) the message was sent with.
+    #[test]
+    fn an_edit_keeps_the_attachments_and_quote() {
+        let mut state = state();
+        state.select(&id("a"));
+        state.apply(Event::History {
+            conversation: id("a"),
+            messages: vec![ChatMessage {
+                outgoing: true,
+                quote: Some(Quote {
+                    author: "Alice".into(),
+                    text: "hello".into(),
+                    author_id: "alice".into(),
+                    timestamp: 5,
+                }),
+                ..with_attachment("a", 10, "p", AttachmentKind::Image)
+            }],
+            reactions: Vec::new(),
+            older: None,
+        });
+        let target = state.messages().next().unwrap().message.reference();
+        state.apply(Event::Edited {
+            conversation: id("a"),
+            target,
+            message: ChatMessage {
+                body: "better".into(),
+                ..message("a", "You", 10, true)
+            },
+        });
+        let edited = state.messages().next().unwrap().message;
+        assert_eq!(edited.body, "better");
+        assert_eq!(edited.attachments.len(), 1);
+        assert_eq!(
+            edited.quote.as_ref().map(|q| q.text.as_str()),
+            Some("hello")
         );
     }
 

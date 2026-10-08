@@ -582,6 +582,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let result = slint::run_event_loop_until_quit();
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
+    // Pasted pictures have been sent or given up by now.
+    clipboard::clean();
     shutdown.closed();
     // Only now may another langis start.
     drop(instance);
@@ -624,15 +626,19 @@ impl Images {
         if let Some(image) = self.blurs.borrow().get(hash) {
             return image.clone();
         }
-        // Blurred anyway: a few dozen pixels are plenty, scaled up by the UI.
+        // Blurred anyway: a few dozen pixels are plenty, scaled up by the UI. The sizes are
+        // the sender's, so they are taken wide enough not to overflow.
+        let (width, height) = (u64::from(width), u64::from(height));
         let (w, h) = if width >= height {
-            (32, (32 * height / width.max(1)).clamp(4, 32))
+            (32, (32 * height / width.max(1)).clamp(4, 32) as u32)
         } else {
-            ((32 * width / height.max(1)).clamp(4, 32), 32)
+            ((32 * width / height.max(1)).clamp(4, 32) as u32, 32)
         };
-        let image = match blurhash::decode(hash, w, h, 1.0) {
-            Ok(rgba) => Image::from_rgba8(SharedPixelBuffer::clone_from_slice(&rgba, w, h)),
-            Err(_) => Image::default(),
+        // A hash is base-83 text, 6 to 166 characters long; nothing else is worth decoding.
+        let plausible = hash.is_ascii() && (6..=166).contains(&hash.len());
+        let image = match plausible.then(|| blurhash::decode(hash, w, h, 1.0)) {
+            Some(Ok(rgba)) => Image::from_rgba8(SharedPixelBuffer::clone_from_slice(&rgba, w, h)),
+            _ => Image::default(),
         };
         self.blurs
             .borrow_mut()

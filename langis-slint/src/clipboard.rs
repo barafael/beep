@@ -29,25 +29,16 @@ pub fn pasted() -> Option<Vec<PathBuf>> {
     }
 }
 
-fn dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("langis-pasted")
-}
+/// Where pasted pictures are kept until sent; see `langis_core::scratch`.
+const PASTED: &str = "langis-pasted";
 
-/// Forgets pictures pasted in an earlier run.
+/// Forgets pasted pictures: an earlier run's at the start, this run's at the end.
 pub fn clean() {
-    let _ = std::fs::remove_dir_all(dir());
+    langis_core::scratch::clean(PASTED);
 }
 
 fn save_png(image: &arboard::ImageData) -> std::io::Result<PathBuf> {
-    let dir = dir();
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&dir)?;
+    let dir = langis_core::scratch::dir(PASTED)?;
     let name = format!("pasted-{}.png", langis_core::now_millis());
     let path = dir.join(name);
     let file = std::fs::File::create(&path)?;

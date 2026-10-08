@@ -107,9 +107,9 @@ pub fn restrict_file(path: &Path) -> io::Result<()> {
 #[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let permissions = fs::Permissions::from_mode(mode);
-    if fs::metadata(path)?.permissions() != permissions {
-        fs::set_permissions(path, permissions)?;
+    // The mode read back carries the file type bits too; only the permission bits matter.
+    if fs::metadata(path)?.permissions().mode() & 0o777 != mode {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     }
     Ok(())
 }
