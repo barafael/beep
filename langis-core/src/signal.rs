@@ -88,6 +88,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     if let Some(closed) = closed {
         let _ = closed.recv_timeout(Duration::from_secs(5));
     }
+    attachments::clean_opened();
 }
 
 /// Disconnects once every connection to a store has been closed.
@@ -820,20 +821,18 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
     let _ = ctx.events.send(Event::Conversations(vec![conversation]));
 }
 
-/// If `context`'s change removed us, drops us from the stored group: presage can't read the
-/// group from the server any more, so its copy would still count us in. Only changes the
-/// server signed count: any member could send a made-up one.
-async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV2) {
-    use presage::libsignal_service::groups_v2::{GroupChange, GroupOperations};
-    use presage::libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams};
-    let own = manager.registration_data().service_ids.aci();
-    let Some(change) = context
-        .group_change
-        .as_deref()
-        .and_then(|bytes| presage::proto::GroupChange::decode(bytes).ok())
-    else {
-        return;
-    };
+/// The group change a message carries, decrypted with the group's key, if the server signed
+/// it. Only a signed change counts: the bytes are the sender's, so any member could make up
+/// one that was never applied (removals, admin rights, a timer) and have it narrated or acted
+/// on. Changes made here go out with the server's signature too (presage sends the change
+/// the server returned), so they pass.
+async fn signed_group_change(
+    manager: &Mgr,
+    key: [u8; 32],
+    context: &GroupContextV2,
+) -> Option<presage::libsignal_service::groups_v2::GroupChanges> {
+    use presage::libsignal_service::groups_v2::GroupOperations;
+    let change = presage::proto::GroupChange::decode(context.group_change.as_deref()?).ok()?;
     let servers = presage::libsignal_service::configuration::ServiceConfiguration::from(
         manager.registration_data().signal_servers,
     );
@@ -845,12 +844,20 @@ async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV
     });
     if !signed {
         debug!("a group change without the server's signature; ignored");
-        return;
+        return None;
     }
     let operations = GroupOperations::new(GroupSecretParams::derive_from_master_key(
         GroupMasterKey::new(key),
     ));
-    let Ok(changes) = operations.decrypt_group_change(change) else {
+    operations.decrypt_group_change(change).ok()
+}
+
+/// If `context`'s change removed us, drops us from the stored group: presage can't read the
+/// group from the server any more, so its copy would still count us in.
+async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV2) {
+    use presage::libsignal_service::groups_v2::GroupChange;
+    let own = manager.registration_data().service_ids.aci();
+    let Some(changes) = signed_group_change(manager, key, context).await else {
         return;
     };
     let removed = changes
@@ -1074,19 +1081,18 @@ async fn show_stored(
     }
 }
 
-/// What a group change says, from the change itself (decrypted with the group's key), and the
-/// timer it sets, if it does. `editor` is who made it.
+/// What a group change says, from the change itself (decrypted with the group's key, and only
+/// if the server signed it; see [`signed_group_change`]), and the timer it sets, if it does.
+/// `editor` is who made it.
 async fn group_notice(
     manager: &Mgr,
     names: &mut Names,
     context: &GroupContextV2,
     editor: &str,
 ) -> Option<(String, Option<u32>)> {
-    use presage::libsignal_service::groups_v2::{GroupChange, GroupOperations, Role};
-    use presage::libsignal_service::prelude::ProtobufMessage as _;
-    use presage::libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams};
+    use presage::libsignal_service::groups_v2::{GroupChange, Role};
     let key: [u8; 32] = context.master_key.clone()?.try_into().ok()?;
-    let Some(bytes) = &context.group_change else {
+    if context.group_change.is_none() {
         // A group's first message, from whoever made it.
         return (context.revision == Some(0)).then(|| {
             let text = if editor == "You" {
@@ -1096,12 +1102,8 @@ async fn group_notice(
             };
             (text, None)
         });
-    };
-    let change = presage::proto::GroupChange::decode(&bytes[..]).ok()?;
-    let operations = GroupOperations::new(GroupSecretParams::derive_from_master_key(
-        GroupMasterKey::new(key),
-    ));
-    let changes = operations.decrypt_group_change(change).ok()?;
+    }
+    let changes = signed_group_change(manager, key, context).await?;
     let editor_id = ServiceId::Aci(changes.editor);
     let editor = display_name(manager, names, editor_id).await;
     let mut lines = Vec::new();
@@ -1348,7 +1350,17 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
                 if known && ctx.preferences.get().sync_to_phone {
                     write_storage(&mut manager, &ctx).await;
                 }
-                ctx.storage_changed.notified().await;
+                if known {
+                    ctx.storage_changed.notified().await;
+                } else {
+                    // The phone sends the key right after linking (`handle_content` wakes
+                    // this when it comes); if that was missed, look again later rather than
+                    // never, since without it message requests can't be told apart.
+                    tokio::select! {
+                        () = tokio::time::sleep(RETRY) => {}
+                        () = ctx.storage_changed.notified() => {}
+                    }
+                }
                 tokio::time::sleep(SETTLE).await;
             }
             // E.g. offline at the start; try again later.
@@ -1881,6 +1893,12 @@ async fn handle_received(
         }
         Received::DecryptionError(sender) => {
             warn!(sender = %sender.service_id_string(), "decryption error");
+            // Nothing from blocked people, as for messages that do decrypt: no notice, and no
+            // session reset (which is a message to them, and says we are here).
+            if is_blocked(ctx, &conversation_id(&Thread::Contact(sender))).await {
+                debug!("from a blocked contact; ignored");
+                return true;
+            }
             // A broken session stays broken until someone resets it; the sender's app then
             // starts a new one (and can resend). Not more than hourly, so a peer that keeps
             // failing can't keep us resetting.
@@ -1925,6 +1943,16 @@ async fn handle_received(
 /// Returns `false` once the UI has gone away.
 async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &Content) -> bool {
     let events = &ctx.events;
+    // Sync messages speak for our account: what our other devices sent, read, blocked or
+    // accepted. Only our own devices may say so (the sender is authenticated by the session);
+    // from anyone else they are forged, and presage doesn't check (as Signal's clients do).
+    if !from_our_account(own_id(manager), content) {
+        warn!(
+            sender = %content.metadata.sender.service_id_string(),
+            "dropped a sync message from another account"
+        );
+        return true;
+    }
     match &content.body {
         ContentBody::ReceiptMessage(receipt) => return on_receipt(ctx, receipt).await,
         // Typing in a group names the group differently from other messages.
@@ -1975,11 +2003,35 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             }
             return true;
         }
+        // The storage key arrives with it (presage has kept it by now), so the storage
+        // service can be read: `follow_storage` may be waiting for exactly this.
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Keys(_)),
+            ..
+        }) => {
+            ctx.storage_changed.notify_one();
+            return true;
+        }
         _ => {}
     }
     let Ok(thread) = Thread::try_from(content) else {
         return true;
     };
+    // A message for a group we aren't in (presage fetches a group from the server the first
+    // time a message names it, which fails for one we aren't a member of): a made-up master
+    // key, or a group we were removed from. Signal's clients drop these, so that anyone able
+    // to write to us can't fill the chat list with groups.
+    let known = ctx.threads.borrow().contains_key(&conversation_id(&thread));
+    if let Thread::Group(key) = &thread
+        && !known
+        && !matches!(manager.store().group(*key).await, Ok(Some(_)))
+    {
+        debug!(
+            sender = %content.metadata.sender.service_id_string(),
+            "dropped a message for a group we aren't in"
+        );
+        return true;
+    }
     let id = ensure_conversation(manager, ctx, thread.clone()).await;
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
@@ -2458,10 +2510,16 @@ fn data_of(content: &Content) -> Option<(&DataMessage, bool)> {
     }
 }
 
-/// Ours: sent from here (stored with us as the sender) or synced from another device.
+/// `false` for a sync message that didn't come from one of our own devices; see
+/// [`handle_content`]. Anything else is fine.
+fn from_our_account(own: ServiceId, content: &Content) -> bool {
+    !matches!(content.body, ContentBody::SynchronizeMessage(_)) || content.metadata.sender == own
+}
+
+/// Ours: sent from here (stored with us as the sender) or synced from another device (which
+/// sends it as us too; [`handle_content`] has dropped sync messages from anyone else).
 fn is_outgoing(manager: &Mgr, content: &Content) -> bool {
-    matches!(content.body, ContentBody::SynchronizeMessage(_))
-        || content.metadata.sender == own_id(manager)
+    content.metadata.sender == own_id(manager)
 }
 
 /// Who wrote what a content carries: us for what we sent from any device.
@@ -2584,11 +2642,19 @@ async fn to_chat_message(
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
         preview: data.preview.first().and_then(|preview| {
+            // Only for a link the text has (as Signal's clients require): otherwise a card
+            // with a trusted site's title and picture could lead somewhere else entirely.
+            let url = preview
+                .url
+                .clone()
+                .filter(|url| url.starts_with("https://"))?;
+            let text = data.body.as_deref().unwrap_or_default();
+            if !format::links(text).contains(&url.as_str()) {
+                debug!("dropped a link preview for a link not in the message");
+                return None;
+            }
             Some(crate::LinkPreview {
-                url: preview
-                    .url
-                    .clone()
-                    .filter(|url| url.starts_with("https://"))?,
+                url,
                 title: preview.title.clone().unwrap_or_default(),
                 description: preview.description.clone().unwrap_or_default(),
                 image: preview
@@ -2997,28 +3063,66 @@ async fn handle_command(
             mentions,
         } => {
             let thread = thread(&conversation)?;
+            // An edit replaces the whole message, so all but the text comes from the message
+            // as sent: its attachments, quote, sticker and timer stay (receivers show what
+            // the edit carries, and nothing else).
+            let stored = manager
+                .store()
+                .message(&thread, target.timestamp)
+                .await
+                .ok()
+                .flatten();
+            let original = stored
+                .as_ref()
+                .and_then(data_of)
+                .map(|(data, _)| data.clone())
+                .unwrap_or_default();
             // Kept as the earlier version.
-            let previous = match manager.store().message(&thread, target.timestamp).await {
-                Ok(Some(content)) => data_of(&content)
-                    .and_then(|(data, _)| data.body.clone())
-                    .unwrap_or_default(),
-                _ => String::new(),
-            };
+            let previous = original.body.clone().unwrap_or_default();
             let (text, ranges) = format::encode(&body, &styles, &mentions);
             let timestamp = now_millis();
-            let data = DataMessage {
-                body: Some(text),
+            let mut data = DataMessage {
+                body: (!text.is_empty()).then_some(text),
                 body_ranges: body_ranges(ranges),
                 timestamp: Some(timestamp),
-                ..Default::default()
+                ..original
             };
-            send_edit(manager, &thread, target.timestamp, data, timestamp).await?;
+            // The preview follows the text: gone with its link, made anew for a new one.
+            let links = format::links(&body);
+            data.preview.retain(|preview| {
+                preview
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| links.contains(&url))
+            });
+            if data.preview.is_empty()
+                && ctx.preferences.get().link_previews
+                && let Some((sent, _)) = link_preview(manager, &body).await
+            {
+                data.preview.push(sent);
+            }
+            send_edit(manager, &thread, target.timestamp, data.clone(), timestamp).await?;
             // For after a restart; the state keeps the text before by itself.
             ctx.tables
                 .record_edit(&conversation, &target, timestamp, &previous)
                 .await
                 .map_err(db)?;
-            let message = ChatMessage {
+            // Shown as it will be read back: the edit in the message's place.
+            let edited = stored.map(|mut content| {
+                content.body = ContentBody::EditMessage(EditMessage {
+                    target_sent_timestamp: Some(target.timestamp),
+                    data_message: Some(data),
+                });
+                content
+            });
+            let message = match edited {
+                Some(content) => {
+                    to_chat_message(manager, &mut Names::new(), conversation.clone(), &content)
+                        .await
+                }
+                None => None,
+            };
+            let message = message.unwrap_or_else(|| ChatMessage {
                 conversation: conversation.clone(),
                 sender_id: target.author_id.clone(),
                 sender: "You".into(),
@@ -3028,7 +3132,7 @@ async fn handle_command(
                 styles,
                 edited_at: Some(timestamp),
                 ..Default::default()
-            };
+            });
             let _ = events.send(Event::Edited {
                 conversation,
                 target,
@@ -3714,6 +3818,51 @@ async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sync message says what our account did elsewhere, so only our own devices may send
+    /// one; a contact's is dropped before it can clear chats or unblock people.
+    #[test]
+    fn sync_messages_count_only_from_our_own_devices() {
+        use presage::libsignal_service::{content::Metadata, push_service::DEFAULT_DEVICE_ID};
+        let who = |n: u8| {
+            ServiceId::parse_from_service_id_string(&format!(
+                "00000000-0000-0000-0000-0000000000{n:02}"
+            ))
+            .unwrap()
+        };
+        let (own, other) = (who(1), who(2));
+        let content = |sender: ServiceId, body: ContentBody| Content {
+            metadata: Metadata {
+                sender,
+                destination: own,
+                sender_device: *DEFAULT_DEVICE_ID,
+                pni_verified: None,
+                client_timestamp: chrono::DateTime::from_timestamp_millis(1).unwrap(),
+                server_timestamp: chrono::DateTime::from_timestamp_millis(1).unwrap(),
+                needs_receipt: false,
+                unidentified_sender: false,
+                was_plaintext: false,
+                server_guid: None,
+            },
+            body,
+        };
+        let sync = || {
+            ContentBody::SynchronizeMessage(SyncMessage {
+                content: Some(SyncContent::Blocked(sync_message::Blocked::default())),
+                ..Default::default()
+            })
+        };
+        let data = || {
+            ContentBody::DataMessage(DataMessage {
+                body: Some("hi".into()),
+                ..Default::default()
+            })
+        };
+        assert!(from_our_account(own, &content(own, sync())));
+        assert!(!from_our_account(own, &content(other, sync())));
+        assert!(from_our_account(own, &content(other, data())));
+        assert!(from_our_account(own, &content(own, data())));
+    }
 
     #[test]
     fn only_refused_credentials_mean_the_device_was_removed() {

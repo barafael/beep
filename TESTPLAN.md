@@ -297,3 +297,23 @@ part of a test. Every change below reaches all members' phones.
 7. 24 hours after posting, stories are gone from the list (also after restarting).
 8. Stories from someone whose chat is an unanswered message request, or whom you blocked, don't
    show (watching would tell them you're active). Accept the request: their stories appear.
+
+## 4. Review fixes (October 2026)
+
+What the third code review changed; each is a manual check because it needs the servers, the
+phone or a second person.
+
+1. Edit a message you sent **with a photo** (↑, change the caption): the photo stays, here and
+   on their phone. Edit a message with a link preview so the link is gone: the card goes too.
+2. Receive a file called e.g. `test.exe` or `test.sh`: **Open** refuses with a message saying
+   to save it instead; **Save** still works.
+3. Freshly linked, with the phone's storage key arriving late (phone offline while linking,
+   then online): within five minutes message requests are told apart from accepted chats
+   (Settings from the phone are read; see 1.10).
+4. A message request's notification: typing a reply in the notification popup does nothing
+   (it would accept the request). Accept it in langis, then replying from a notification works.
+5. Block someone, then have them write to you from a fresh install (an undecryptable
+   message): nothing shows in their chat, and the log has no "reset the session" for them.
+6. In a group, have a member change the timer or remove someone: the notice shows (their
+   change is signed by the server). No notice ever appears for a change that didn't happen.
+

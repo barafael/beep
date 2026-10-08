@@ -51,15 +51,26 @@ fn clamp_plaintext(rust_log: &str) -> String {
         if directive.starts_with('/') {
             continue;
         }
-        let Some((target, level)) = directive.split_once('=') else {
-            // A bare level such as `debug` applies to everything, but the caps are per-crate, so
-            // they are the more specific match and win on their own.
-            kept.push(directive.to_string());
-            continue;
+        // The level follows the last `=`, which comes after any span filter: a field
+        // comparison such as `target[span{peer=x}]` has an `=` of its own.
+        let after_span = directive.rfind(']').map_or(0, |i| i + 1);
+        let level_at = directive[after_span..].find('=').map(|i| after_span + i);
+        let (target, below_info) = match level_at {
+            Some(at) => (
+                &directive[..at],
+                directive[at + 1..]
+                    .parse::<LevelFilter>()
+                    .is_ok_and(|level| level > LevelFilter::INFO),
+            ),
+            // A bare level such as `debug` applies to everything, but the caps are per-crate,
+            // so they are the more specific match and win on their own.
+            None if directive.parse::<LevelFilter>().is_ok() => {
+                kept.push(directive.to_string());
+                continue;
+            }
+            // Anything else without a level is a target, enabled at `trace`.
+            None => (directive, true),
         };
-        let below_info = level
-            .parse::<LevelFilter>()
-            .is_ok_and(|level| level > LevelFilter::INFO);
         // `target[span{field}]=level` is valid too; compare the module path on its own.
         let module = target.split_once('[').map_or(target, |(module, _)| module);
         let plaintext = PLAINTEXT_TARGETS
@@ -137,6 +148,13 @@ mod tests {
             "trace",
             "presage=debug",
             "presage::manager::registered=trace",
+            // A target without a level means `trace`.
+            "presage",
+            "presage::manager::registered",
+            "presage::manager::registered[receive]",
+            "presage::manager::registered[receive{peer=x}]",
+            "presage::manager::registered[receive{peer=x}]=trace",
+            "info,presage::manager::registered",
             // Regex directives match anything, so they are dropped outright.
             "/registered/=trace",
             "/^presage.*/=debug",
@@ -184,6 +202,7 @@ mod tests {
         let debug = || tracing::debug!(target: "langis_core::signal", answer = 42, "a hint");
         assert!(logged("debug", debug).contains("42"));
         assert!(logged("langis_core=debug", debug).contains("42"));
+        assert!(logged("langis_core::signal", debug).contains("42"));
         // Nothing is logged at debug when `RUST_LOG` is unset.
         assert!(!logged("", debug).contains("42"));
     }

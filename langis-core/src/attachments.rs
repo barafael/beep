@@ -301,24 +301,82 @@ pub(crate) async fn upload(
         .collect()
 }
 
-/// Where opened attachments are put for the default app to read: private to the user, and on
-/// Linux in the per-session runtime directory, which is memory-backed and cleared at logout.
-fn open_dir() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) => PathBuf::from(dir).join("langis"),
-        None => std::env::temp_dir().join(format!("langis-{}", whoami())),
-    }
-}
+/// Where opened attachments are put for the default app to read; see [`crate::scratch`].
+const OPENED: &str = "langis-opened";
 
-fn whoami() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "user".into())
-}
-
-/// Removes attachments opened in an earlier run; by now their apps have read them.
+/// Removes opened attachments: an earlier run's at the start (by now their apps have read
+/// them), this run's at the end.
 pub(crate) fn clean_opened() {
-    let _ = std::fs::remove_dir_all(open_dir());
+    crate::scratch::clean(OPENED);
+}
+
+/// File types the desktop would run rather than show, by extension: Signal Desktop's list,
+/// plus what Linux desktops and shells run. The sender names the file, so "Open" on one of
+/// these would run a program of the sender's choosing; they can still be saved, and run on
+/// purpose from there.
+#[rustfmt::skip]
+const DANGEROUS_EXTENSIONS: &[&str] = &[
+    "ade",
+    "adp",
+    "apk",
+    "appimage",
+    "application",
+    "appref-ms",
+    "bat",
+    "cab",
+    "chm",
+    "cmd",
+    "com",
+    "cpl",
+    "desktop",
+    "diagcab",
+    "dll",
+    "dmg",
+    "exe",
+    "hta",
+    "ins",
+    "isp",
+    "jar",
+    "js",
+    "jse",
+    "lib",
+    "lnk",
+    "mde",
+    "msc",
+    "msi",
+    "msix",
+    "msixbundle",
+    "msp",
+    "mst",
+    "nsh",
+    "pif",
+    "ps1",
+    "psm1",
+    "py",
+    "pyw",
+    "reg",
+    "run",
+    "scr",
+    "sct",
+    "sh",
+    "shb",
+    "sys",
+    "url",
+    "vb",
+    "vbe",
+    "vbs",
+    "vxd",
+    "wsc",
+    "wsf",
+    "wsh",
+];
+
+/// Whether opening a file called `name` with the desktop's default app could run it.
+pub(crate) fn is_dangerous(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| DANGEROUS_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// Downloads an attachment and opens it with the desktop's default app. Errors are reported
@@ -330,15 +388,23 @@ pub(crate) async fn open(
     limit: Rc<Semaphore>,
 ) {
     let opened = async {
+        let name = safe_name(&attachment);
+        if is_dangerous(&name) {
+            return Err(format!(
+                "{name} is a kind of file the desktop would run rather than show, so it isn't \
+                 opened from here. Save it if you trust the sender, and open it from there."
+            ));
+        }
         let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
         let data = download(servers, &attachment).await?;
         // One directory per attachment, so two files with the same name don't collide.
-        let dir = open_dir().join(hex::encode(
-            &Sha256::digest(attachment.id.0.as_bytes())[..8],
-        ));
-        crate::vault::restrict_dir(&open_dir()).map_err(|e| e.to_string())?;
+        let dir = crate::scratch::dir(OPENED)
+            .map_err(|e| format!("couldn't make a private directory: {e}"))?
+            .join(hex::encode(
+                &Sha256::digest(attachment.id.0.as_bytes())[..8],
+            ));
         crate::vault::restrict_dir(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(safe_name(&attachment));
+        let path = dir.join(name);
         crate::vault::write_private(&path, &data)
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
@@ -388,9 +454,8 @@ pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
     reader.decode().ok()
 }
 
-/// A file name in the downloads folder that isn't taken yet: the sender's name for the file
-/// if it is safe, otherwise one made up from the type.
-/// The sender's name for the file if it is safe to use (no directories, not hidden),
+/// The sender's name for the file if it is safe to use (no directories, not hidden, and
+/// nothing Windows would quietly drop from the end, which could hide the real extension),
 /// otherwise one made up from the type.
 fn safe_name(attachment: &Attachment) -> String {
     attachment
@@ -398,7 +463,8 @@ fn safe_name(attachment: &Attachment) -> String {
         .as_deref()
         .and_then(|name| std::path::Path::new(name).file_name())
         .and_then(|name| name.to_str())
-        .filter(|name| !name.starts_with('.'))
+        .map(|name| name.trim_end_matches(['.', ' ']))
+        .filter(|name| !name.is_empty() && !name.starts_with('.'))
         .map(str::to_owned)
         .unwrap_or_else(|| format!("signal-attachment.{}", extension(&attachment.content_type)))
 }
@@ -487,6 +553,37 @@ mod tests {
             AttachmentPointer::decode(&*attachment.pointer).unwrap(),
             pointer("image/png", 0)
         );
+    }
+
+    #[test]
+    fn programs_are_not_opened() {
+        for name in [
+            "invoice.exe",
+            "setup.EXE",
+            "run.desktop",
+            "x.sh",
+            "notes.js",
+            "a.lnk",
+        ] {
+            assert!(is_dangerous(name), "{name}");
+        }
+        for name in [
+            "invoice.pdf",
+            "photo.jpg",
+            "exe",
+            "notes.txt",
+            "archive.tar.gz",
+        ] {
+            assert!(!is_dangerous(name), "{name}");
+        }
+        // Windows drops trailing dots and spaces, so these would end up as programs.
+        let named = |name: &str| Attachment {
+            file_name: Some(name.into()),
+            ..describe(&pointer("application/octet-stream", 0), false)
+        };
+        assert_eq!(safe_name(&named("invoice.exe.")), "invoice.exe");
+        assert_eq!(safe_name(&named("invoice.exe ")), "invoice.exe");
+        assert_eq!(safe_name(&named("...")), "signal-attachment.bin");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! and picture, as its `og:` meta tags (or its `<title>`) give them. The page is fetched
 //! directly, so the site learns the user's address; that is why it is off by default.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 /// What a page says about itself.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -18,17 +18,24 @@ const MAX_PAGE: usize = 512 * 1024;
 /// Larger pictures are left out.
 pub(crate) const MAX_IMAGE: usize = 2 * 1024 * 1024;
 
+/// The one client for all fetches: building one sets up TLS and a connection pool, which is
+/// worth keeping; a `reqwest::Client` is made to be shared.
 fn client() -> Option<reqwest::Client> {
-    // As libsignal-service does, unless something installed one already.
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("Mozilla/5.0 (compatible; langis link preview)")
-        .build()
-        .ok()
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            // As libsignal-service does, unless something installed one already.
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+            }
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .user_agent("Mozilla/5.0 (compatible; langis link preview)")
+                .build()
+                .ok()
+        })
+        .clone()
 }
 
 /// Fetches what `url` (https only) says about itself; `None` if it can't be had or says

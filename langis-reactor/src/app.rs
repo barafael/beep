@@ -99,6 +99,14 @@ impl Component for Langis {
             }
             Message::DismissError => self.chat.dismiss_error(),
         }
+        // What followed from the state's own changes (read receipts and the like), which it
+        // queues rather than returns: selecting a chat marks it read, for one.
+        for command in self.chat.take_commands() {
+            self.backend.send(command);
+        }
+        // No notifier on this frontend yet; taken so they don't pile up for the life of the
+        // process.
+        drop(self.chat.take_notices());
     }
 
     fn view(&self, _input: &(), context: &mut ViewContext<Self>) -> View {
