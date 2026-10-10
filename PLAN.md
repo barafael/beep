@@ -45,7 +45,8 @@ so what b33p runs is exactly what is proposed. Nothing waits on a merge.
 - presage: #442 history-transfer key on `RegistrationData`, #447 wait for the history archive
   (stacked on #442), #443 paged thread reads, #444 storage service from a linked device,
   #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
-  and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile).
+  and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile),
+  #449 report only real identity changes, and note them.
 
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
@@ -55,9 +56,13 @@ PR lands. A CI job (build, test, clippy) later.
 
 By how much they matter, most first:
 
-- **Safety numbers:** a notice when a contact's safety number changes, and marking it
-  verified. Needs the presage fork to report identity changes. This is about trust, so it
-  comes first.
+- **Safety numbers:** a notice when a contact's safety number changes is done (presage#449
+  makes the store report real changes and note them; langis shows the note as a centred line,
+  without notification, unread count or receipt). Left: marking it verified (and sending that
+  to our other devices; reading what the phone set), and resetting it on a change. Known limits
+  of the notice: it is timed when the change was noticed, so after a long time offline it can
+  sort below the first message with the new key; it shows in the 1:1 chat only, not in shared
+  groups. This is about trust, so it comes first.
 - **Groups:** accepting an invitation here (now done on the phone); adding people known only
   by phone number (invite them by PNI); retrying a change that clashed with someone else's;
   the group picture; invite links and join requests.

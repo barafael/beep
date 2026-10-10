@@ -117,6 +117,9 @@ export struct MessageItem {
     delivery: int,
     edited: bool,
     deleted: bool,
+    // A line about the conversation that nobody wrote (e.g. a new safety number): drawn as
+    // centred text, with nothing to reply, react to or delete.
+    notice: bool,
     // Time left until it disappears, e.g. "5m"; empty if it doesn't.
     expires: string,
     // Ours and recent enough to edit or delete for everyone.
@@ -824,7 +827,24 @@ component Bubble inherits Rectangle {
                 }
             }
 
-            HorizontalLayout {
+            if item.notice: HorizontalLayout {
+                alignment: center;
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+                Text {
+                    text: item.text;
+                    accessible-role: text;
+                    accessible-label: item.text;
+                    max-width: root.max-bubble-width;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    font-size: 0.8rem;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+            }
+            if !item.notice: HorizontalLayout {
                 alignment: item.outgoing ? end : start;
                 padding-left: 12px;
                 padding-right: 12px;
@@ -1073,11 +1093,11 @@ component Bubble inherits Rectangle {
     // On top: it takes only right clicks.
     ContextMenuArea {
         Menu {
-            if !item.deleted: MenuItem {
+            if !item.deleted && !item.notice: MenuItem {
                 title: "Reply";
                 activated => { root.reply(); }
             }
-            if !item.deleted: MenuItem {
+            if !item.deleted && !item.notice: MenuItem {
                 title: "React…";
                 activated => { picker.show(); }
             }
@@ -1093,8 +1113,8 @@ component Bubble inherits Rectangle {
                 title: "Edit";
                 activated => { root.edit(); }
             }
-            if !item.deleted: MenuSeparator {}
-            MenuItem {
+            if !item.deleted && !item.notice: MenuSeparator {}
+            if !item.notice: MenuItem {
                 title: "Delete for me";
                 activated => { root.delete(false); }
             }

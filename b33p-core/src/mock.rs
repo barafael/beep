@@ -683,6 +683,17 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
             },
+            // She set up a new phone; what follows came with her new safety number.
+            ChatMessage {
+                notice: true,
+                ..message(
+                    "alice",
+                    "Alice",
+                    "Your safety number with Alice has changed.",
+                    ago(31),
+                    false,
+                )
+            },
             ChatMessage {
                 attachments: vec![attachment(
                     "photo",

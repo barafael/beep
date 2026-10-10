@@ -568,7 +568,8 @@ impl ChatState {
                 }
                 let looking =
                     self.selected.as_ref() == Some(&id) && self.notifications.window_focused;
-                if !outgoing {
+                let notice = history[pos].notice;
+                if !outgoing && !notice {
                     let message = &history[pos];
                     // A photo or sticker alone says what it is.
                     let body = match (message.body.is_empty(), message.attachments.first()) {
@@ -587,7 +588,7 @@ impl ChatState {
                 }
                 if looking {
                     self.mark_seen();
-                } else if !outgoing {
+                } else if !outgoing && !notice {
                     *self.unread.entry(id).or_default() += 1;
                 }
                 self.sort_conversations();
@@ -1665,6 +1666,7 @@ impl ChatState {
     pub fn can_forward(message: &ChatMessage) -> bool {
         !message.deleted
             && message.unsent.is_none()
+            && !message.notice
             && message.timer_change.is_none()
             && !message
                 .attachments
@@ -1841,7 +1843,7 @@ impl ChatState {
         let Some(message) = self.messages().nth(index).map(|v| v.message) else {
             return (None, Update::default());
         };
-        if for_everyone && !self.can_edit(message) {
+        if message.notice || for_everyone && !self.can_edit(message) {
             return (None, Update::default());
         }
         let target = message.reference();
@@ -2093,7 +2095,7 @@ impl ChatState {
         }
         let conversation = conversation.id.clone();
         let message = self.messages().nth(index)?.message;
-        if message.unsent.is_some() {
+        if message.unsent.is_some() || message.notice {
             return None;
         }
         let ours = message.reactions.iter().find(|r| r.outgoing);
@@ -2110,7 +2112,7 @@ impl ChatState {
         let quote = self
             .messages()
             .nth(index)
-            .filter(|view| view.message.unsent.is_none())
+            .filter(|view| view.message.unsent.is_none() && !view.message.notice)
             .map(|view| Quote {
                 author: view.message.sender.clone(),
                 text: view.body.lines().next().unwrap_or_default().to_owned(),
@@ -2374,7 +2376,9 @@ impl ChatState {
             history.iter().position(|m| std::ptr::eq(m, first))
         });
         let same_run = |a: &ChatMessage, b: &ChatMessage| {
-            a.sender_id == b.sender_id
+            !a.notice
+                && !b.notice
+                && a.sender_id == b.sender_id
                 && b.timestamp.saturating_sub(a.timestamp) <= RUN_GAP_MS
                 && local_date(a.timestamp) == local_date(b.timestamp)
         };
@@ -2577,7 +2581,7 @@ fn mentions_in(body: &str, people: &[Person]) -> Vec<Mention> {
 fn unread_after(history: &[ChatMessage], last_read: u64) -> impl Iterator<Item = &ChatMessage> {
     history
         .iter()
-        .filter(move |m| !m.outgoing && m.timestamp > last_read)
+        .filter(move |m| !m.outgoing && !m.notice && m.timestamp > last_read)
 }
 
 /// Inserts in order, or replaces the message if it is already there; returns whether it was
@@ -3679,6 +3683,44 @@ mod tests {
             .conversations()
             .map(|c| c.conversation.id.0.clone())
             .collect()
+    }
+
+    /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
+    /// not unread, and no read receipt for it.
+    #[test]
+    fn notices_are_shown_and_nothing_more() {
+        let notice = |timestamp| ChatMessage {
+            notice: true,
+            ..message("a", "Ann", timestamp, false)
+        };
+        let mut state = notifying();
+        state.apply(Event::Message(notice(10)));
+        assert!(shown(&state.take_notices()).is_empty(), "no notification");
+        assert_eq!(state.unread_total(), 0, "not unread");
+
+        state.apply(Event::Message(message("a", "Ann", 20, false)));
+        state.take_notices();
+        assert_eq!(state.unread_total(), 1, "only the real message");
+        state.set_window_focused(true);
+        state.select(&id("a"));
+        assert!(
+            matches!(
+                &state.take_commands()[..],
+                [Command::MarkRead { messages, .. }]
+                    if messages.len() == 1 && messages[0].timestamp == 20
+            ),
+            "a receipt for the message only"
+        );
+
+        // Nothing to answer, react to, forward or delete; and it stands apart from Ann's run.
+        let at = state.messages().position(|v| v.message.notice).unwrap();
+        state.reply_to(at);
+        assert!(state.replying().is_none(), "no reply");
+        assert!(state.react(at, "👍").is_none(), "no reaction");
+        assert!(!state.start_forward(at), "no forwarding");
+        assert!(state.delete(at, false).0.is_none(), "no deleting");
+        let view = state.messages().nth(at).unwrap();
+        assert!(view.first_of_run && view.last_of_run, "a run of its own");
     }
 
     #[test]
