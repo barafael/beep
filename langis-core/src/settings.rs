@@ -20,30 +20,16 @@ pub enum WidgetStyle {
     Native,
     /// Qt's Fusion style: the native widgets, but the same on every desktop.
     Fusion,
-    Fluent,
-    Material,
-    Cupertino,
-    Cosmic,
 }
 
 impl WidgetStyle {
-    pub const ALL: [Self; 6] = [
-        Self::Native,
-        Self::Fusion,
-        Self::Fluent,
-        Self::Material,
-        Self::Cupertino,
-        Self::Cosmic,
-    ];
+    pub const ALL: [Self; 2] = [Self::Native, Self::Fusion];
 
+    /// Styles langis no longer has ("fluent", …) aren't keys, so they read as the default.
     fn key(self) -> &'static str {
         match self {
             Self::Native => "native",
             Self::Fusion => "fusion",
-            Self::Fluent => "fluent",
-            Self::Material => "material",
-            Self::Cupertino => "cupertino",
-            Self::Cosmic => "cosmic",
         }
     }
 }
@@ -254,7 +240,10 @@ mod tests {
     #[test]
     fn ignores_what_it_does_not_know() {
         let settings =
-            Settings::parse("theme = sepia\nfuture_option = 3\ngarbage\ntext_size=small\n");
+            // `style = fluent`: a style earlier versions had.
+            Settings::parse(
+                "theme = sepia\nfuture_option = 3\ngarbage\nstyle = fluent\ntext_size=small\n",
+            );
         assert_eq!(
             settings,
             Settings {

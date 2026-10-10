@@ -1,5 +1,5 @@
 [workspace]
-members = ["langis-core", "langis-notify", "langis-slint", "langis-reactor"]
+members = ["langis-core", "langis-notify", "langis-slint"]
 resolver = "3"
 
 [workspace.package]

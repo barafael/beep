@@ -517,6 +517,7 @@ pub fn run(commands: Inbox, events: Events) {
             }
             Ok(Command::Send {
                 conversation,
+                timestamp,
                 body,
                 quote,
                 files,
@@ -536,8 +537,18 @@ pub fn run(commands: Inbox, events: Events) {
                         )
                     })
                     .collect();
+                // Sending takes a moment, and `/fail` fails, to see both in the UI.
+                std::thread::sleep(Duration::from_millis(1200));
+                if body == "/fail" {
+                    let _ = events.send(Event::SendFailed {
+                        conversation,
+                        timestamp,
+                    });
+                    let _ = events.send(Event::Error("failed to send: mock failure".into()));
+                    continue;
+                }
                 let echo = format!("You said: {body}");
-                let sent = now_millis();
+                let sent = timestamp;
                 let _ = events.send(Event::Message(ChatMessage {
                     quote,
                     attachments,

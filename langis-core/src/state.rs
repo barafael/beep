@@ -12,7 +12,7 @@ use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Details, Event, HistoryTransfer, Mention, MessageRef,
-    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange,
+    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange, Unsent,
     apply_reaction, format, now_millis,
 };
 
@@ -48,6 +48,8 @@ pub struct Update {
     /// Messages already shown changed in place (an attachment downloaded, a reaction came
     /// in); their rows need redrawing.
     pub rows: bool,
+    /// The user sent a message: show the end of the open chat, wherever it was scrolled to.
+    pub scroll_to_end: bool,
 }
 
 impl Update {
@@ -68,6 +70,7 @@ impl Update {
             conversations: self.conversations || other.conversations,
             messages: self.messages.merge(other.messages),
             rows: self.rows || other.rows,
+            scroll_to_end: self.scroll_to_end || other.scroll_to_end,
         }
     }
 }
@@ -505,6 +508,44 @@ impl ChatState {
                     }
                 }
             }
+            Event::Message(message)
+                if message.outgoing
+                    && message.unsent.is_none()
+                    && self.history.get(&message.conversation).is_some_and(|history| {
+                        history.iter().any(|m| is_unsent_at(m, message.timestamp))
+                    }) =>
+            {
+                // Sent: it takes the place of the message shown while sending.
+                let id = message.conversation.clone();
+                let history = self.history.get_mut(&id).expect("checked above");
+                let shown = history
+                    .iter()
+                    .rposition(|m| is_unsent_at(m, message.timestamp))
+                    .expect("checked above");
+                history.remove(shown);
+                let pos = insert(history, message);
+                if self.selected.as_ref() == Some(&id) {
+                    if pos == Some(shown) {
+                        update.rows = true;
+                    } else {
+                        update.messages = MessagesUpdate::Reset;
+                    }
+                }
+                update.conversations = true;
+            }
+            Event::SendFailed {
+                conversation,
+                timestamp,
+            } => {
+                if let Some(message) = self
+                    .history
+                    .get_mut(&conversation)
+                    .and_then(|history| history.iter_mut().rfind(|m| is_unsent_at(m, timestamp)))
+                {
+                    message.unsent = Some(Unsent::Failed);
+                    update.rows = self.selected.as_ref() == Some(&conversation);
+                }
+            }
             Event::Message(message) => {
                 let id = message.conversation.clone();
                 let outgoing = message.outgoing;
@@ -893,10 +934,10 @@ impl ChatState {
     /// Counts as reading it. Under the same conditions as the composer: not while catching
     /// up, nor to blocked chats, left groups or unanswered requests (writing would accept
     /// one, and hand the stranger our profile).
-    pub fn reply(&mut self, id: &ConversationId, text: &str) -> Option<Command> {
+    pub fn reply(&mut self, id: &ConversationId, text: &str) -> (Option<Command>, Update) {
         let body = text.trim();
         if body.is_empty() || !self.conversation(id).is_some_and(|c| self.can_write_to(c)) {
-            return None;
+            return (None, Update::default());
         }
         if let Some(command) = self.mark_read(id.clone()) {
             self.queued.push(command);
@@ -905,14 +946,17 @@ impl ChatState {
             .pending
             .push(Notice::Withdraw(id.clone()));
         let (body, styles) = format::parse(body);
-        Some(Command::Send {
+        let command = Command::Send {
             files: Vec::new(),
             conversation: id.clone(),
+            timestamp: now_millis(),
             body,
             quote: None,
             styles,
             mentions: Vec::new(),
-        })
+        };
+        let update = self.show_sending(&command);
+        (Some(command), update)
     }
 
     pub fn set_notifications(&mut self, enabled: bool, content: NotificationContent) {
@@ -1077,33 +1121,80 @@ impl ChatState {
         Update::reset()
     }
 
-    /// Turns composer text into a send command for the selected conversation.
-    /// Sends `text` to the selected conversation, as a reply if one is being written.
-    pub fn compose(&mut self, text: &str) -> Option<Command> {
+    /// Sends `text` to the selected conversation, as a reply if one is being written, or
+    /// saves it as the edit being written. A new message shows right away, as sending, until
+    /// the sent one replaces it ([`Event::Message`]) or sending fails ([`Event::SendFailed`]).
+    pub fn compose(&mut self, text: &str) -> (Option<Command>, Update) {
         if !self.can_compose(text) {
-            return None;
+            return (None, Update::default());
         }
-        let conversation = self.selected.clone()?;
+        let Some(conversation) = self.selected.clone() else {
+            return (None, Update::default());
+        };
         self.typing_sent = None;
         let (body, styles) = format::parse(text.trim());
         let mentions = mentions_in(&body, &std::mem::take(&mut self.draft_mentions));
         if let Some(target) = self.editing.take() {
-            return Some(Command::Edit {
+            let command = Command::Edit {
                 conversation,
                 target,
                 body,
                 styles,
                 mentions,
-            });
+            };
+            return (Some(command), Update::default());
         }
-        Some(Command::Send {
+        let command = Command::Send {
             conversation,
+            timestamp: now_millis(),
             body,
             quote: self.replying.take(),
             files: std::mem::take(&mut self.staged),
             styles,
             mentions,
-        })
+        };
+        let mut update = self.show_sending(&command);
+        update.scroll_to_end = true;
+        (Some(command), update)
+    }
+
+    /// Shows the message `send` sends, as sending, until it is sent or fails.
+    fn show_sending(&mut self, send: &Command) -> Update {
+        let Command::Send {
+            conversation,
+            timestamp,
+            body,
+            quote,
+            files,
+            styles,
+            ..
+        } = send
+        else {
+            return Update::default();
+        };
+        // The files go up first, which takes a while: until then, their names stand in.
+        let mut shown = body.clone();
+        for file in files {
+            let name = file.file_name().map_or_else(
+                || file.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            if !shown.is_empty() {
+                shown.push('\n');
+            }
+            shown.push_str(&format!("📎 {name}"));
+        }
+        self.apply(Event::Message(ChatMessage {
+            conversation: conversation.clone(),
+            sender: "You".into(),
+            body: shown,
+            timestamp: *timestamp,
+            outgoing: true,
+            quote: quote.clone(),
+            styles: styles.clone(),
+            unsent: Some(Unsent::Sending),
+            ..Default::default()
+        }))
     }
 
     /// A chat from someone the user hasn't accepted (here, on the phone, or by writing to
@@ -1570,6 +1661,7 @@ impl ChatState {
     /// Whether a message can be forwarded: not deleted, not view-once.
     pub fn can_forward(message: &ChatMessage) -> bool {
         !message.deleted
+            && message.unsent.is_none()
             && message.timer_change.is_none()
             && !message
                 .attachments
@@ -1724,6 +1816,7 @@ impl ChatState {
     pub fn can_edit(&self, message: &ChatMessage) -> bool {
         message.outgoing
             && !message.deleted
+            && message.unsent.is_none()
             && now_millis().saturating_sub(message.timestamp) < DELETE_FOR_EVERYONE_MS
     }
 
@@ -1750,6 +1843,14 @@ impl ChatState {
         }
         let target = message.reference();
         let conversation = message.conversation.clone();
+        if message.unsent.is_some() {
+            // Never went out (or is still going): nothing to tell anyone. A send still under
+            // way finishes regardless, and the sent message shows up.
+            let timestamp = message.timestamp;
+            let history = self.history.get_mut(&conversation).expect("shown");
+            history.retain(|m| !is_unsent_at(m, timestamp));
+            return (None, Update::reset());
+        }
         if self.editing.as_ref() == Some(&target) {
             self.editing = None;
         }
@@ -1989,6 +2090,9 @@ impl ChatState {
         }
         let conversation = conversation.id.clone();
         let message = self.messages().nth(index)?.message;
+        if message.unsent.is_some() {
+            return None;
+        }
         let ours = message.reactions.iter().find(|r| r.outgoing);
         Some(Command::React {
             conversation,
@@ -2000,7 +2104,11 @@ impl ChatState {
 
     /// Starts a reply to the `index`th message of [`ChatState::messages`].
     pub fn reply_to(&mut self, index: usize) -> Update {
-        let quote = self.messages().nth(index).map(|view| Quote {
+        let quote = self
+            .messages()
+            .nth(index)
+            .filter(|view| view.message.unsent.is_none())
+            .map(|view| Quote {
             author: view.message.sender.clone(),
             text: view.body.lines().next().unwrap_or_default().to_owned(),
             author_id: view.message.sender_id.clone(),
@@ -2424,6 +2532,11 @@ fn tombstone(message: &mut ChatMessage) {
 }
 
 /// Signal identifies a message by its author and sent timestamp.
+/// Whether `message` is one of ours shown before it went out, sent at `timestamp`.
+fn is_unsent_at(message: &ChatMessage, timestamp: u64) -> bool {
+    message.unsent.is_some() && message.timestamp == timestamp
+}
+
 fn message_key(message: &ChatMessage) -> (u64, &str) {
     (message.timestamp, &message.sender_id)
 }
@@ -2744,7 +2857,7 @@ mod tests {
         let a = ConversationId("a".into());
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         state.take_notices();
-        let reply = state.reply(&a, " thanks ");
+        let reply = state.reply(&a, " thanks ").0;
         assert!(
             matches!(reply, Some(Command::Send { conversation, body, quote: None, .. }) if conversation == a && body == "thanks")
         );
@@ -2757,8 +2870,8 @@ mod tests {
                 .unread,
             0
         );
-        assert!(state.reply(&a, "  ").is_none());
-        assert!(state.reply(&ConversationId("nope".into()), "hi").is_none());
+        assert!(state.reply(&a, "  ").0.is_none());
+        assert!(state.reply(&ConversationId("nope".into()), "hi").0.is_none());
         state.select(&a);
         assert_eq!(state.take_notices(), [Notice::Withdraw(a)]);
     }
@@ -2773,7 +2886,7 @@ mod tests {
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         // An unanswered request, once the phone's settings are known.
         state.apply(Event::StorageRead);
-        assert!(state.reply(&a, "hi").is_none());
+        assert!(state.reply(&a, "hi").0.is_none());
         state.apply(Event::Settings {
             conversation: a.clone(),
             settings: ChatSettings {
@@ -2781,7 +2894,7 @@ mod tests {
                 ..ChatSettings::default()
             },
         });
-        assert!(state.reply(&a, "hi").is_some());
+        assert!(state.reply(&a, "hi").0.is_some());
         state.apply(Event::Settings {
             conversation: a.clone(),
             settings: ChatSettings {
@@ -2790,14 +2903,14 @@ mod tests {
                 ..ChatSettings::default()
             },
         });
-        assert!(state.reply(&a, "hi").is_none());
+        assert!(state.reply(&a, "hi").0.is_none());
         // Reconnecting: nothing goes out until caught up again.
         let mut state = notifying();
         state.apply(Event::Message(message("a", "Alice", 1, false)));
         state.apply(Event::Reconnecting);
-        assert!(state.reply(&a, "hi").is_none());
+        assert!(state.reply(&a, "hi").0.is_none());
         state.apply(Event::Synced);
-        assert!(state.reply(&a, "hi").is_some());
+        assert!(state.reply(&a, "hi").0.is_some());
         // A group we left.
         let mut state = notifying();
         let g = ConversationId("g".into());
@@ -2805,7 +2918,7 @@ mod tests {
             left: true,
             ..conversation("g", true)
         }]));
-        assert!(state.reply(&g, "hi").is_none());
+        assert!(state.reply(&g, "hi").0.is_none());
         state.select(&g);
         assert!(state.react(0, "👍").is_none());
     }
@@ -3091,7 +3204,7 @@ mod tests {
             ),
             ("Alice", "alice", 7)
         );
-        let sent = state.compose("sure");
+        let sent = state.compose("sure").0;
         assert!(matches!(sent, Some(Command::Send { quote: Some(q), .. }) if q == quote));
         assert!(state.replying().is_none(), "sending uses it up");
 
@@ -3224,7 +3337,7 @@ mod tests {
         state.stage_files(["/tmp/a.pdf".into(), "/tmp/b.png".into()]);
         state.unstage(0);
         assert!(state.can_compose(""), "files alone can be sent");
-        let sent = state.compose("");
+        let sent = state.compose("").0;
         assert!(
             matches!(sent, Some(Command::Send { files, .. }) if files == [std::path::PathBuf::from("/tmp/b.png")])
         );
@@ -3412,10 +3525,90 @@ mod tests {
     #[test]
     fn compose_requires_selection_sync_and_text() {
         let mut state = state();
-        assert!(state.compose("hi").is_none());
+        assert!(state.compose("hi").0.is_none());
         state.select(&ConversationId("a".into()));
-        assert!(state.compose("   ").is_none());
-        assert!(matches!(state.compose(" hi "), Some(Command::Send { body, .. }) if body == "hi"));
+        assert!(state.compose("   ").0.is_none());
+        assert!(matches!(state.compose(" hi ").0, Some(Command::Send { body, .. }) if body == "hi"));
+    }
+
+    /// The timestamp `command` sends with; panics for anything but a send.
+    fn sent_at(command: Option<Command>) -> u64 {
+        match command {
+            Some(Command::Send { timestamp, .. }) => timestamp,
+            other => panic!("not a send: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_message_shows_while_sending_and_the_sent_one_takes_its_place() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Alice", 7, false)));
+        state.select(&ConversationId("a".into()));
+        let (command, update) = state.compose("hi");
+        let timestamp = sent_at(command);
+        assert_eq!(update.messages, MessagesUpdate::Appended(1));
+        assert!(update.scroll_to_end, "sending shows the end of the chat");
+        let shown = &state.last_messages(1).next().unwrap().message;
+        assert_eq!(
+            (shown.body.as_str(), shown.unsent),
+            ("hi", Some(Unsent::Sending))
+        );
+
+        let update = state.apply(Event::Message(ChatMessage {
+            body: "hi".into(),
+            ..message("a", "Me", timestamp, true)
+        }));
+        assert!(update.rows, "redrawn in place");
+        assert_eq!(update.messages, MessagesUpdate::Unchanged);
+        let bodies: Vec<_> = state.messages().map(|m| m.message.unsent).collect();
+        assert_eq!(bodies, [None, None], "replaced, not added");
+        assert_eq!(state.last_messages(1).next().unwrap().message.sender_id, "me");
+    }
+
+    #[test]
+    fn a_failed_send_stays_shown_as_failed() {
+        let mut state = state();
+        state.select(&ConversationId("a".into()));
+        let timestamp = sent_at(state.compose("hi").0);
+        let update = state.apply(Event::SendFailed {
+            conversation: ConversationId("a".into()),
+            timestamp,
+        });
+        assert!(update.rows);
+        let shown = state.last_messages(1).next().unwrap().message.clone();
+        assert_eq!(shown.unsent, Some(Unsent::Failed));
+
+        // Nothing points at a message that never went out; deleting it only removes it here.
+        assert!(state.react(0, "👍").is_none());
+        state.reply_to(0);
+        assert!(state.replying().is_none());
+        assert!(!state.can_edit(&shown));
+        assert!(!ChatState::can_forward(&shown));
+        let (command, _) = state.delete(0, false);
+        assert!(command.is_none());
+        assert_eq!(state.messages().count(), 0);
+    }
+
+    #[test]
+    fn files_show_by_name_until_sent() {
+        let mut state = state();
+        state.select(&ConversationId("a".into()));
+        state.stage_files(vec![std::path::PathBuf::from("/tmp/b.png")]);
+        state.compose("look");
+        let shown = &state.last_messages(1).next().unwrap().message;
+        assert_eq!(shown.body, "look\n📎 b.png");
+    }
+
+    #[test]
+    fn a_reply_from_a_notification_shows_while_sending() {
+        let mut state = state();
+        let a = ConversationId("a".into());
+        state.select(&a);
+        let (command, update) = state.reply(&a, "thanks");
+        sent_at(command);
+        assert_eq!(update.messages, MessagesUpdate::Appended(1));
+        let shown = &state.last_messages(1).next().unwrap().message;
+        assert_eq!(shown.unsent, Some(Unsent::Sending));
     }
 
     #[test]
@@ -3693,7 +3886,7 @@ mod tests {
         let mut state = state();
         state.select(&id("a"));
         assert!(matches!(
-            state.compose("*hi* there"),
+            state.compose("*hi* there").0,
             Some(Command::Send { body, styles, .. }) if body == "hi there" && styles.len() == 1
         ));
         state.apply(Event::Message(ChatMessage {
@@ -3706,11 +3899,11 @@ mod tests {
         assert_eq!(state.edit(theirs), None);
         assert!(state.edit(ours).is_some());
         assert!(matches!(
-            state.compose("fixed"),
+            state.compose("fixed").0,
             Some(Command::Edit { body, .. }) if body == "fixed"
         ));
         // Editing ends with the edit.
-        assert!(matches!(state.compose("next"), Some(Command::Send { .. })));
+        assert!(matches!(state.compose("next").0, Some(Command::Send { .. })));
     }
 
     #[test]
@@ -3738,7 +3931,7 @@ mod tests {
         assert_eq!(names("hi @le"), ["Ann Lee"]);
         let draft = state.pick_mention("hi @le", 0).unwrap();
         assert_eq!(draft, "hi @Ann Lee ");
-        let Some(Command::Send { body, mentions, .. }) = state.compose(&format!("{draft}*look*"))
+        let Some(Command::Send { body, mentions, .. }) = state.compose(&format!("{draft}*look*")).0
         else {
             panic!("sends");
         };
@@ -3753,7 +3946,7 @@ mod tests {
         );
         // Forgotten once sent.
         assert!(
-            matches!(state.compose("@Ann Lee"), Some(Command::Send { mentions, .. }) if mentions.is_empty())
+            matches!(state.compose("@Ann Lee").0, Some(Command::Send { mentions, .. }) if mentions.is_empty())
         );
     }
 

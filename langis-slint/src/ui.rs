@@ -1,5 +1,5 @@
-// Included once per widget style by `main.rs`: the types Slint generates (`AppWindow`,
-// `MessageItem`, …) are separate per style, this code is the same for all of them.
+// Included by `main.rs` next to the UI Slint generates (`AppWindow`, `MessageItem`, …) for the
+// widget style langis ships.
 
 use std::rc::Rc;
 
@@ -11,7 +11,7 @@ use langis_core::state::{
 use langis_core::timeline::{self, Stretch};
 use langis_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
-    HistoryTransfer, now_millis,
+    HistoryTransfer, Unsent, now_millis,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -71,7 +71,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |text| {
-            if shared.act(|chat| (chat.compose(&text), Update::default()))
+            if shared.act(|chat| chat.compose(&text))
                 && let Some(window) = window.upgrade()
             {
                 window.set_draft(SharedString::new());
@@ -661,19 +661,6 @@ impl Ui for Window {
         i_slint_core::window::WindowInner::from_pub(self.0.window()).active()
     }
 
-    fn geometry(&self) -> (slint::PhysicalPosition, slint::PhysicalSize) {
-        (self.0.window().position(), self.0.window().size())
-    }
-
-    fn take_geometry(&self, (position, size): (slint::PhysicalPosition, slint::PhysicalSize)) {
-        self.0.window().set_size(size);
-        self.0.window().set_position(position);
-    }
-
-    fn open_settings(&self) {
-        self.0.set_settings_open(true);
-    }
-
     fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str) {
         let playback = self.0.global::<Playback>();
         playback.set_id(id.into());
@@ -966,8 +953,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         MessagesUpdate::Unchanged => {}
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
-                messages.push(message_item(&message, chat, images));
+                messages.push(MessageItem { fresh: true, ..message_item(&message, chat, images) });
             }
+            settle_fresh(window);
         }
         MessagesUpdate::Prepended(n) => {
             // The list keeps what is on screen in place.
@@ -1002,6 +990,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     }
 
     // After the rows are there.
+    if update.scroll_to_end {
+        window.set_scroll_to_end_serial(window.get_scroll_to_end_serial().wrapping_add(1));
+    }
     if let Some((row, count)) = chat.jump()
         && count as i32 != window.get_jump_serial()
     {
@@ -1025,6 +1016,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             conversations.set_vec(items);
         }
         window.set_selected(chat.selected_index().map_or(-1, |i| i as i32));
+        window.set_selected_id(chat.selected().map_or("", |c| c.id.0.as_str()).into());
         if !chat.searching() {
             window.set_search_text(SharedString::new());
         }
@@ -1408,11 +1400,13 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         attachments: ModelRc::new(VecModel::from(attachments)),
         reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
         text: if m.deleted { "" } else { view.body }.into(),
-        delivery: match (m.outgoing, m.delivery) {
-            (false, _) => 0,
-            (true, Delivery::Sent) => 1,
-            (true, Delivery::Delivered) => 2,
-            (true, Delivery::Read) => 3,
+        delivery: match (m.outgoing, m.unsent, m.delivery) {
+            (false, ..) => 0,
+            (true, Some(Unsent::Sending), _) => -1,
+            (true, Some(Unsent::Failed), _) => -2,
+            (true, None, Delivery::Sent) => 1,
+            (true, None, Delivery::Delivered) => 2,
+            (true, None, Delivery::Read) => 3,
         },
         edited: m.edited_at.is_some(),
         deleted: m.deleted,
@@ -1442,6 +1436,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
             })
             .unwrap_or_default(),
         highlighted: view.highlighted,
+        fresh: false,
     }
 }
 
@@ -1462,6 +1457,25 @@ fn reaction_items(reactions: &[langis_core::Reaction]) -> Vec<ReactionItem> {
 
 /// Like `==`, but comparing the nested lists by content: each item gets new models, which would
 /// never compare equal and so redraw every row with an attachment or a reaction.
+/// Once new rows had time to fade in, they are like the others: shown again (scrolled back to,
+/// or redrawn), they don't fade in again.
+fn settle_fresh(window: &AppWindow) {
+    let window = window.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(500), move || {
+        let Some(window) = window.upgrade() else {
+            return;
+        };
+        let messages = window.get_messages();
+        // The new ones are at the end.
+        for row in (0..messages.row_count()).rev() {
+            match messages.row_data(row) {
+                Some(item) if item.fresh => messages.set_row_data(row, MessageItem { fresh: false, ..item }),
+                _ => break,
+            }
+        }
+    });
+}
+
 fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
     fn same<T: PartialEq>(a: &ModelRc<T>, b: &ModelRc<T>) -> bool {
         a.row_count() == b.row_count() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
