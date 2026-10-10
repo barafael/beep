@@ -6,17 +6,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>langis</string>
+    <string>b33p</string>
     <key>CFBundleExecutable</key>
-    <string>langis</string>
+    <string>b33p</string>
     <key>CFBundleIconFile</key>
-    <string>langis</string>
+    <string>b33p</string>
     <key>CFBundleIdentifier</key>
-    <string>org.langis.Langis</string>
+    <string>io.github.barafael.B33p</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>langis</string>
+    <string>b33p</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

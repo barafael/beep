@@ -1,0 +1,13 @@
+# Install to ~/.local/share/applications/ (and b33p-slint/assets/b33p.svg as
+# ~/.local/share/icons/hicolor/scalable/apps/io.github.barafael.B33p.svg). Notifications name this
+# file in their `desktop-entry` hint, so the desktop shows b33p's name and icon and groups them.
+[Desktop Entry]
+Type=Application
+Name=b33p
+Comment=Signal messenger client
+Exec=b33p
+Icon=io.github.barafael.B33p
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupNotify=true
+X-KDE-FormFactor=desktop

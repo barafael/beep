@@ -1,5 +1,5 @@
 [workspace]
-members = ["langis-core", "langis-notify", "langis-slint"]
+members = ["b33p-core", "b33p-notify", "b33p-slint"]
 resolver = "3"
 
 [workspace.package]
@@ -9,12 +9,12 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [workspace.dependencies]
-langis-core = { path = "langis-core", default-features = false }
+b33p-core = { path = "b33p-core", default-features = false }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
-# open pull requests, so langis builds on exactly what is proposed upstream:
+# open pull requests, so b33p builds on exactly what is proposed upstream:
 #   #442 history-transfer key on RegistrationData   #447 wait for the history archive
 #   #443 paged thread reads                         #444 storage service from a linked device
 #   #445 drop sync messages from other accounts     #446 a linked device unlinks itself
