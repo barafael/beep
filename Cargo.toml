@@ -23,7 +23,9 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait)
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
+# `cdsi`: Signal's contact discovery, to find someone by phone number (builds BoringSSL: needs
+# cmake and clang).
+presage = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485", features = ["cdsi"] }
 presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
