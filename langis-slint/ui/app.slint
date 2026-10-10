@@ -220,6 +220,62 @@ export struct SearchResult {
 
 export enum Screen { connecting, password, link, chats }
 
+// A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`). They are all drawn on
+// the same square grid, so icons of the same size placed side by side share their center.
+component Icon inherits Image {
+    in property <color> tint: Palette.foreground.with-alpha(0.7);
+    width: 18px;
+    height: self.width;
+    image-fit: contain;
+    colorize: root.tint;
+    accessible-role: none;
+}
+
+// A button that is only an icon. Every icon button looks and lines up the same: a fixed square
+// with the icon in its middle.
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    // What it does, for screen readers and as its tooltip.
+    in property <string> label;
+    // Hidden until hovered when false, e.g. a message's actions.
+    in property <bool> shown: true;
+    // Highlighted, e.g. while the panel it opens is open.
+    in property <bool> active;
+    // A dot in the corner, e.g. for something new behind it.
+    in property <bool> badge;
+    in property <length> icon-size: 18px;
+    in property <color> tint: Palette.foreground.with-alpha(0.7);
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    width: 32px;
+    height: 32px;
+    border-radius: self.height / 2;
+    opacity: root.shown || root.active || touch.has-hover ? 1 : 0;
+    background: root.active ? Palette.accent-background.with-alpha(0.18)
+        : touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        source: root.icon;
+        tint: root.tint;
+        width: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    if root.badge: Rectangle {
+        x: parent.width - self.width - 4px;
+        y: 4px;
+        width: 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Palette.accent-background;
+    }
+}
+
 component Avatar inherits Rectangle {
     in property <string> initials;
     in property <color> tint;
@@ -376,17 +432,22 @@ component ConversationRow inherits Rectangle {
                     horizontal-stretch: 1;
                     color: Palette.foreground;
                 }
-                if item.muted: Text {
-                    text: "🔕";
-                    font-size: 0.75rem;
-                    vertical-alignment: center;
-                    opacity: 0.6;
+                // Centered on the time beside them, which the row's text centers on too.
+                if item.muted: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        source: @image-url("@lucide/bell-off.svg");
+                        width: 14px;
+                        tint: Palette.foreground.with-alpha(0.55);
+                    }
                 }
-                if item.pinned: Text {
-                    text: "📌";
-                    font-size: 0.75rem;
-                    vertical-alignment: center;
-                    opacity: 0.7;
+                if item.pinned: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        source: @image-url("@lucide/pin.svg");
+                        width: 14px;
+                        tint: Palette.foreground.with-alpha(0.55);
+                    }
                 }
                 Text {
                     text: item.time;
@@ -627,32 +688,6 @@ component AttachmentView inherits VerticalLayout {
     }
 }
 
-component HoverButton inherits Rectangle {
-    in property <bool> shown;
-    in property <string> symbol;
-    // What it does, for screen readers.
-    in property <string> label;
-    callback clicked;
-    accessible-role: button;
-    accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
-    width: 28px;
-    height: 28px;
-    border-radius: 14px;
-    opacity: root.shown || touch.has-hover ? 1 : 0;
-    background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    Text {
-        text: root.symbol;
-        accessible-role: none;
-        font-size: 1.1rem;
-        color: Palette.foreground.with-alpha(0.6);
-    }
-}
-
 // Quick reactions, as in Signal's own apps.
 component ReactionPicker inherits PopupWindow {
     callback picked(string);
@@ -688,15 +723,15 @@ component HoverButtons inherits HorizontalLayout {
     in property <bool> shown;
     callback react;
     callback reply;
-    HoverButton {
+    IconButton {
         label: "React";
-        symbol: "☺";
+        icon: @image-url("@lucide/face-slightly-smiling-plus.svg");
         shown: root.shown;
         clicked => { root.react(); }
     }
-    HoverButton {
+    IconButton {
         label: "Reply";
-        symbol: "↩";
+        icon: @image-url("@lucide/reply.svg");
         shown: root.shown;
         clicked => { root.reply(); }
     }
@@ -1488,7 +1523,16 @@ component SettingRow inherits HorizontalLayout {
             color: Palette.foreground.with-alpha(0.6);
         }
     }
-    @children
+    // The controls' column: each keeps its own height, centered beside the label and hint,
+    // and they all end at the same right edge.
+    VerticalLayout {
+        alignment: center;
+        width: 200px;
+        HorizontalLayout {
+            alignment: end;
+            @children
+        }
+    }
 }
 
 component SectionTitle inherits Text {
@@ -2036,13 +2080,14 @@ export component AppWindow inherits Window {
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                TouchArea {
-                    accessible-role: button;
-                    accessible-label: "Dismiss";
-                    accessible-action-default => { self.clicked(); }
-                    width: 28px;
-                    clicked => { root.dismiss-error(); }
-                    Text { text: "✕"; color: white; }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("@lucide/x.svg");
+                        label: "Dismiss";
+                        tint: white;
+                        clicked => { root.dismiss-error(); }
+                    }
                 }
             }
         }
@@ -2078,84 +2123,48 @@ export component AppWindow inherits Window {
                 background: Palette.alternate-background;
                 VerticalLayout {
                     HorizontalLayout {
-                        padding: 16px;
-                        padding-bottom: 8px;
-                        spacing: 8px;
-                        if root.showing-archived: TouchArea {
-                            accessible-role: button;
-                            accessible-label: "Back to chats";
-                            accessible-action-default => { self.clicked(); }
-                            width: 24px;
-                            mouse-cursor: pointer;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 10px;
+                        padding-bottom: 4px;
+                        spacing: 4px;
+                        height: 32px + self.padding-top + self.padding-bottom;
+                        if root.showing-archived: IconButton {
+                            icon: @image-url("@lucide/arrow-left.svg");
+                            label: "Back to chats";
                             clicked => { root.show-archived(false); }
-                            Text {
-                                text: "←";
-                                font-size: 1.3rem;
-                                color: Palette.foreground.with-alpha(0.8);
-                            }
                         }
                         Text {
                             text: root.showing-archived ? "Archived" : "Chats";
                             font-size: 1.3rem;
                             font-weight: 700;
                             color: Palette.foreground;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
                         }
-                        Rectangle { horizontal-stretch: 1; }
-                        VerticalLayout {
-                            alignment: center;
-                            Rectangle {
-                                width: 28px;
-                                height: 28px;
-                                HoverButton {
-                                    symbol: "◎";
-                                    label: root.unviewed-stories > 0 ? "Stories, " + root.unviewed-stories + " new" : "Stories";
-                                    shown: true;
-                                    clicked => {
-                                        root.stories-open = true;
-                                        root.open-stories();
-                                    }
-                                }
-                                if root.unviewed-stories > 0: Rectangle {
-                                    x: parent.width - 9px;
-                                    y: 1px;
-                                    width: 8px;
-                                    height: 8px;
-                                    border-radius: 4px;
-                                    background: Palette.accent-background;
-                                }
+                        IconButton {
+                            icon: @image-url("@lucide/circle-dashed.svg");
+                            label: root.unviewed-stories > 0 ? "Stories, " + root.unviewed-stories + " new" : "Stories";
+                            badge: root.unviewed-stories > 0;
+                            clicked => {
+                                root.stories-open = true;
+                                root.open-stories();
                             }
                         }
-                        VerticalLayout {
-                            alignment: center;
-                            HoverButton {
-                                symbol: "+";
-                                label: "New group";
-                                shown: true;
-                                clicked => {
-                                    root.group-draft-name = "";
-                                    root.group-draft-filter = "";
-                                    root.open-new-group();
-                                }
+                        IconButton {
+                            icon: @image-url("@lucide/plus.svg");
+                            label: "New group";
+                            clicked => {
+                                root.group-draft-name = "";
+                                root.group-draft-filter = "";
+                                root.open-new-group();
                             }
                         }
-                        settings-button := Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            y: (parent.height - self.height) / 2;
-                            border-radius: 6px;
-                            background: root.settings-open ? Palette.accent-background.with-alpha(0.18)
-                                : settings-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
-                            settings-touch := TouchArea {
-                                accessible-role: button;
-                                accessible-label: "Settings";
-                                accessible-action-default => { self.clicked(); }
-                                clicked => { root.settings-open = !root.settings-open; }
-                            }
-                            Text {
-                                text: "⚙";
-                                font-size: 1.2rem;
-                                color: Palette.foreground.with-alpha(0.75);
-                            }
+                        IconButton {
+                            icon: @image-url("@lucide/settings.svg");
+                            label: "Settings";
+                            active: root.settings-open;
+                            clicked => { root.settings-open = !root.settings-open; }
                         }
                     }
                     if root.history-status != "": HorizontalLayout {
@@ -2261,12 +2270,14 @@ export component AppWindow inherits Window {
                                 padding-left: 10px;
                                 padding-right: 10px;
                                 spacing: 12px;
-                                Text {
-                                    text: "📦";
+                                // In the avatars' column.
+                                Rectangle {
                                     width: 40px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    color: Palette.foreground.with-alpha(0.7);
+                                    Icon {
+                                        source: @image-url("@lucide/archive.svg");
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                                 Text {
                                     text: "Archived chats";
@@ -2382,19 +2393,14 @@ export component AppWindow inherits Window {
                     }
                     HorizontalLayout {
                         padding-left: root.narrow ? 4px : 16px;
-                        padding-right: 16px;
+                        padding-right: 12px;
                         spacing: 12px;
-                        if root.narrow: TouchArea {
-                            accessible-role: button;
-                            accessible-label: "Back";
-                            accessible-action-default => { self.clicked(); }
-                            width: 36px;
-                            mouse-cursor: pointer;
-                            clicked => { root.back(); }
-                            Text {
-                                text: "←";
-                                font-size: 1.3rem;
-                                color: Palette.foreground.with-alpha(0.8);
+                        if root.narrow: VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: @image-url("@lucide/arrow-left.svg");
+                                label: "Back";
+                                clicked => { root.back(); }
                             }
                         }
                         Avatar {
@@ -2430,52 +2436,35 @@ export component AppWindow inherits Window {
                                 color: Palette.foreground.with-alpha(0.6);
                             }
                         }
-                        if root.show-calendar: Rectangle {
-                            width: 32px;
-                            height: 32px;
-                            y: (parent.height - self.height) / 2;
-                            border-radius: 6px;
-                            background: root.calendar-open ? Palette.accent-background.with-alpha(0.18)
-                                : calendar-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
-                            calendar-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    if root.calendar-open {
-                                        root.calendar-open = false;
-                                    } else {
-                                        root.open-calendar();
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 4px;
+                                if root.show-calendar: IconButton {
+                                    icon: @image-url("@lucide/calendar.svg");
+                                    label: "Activity calendar";
+                                    active: root.calendar-open;
+                                    clicked => {
+                                        if root.calendar-open {
+                                            root.calendar-open = false;
+                                        } else {
+                                            root.open-calendar();
+                                        }
                                     }
                                 }
-                            }
-                            // A tiny calendar grid.
-                            for i in 9: Rectangle {
-                                x: 8px + mod(i, 3) * 6px;
-                                y: 8px + floor(i / 3) * 6px;
-                                width: 4px;
-                                height: 4px;
-                                border-radius: 1px;
-                                background: Palette.foreground.with-alpha(mod(i * 5, 7) / 9 + 0.25);
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            HoverButton {
-                                label: "Search this chat";
-                                symbol: "🔍";
-                                shown: true;
-                                clicked => {
-                                    root.chat-search-text = "";
-                                    root.open-chat-search();
+                                IconButton {
+                                    icon: @image-url("@lucide/search.svg");
+                                    label: "Search this chat";
+                                    clicked => {
+                                        root.chat-search-text = "";
+                                        root.open-chat-search();
+                                    }
                                 }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            HoverButton {
-                                label: "More";
-                                symbol: "⋮";
-                                shown: true;
-                                clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
+                                IconButton {
+                                    icon: @image-url("@lucide/ellipsis-vertical.svg");
+                                    label: "More";
+                                    clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
+                                }
                             }
                         }
                     }
@@ -2893,10 +2882,9 @@ export component AppWindow inherits Window {
                                         // Not for ourselves, nor where we're no longer in the group.
                                         if member.name != "You" && !root.conversations[root.selected].left: VerticalLayout {
                                             alignment: center;
-                                            HoverButton {
-                                                symbol: "⋮";
+                                            IconButton {
+                                                icon: @image-url("@lucide/ellipsis-vertical.svg");
                                                 label: "Manage " + member.name;
-                                                shown: true;
                                                 clicked => { member-menu.show({ x: self.x - 160px, y: self.y + self.height }); }
                                             }
                                             member-menu := ContextMenuArea {
@@ -3128,17 +3116,17 @@ export component AppWindow inherits Window {
                             horizontal-stretch: 1;
                             color: Palette.foreground;
                         }
-                        TouchArea {
-                            accessible-role: button;
-                            accessible-label: "Stop editing";
-                            accessible-action-default => { self.clicked(); }
-                            width: 28px;
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.cancel-edit();
-                                root.draft = "";
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: @image-url("@lucide/x.svg");
+                                label: "Stop editing";
+                                tint: Palette.foreground.with-alpha(0.6);
+                                clicked => {
+                                    root.cancel-edit();
+                                    root.draft = "";
+                                }
                             }
-                            Text { text: "✕"; color: Palette.foreground.with-alpha(0.6); }
                         }
                     }
                 }
@@ -3169,14 +3157,14 @@ export component AppWindow inherits Window {
                                 color: Palette.foreground.with-alpha(0.7);
                             }
                         }
-                        TouchArea {
-                            accessible-role: button;
-                            accessible-label: "Stop replying";
-                            accessible-action-default => { self.clicked(); }
-                            width: 28px;
-                            mouse-cursor: pointer;
-                            clicked => { root.cancel-reply(); }
-                            Text { text: "✕"; color: Palette.foreground.with-alpha(0.6); }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: @image-url("@lucide/x.svg");
+                                label: "Stop replying";
+                                tint: Palette.foreground.with-alpha(0.6);
+                                clicked => { root.cancel-reply(); }
+                            }
                         }
                     }
                 }
@@ -3198,20 +3186,30 @@ export component AppWindow inherits Window {
                             x: 8px;
                             width: parent.width - 16px;
                             spacing: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    source: @image-url("@lucide/paperclip.svg");
+                                    width: 14px;
+                                }
+                            }
                             Text {
-                                text: "📎 " + name;
+                                text: name;
                                 font-size: 0.85rem;
                                 vertical-alignment: center;
                                 color: Palette.foreground;
                             }
-                            TouchArea {
-                                accessible-role: button;
-                                accessible-label: "Remove " + name;
-                                accessible-action-default => { self.clicked(); }
-                                width: 14px;
-                                mouse-cursor: pointer;
-                                clicked => { root.unstage(index); }
-                                Text { text: "✕"; font-size: 0.8rem; color: Palette.foreground.with-alpha(0.6); }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    icon: @image-url("@lucide/x.svg");
+                                    label: "Remove " + name;
+                                    tint: Palette.foreground.with-alpha(0.6);
+                                    width: 20px;
+                                    height: 20px;
+                                    icon-size: 12px;
+                                    clicked => { root.unstage(index); }
+                                }
                             }
                         }
                     }
@@ -3283,25 +3281,36 @@ export component AppWindow inherits Window {
                     height: self.hidden ? 0px : composer-row.preferred-height;
                     clip: true;
                 composer-row := HorizontalLayout {
+                    // The editor's frame and margins around its text. They differ between Qt
+                    // styles, so a hidden editor of known height tells. Above the text it is
+                    // Slint's padding and border (4px + 1px, in every style); the rest is below,
+                    // where the style keeps room for a scroll bar.
+                    property <length> editor-chrome: 100px - chrome-probe.visible-height;
+                    property <length> editor-top: 5px;
+                    property <length> line: one-line-measure.preferred-height;
+                    // What is beside the editor centers on its last line, wherever that is.
+                    function last-line-padding(height: length) -> length {
+                        max(0px, self.editor-chrome - self.editor-top + self.line / 2 - height / 2)
+                    }
                     width: parent.width;
                     padding: 12px;
                     spacing: 6px;
                     alignment: stretch;
                     VerticalLayout {
                         alignment: end;
-                        HoverButton {
+                        padding-bottom: composer-row.last-line-padding(32px);
+                        IconButton {
                             label: "Attach files";
-                            symbol: "📎";
-                            shown: true;
+                            icon: @image-url("@lucide/paperclip.svg");
                             clicked => { root.attach(); }
                         }
                     }
                     VerticalLayout {
                         alignment: end;
-                        HoverButton {
+                        padding-bottom: composer-row.last-line-padding(32px);
+                        IconButton {
                             label: "Stickers";
-                            symbol: "▦";
-                            shown: true;
+                            icon: @image-url("@lucide/sticker.svg");
                             clicked => {
                                 root.open-stickers();
                                 sticker-picker.show();
@@ -3399,10 +3408,10 @@ export component AppWindow inherits Window {
                     }
                     VerticalLayout {
                         alignment: end;
-                        HoverButton {
+                        padding-bottom: composer-row.last-line-padding(32px);
+                        IconButton {
                             label: "Emoji";
-                            symbol: "☺";
-                            shown: true;
+                            icon: @image-url("@lucide/face-slightly-smiling.svg");
                             clicked => { emoji-picker.show(); }
                         }
                         emoji-picker := PopupWindow {
@@ -3448,12 +3457,21 @@ export component AppWindow inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                         // Room for the style's frame and padding, so no scroll bar shows for a line.
-                        height: clamp(measure.preferred-height + 30px, 50px, 150px);
+                        property <length> chrome: composer-row.editor-chrome;
+                        height: clamp(measure.preferred-height + self.chrome, composer-row.line + self.chrome, 150px);
                         measure := Text {
                             visible: false;
                             width: parent.width - 20px;
                             text: root.draft + " ";
                             wrap: word-wrap;
+                        }
+                        one-line-measure := Text {
+                            visible: false;
+                            text: " ";
+                        }
+                        chrome-probe := TextEdit {
+                            visible: false;
+                            height: 100px;
                         }
                         composer := TextEdit {
                             width: parent.width;
@@ -3485,7 +3503,8 @@ export component AppWindow inherits Window {
                     }
                     VerticalLayout {
                         alignment: end;
-                        Button {
+                        padding-bottom: composer-row.last-line-padding(send-button.preferred-height);
+                        send-button := Button {
                             text: root.editing ? "Save" : "Send";
                             primary: true;
                             enabled: root.can-send;
@@ -3539,17 +3558,17 @@ export component AppWindow inherits Window {
                             color: white;
                             horizontal-stretch: 1;
                         }
-                        TouchArea {
-                            width: 28px;
-                            mouse-cursor: pointer;
-                            accessible-role: button;
-                            accessible-label: "Close stories";
-                            accessible-action-default => { self.clicked(); }
-                            clicked => {
-                                root.close-story();
-                                root.stories-open = false;
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: @image-url("@lucide/x.svg");
+                                label: "Close stories";
+                                tint: white;
+                                clicked => {
+                                    root.close-story();
+                                    root.stories-open = false;
+                                }
                             }
-                            Text { text: "✕"; color: white; font-size: 1.1rem; }
                         }
                     }
                     if root.story-rings.length == 0: Text {
@@ -3662,14 +3681,14 @@ export component AppWindow inherits Window {
                                 font-size: 0.8rem;
                             }
                         }
-                        TouchArea {
-                            width: 28px;
-                            mouse-cursor: pointer;
-                            accessible-role: button;
-                            accessible-label: "Close story";
-                            accessible-action-default => { self.clicked(); }
-                            clicked => { root.close-story(); }
-                            Text { text: "✕"; color: white; }
+                        VerticalLayout {
+                            alignment: center;
+                            IconButton {
+                                icon: @image-url("@lucide/x.svg");
+                                label: "Close story";
+                                tint: white;
+                                clicked => { root.close-story(); }
+                            }
                         }
                     }
                     HorizontalLayout {
@@ -3682,7 +3701,13 @@ export component AppWindow inherits Window {
                             accessible-label: "Previous story";
                             accessible-action-default => { self.clicked(); }
                             clicked => { root.step-story(-1); }
-                            Text { text: "‹"; color: white; font-size: 2rem; }
+                            Icon {
+                                source: @image-url("@lucide/chevron-left.svg");
+                                width: 28px;
+                                tint: white;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                         Rectangle {
                             horizontal-stretch: 1;
@@ -3717,7 +3742,13 @@ export component AppWindow inherits Window {
                             accessible-label: "Next story";
                             accessible-action-default => { self.clicked(); }
                             clicked => { root.step-story(1); }
-                            Text { text: "›"; color: white; font-size: 2rem; }
+                            Icon {
+                                source: @image-url("@lucide/chevron-right.svg");
+                                width: 28px;
+                                tint: white;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }

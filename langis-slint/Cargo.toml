@@ -39,6 +39,8 @@ rodio = { version = "0.22.2", default-features = false, features = ["playback", 
 
 [build-dependencies]
 slint-build = "1.18"
+# The icons (Lucide), written out for the UI to use as `@image-url("@lucide/<name>.svg")`.
+lucide-static-svg = "1.55"
 
 # On Linux, render through Qt only, so the native style draws real Breeze/Qt widgets and follows
 # the desktop's colors and fonts. Qt 6 is required at runtime; there is no winit fallback.
