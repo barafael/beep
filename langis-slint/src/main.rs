@@ -26,46 +26,17 @@ mod tray;
 #[cfg(test)]
 mod ui_tests;
 
-/// The UI, compiled once per Slint widget style (see `build.rs`). Slint fixes the style when it
-/// compiles, so switching styles means switching between these: each includes `ui.rs`.
+/// The UI, compiled per Slint widget style (see `build.rs`). The app has one, the native (Qt)
+/// style, with `ui.rs` on top: Fusion is the same UI, in Qt's Fusion style.
 mod styles {
     pub mod native {
         include!(concat!(env!("OUT_DIR"), "/app_native.rs"));
         include!("ui.rs");
     }
+    /// For the UI tests, which run without Qt: only the window, they drive it themselves.
+    #[cfg(test)]
     pub mod fluent {
         include!(concat!(env!("OUT_DIR"), "/app_fluent.rs"));
-        include!("ui.rs");
-    }
-    pub mod material {
-        include!(concat!(env!("OUT_DIR"), "/app_material.rs"));
-        include!("ui.rs");
-    }
-    pub mod cupertino {
-        include!(concat!(env!("OUT_DIR"), "/app_cupertino.rs"));
-        include!("ui.rs");
-    }
-    pub mod cosmic {
-        include!(concat!(env!("OUT_DIR"), "/app_cosmic.rs"));
-        include!("ui.rs");
-    }
-
-    use std::rc::Rc;
-
-    use langis_core::settings::WidgetStyle;
-
-    /// A window in `style`, not shown yet. Fusion is the native (Qt) UI in Qt's Fusion style.
-    pub fn create(
-        style: WidgetStyle,
-        shared: &Rc<super::Shared>,
-    ) -> Result<Rc<dyn super::Ui>, slint::PlatformError> {
-        match style {
-            WidgetStyle::Native | WidgetStyle::Fusion => native::create(shared),
-            WidgetStyle::Fluent => fluent::create(shared),
-            WidgetStyle::Material => material::create(shared),
-            WidgetStyle::Cupertino => cupertino::create(shared),
-            WidgetStyle::Cosmic => cosmic::create(shared),
-        }
     }
 }
 
@@ -86,9 +57,6 @@ pub trait Ui {
     fn visible(&self) -> bool;
     /// Whether the window is the active one.
     fn active(&self) -> bool;
-    fn geometry(&self) -> (slint::PhysicalPosition, slint::PhysicalSize);
-    fn take_geometry(&self, geometry: (slint::PhysicalPosition, slint::PhysicalSize));
-    fn open_settings(&self);
     /// What plays: the attachment (empty for nothing), paused, progress 0…1, and the time.
     fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str);
 }
@@ -129,11 +97,10 @@ enum QtStyle {
 }
 
 impl QtStyle {
-    fn of(style: WidgetStyle) -> Option<Self> {
+    fn of(style: WidgetStyle) -> Self {
         match style {
-            WidgetStyle::Native => Some(Self::System),
-            WidgetStyle::Fusion => Some(Self::Fusion),
-            _ => None,
+            WidgetStyle::Native => Self::System,
+            WidgetStyle::Fusion => Self::Fusion,
         }
     }
 }
@@ -343,9 +310,10 @@ impl Shared {
 
     /// Why the chosen style isn't showing yet, if it isn't.
     fn style_note(&self) -> String {
-        match QtStyle::of(self.settings.borrow().style) {
-            Some(qt) if qt != self.qt_style_at_start => "Takes effect when langis restarts.".into(),
-            _ => String::new(),
+        if QtStyle::of(self.settings.borrow().style) != self.qt_style_at_start {
+            "Takes effect when langis restarts.".into()
+        } else {
+            String::new()
         }
     }
 
@@ -353,7 +321,7 @@ impl Shared {
         if let Err(error) = settings.save() {
             tracing::warn!(%error, "failed to save settings");
         }
-        let previous = self.settings.replace(settings.clone());
+        self.settings.replace(settings.clone());
         self.commands
             .send(Command::Preferences(settings.preferences));
         if let Some(tray) = &*self.tray.borrow() {
@@ -371,42 +339,6 @@ impl Shared {
                 },
             )
         });
-        // Native and Fusion are the same window; Qt switches between them on restart.
-        let window_of = |style| {
-            if QtStyle::of(style).is_some() {
-                WidgetStyle::Native
-            } else {
-                style
-            }
-        };
-        if window_of(previous.style) != window_of(settings.style) {
-            // Not from inside the old window's own callback, which is running right now.
-            let this = self.clone();
-            let _ = slint::spawn_local(async move { this.switch_style(settings.style) });
-        }
-    }
-
-    /// Replaces the window with one in `style`, in the same place and showing the same things.
-    fn switch_style(self: &Rc<Self>, style: WidgetStyle) {
-        let new = match styles::create(style, self) {
-            Ok(new) => new,
-            Err(error) => {
-                tracing::warn!(%error, "failed to switch the style");
-                return;
-            }
-        };
-        let old = self.ui.replace(Some(new.clone()));
-        if let Some(old) = &old {
-            new.take_geometry(old.geometry());
-        }
-        new.open_settings();
-        self.refresh(everything());
-        if let Err(error) = new.show() {
-            tracing::warn!(%error, "failed to show the window");
-        }
-        if let Some(old) = old {
-            old.hide();
-        }
     }
 }
 
@@ -478,7 +410,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .commands
         .send(Command::Preferences(settings.preferences));
 
-    let ui = styles::create(settings.style, &shared)?;
+    let ui = styles::native::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
     shared.tray.replace(Some(tray::create(&shared)?));
     let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;

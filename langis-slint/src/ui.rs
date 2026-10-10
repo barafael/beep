@@ -1,5 +1,5 @@
-// Included once per widget style by `main.rs`: the types Slint generates (`AppWindow`,
-// `MessageItem`, …) are separate per style, this code is the same for all of them.
+// Included by `main.rs` next to the UI Slint generates (`AppWindow`, `MessageItem`, …) for the
+// widget style langis ships.
 
 use std::rc::Rc;
 
@@ -659,19 +659,6 @@ impl Ui for Window {
     /// up to date internally.
     fn active(&self) -> bool {
         i_slint_core::window::WindowInner::from_pub(self.0.window()).active()
-    }
-
-    fn geometry(&self) -> (slint::PhysicalPosition, slint::PhysicalSize) {
-        (self.0.window().position(), self.0.window().size())
-    }
-
-    fn take_geometry(&self, (position, size): (slint::PhysicalPosition, slint::PhysicalSize)) {
-        self.0.window().set_size(size);
-        self.0.window().set_position(position);
-    }
-
-    fn open_settings(&self) {
-        self.0.set_settings_open(true);
     }
 
     fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str) {

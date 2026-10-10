@@ -16,7 +16,8 @@ signal = ["langis-core/signal"]
 [dependencies]
 langis-core.workspace = true
 langis-notify = { path = "../langis-notify" }
-slint = "1.18"
+# Slint's defaults bring both the winit and the Qt backend; each platform picks one below.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
 # Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
 # Pinned to the version slint itself pins.
 i-slint-core = "=1.18.1"
@@ -39,10 +40,14 @@ rodio = { version = "0.22.2", default-features = false, features = ["playback", 
 [build-dependencies]
 slint-build = "1.18"
 
-# On Linux, render through Qt so the native style draws real Breeze/Qt widgets and follows the
-# desktop's colors and fonts. Qt is already resident on KDE; other desktops fall back to winit.
+# On Linux, render through Qt only, so the native style draws real Breeze/Qt widgets and follows
+# the desktop's colors and fonts. Qt 6 is required at runtime; there is no winit fallback.
 [target.'cfg(target_os = "linux")'.dependencies]
-slint = { version = "1.18", features = ["backend-qt"] }
+slint = { version = "1.18", default-features = false, features = ["backend-qt"] }
+
+# Elsewhere, Slint's own window and renderer.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+slint = { version = "1.18", default-features = false, features = ["backend-winit", "renderer-femtovg"] }
 
 # Asks whether the desktop shows tray icons (`tray::host_present`), and keeps langis to one
 # copy (`instance.rs`).

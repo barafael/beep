@@ -1562,7 +1562,7 @@ component SettingsPage inherits Rectangle {
                         ComboBox {
                             width: 200px;
                             // In the order of `WidgetStyle::ALL`.
-                            model: ["System", "Fusion", "Fluent", "Material", "Cupertino", "Cosmic"];
+                            model: ["System", "Fusion"];
                             current-index <=> root.widget-style;
                             selected => { root.changed-settings(); }
                         }
