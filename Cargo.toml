@@ -43,8 +43,10 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rus
 libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "8a6e08ab55f0d5859ae6a9c9f9e5adcb4a1c8d94" }
 
 [profile.release]
-opt-level = 3
-# Whole-program LTO across all crates: slower to build, fastest and smallest binary.
+# Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
+# 1.6 MB but stops vectorizing loops, which image decoding and the crypto rely on.
+opt-level = "s"
+# Whole-program LTO across all crates: slower to build, faster and smaller binary.
 lto = "fat"
 codegen-units = 1
 strip = true
