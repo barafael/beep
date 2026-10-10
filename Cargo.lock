@@ -750,7 +750,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "image",
  "jiff",
  "keyring-core",
@@ -949,6 +949,15 @@ dependencies = [
 
 [[package]]
 name = "block-padding"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8894febbff9f758034a5b8e12d87918f56dfc64a8e1fe757d65e29041538d93"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
+name = "block-padding"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "710f1dd022ef4e93f8a438b4ba958de7f64308434fa6a87104481645cc30068b"
@@ -1124,6 +1133,15 @@ dependencies = [
  "rustix 0.38.44",
  "wayland-backend",
  "wayland-client",
+]
+
+[[package]]
+name = "cbc"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
+dependencies = [
+ "cipher 0.4.4",
 ]
 
 [[package]]
@@ -2969,7 +2987,16 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
 dependencies = [
- "hmac",
+ "hmac 0.13.0",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -3733,6 +3760,7 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
+ "block-padding 0.3.3",
  "generic-array",
 ]
 
@@ -3742,7 +3770,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
 dependencies = [
- "block-padding",
+ "block-padding 0.4.2",
  "hybrid-array",
 ]
 
@@ -4221,7 +4249,7 @@ dependencies = [
  "derive_more",
  "displaydoc",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "libsignal-core",
  "partial-default",
  "password-hash",
@@ -4274,7 +4302,7 @@ dependencies = [
  "displaydoc",
  "ed25519-dalek",
  "hex",
- "hmac",
+ "hmac 0.13.0",
  "itertools 0.15.0",
  "prost",
  "prost-build",
@@ -4292,14 +4320,14 @@ dependencies = [
  "assert_matches",
  "async-compression",
  "async-trait",
- "cbc",
+ "cbc 0.2.1",
  "derive-where",
  "derive_more",
  "displaydoc",
  "futures",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "intmap",
  "itertools 0.15.0",
  "libsignal-account-keys",
@@ -4361,7 +4389,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "http",
  "http-body-util",
  "hyper",
@@ -4472,7 +4500,7 @@ dependencies = [
  "displaydoc",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "indexmap 2.14.2",
  "itertools 0.15.0",
  "libcrux-ml-kem",
@@ -4504,14 +4532,14 @@ dependencies = [
  "base64 0.22.1",
  "bincode 1.3.3",
  "bytes",
- "cbc",
+ "cbc 0.2.1",
  "chrono",
  "ctr 0.10.1",
  "derive_more",
  "futures",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "libsignal-account-keys",
  "libsignal-core",
  "libsignal-net",
@@ -4564,6 +4592,7 @@ source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa
 dependencies = [
  "cc",
  "pkg-config",
+ "sqlcipher-crypto-provider",
  "vcpkg",
 ]
 
@@ -5753,6 +5782,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest 0.10.7",
+ "hmac 0.12.1",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5918,7 +5957,7 @@ version = "0.7.0"
 source = "git+https://github.com/signalapp/libsignal?tag=v0.99.0#439f035d9cfd7efe5435cbea0294591c9ed17232"
 dependencies = [
  "curve25519-dalek",
- "hmac",
+ "hmac 0.13.0",
  "sha2 0.11.0",
 ]
 
@@ -6045,7 +6084,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=b3b7f13f5f681b33d1a39f5bb51809955b073485#b3b7f13f5f681b33d1a39f5bb51809955b073485"
+source = "git+https://github.com/barafael/presage?rev=068f7c2f591566d911d5fb6cbb63c3f1eee95bd5#068f7c2f591566d911d5fb6cbb63c3f1eee95bd5"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6068,7 +6107,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=b3b7f13f5f681b33d1a39f5bb51809955b073485#b3b7f13f5f681b33d1a39f5bb51809955b073485"
+source = "git+https://github.com/barafael/presage?rev=068f7c2f591566d911d5fb6cbb63c3f1eee95bd5#068f7c2f591566d911d5fb6cbb63c3f1eee95bd5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6949,7 +6988,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5107b24b91445dd2aa449a258a1807b63240942157292354dc5bfdbeb8bc6db8"
 dependencies = [
  "aes 0.9.3",
- "cbc",
+ "cbc 0.2.1",
  "futures-util",
  "getrandom 0.4.3",
  "hkdf",
@@ -7157,13 +7196,13 @@ version = "0.1.0"
 source = "git+https://github.com/signalapp/libsignal?tag=v0.99.0#439f035d9cfd7efe5435cbea0294591c9ed17232"
 dependencies = [
  "aes 0.9.3",
- "cbc",
+ "cbc 0.2.1",
  "ctr 0.10.1",
  "derive_more",
  "displaydoc",
  "ghash",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "hpke-rs",
  "hpke-rs-crypto",
  "libsignal-core",
@@ -7523,6 +7562,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlcipher-crypto-provider"
+version = "0.1.0"
+source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa070f70a131a470e7dc#2a42b3354c9194700d08aa070f70a131a470e7dc"
+dependencies = [
+ "aes 0.8.4",
+ "cbc 0.1.2",
+ "hmac 0.12.1",
+ "pbkdf2",
+ "rand 0.10.3",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "sqlx"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7654,7 +7707,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "itoa",
  "log",
  "md-5",
@@ -8739,7 +8792,7 @@ dependencies = [
  "curve25519-dalek",
  "displaydoc",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "log",
  "poksho",
  "prost",

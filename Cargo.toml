@@ -23,10 +23,11 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait)
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-# `cdsi`: Signal's contact discovery, to find someone by phone number (builds BoringSSL: needs
-# cmake and clang).
-presage = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485", features = ["cdsi"] }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
+presage = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5" }
+# `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
+# builds BoringSSL (needs cmake and clang), so SQLCipher is built to use that libcrypto rather
+# than OpenSSL's: the two can't both be linked.
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.

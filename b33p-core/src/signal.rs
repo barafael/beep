@@ -1045,8 +1045,8 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
 }
 
 /// Why someone can't be put in a group.
-const PHONE_NUMBER_ONLY: &str =
-    "someone chosen is known only by their phone number, which groups here don't support yet";
+const PHONE_NUMBER_ONLY: &str = "someone chosen is known only by their phone number: they can be \
+     invited once the group exists (make it, then add them)";
 
 /// A group member's ACI; `None` for those known only by their phone number (PNI).
 fn member_aci(id: &str) -> Option<presage::libsignal_service::protocol::Aci> {
@@ -1082,9 +1082,13 @@ fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
     Some(match edit {
         Edit::Title(title) => To::Title(title.trim().to_owned()),
         Edit::Description(description) => To::Description(description.trim().to_owned()),
-        Edit::AddMembers(members) => {
-            To::AddMembers(members.iter().map(|m| aci(m)).collect::<Option<_>>()?)
-        }
+        // Someone known only by phone number is invited by it.
+        Edit::AddMembers(members) => To::AddMembers(
+            members
+                .iter()
+                .map(|m| ServiceId::parse_from_service_id_string(m))
+                .collect::<Option<_>>()?,
+        ),
         Edit::RemoveMember(member) => To::RemoveMember(aci(&member)?),
         Edit::SetAdmin(member, admin) => To::SetAdmin(aci(&member)?, admin),
         Edit::Leave => To::Leave,
@@ -3267,6 +3271,10 @@ async fn handle_command(
             conversation,
             verified,
         } => set_verified(manager, ctx, &conversation, verified).await?,
+        Command::FindNumber { number, then } => {
+            let conversation = find_number(manager, ctx, &number).await?;
+            let _ = events.send(Event::Found { conversation, then });
+        }
         Command::LoadDetails(conversation) => {
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
@@ -3911,6 +3919,53 @@ async fn on_verified_elsewhere(manager: &Mgr, ctx: &Ctx, verified: &presage::pro
     {
         warn!(%error, "failed to keep a verification from another device");
     }
+}
+
+/// A phone number as typed: international ("+49 151 …"), or in the way of `own`'s country
+/// ("0151 …"); `None` unless it is a valid number.
+fn parse_number(
+    text: &str,
+    own: &presage::libsignal_service::prelude::phonenumber::PhoneNumber,
+) -> Option<presage::libsignal_service::prelude::phonenumber::PhoneNumber> {
+    use presage::libsignal_service::prelude::phonenumber;
+    let number = phonenumber::parse(own.country().id(), text.trim()).ok()?;
+    phonenumber::is_valid(&number).then_some(number)
+}
+
+/// Finds who `number` belongs to on Signal (their ACI, or only their PNI if they don't let
+/// themselves be found by number) and makes a chat with them, named by the number unless we
+/// know them; returns that chat.
+async fn find_number(manager: &mut Mgr, ctx: &Ctx, number: &str) -> Result<ConversationId, String> {
+    let own = manager.registration_data().phone_number.clone();
+    let parsed = parse_number(number, &own).ok_or(format!("“{number}” isn't a phone number."))?;
+    let shown = display_number(&parsed);
+    let found = manager
+        .discover_contacts_by_phone_number([&parsed])
+        .await
+        .map_err(|e| format!("failed to look the number up: {e}"))?;
+    let who = found
+        .into_iter()
+        .find_map(|(_, who)| who)
+        .ok_or(format!("Nobody on Signal has the number {shown}."))?;
+    let thread = Thread::Contact(who);
+    let id = conversation_id(&thread);
+    if !ctx.threads.borrow().contains_key(&id) {
+        let title = match manager.thread_title(&thread).await {
+            Ok(title) if !title.is_empty() && title != who.service_id_string() => title,
+            _ => shown.clone(),
+        };
+        let mut conversation = register(&ctx.threads, thread, title, shown, 0);
+        conversation.trust = trust_of(manager, &ctx.tables, who).await;
+        conversation.settings = ctx
+            .tables
+            .settings(&id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+    }
+    Ok(id)
 }
 
 /// The safety number with `who`, as Signal shows it: 60 digits in groups of five.
@@ -4688,6 +4743,26 @@ mod tests {
         let other: PresageError<presage_store_sqlite::SqliteStoreError> =
             MessageSenderError::MaximumRetriesLimitExceeded.into();
         assert_eq!(untrusted(&other), None);
+    }
+
+    /// A number typed internationally, or the way our own country writes them, is the same
+    /// number; text that isn't one, or an invalid number, is none.
+    #[test]
+    fn numbers_are_read_the_way_our_country_writes_them() {
+        use presage::libsignal_service::prelude::phonenumber;
+        let own = phonenumber::parse(None, "+49 151 23456789").unwrap();
+        // As contact discovery gets them.
+        let e164 = |text| {
+            parse_number(text, &own).map(|n| n.format().mode(phonenumber::Mode::E164).to_string())
+        };
+        assert_eq!(e164("+49 1512 3456780").as_deref(), Some("+4915123456780"));
+        assert_eq!(e164(" 01512 3456780 ").as_deref(), Some("+4915123456780"));
+        assert!(
+            parse_number("+44 7911 123456", &own).is_some(),
+            "another country's"
+        );
+        assert_eq!(parse_number("Ann", &own), None);
+        assert_eq!(parse_number("+49 1", &own), None, "too short to be valid");
     }
 
     #[test]

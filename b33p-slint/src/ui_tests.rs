@@ -218,6 +218,32 @@ fn an_invitation_is_answered_in_the_chat() {
     );
 }
 
+/// A phone number typed in the chat search offers to message it, which looks it up.
+#[test]
+fn a_typed_number_can_be_messaged() {
+    let (window, _messages) = window_with_messages(1);
+    let found = Rc::new(std::cell::RefCell::new(None));
+    window.on_find_number({
+        let found = found.clone();
+        move |number, open| *found.borrow_mut() = Some((number.to_string(), open))
+    });
+    window.set_search_text("+49 151 23456789".into());
+    settle(&window);
+    assert!(
+        find(&window, "Message +49 151 23456789").is_none(),
+        "only once it is a number"
+    );
+    window.set_search_is_number(true);
+    settle(&window);
+    find(&window, "Message +49 151 23456789")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(
+        *found.borrow(),
+        Some(("+49 151 23456789".to_string(), true))
+    );
+}
+
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);

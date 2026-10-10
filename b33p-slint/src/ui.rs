@@ -147,6 +147,13 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             shared.act(|chat| (chat.edit_group(&ConversationId(id.into()), edit), Update::default()));
         }
     });
+    window.on_find_number({
+        let shared = shared.clone();
+        move |number, open| {
+            let then = if open { b33p_core::AfterFinding::Open } else { b33p_core::AfterFinding::Choose };
+            shared.act(|chat| (chat.find_number(&number, then), Update::default()));
+        }
+    });
     window.on_confirm_safety_number({
         let shared = shared.clone();
         move |id| {
@@ -929,6 +936,8 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         })
         .unwrap_or_default();
     window.set_search_results(ModelRc::new(VecModel::from(results)));
+    window.set_search_is_number(state::looks_like_number(&window.get_search_text()));
+    window.set_group_filter_is_number(state::looks_like_number(&window.get_group_draft_filter()));
     let draft = chat.group_draft();
     window.set_group_draft_open(draft.is_some());
     if let Some((new, chosen)) = draft {
