@@ -49,6 +49,12 @@ so what b33p runs is exactly what is proposed. Nothing waits on a merge.
   and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile),
   #449 report only real identity changes, and note them, #450 pin an identity required for
   sending.
+- rusqlite (whisperfish's SQLCipher fork), through branch `langis/integration` of our fork:
+  whisperfish/rusqlite#2 (not ours) builds on Linux arm64 and ends a crash at exit; ours, #3, lets the
+  Rust crypto provider build on Windows without OpenSSL.
+
+Contact discovery brings BoringSSL, so SQLCipher uses a crypto provider in Rust and nothing links
+OpenSSL. On Windows arm64, BoringSSL is built with Ninja and clang-cl (MSVC can't assemble it).
 
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
@@ -73,9 +79,9 @@ By how much they matter, most first:
   sending (presage#450 pins the verified one) and the chat waits for "Continue".
 - **Groups:** accepting or declining an invitation is done here (presage#448's third commit;
   invitations to our PNI too), and a change that clashed with someone else's is built again on
-  the latest revision (#448's fourth commit). Left: adding people known only by phone number
-  (needs contact discovery, which b33p doesn't build yet); the group picture; invite links and
-  join requests.
+  the latest revision (#448's fourth commit). People known only by phone number
+  can be found (Signal's contact discovery), then messaged or added. Left: the group picture;
+  invite links and join requests.
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.

@@ -66,7 +66,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake pkg-config file desktop-file-utils \
             qt6-base-dev qt6-base-dev-tools qt6-wayland \
-            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libssl-dev
+            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -190,36 +190,29 @@ jobs:
         include:
           - arch: x86_64
             runner: windows-2025
-            triplet: x64-windows
           - arch: aarch64
             runner: windows-11-arm
-            triplet: arm64-windows
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
-    env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
     steps:
       - uses: actions/checkout@v4
-      # SQLCipher encrypts the message store with OpenSSL's libcrypto; there's none on Windows.
-      # Building it takes a quarter of an hour, so it's cached right away, not only if the job passes.
-      - id: openssl-cache
-        uses: actions/cache/restore@v4
+      # BoringSSL (contact discovery) assembles GNU-style .S files on arm64, which MSVC can't, and
+      # Visual Studio projects then link without them. Ninja and clang-cl build them.
+      - if: matrix.arch == 'aarch64'
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          path: vcpkg-cache
-          key: vcpkg-openssl-${{ matrix.triplet }}
-      - name: Install OpenSSL
+          arch: arm64
+      - if: matrix.arch == 'aarch64'
+        name: Build BoringSSL with Ninja and clang-cl
         run: |
-          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:${{ matrix.triplet }}
-          echo "OPENSSL_DIR=$VCPKG_INSTALLATION_ROOT\\installed\\${{ matrix.triplet }}" >> "$GITHUB_ENV"
-      - if: steps.openssl-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: vcpkg-cache
-          key: vcpkg-openssl-${{ matrix.triplet }}
+          ninja --version || choco install ninja -y
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+          echo "CC_aarch64_pc_windows_msvc=clang-cl" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_pc_windows_msvc=clang-cl" >> "$GITHUB_ENV"
+          echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -228,6 +221,8 @@ jobs:
         with:
           key: release
       - name: Build
+        # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
+        shell: pwsh
         run: cargo build --release --locked -p b33p-slint
       - name: Package zip
         env:
@@ -235,7 +230,6 @@ jobs:
         run: |
           mkdir b33p
           cp target/release/b33p.exe b33p/
-          cp "$OPENSSL_DIR"/bin/libcrypto-*.dll b33p/
           7z a "$ZIP" b33p
       - uses: actions/upload-artifact@v4
         with:

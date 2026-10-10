@@ -4588,7 +4588,7 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.36.0"
-source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa070f70a131a470e7dc#2a42b3354c9194700d08aa070f70a131a470e7dc"
+source = "git+https://github.com/barafael/rusqlite?rev=8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16#8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16"
 dependencies = [
  "cc",
  "pkg-config",
@@ -7564,7 +7564,7 @@ dependencies = [
 [[package]]
 name = "sqlcipher-crypto-provider"
 version = "0.1.0"
-source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa070f70a131a470e7dc#2a42b3354c9194700d08aa070f70a131a470e7dc"
+source = "git+https://github.com/barafael/rusqlite?rev=8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16#8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
@@ -8097,7 +8097,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
