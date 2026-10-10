@@ -3,7 +3,9 @@
 
 use std::rc::Rc;
 
-use b33p_core::settings::{NotificationContent, Settings, TextSize, Theme, WidgetStyle};
+use b33p_core::settings::{
+    Animations, NotificationContent, Settings, TextSize, Theme, WidgetStyle,
+};
 use b33p_core::state::{
     self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, SaveState,
     Update,
@@ -668,6 +670,10 @@ impl Ui for Window {
         playback.set_progress(progress);
         playback.set_time(time.into());
     }
+
+    fn set_animations(&self, enabled: bool) {
+        self.0.global::<Motion>().set_scale(if enabled { 1.0 } else { 0.0 });
+    }
 }
 
 /// The settings page shows choices by index, in the order of these enums.
@@ -685,6 +691,8 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         TextSize::Default => 1,
         TextSize::Large => 2,
     });
+    let animations = Animations::ALL.iter().position(|a| *a == settings.animations).unwrap_or_default();
+    window.set_animations(animations as i32);
     window.set_show_avatars(settings.show_avatars);
     window.set_notifications(settings.notifications);
     window.set_notification_content(match settings.notification_content {
@@ -712,6 +720,7 @@ fn read_settings(window: &AppWindow) -> Settings {
             _ => Theme::System,
         },
         style: WidgetStyle::ALL.get(window.get_widget_style() as usize).copied().unwrap_or_default(),
+        animations: Animations::ALL.get(window.get_animations() as usize).copied().unwrap_or_default(),
         text_size: match window.get_text_size() {
             0 => TextSize::Small,
             2 => TextSize::Large,

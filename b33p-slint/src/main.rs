@@ -21,6 +21,7 @@ mod autostart;
 mod clipboard;
 mod instance;
 mod logging;
+mod motion;
 mod shutdown;
 mod tray;
 #[cfg(test)]
@@ -59,6 +60,8 @@ pub trait Ui {
     fn active(&self) -> bool;
     /// What plays: the attachment (empty for nothing), paused, progress 0…1, and the time.
     fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str);
+    /// Whether changes animate (fades, slides) or happen at once.
+    fn set_animations(&self, enabled: bool);
 }
 
 /// Everything that outlives a window: the chat state, the way to the backend, settings and
@@ -78,6 +81,8 @@ pub struct Shared {
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
     /// e.g. for the password, until the chats are there.
     start_hidden: Cell<bool>,
+    /// The desktop asks for reduced motion; see `motion.rs`.
+    system_reduces_motion: Cell<bool>,
     /// Redraws when someone typing next counts as stopped, since no event says so.
     typing_timer: slint::Timer,
     /// Audio and voice messages playing here.
@@ -317,11 +322,24 @@ impl Shared {
         }
     }
 
+    /// Animates, or not, as the settings and the desktop say.
+    fn apply_motion(&self) {
+        let enabled = self
+            .settings
+            .borrow()
+            .animations
+            .enabled(self.system_reduces_motion.get());
+        if let Some(ui) = self.ui() {
+            ui.set_animations(enabled);
+        }
+    }
+
     fn apply_settings(self: &Rc<Self>, settings: Settings) {
         if let Err(error) = settings.save() {
             tracing::warn!(%error, "failed to save settings");
         }
         self.settings.replace(settings.clone());
+        self.apply_motion();
         self.commands
             .send(Command::Preferences(settings.preferences));
         if let Some(tray) = &*self.tray.borrow() {
@@ -401,6 +419,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui: RefCell::default(),
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
+        system_reduces_motion: Cell::new(false),
         typing_timer: slint::Timer::default(),
         player: RefCell::default(),
         pending_play: RefCell::default(),
@@ -413,6 +432,21 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui = styles::native::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
+    shared.apply_motion();
+    // The desktop's reduced-motion preference, as it is and as it changes.
+    let system_motion = motion::watch();
+    slint::spawn_local({
+        let shared = shared.clone();
+        let reduced = system_motion.reduced.clone();
+        async move {
+            while let Ok(reduced) = reduced.recv().await {
+                tracing::debug!(reduced, "the desktop's reduced-motion preference");
+                shared.system_reduces_motion.set(reduced);
+                shared.apply_motion();
+            }
+        }
+    })
+    .expect("the event loop is set up");
     shared.tray.replace(Some(tray::create(&shared)?));
     let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;
     shared.start_hidden.set(hidden);

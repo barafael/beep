@@ -23,6 +23,8 @@ slint = { version = "1.18", default-features = false, features = ["std", "compat
 i-slint-core = "=1.18.1"
 tracing = "0.1"
 async-channel = "2"
+# Whether the desktop asks for reduced motion (`motion.rs`).
+mundy = { version = "0.2.3", default-features = false, features = ["reduced-motion", "callback", "async-io"] }
 # Opens links in the browser.
 open = "5"
 # The file picker for attachments (the desktop's own, through its portal on Linux).
