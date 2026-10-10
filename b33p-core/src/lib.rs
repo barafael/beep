@@ -77,6 +77,15 @@ pub struct Conversation {
     pub trust: Trust,
 }
 
+/// What to do with someone found by phone number; see [`Command::FindNumber`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfterFinding {
+    /// Open the chat with them.
+    Open,
+    /// Choose them for the group being made or added to.
+    Choose,
+}
+
 /// How far the safety number with a contact is trusted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Trust {
@@ -683,6 +692,11 @@ pub enum Event {
         query: String,
         messages: Vec<ChatMessage>,
     },
+    /// Someone found by phone number (see [`Command::FindNumber`]), and their chat.
+    Found {
+        conversation: ConversationId,
+        then: AfterFinding,
+    },
     /// How far the safety number with a contact is trusted now: after it was marked verified,
     /// or cleared, here or on another device, or their key changed.
     Trust {
@@ -811,6 +825,13 @@ pub enum Command {
     },
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
+    /// Finds who a phone number (as typed: international, or in our own country's way) belongs
+    /// to on Signal, makes a chat with them, and answers with [`Event::Found`]; an error if
+    /// nobody has it.
+    FindNumber {
+        number: String,
+        then: AfterFinding,
+    },
     /// Marks the safety number with a contact as verified (compared with theirs), or clears
     /// that (which also accepts a changed one); tells our other devices, and answers with
     /// [`Event::Trust`] if it changed.

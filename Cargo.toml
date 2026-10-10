@@ -23,8 +23,11 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait)
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
+presage = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5" }
+# `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
+# builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
+# SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -34,8 +37,13 @@ libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
-# Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch.
-libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
+# Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
+# langis/integration of our fork: whisperfish's plus two pull requests:
+#   #2 (not ours) builds on Linux arm64, where `c_char` is unsigned, and stops SQLCipher tearing
+#      down at exit while connections still close
+#   #3 (ours) the Rust crypto provider builds on Windows without OpenSSL
+# Go back to whisperfish's once both have landed.
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16" }
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
 # #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and

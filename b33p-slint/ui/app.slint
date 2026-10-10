@@ -2095,6 +2095,12 @@ export component AppWindow inherits Window {
     in property <bool> group-draft-new;
     in-out property <string> group-draft-name;
     in-out property <string> group-draft-filter;
+    // What is typed in the chat search, or the group dialog's search, is a phone number to look up.
+    in property <bool> search-is-number;
+    in property <bool> group-filter-is-number;
+    // Looks up who a phone number belongs to; then opens their chat (true) or chooses them for
+    // the group (false).
+    callback find-number(string, bool);
     in property <[CandidateItem]> group-candidates;
     in property <int> group-draft-chosen;
     callback open-new-group;
@@ -2366,6 +2372,15 @@ export component AppWindow inherits Window {
                                 property <int> focus-request: root.focus-search-request;
                                 changed focus-request => { self.focus(); }
                                 edited(text) => { root.search(text); }
+                            }
+                        }
+                        if root.search-is-number: HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            padding-bottom: 8px;
+                            Button {
+                                text: "Message " + root.search-text;
+                                clicked => { root.find-number(root.search-text, true); }
                             }
                         }
                         if root.folders.length > 0 && !root.showing-archived && root.search-text == "": HorizontalLayout {
@@ -4145,9 +4160,13 @@ export component AppWindow inherits Window {
                     edited => { root.group-draft-edited(); }
                 }
                 LineEdit {
-                    placeholder-text: "Search contacts";
+                    placeholder-text: "Search contacts, or type a phone number";
                     text <=> root.group-draft-filter;
                     edited => { root.group-draft-edited(); }
+                }
+                if root.group-filter-is-number: Button {
+                    text: "Find " + root.group-draft-filter + " on Signal";
+                    clicked => { root.find-number(root.group-draft-filter, false); }
                 }
                 ListView {
                     vertical-stretch: 1;

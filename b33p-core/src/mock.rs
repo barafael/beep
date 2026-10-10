@@ -499,6 +499,20 @@ pub fn run(commands: Inbox, events: Events) {
                     )
                 }));
             }
+            // The stranger's number is on "Signal"; no other.
+            Ok(Command::FindNumber { number, then }) => {
+                let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+                if digits.ends_with("7700900123") {
+                    let _ = events.send(Event::Found {
+                        conversation: ConversationId("stranger".into()),
+                        then,
+                    });
+                } else {
+                    let _ = events.send(Event::Error(format!(
+                        "Nobody on Signal has the number {number}."
+                    )));
+                }
+            }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match conversation.0.as_str() {
                     "rust" => crate::Details {

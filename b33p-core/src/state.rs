@@ -780,6 +780,25 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
+            Event::Found { conversation, then } => match then {
+                crate::AfterFinding::Open => {
+                    if let Some(command) = self.select(&conversation) {
+                        self.queued.push(command);
+                    }
+                    update = update.merge(Update::reset());
+                    update.conversations = true;
+                }
+                crate::AfterFinding::Choose => {
+                    let chosen = self
+                        .group_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.chosen.contains(&conversation));
+                    if !chosen {
+                        self.toggle_group_member(&conversation);
+                    }
+                    update.conversations = true;
+                }
+            },
             Event::Trust {
                 conversation,
                 trust,
@@ -1294,6 +1313,15 @@ impl ChatState {
 
     pub fn close_group_draft(&mut self) {
         self.group_draft = None;
+    }
+
+    /// Looks up who a typed phone number belongs to, then opens their chat or chooses them for
+    /// the group being made; nothing for text that isn't a phone number.
+    pub fn find_number(&self, text: &str, then: crate::AfterFinding) -> Option<Command> {
+        (self.synced && looks_like_number(text)).then(|| Command::FindNumber {
+            number: text.trim().to_owned(),
+            then,
+        })
     }
 
     /// Chooses someone for the group, or unchooses them.
@@ -2590,6 +2618,18 @@ fn message_key(message: &ChatMessage) -> (u64, &str) {
     (message.timestamp, &message.sender_id)
 }
 
+/// Whether `text` is typed like a phone number, to look up: digits (at least six), maybe a
+/// leading "+", and the spaces, dashes, dots, slashes and brackets people write them with.
+pub fn looks_like_number(text: &str) -> bool {
+    let text = text.trim();
+    let text = text.strip_prefix('+').unwrap_or(text);
+    let digits = text.chars().filter(char::is_ascii_digit).count();
+    (6..=15).contains(&digits)
+        && text
+            .chars()
+            .all(|c| c.is_ascii_digit() || " -./()".contains(c))
+}
+
 /// What the draft's last word says after "@", if it starts with one.
 fn mention_query(draft: &str) -> Option<&str> {
     let word = draft.rsplit(char::is_whitespace).next()?;
@@ -3725,6 +3765,61 @@ mod tests {
             .conversations()
             .map(|c| c.conversation.id.0.clone())
             .collect()
+    }
+
+    /// Typed like a phone number (as people write them) is looked up; names, short numbers and
+    /// text with letters aren't.
+    #[test]
+    fn phone_numbers_are_told_from_names() {
+        for number in [
+            "+49 151 23456789",
+            "0151/2345678",
+            "(030) 123-4567",
+            "+4915123456789",
+        ] {
+            assert!(looks_like_number(number), "{number}");
+        }
+        for text in [
+            "Ann",
+            "12345",
+            "call 0151 2345678",
+            "+49 151 2345678 9999999",
+            "",
+        ] {
+            assert!(!looks_like_number(text), "{text}");
+        }
+    }
+
+    /// Looking a number up opens the chat with them, or chooses them for the group being made.
+    #[test]
+    fn someone_found_by_number_is_opened_or_chosen() {
+        use crate::AfterFinding::{Choose, Open};
+        let mut state = state();
+        assert!(state.find_number("Ann", Open).is_none(), "not a number");
+        assert!(matches!(
+            state.find_number(" +49 151 23456789 ", Open),
+            Some(Command::FindNumber { number, then: Open }) if number == "+49 151 23456789"
+        ));
+        state.apply(Event::Found {
+            conversation: id("a"),
+            then: Open,
+        });
+        assert_eq!(state.selected().map(|c| c.id.clone()), Some(id("a")));
+
+        state.open_group_draft(Some(id("g")));
+        state.apply(Event::Found {
+            conversation: id("a"),
+            then: Choose,
+        });
+        assert!(matches!(state.group_draft(), Some((false, [chosen])) if *chosen == id("a")));
+        state.apply(Event::Found {
+            conversation: id("a"),
+            then: Choose,
+        });
+        assert!(
+            matches!(state.group_draft(), Some((false, [_]))),
+            "found again: still chosen, not unchosen"
+        );
     }
 
     /// An invitation is answered while we're invited, not in the group yet; other changes need

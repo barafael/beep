@@ -86,7 +86,7 @@ i-slint-backend-testing = "=1.18.1"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs
-# (Qt 6, OpenSSL 3, …) off the binary.
+# (Qt 6, ALSA, …) off the binary.
 [package.metadata.deb]
 name = "b33p"
 maintainer = "Rafael Bachmann <rafael.bachmann.93@gmail.com>"
