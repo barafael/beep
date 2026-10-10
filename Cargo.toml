@@ -13,10 +13,15 @@ langis-core = { path = "langis-core", default-features = false }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Not on crates.io. Our fork adds the link-time history transfer on top of upstream 33dd149
-# (branch langis/link-history-key); drop it once that lands upstream (whisperfish/presage#430).
-presage = { git = "https://github.com/barafael/presage", rev = "9c2119526e393f9010a3548517be775b080b677e" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "9c2119526e393f9010a3548517be775b080b677e" }
+# Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
+# open pull requests, so langis builds on exactly what is proposed upstream:
+#   #442 history-transfer key on RegistrationData   #447 wait for the history archive
+#   #443 paged thread reads                         #444 storage service from a linked device
+#   #445 drop sync messages from other accounts     #446 a linked device unlinks itself
+#   #448 create and change groups (needs libsignal-service-rs#473, see the patch below)
+# Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
+presage = { git = "https://github.com/barafael/presage", rev = "8e00c9256e9dc0bf0118538f1a087a89cc1025c9" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "8e00c9256e9dc0bf0118538f1a087a89cc1025c9" }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -29,12 +34,11 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
 
-# Group changes (creating groups, adding and removing members, …) aren't in libsignal-service
-# yet; our fork has them (branch langis/groups, on the revision presage uses). Offered upstream
-# as whisperfish/libsignal-service-rs, branch groups-v2-changes of the fork; drop this once
-# they land and presage takes them up.
+# Branch langis/integration of our libsignal-service fork: the revision presage pins plus
+# #473 (group calls) and #474 (drop sync messages from other accounts on the PNI path too).
+# Drop this once both have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "f85742f81287f04ba183a2977606e19ff34d7ec1" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f359660bef497e1232416a7d67efa451b239c30" }
 
 [profile.release]
 opt-level = 3
