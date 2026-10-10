@@ -1,0 +1,269 @@
+# Builds langis for Linux (AppImage), macOS (.dmg) and Windows (.zip), each for x86_64 and
+# arm64. Pushing a `v*` tag publishes them as a GitHub release; running the workflow by hand
+# only builds them, as downloadable workflow artifacts.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      label: ${{ steps.version.outputs.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version from the tag, else from Cargo.toml
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version=${GITHUB_REF_NAME#v}
+            if [[ "$version" != "$cargo_version"* ]]; then
+              echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $cargo_version"
+              exit 1
+            fi
+            label=$version
+          else
+            version=$cargo_version
+            label=$cargo_version-dev.${GITHUB_SHA::7}
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      QMAKE: /usr/lib/qt6/bin/qmake
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake pkg-config file desktop-file-utils \
+            qt6-base-dev qt6-base-dev-tools qt6-wayland \
+            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libssl-dev
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Build
+        run: cargo build --release --locked -p langis-slint
+      # The tarball and the .deb use the system's Qt (6.4 or newer); the AppImage brings its own.
+      - name: Package tarball
+        env:
+          NAME: langis-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}
+        run: |
+          mkdir "$NAME"
+          cp target/release/langis packaging/linux/org.langis.Langis.desktop "$NAME/"
+          cp langis-slint/assets/langis.svg "$NAME/org.langis.Langis.svg"
+          tar czf "$NAME.tar.gz" "$NAME"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Package .deb
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+          DEB: langis-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}.deb
+        run: |
+          # A dev build sorts before its release: 0.1.0~dev.abc1234 < 0.1.0.
+          cargo deb -p langis-slint --no-build --deb-version "${LABEL/-/\~}" --output "$DEB"
+          dpkg-deb --info "$DEB"
+      - name: Package AppImage
+        env:
+          ARCH: ${{ matrix.arch }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          LINUXDEPLOY_OUTPUT_VERSION: ${{ needs.version.outputs.label }}
+          LDAI_OUTPUT: langis-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}.AppImage
+          # Qt's Wayland client, so langis runs natively on Wayland desktops, not through XWayland.
+          EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
+        run: |
+          base=https://github.com/linuxdeploy
+          curl -fsSLo linuxdeploy "$base/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
+          curl -fsSLo linuxdeploy-plugin-qt "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$ARCH.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          cp langis-slint/assets/langis.svg org.langis.Langis.svg
+          ./linuxdeploy --appdir AppDir \
+            --executable target/release/langis \
+            --desktop-file packaging/linux/org.langis.Langis.desktop \
+            --icon-file org.langis.Langis.svg \
+            --plugin qt \
+            --output appimage
+          test -f "$LDAI_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langis-linux-${{ matrix.arch }}
+          path: |
+            langis-*.AppImage
+            langis-*.tar.gz
+            langis-*.deb
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: brew install librsvg
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Build
+        run: cargo build --release --locked -p langis-slint
+      - name: Package app bundle and disk image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          DMG: langis-${{ needs.version.outputs.label }}-macos-${{ matrix.arch }}.dmg
+        run: |
+          app=dmg/langis.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/langis "$app/Contents/MacOS/"
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+
+          iconset=langis.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            rsvg-convert -w $size -h $size langis-slint/assets/langis.svg -o "$iconset/icon_${size}x${size}.png"
+            rsvg-convert -w $((size * 2)) -h $((size * 2)) langis-slint/assets/langis.svg -o "$iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/langis.icns"
+
+          # Not notarized: an ad-hoc signature only, which Apple Silicon needs to run it at all.
+          codesign --force --deep --sign - "$app"
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname langis -srcfolder dmg -ov -format UDZO "$DMG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langis-macos-${{ matrix.arch }}
+          path: langis-*.dmg
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-2025
+            triplet: x64-windows
+          - arch: aarch64
+            runner: windows-11-arm
+            triplet: arm64-windows
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+      # SQLCipher encrypts the message store with OpenSSL's libcrypto; there's none on Windows.
+      # Building it takes a quarter of an hour, so it's cached right away, not only if the job passes.
+      - id: openssl-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-openssl-${{ matrix.triplet }}
+      - name: Install OpenSSL
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:${{ matrix.triplet }}
+          echo "OPENSSL_DIR=$VCPKG_INSTALLATION_ROOT\\installed\\${{ matrix.triplet }}" >> "$GITHUB_ENV"
+      - if: steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-openssl-${{ matrix.triplet }}
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Build
+        run: cargo build --release --locked -p langis-slint
+      - name: Package zip
+        env:
+          ZIP: langis-${{ needs.version.outputs.label }}-windows-${{ matrix.arch }}.zip
+        run: |
+          mkdir langis
+          cp target/release/langis.exe langis/
+          cp "$OPENSSL_DIR"/bin/libcrypto-*.dll langis/
+          7z a "$ZIP" langis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langis-windows-${{ matrix.arch }}
+          path: langis-*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, linux, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: langis-*
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "langis $VERSION" \
+            --generate-notes \
+            --verify-tag \
+            "${prerelease[@]}"
