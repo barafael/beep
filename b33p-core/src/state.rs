@@ -780,6 +780,20 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
+            Event::Trust {
+                conversation,
+                trust,
+            } => {
+                if let Some((shown, Some(details))) = &mut self.details
+                    && *shown == conversation
+                {
+                    details.trust = trust;
+                }
+                if let Some(listed) = self.conversations.iter_mut().find(|c| c.id == conversation) {
+                    listed.trust = trust;
+                    update.conversations = true;
+                }
+            }
             Event::Details {
                 conversation,
                 details,
@@ -1080,14 +1094,26 @@ impl ChatState {
     }
 
     /// Whether anything may be sent to `conversation` now: once caught up, and not to a
-    /// blocked chat, a group we left, or a message request not answered yet. Every way of
+    /// blocked chat, a group we left, a contact whose verified safety number changed (until
+    /// that is confirmed), or a message request not answered yet. Every way of
     /// sending (composing, replying from a notification, forwarding, stickers, reactions)
     /// goes by this.
     pub fn can_write_to(&self, conversation: &Conversation) -> bool {
         self.synced
             && !conversation.settings.blocked
             && !conversation.left
+            && conversation.trust != crate::Trust::Changed
             && !self.is_request(conversation)
+    }
+
+    /// Accepts the new safety number of a contact whose verified one changed, so that they can
+    /// be written to again: it is no longer verified (that takes comparing it again).
+    pub fn confirm_safety_number(&self, id: &ConversationId) -> Option<Command> {
+        let conversation = self.conversation(id)?;
+        (conversation.trust == crate::Trust::Changed).then(|| Command::SetVerified {
+            conversation: id.clone(),
+            verified: false,
+        })
     }
 
     /// Adds files to send with the next message.
@@ -1387,6 +1413,16 @@ impl ChatState {
 
     pub fn close_details(&mut self) {
         self.details = None;
+    }
+
+    /// Marks the safety number on the open details page verified, or clears that.
+    pub fn set_verified(&mut self, verified: bool) -> Option<Command> {
+        let (conversation, details) = self.details.as_ref()?;
+        details.as_ref()?.safety_number.as_ref()?;
+        Some(Command::SetVerified {
+            conversation: conversation.clone(),
+            verified,
+        })
     }
 
     /// The details page, if shown: `Some(None)` while it is gathered.
@@ -3686,8 +3722,83 @@ mod tests {
             .collect()
     }
 
-    /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
-    /// not unread, and no read receipt for it.
+    /// Verifying acts on the open details page, and only with a safety number to verify; the
+    /// answer updates what it shows.
+    #[test]
+    fn verifying_from_the_details_page() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 1, false)));
+        assert!(state.set_verified(true).is_none(), "no details page open");
+        state.select(&id("a"));
+        assert!(state.open_details().is_some());
+        assert!(state.set_verified(true).is_none(), "details not loaded yet");
+        state.apply(Event::Details {
+            conversation: id("a"),
+            details: crate::Details::default(),
+        });
+        assert!(state.set_verified(true).is_none(), "no safety number yet");
+        state.apply(Event::Details {
+            conversation: id("a"),
+            details: crate::Details {
+                safety_number: Some("12345".into()),
+                ..Default::default()
+            },
+        });
+        assert!(matches!(
+            state.set_verified(true),
+            Some(Command::SetVerified { conversation, verified: true }) if conversation == id("a")
+        ));
+        state.apply(Event::Trust {
+            conversation: id("b"),
+            trust: crate::Trust::Verified,
+        });
+        assert_eq!(
+            state.details().unwrap().unwrap().trust,
+            crate::Trust::Unverified,
+            "another chat's"
+        );
+        state.apply(Event::Trust {
+            conversation: id("a"),
+            trust: crate::Trust::Verified,
+        });
+        assert_eq!(
+            state.details().unwrap().unwrap().trust,
+            crate::Trust::Verified
+        );
+    }
+
+    /// When the safety number of a contact we verified changes, nothing is sent to them until
+    /// that is confirmed (or it is verified again), as Signal asks.
+    #[test]
+    fn a_changed_verified_safety_number_stops_sending_until_confirmed() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "a", 1, false)));
+        state.select(&id("a"));
+        assert!(state.can_compose("hi"), "writable before");
+        assert!(
+            state.confirm_safety_number(&id("a")).is_none(),
+            "nothing to confirm"
+        );
+
+        state.apply(Event::Trust {
+            conversation: id("a"),
+            trust: crate::Trust::Changed,
+        });
+        assert!(!state.can_compose("hi"));
+        assert!(state.compose("hi").0.is_none(), "not sent");
+        assert!(state.react(0, "👍").is_none(), "no reaction either");
+        assert!(matches!(
+            state.confirm_safety_number(&id("a")),
+            Some(Command::SetVerified { conversation, verified: false }) if conversation == id("a")
+        ));
+
+        state.apply(Event::Trust {
+            conversation: id("a"),
+            trust: crate::Trust::Unverified,
+        });
+        assert!(state.can_compose("hi"), "writable once confirmed");
+    }
+
     /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:
     /// nothing to edit or delete for everyone, and "edit the last one" passes over them.
     #[test]
@@ -3711,6 +3822,8 @@ mod tests {
         assert_eq!(state.editing().unwrap().timestamp, now - 2);
     }
 
+    /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
+    /// not unread, and no read receipt for it.
     #[test]
     fn notices_are_shown_and_nothing_more() {
         let notice = |timestamp| ChatMessage {

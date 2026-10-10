@@ -1,5 +1,6 @@
 //! Reading the storage service, where the phone keeps the account's settings and those of each
-//! contact and group: which chats are pinned, muted, archived or marked unread.
+//! contact and group: which chats are pinned, muted, archived or marked unread, and whose safety
+//! number was verified.
 //!
 //! b33p doesn't write there yet, so its own changes must survive a sync: a setting is taken
 //! from the phone only if it changed there since the last sync (what the phone said then is kept
@@ -17,10 +18,24 @@ use presage::{
 };
 use tracing::{debug, info};
 
-use crate::{ChatSettings, ConversationId, Event, Events, local::LocalStore, signal::Mgr};
+use crate::{
+    ChatSettings, ConversationId, Event, Events,
+    local::{LocalStore, Verification},
+    signal::Mgr,
+};
 
 /// Items read per request.
 const BATCH: usize = 500;
+
+/// Verifications a read of the storage service found: those the phone changed since the last
+/// read, for the caller to take over (it notes them in the chats), and all it says now, to keep
+/// once they are; see [`LocalStore::set_remote_verifications`].
+pub(crate) struct Verifications {
+    /// The first read of them: what was set before b33p read them, taken over quietly.
+    pub first: bool,
+    pub changed: Vec<(ServiceId, Verification)>,
+    pub now: HashMap<String, Verification>,
+}
 
 /// Takes over what changed on the phone since the last time; tells the UI what changed here.
 /// Returns whether b33p knows what the phone says (it doesn't before the phone has sent the
@@ -29,22 +44,27 @@ pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<bool, String> {
+) -> Result<(bool, Option<Verifications>), String> {
     let Some(service) = manager
         .storage_service()
         .await
         .map_err(|e| format!("failed to reach the storage service: {e}"))?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
-        return Ok(false);
+        return Ok((false, None));
     };
-    let known = tables.storage_version().await.map_err(db)?;
+    // Verifications came later than the rest: read everything again once to get them.
+    let known = if tables.remote_verifications_read().await.map_err(db)? {
+        tables.storage_version().await.map_err(db)?
+    } else {
+        0
+    };
     let Some(manifest) = service
         .manifest_if_changed(known)
         .await
         .map_err(|e| format!("failed to read the storage manifest: {e}"))?
     else {
-        return Ok(true);
+        return Ok((true, None));
     };
     let wanted: Vec<Vec<u8>> = manifest
         .identifiers
@@ -62,6 +82,7 @@ pub(crate) async fn sync(
         .collect();
     let ikm = (!manifest.record_ikm.is_empty()).then_some(&manifest.record_ikm[..]);
     let mut remote = HashMap::new();
+    let mut verifications = HashMap::new();
     let mut pins = Vec::new();
     let mut folders = Vec::new();
     for keys in wanted.chunks(BATCH) {
@@ -71,6 +92,11 @@ pub(crate) async fn sync(
                 Record::Contact(contact) => {
                     let aci = ServiceId::parse_from_service_id_string(&contact.aci)
                         .or_else(|| ServiceId::parse_from_service_id_binary(&contact.aci_binary));
+                    if let Some(aci) = aci
+                        && let Some(verification) = verification(&contact)
+                    {
+                        verifications.insert(aci.service_id_string(), verification);
+                    }
                     if let Some(aci) = aci {
                         remote.insert(
                             ConversationId::contact(&aci.service_id_string()),
@@ -134,6 +160,20 @@ pub(crate) async fn sync(
     let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
     tables.set_folders(&folders).await.map_err(db)?;
     let _ = events.send(Event::Folders(folders));
+    // Verifications the phone changed since last time; ours stand otherwise. The caller takes
+    // them over (with notes in the chats) and then keeps what the phone said.
+    let verified_before = tables.remote_verifications().await.map_err(db)?;
+    let first = !tables.remote_verifications_read().await.map_err(db)?;
+    let verified_changed: Vec<(ServiceId, Verification)> =
+        changed_verifications(&verified_before, &verifications)
+            .into_iter()
+            .filter_map(|(aci, v)| {
+                Some((
+                    ServiceId::parse_from_service_id_string(aci)?,
+                    Verification::clone(v),
+                ))
+            })
+            .collect();
     for (position, id) in pins.iter().enumerate() {
         remote.entry(id.clone()).or_default().pinned = Some(position as u32);
     }
@@ -158,7 +198,38 @@ pub(crate) async fn sync(
             break;
         }
     }
-    Ok(true)
+    Ok((
+        true,
+        Some(Verifications {
+            first,
+            changed: verified_changed,
+            now: verifications,
+        }),
+    ))
+}
+
+/// The verifications that changed on the phone since it said `before`; the rest are left as
+/// they are here, which may be newer.
+fn changed_verifications<'a>(
+    before: &HashMap<String, Verification>,
+    now: &'a HashMap<String, Verification>,
+) -> Vec<(&'a String, &'a Verification)> {
+    let mut changed: Vec<_> = now
+        .iter()
+        .filter(|(aci, verification)| before.get(*aci) != Some(*verification))
+        .collect();
+    changed.sort_by(|a, b| a.0.cmp(b.0));
+    changed
+}
+
+/// Whether the phone verified a contact's safety number, and for which key of theirs.
+fn verification(contact: &presage::proto::ContactRecord) -> Option<Verification> {
+    use presage::{libsignal_service::protocol::IdentityKey, proto::contact_record::IdentityState};
+    let key = IdentityKey::decode(&contact.identity_key).ok()?;
+    Some(Verification {
+        identity_key: key.serialize().to_vec(),
+        verified: contact.identity_state() == IdentityState::Verified,
+    })
 }
 
 async fn read(
@@ -754,6 +825,56 @@ mod tests {
             pinned: Some(at),
             ..ChatSettings::default()
         }
+    }
+
+    /// The phone's verifications are taken from contact records, with the key they are for; a
+    /// key that doesn't decode is no verification.
+    #[test]
+    fn reads_verifications_from_contact_records() {
+        use presage::{
+            libsignal_service::protocol::IdentityKeyPair, proto::contact_record::IdentityState,
+        };
+        let key = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
+        let mut contact = presage::proto::ContactRecord {
+            identity_key: key.serialize().to_vec(),
+            ..Default::default()
+        };
+        contact.set_identity_state(IdentityState::Verified);
+        assert_eq!(
+            verification(&contact),
+            Some(Verification {
+                identity_key: key.serialize().to_vec(),
+                verified: true,
+            })
+        );
+        contact.set_identity_state(IdentityState::Unverified);
+        assert_eq!(verification(&contact).map(|v| v.verified), Some(false));
+        contact.identity_key = vec![1, 2, 3];
+        assert_eq!(verification(&contact), None);
+    }
+
+    /// Only what changed on the phone since the last read is taken: a verification made here
+    /// meanwhile isn't undone by the phone repeating what it said before.
+    #[test]
+    fn takes_only_verifications_changed_on_the_phone() {
+        let of = |key: u8, verified| Verification {
+            identity_key: vec![key; 33],
+            verified,
+        };
+        let before = HashMap::from([
+            ("alice".to_string(), of(1, false)),
+            ("bob".to_string(), of(2, true)),
+        ]);
+        let now = HashMap::from([
+            ("alice".to_string(), of(1, false)),
+            ("bob".to_string(), of(2, false)),
+            ("carol".to_string(), of(3, true)),
+        ]);
+        let changed: Vec<_> = changed_verifications(&before, &now)
+            .into_iter()
+            .map(|(aci, v)| (aci.as_str(), v.verified))
+            .collect();
+        assert_eq!(changed, [("bob", false), ("carol", true)]);
     }
 
     #[test]

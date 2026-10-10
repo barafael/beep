@@ -115,6 +115,77 @@ fn a_notice_is_drawn_as_a_line_not_a_message() {
     );
 }
 
+/// The details page offers to mark the safety number verified, or to clear that, and says
+/// when it is.
+#[test]
+fn the_safety_number_can_be_marked_verified() {
+    let (window, _messages) = window_with_messages(1);
+    let asked = Rc::new(Cell::new(None));
+    window.on_set_verified({
+        let asked = asked.clone();
+        move |verified| asked.set(Some(verified))
+    });
+    // Tall enough for the whole details page: the panel makes only what shows.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 1200.));
+    window.set_details_open(true);
+    window.set_details_safety_number("12345 67890".into());
+    settle(&window);
+    assert!(
+        find(&window, "Copy").is_some(),
+        "the safety number's buttons show"
+    );
+    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_none());
+    find(&window, "Mark as verified")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(asked.get(), Some(true));
+
+    window.set_details_verified(true);
+    settle(&window);
+    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_some());
+    find(&window, "Clear verification")
+        .expect("offered once verified")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(asked.get(), Some(false));
+}
+
+/// A chat whose verified safety number changed says so where the composer was, and offers to
+/// continue (confirming it) or to see the safety number.
+#[test]
+fn a_changed_safety_number_holds_the_composer() {
+    let (window, _messages) = window_with_messages(1);
+    let confirmed = Rc::new(std::cell::RefCell::new(None));
+    window.on_confirm_safety_number({
+        let confirmed = confirmed.clone();
+        move |id| *confirmed.borrow_mut() = Some(id)
+    });
+    let opened = Rc::new(Cell::new(false));
+    window.on_open_details({
+        let opened = opened.clone();
+        move || opened.set(true)
+    });
+    let notice = "Your safety number with Ann changed since you verified it. Compare it again, or continue without.";
+    assert!(find(&window, notice).is_none());
+    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+        id: "a".into(),
+        title: "Ann".into(),
+        safety_changed: true,
+        ..Default::default()
+    }])));
+    settle(&window);
+    assert!(find(&window, notice).is_some());
+    find(&window, "Show safety number")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert!(opened.get());
+    find(&window, "Continue")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(confirmed.borrow().as_deref(), Some("a"));
+}
+
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);

@@ -105,6 +105,12 @@ pub fn run(commands: Inbox, events: Events) {
             note_to_self: id == "me",
             admin: is_group,
             left: false,
+            // Verified once; her key changed since, so writing to her waits for a confirmation.
+            trust: if id == "dana" {
+                crate::Trust::Changed
+            } else {
+                crate::Trust::Unverified
+            },
             members: if is_group {
                 ["Carol", "Dana", "Eve", "Ferris"]
                     .map(|name| Person {
@@ -432,6 +438,34 @@ pub fn run(commands: Inbox, events: Events) {
                 if response == crate::RequestResponse::Delete {
                     let _ = events.send(Event::Cleared(conversation));
                 }
+            }
+            Ok(Command::SetVerified {
+                conversation,
+                verified,
+            }) => {
+                let _ = events.send(Event::Trust {
+                    conversation: conversation.clone(),
+                    trust: if verified {
+                        crate::Trust::Verified
+                    } else {
+                        crate::Trust::Unverified
+                    },
+                });
+                let name = CONVERSATIONS
+                    .iter()
+                    .find(|(id, _, _)| *id == conversation.0)
+                    .map_or("them", |(_, name, _)| *name);
+                let state = if verified { "verified" } else { "unverified" };
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(
+                        &conversation.0,
+                        name,
+                        &format!("You marked your safety number with {name} as {state}."),
+                        now_millis(),
+                        false,
+                    )
+                }));
             }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match conversation.0.as_str() {

@@ -14,6 +14,14 @@ use sqlx::{
 
 use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
 
+/// Whether a contact's safety number was verified, and for which of their identity keys
+/// (serialized): only that key is verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Verification {
+    pub identity_key: Vec<u8>,
+    pub verified: bool,
+}
+
 /// A story as kept: a picture (`pointer`, an encoded attachment pointer) or text.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StoredStory {
@@ -142,6 +150,19 @@ const SCHEMA: &[&str] = &[
         viewed INTEGER NOT NULL DEFAULT 0,
         outgoing INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (author, ts)
+    )",
+    // Whether we verified a contact's safety number, and for which of their identity keys: a new
+    // key isn't verified. By the contact's ACI.
+    "CREATE TABLE IF NOT EXISTS b33p_verification (
+        aci TEXT PRIMARY KEY NOT NULL,
+        identity_key BLOB NOT NULL,
+        verified INTEGER NOT NULL
+    )",
+    // The same as the storage service said it last, to tell its changes from ours.
+    "CREATE TABLE IF NOT EXISTS b33p_remote_verification (
+        aci TEXT PRIMARY KEY NOT NULL,
+        identity_key BLOB NOT NULL,
+        verified INTEGER NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS b33p_meta (
         key TEXT PRIMARY KEY NOT NULL,
@@ -506,6 +527,114 @@ impl LocalStore {
         Ok(version.unwrap_or(0) as u64)
     }
 
+    /// Whether we verified the contact with this ACI, and their key then.
+    pub(crate) async fn verification(
+        &self,
+        aci: &str,
+    ) -> Result<Option<Verification>, sqlx::Error> {
+        let row = sqlx::query("SELECT identity_key, verified FROM b33p_verification WHERE aci = ?")
+            .bind(aci)
+            .fetch_optional(&self.db)
+            .await?;
+        Ok(row.map(|row| Verification {
+            identity_key: row.get(0),
+            verified: row.get::<i64, _>(1) != 0,
+        }))
+    }
+
+    /// Every contact we verified or cleared the verification of, by ACI.
+    pub(crate) async fn verifications(&self) -> Result<HashMap<String, Verification>, sqlx::Error> {
+        let rows = sqlx::query("SELECT aci, identity_key, verified FROM b33p_verification")
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let verification = Verification {
+                    identity_key: row.get(1),
+                    verified: row.get::<i64, _>(2) != 0,
+                };
+                (row.get(0), verification)
+            })
+            .collect())
+    }
+
+    /// Remembers whether we verified the contact with this ACI, for this key of theirs.
+    pub(crate) async fn set_verification(
+        &self,
+        aci: &str,
+        verification: &Verification,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO b33p_verification (aci, identity_key, verified)
+             VALUES (?, ?, ?)",
+        )
+        .bind(aci)
+        .bind(&verification.identity_key)
+        .bind(verification.verified as i64)
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
+    /// What the storage service said last about verifications, by ACI.
+    pub(crate) async fn remote_verifications(
+        &self,
+    ) -> Result<HashMap<String, Verification>, sqlx::Error> {
+        let rows = sqlx::query("SELECT aci, identity_key, verified FROM b33p_remote_verification")
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let verification = Verification {
+                    identity_key: row.get(1),
+                    verified: row.get::<i64, _>(2) != 0,
+                };
+                (row.get(0), verification)
+            })
+            .collect())
+    }
+
+    /// Whether what the storage service says about verifications was ever read: until then,
+    /// the whole manifest is read again even if it didn't change.
+    pub(crate) async fn remote_verifications_read(&self) -> Result<bool, sqlx::Error> {
+        let read: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'remote_verifications'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(read.is_some())
+    }
+
+    /// Replaces what the storage service said last about verifications.
+    pub(crate) async fn set_remote_verifications(
+        &self,
+        remote: &HashMap<String, Verification>,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.db.begin().await?;
+        sqlx::query("DELETE FROM b33p_remote_verification")
+            .execute(&mut *tx)
+            .await?;
+        for (aci, verification) in remote {
+            sqlx::query(
+                "INSERT INTO b33p_remote_verification (aci, identity_key, verified)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(aci)
+            .bind(&verification.identity_key)
+            .bind(verification.verified as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "INSERT INTO b33p_meta (key, value) VALUES ('remote_verifications', 1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
     /// Pins exactly `order`, in that order; everything else is unpinned.
     pub(crate) async fn set_pins(&self, order: &[ConversationId]) -> Result<(), sqlx::Error> {
         let mut tx = self.db.begin().await?;
@@ -771,6 +900,46 @@ mod tests {
             author_id: author.into(),
             timestamp: ts,
         }
+    }
+
+    #[test]
+    fn remembers_verifications() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            assert_eq!(local.verification("alice").await.unwrap(), None);
+            let verified = |key: u8, verified| Verification {
+                identity_key: vec![key; 33],
+                verified,
+            };
+            local
+                .set_verification("alice", &verified(1, true))
+                .await
+                .unwrap();
+            local
+                .set_verification("alice", &verified(2, false))
+                .await
+                .unwrap();
+            assert_eq!(
+                local.verification("alice").await.unwrap(),
+                Some(verified(2, false)),
+                "the latest replaces it"
+            );
+
+            let remote = HashMap::from([("alice".to_string(), verified(1, true))]);
+            assert!(!local.remote_verifications_read().await.unwrap());
+            local.set_remote_verifications(&remote).await.unwrap();
+            assert!(local.remote_verifications_read().await.unwrap());
+            assert_eq!(local.remote_verifications().await.unwrap(), remote);
+            local
+                .set_remote_verifications(&HashMap::new())
+                .await
+                .unwrap();
+            assert!(
+                local.remote_verifications().await.unwrap().is_empty(),
+                "replaced as a whole"
+            );
+        });
     }
 
     #[test]

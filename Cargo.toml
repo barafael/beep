@@ -36,10 +36,11 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
-# #473 (group calls) and #474 (drop sync messages from other accounts on the PNI path too).
-# Drop this once both have landed and presage takes them up.
+# #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and
+# #476 (send a sync message to ourselves once, not twice).
+# Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f359660bef497e1232416a7d67efa451b239c30" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "8a6e08ab55f0d5859ae6a9c9f9e5adcb4a1c8d94" }
 
 [profile.release]
 opt-level = 3
