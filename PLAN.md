@@ -36,13 +36,20 @@ done when every check is ✅ or has an issue noted here.
 
 ## 2. Make the build stand on its own
 
-Done in part: the group changes to libsignal-service-rs are on our fork
-(`barafael/libsignal-service-rs`, branch `langis/groups`), which langis uses by revision, so a
-fresh checkout builds. They are offered upstream as a draft pull request (branch
-`groups-v2-changes`, on upstream main).
+Done: every change we need in presage and libsignal-service is offered upstream, and langis
+builds from branch `langis/integration` of each fork: upstream main plus our open pull requests,
+so what langis runs is exactly what is proposed. Nothing waits on a merge.
 
-Left: follow the pull request through review; once it lands and presage takes it up, drop
-the `[patch]`. A CI job (build, test, clippy) later.
+- libsignal-service-rs: #473 group calls, #474 drop sync messages from other accounts on the
+  PNI receive path too (a security fix; reproducer in `~/libsignal-pni-sync-repro`).
+- presage: #442 history-transfer key on `RegistrationData`, #447 wait for the history archive
+  (stacked on #442), #443 paged thread reads, #444 storage service from a linked device,
+  #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
+  and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile).
+
+Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
+the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
+PR lands. A CI job (build, test, clippy) later.
 
 ## 3. M4: close the gaps M1–M3 left
 
