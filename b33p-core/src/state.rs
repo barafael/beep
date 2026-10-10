@@ -511,9 +511,12 @@ impl ChatState {
             Event::Message(message)
                 if message.outgoing
                     && message.unsent.is_none()
-                    && self.history.get(&message.conversation).is_some_and(|history| {
-                        history.iter().any(|m| is_unsent_at(m, message.timestamp))
-                    }) =>
+                    && self
+                        .history
+                        .get(&message.conversation)
+                        .is_some_and(|history| {
+                            history.iter().any(|m| is_unsent_at(m, message.timestamp))
+                        }) =>
             {
                 // Sent: it takes the place of the message shown while sending.
                 let id = message.conversation.clone();
@@ -2109,11 +2112,11 @@ impl ChatState {
             .nth(index)
             .filter(|view| view.message.unsent.is_none())
             .map(|view| Quote {
-            author: view.message.sender.clone(),
-            text: view.body.lines().next().unwrap_or_default().to_owned(),
-            author_id: view.message.sender_id.clone(),
-            timestamp: view.message.timestamp,
-        });
+                author: view.message.sender.clone(),
+                text: view.body.lines().next().unwrap_or_default().to_owned(),
+                author_id: view.message.sender_id.clone(),
+                timestamp: view.message.timestamp,
+            });
         self.replying = quote;
         Update::default()
     }
@@ -2871,7 +2874,12 @@ mod tests {
             0
         );
         assert!(state.reply(&a, "  ").0.is_none());
-        assert!(state.reply(&ConversationId("nope".into()), "hi").0.is_none());
+        assert!(
+            state
+                .reply(&ConversationId("nope".into()), "hi")
+                .0
+                .is_none()
+        );
         state.select(&a);
         assert_eq!(state.take_notices(), [Notice::Withdraw(a)]);
     }
@@ -3528,7 +3536,9 @@ mod tests {
         assert!(state.compose("hi").0.is_none());
         state.select(&ConversationId("a".into()));
         assert!(state.compose("   ").0.is_none());
-        assert!(matches!(state.compose(" hi ").0, Some(Command::Send { body, .. }) if body == "hi"));
+        assert!(
+            matches!(state.compose(" hi ").0, Some(Command::Send { body, .. }) if body == "hi")
+        );
     }
 
     /// The timestamp `command` sends with; panics for anything but a send.
@@ -3562,7 +3572,10 @@ mod tests {
         assert_eq!(update.messages, MessagesUpdate::Unchanged);
         let bodies: Vec<_> = state.messages().map(|m| m.message.unsent).collect();
         assert_eq!(bodies, [None, None], "replaced, not added");
-        assert_eq!(state.last_messages(1).next().unwrap().message.sender_id, "me");
+        assert_eq!(
+            state.last_messages(1).next().unwrap().message.sender_id,
+            "me"
+        );
     }
 
     #[test]
@@ -3903,7 +3916,10 @@ mod tests {
             Some(Command::Edit { body, .. }) if body == "fixed"
         ));
         // Editing ends with the edit.
-        assert!(matches!(state.compose("next").0, Some(Command::Send { .. })));
+        assert!(matches!(
+            state.compose("next").0,
+            Some(Command::Send { .. })
+        ));
     }
 
     #[test]

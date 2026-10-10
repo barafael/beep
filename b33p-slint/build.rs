@@ -22,7 +22,13 @@ fn main() {
     // into the tests only. Finding elements in it needs debug info in its generated code.
     compile(&input, &out.join("app_fluent.rs"), "fluent", true, &icons);
     // The tray icon has no widgets, so its style doesn't matter.
-    compile(&manifest.join("ui/tray.slint"), &out.join("tray.rs"), "native", false, &icons);
+    compile(
+        &manifest.join("ui/tray.slint"),
+        &out.join("tray.rs"),
+        "native",
+        false,
+        &icons,
+    );
 }
 
 /// Writes every Lucide icon to `$OUT_DIR/lucide/<name>.svg`; Slint embeds only those the UI
@@ -42,9 +48,12 @@ fn compile(input: &Path, output: &Path, style: &str, debug_info: bool, icons: &P
         .with_style(style.into())
         .with_debug_info(debug_info)
         .with_library_paths(HashMap::from([("lucide".to_owned(), icons.to_owned())]));
-    let dependencies = slint_build::compile_with_output_path(input, output, config)
-        .unwrap_or_else(|error| {
-            panic!("failed to compile {} with the {style} style: {error}", input.display())
+    let dependencies =
+        slint_build::compile_with_output_path(input, output, config).unwrap_or_else(|error| {
+            panic!(
+                "failed to compile {} with the {style} style: {error}",
+                input.display()
+            )
         });
     for path in dependencies {
         // Not the icons written above: they change only with the crate, which reruns this.
