@@ -41,7 +41,8 @@ builds from branch `langis/integration` of each fork: upstream main plus our ope
 so what b33p runs is exactly what is proposed. Nothing waits on a merge.
 
 - libsignal-service-rs: #473 group calls, #474 drop sync messages from other accounts on the
-  PNI receive path too (a security fix; reproducer in `~/libsignal-pni-sync-repro`).
+  PNI receive path too (a security fix; reproducer in `~/libsignal-pni-sync-repro`), #476 send a
+  sync message to ourselves once, not twice.
 - presage: #442 history-transfer key on `RegistrationData`, #447 wait for the history archive
   (stacked on #442), #443 paged thread reads, #444 storage service from a linked device,
   #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
