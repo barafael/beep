@@ -366,6 +366,9 @@ pub struct ChatMessage {
     /// Ours, shown before it went out: still sending, or it failed. `None` once it is sent,
     /// and for everything else.
     pub unsent: Option<Unsent>,
+    /// A line about the conversation that nobody wrote, e.g. that a contact's safety number
+    /// changed: not notified, not counted as unread, nothing to reply or react to.
+    pub notice: bool,
 }
 
 /// One of our messages that hasn't gone out (yet).

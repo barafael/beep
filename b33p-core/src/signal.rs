@@ -1957,6 +1957,10 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
+    // From someone whose safety number changed: the store noted it while decrypting.
+    if content.metadata.sender != own_id(manager) {
+        announce_identity_change(manager, ctx, names, content.metadata.sender).await;
+    }
     match &content.body {
         ContentBody::ReceiptMessage(receipt) => return on_receipt(ctx, receipt).await,
         // Typing in a group names the group differently from other messages.
@@ -2514,6 +2518,48 @@ fn data_of(content: &Content) -> Option<(&DataMessage, bool)> {
     }
 }
 
+/// Whether a stored content is the store's note that a contact's safety number (identity key)
+/// changed: a `Verified` sync message the store saves in their thread when it replaces their
+/// key. Real ones, from our own devices, name whom they are about; this one doesn't.
+fn is_identity_change(content: &Content) -> bool {
+    match &content.body {
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::Verified(verified)),
+            ..
+        }) => {
+            verified.destination_aci.is_none()
+                && verified.destination_aci_binary.is_none()
+                // The new key isn't verified; a note of verifying would say so.
+                && verified.state() == presage::proto::verified::State::Default
+        }
+        _ => false,
+    }
+}
+
+/// Shows the note of a changed safety number that the store saved while decrypting a message
+/// from `contact` or fetching their keys to send to them (before b33p hears of either), in
+/// their chat if there is one and it isn't blocked. Notes are saved with the time they were
+/// made; the UI ignores one it already has.
+async fn announce_identity_change(manager: &Mgr, ctx: &Ctx, names: &mut Names, contact: ServiceId) {
+    let thread = Thread::Contact(contact);
+    let id = conversation_id(&thread);
+    if contact == own_id(manager)
+        || !ctx.threads.borrow().contains_key(&id)
+        || is_blocked(ctx, &id).await
+    {
+        return;
+    }
+    let since = crate::now_millis().saturating_sub(5 * 60 * 1000);
+    let Ok(recent) = manager.store().messages(&thread, since..).await else {
+        return;
+    };
+    for content in recent.flatten().filter(is_identity_change) {
+        if let Some(message) = to_chat_message(manager, names, id.clone(), &content).await {
+            let _ = ctx.events.send(Event::Message(message));
+        }
+    }
+}
+
 /// `false` for a sync message that didn't come from one of our own devices; see
 /// [`handle_content`]. Anything else is fine.
 fn from_our_account(own: ServiceId, content: &Content) -> bool {
@@ -2575,6 +2621,19 @@ async fn to_chat_message(
     conversation: ConversationId,
     content: &Content,
 ) -> Option<ChatMessage> {
+    if is_identity_change(content) {
+        let who = content.metadata.sender;
+        let name = display_name(manager, names, who).await;
+        return Some(ChatMessage {
+            conversation,
+            sender_id: who.service_id_string(),
+            body: format!("Your safety number with {name} has changed."),
+            sender: name,
+            timestamp: content.timestamp(),
+            notice: true,
+            ..Default::default()
+        });
+    }
     let (data, edit) = data_of(content)?;
     let outgoing = is_outgoing(manager, content);
     let author = author_of(manager, content);
@@ -2589,19 +2648,23 @@ async fn to_chat_message(
     let attachments = attachments::of_message(data);
     let mut timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0)
         .then(|| data.expire_timer.unwrap_or(0));
+    // Whether it says what changed in the conversation rather than what someone wrote.
+    let mut notice = false;
     if let Some(seconds) = timer_change
         && body.is_empty()
     {
         body = crate::timer_notice(&sender, seconds);
+        notice = true;
     }
     // A change to the group: what it says.
     if body.is_empty()
         && attachments::of_message(data).is_empty()
         && let Some(context) = &data.group_v2
-        && let Some((notice, timer)) = group_notice(manager, names, context, &sender).await
+        && let Some((notice_text, timer)) = group_notice(manager, names, context, &sender).await
     {
-        body = notice;
+        body = notice_text;
         timer_change = timer_change.or(timer);
+        notice = true;
     }
     if body.is_empty() && attachments.is_empty() {
         return None;
@@ -2645,6 +2708,7 @@ async fn to_chat_message(
         styles,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
+        notice,
         preview: data.preview.first().and_then(|preview| {
             // Only for a link the text has (as Signal's clients require): otherwise a card
             // with a trusted site's title and picture could lead somewhere else entirely.
@@ -3269,6 +3333,7 @@ async fn handle_command(
                 sender_id: own_id(manager).service_id_string(),
                 sender: "You".into(),
                 body: crate::timer_notice("You", seconds),
+                notice: true,
                 timestamp,
                 outgoing: true,
                 expire_timer: (seconds > 0).then_some(seconds),
@@ -3512,7 +3577,12 @@ async fn send_new(
     };
     // As receivers will see them, stickers included.
     let shown_attachments = attachments::of_message(&message);
-    send_data(manager, &thread, message, timestamp).await?;
+    let sent = send_data(manager, &thread, message, timestamp).await;
+    // Sending may have met their new safety number, in the keys fetched to write to them.
+    if let Thread::Contact(recipient) = thread {
+        announce_identity_change(manager, ctx, &mut Names::new(), recipient).await;
+    }
+    sent?;
     let own = own_id(manager).service_id_string();
     // presage sent it with the thread's timer.
     let timer = expire_timer(manager, &thread).await;
@@ -3881,6 +3951,68 @@ mod tests {
         assert!(!from_our_account(own, &content(other, sync())));
         assert!(from_our_account(own, &content(other, data())));
         assert!(from_our_account(own, &content(own, data())));
+    }
+
+    /// What the store saves when a contact's safety number changes is recognised as that note
+    /// (from the store itself, so a change in how presage writes it shows up here); a real
+    /// `Verified` sync message from our devices, which names its contact, is not.
+    #[test]
+    fn a_changed_safety_number_is_recognised() {
+        use presage::{
+            libsignal_service::protocol::{
+                DeviceId, IdentityKeyPair, IdentityKeyStore, ProtocolAddress,
+            },
+            store::Store as _,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let store = SqliteStore::open(":memory:", OnNewIdentity::Trust)
+                .await
+                .unwrap();
+            let contact =
+                ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000002")
+                    .unwrap();
+            let address =
+                ProtocolAddress::new(contact.service_id_string(), DeviceId::new(1).unwrap());
+            let mut identities = store.aci_protocol_store();
+            // Their first key, then a new one (e.g. they reinstalled Signal).
+            for _ in 0..2 {
+                let key = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
+                identities.save_identity(&address, &key).await.unwrap();
+            }
+            let stored: Vec<Content> = store
+                .messages(&Thread::Contact(contact), ..)
+                .await
+                .unwrap()
+                .flatten()
+                .collect();
+            assert_eq!(stored.len(), 1, "one note, for the one change");
+            assert!(is_identity_change(&stored[0]));
+
+            let mut real = stored[0].clone();
+            let ContentBody::SynchronizeMessage(SyncMessage {
+                content: Some(SyncContent::Verified(verified)),
+                ..
+            }) = &mut real.body
+            else {
+                panic!("the note is a Verified sync message");
+            };
+            let mut verifying = stored[0].clone();
+            verified.destination_aci = Some(contact.service_id_string());
+            assert!(!is_identity_change(&real));
+            // Nor is a note of verifying the key.
+            if let ContentBody::SynchronizeMessage(SyncMessage {
+                content: Some(SyncContent::Verified(verified)),
+                ..
+            }) = &mut verifying.body
+            {
+                verified.set_state(presage::proto::verified::State::Verified);
+            }
+            assert!(!is_identity_change(&verifying));
+        });
     }
 
     #[test]
