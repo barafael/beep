@@ -12,14 +12,27 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
 
+use presage::proto::verified::State;
+
 use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
 
 /// Whether a contact's safety number was verified, and for which of their identity keys
-/// (serialized): only that key is verified.
+/// (serialized), in Signal's terms: [`State::Default`] (not verified, or cleared),
+/// [`State::Verified`] (only that key), or [`State::Unverified`] (verified before, changed
+/// since, and not confirmed yet: nothing is sent to them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Verification {
     pub identity_key: Vec<u8>,
-    pub verified: bool,
+    pub state: State,
+}
+
+/// A verification as kept in its tables: `identity_key` and `verified` (Signal's state as a
+/// number) at `at` and the column after.
+fn verification_of(row: &SqliteRow, at: usize) -> Verification {
+    Verification {
+        identity_key: row.get(at),
+        state: State::try_from(row.get::<i64, _>(at + 1) as i32).unwrap_or(State::Default),
+    }
 }
 
 /// A story as kept: a picture (`pointer`, an encoded attachment pointer) or text.
@@ -152,7 +165,8 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (author, ts)
     )",
     // Whether we verified a contact's safety number, and for which of their identity keys: a new
-    // key isn't verified. By the contact's ACI.
+    // key isn't verified. By the contact's ACI; `verified` is Signal's state (0 default,
+    // 1 verified, 2 unverified: changed since verified, not confirmed).
     "CREATE TABLE IF NOT EXISTS b33p_verification (
         aci TEXT PRIMARY KEY NOT NULL,
         identity_key BLOB NOT NULL,
@@ -536,10 +550,7 @@ impl LocalStore {
             .bind(aci)
             .fetch_optional(&self.db)
             .await?;
-        Ok(row.map(|row| Verification {
-            identity_key: row.get(0),
-            verified: row.get::<i64, _>(1) != 0,
-        }))
+        Ok(row.map(|row| verification_of(&row, 0)))
     }
 
     /// Every contact we verified or cleared the verification of, by ACI.
@@ -549,13 +560,7 @@ impl LocalStore {
             .await?;
         Ok(rows
             .iter()
-            .map(|row| {
-                let verification = Verification {
-                    identity_key: row.get(1),
-                    verified: row.get::<i64, _>(2) != 0,
-                };
-                (row.get(0), verification)
-            })
+            .map(|row| (row.get(0), verification_of(row, 1)))
             .collect())
     }
 
@@ -571,7 +576,7 @@ impl LocalStore {
         )
         .bind(aci)
         .bind(&verification.identity_key)
-        .bind(verification.verified as i64)
+        .bind(verification.state as i64)
         .execute(&self.db)
         .await
         .map(drop)
@@ -586,13 +591,7 @@ impl LocalStore {
             .await?;
         Ok(rows
             .iter()
-            .map(|row| {
-                let verification = Verification {
-                    identity_key: row.get(1),
-                    verified: row.get::<i64, _>(2) != 0,
-                };
-                (row.get(0), verification)
-            })
+            .map(|row| (row.get(0), verification_of(row, 1)))
             .collect())
     }
 
@@ -622,7 +621,7 @@ impl LocalStore {
             )
             .bind(aci)
             .bind(&verification.identity_key)
-            .bind(verification.verified as i64)
+            .bind(verification.state as i64)
             .execute(&mut *tx)
             .await?;
         }
@@ -908,9 +907,13 @@ mod tests {
         block_on(async {
             let local = open(&dir).await;
             assert_eq!(local.verification("alice").await.unwrap(), None);
-            let verified = |key: u8, verified| Verification {
+            let verified = |key: u8, verified: bool| Verification {
                 identity_key: vec![key; 33],
-                verified,
+                state: if verified {
+                    State::Verified
+                } else {
+                    State::Default
+                },
             };
             local
                 .set_verification("alice", &verified(1, true))

@@ -54,10 +54,11 @@ pub(crate) async fn sync(
         return Ok((false, None));
     };
     // Verifications came later than the rest: read everything again once to get them.
-    let known = if tables.remote_verifications_read().await.map_err(db)? {
-        tables.storage_version().await.map_err(db)?
-    } else {
+    let first = !tables.remote_verifications_read().await.map_err(db)?;
+    let known = if first {
         0
+    } else {
+        tables.storage_version().await.map_err(db)?
     };
     let Some(manifest) = service
         .manifest_if_changed(known)
@@ -163,7 +164,6 @@ pub(crate) async fn sync(
     // Verifications the phone changed since last time; ours stand otherwise. The caller takes
     // them over (with notes in the chats) and then keeps what the phone said.
     let verified_before = tables.remote_verifications().await.map_err(db)?;
-    let first = !tables.remote_verifications_read().await.map_err(db)?;
     let verified_changed: Vec<(ServiceId, Verification)> =
         changed_verifications(&verified_before, &verifications)
             .into_iter()
@@ -222,13 +222,21 @@ fn changed_verifications<'a>(
     changed
 }
 
-/// Whether the phone verified a contact's safety number, and for which key of theirs.
+/// Whether the phone verified a contact's safety number (or saw it change since), and for which
+/// key of theirs.
 fn verification(contact: &presage::proto::ContactRecord) -> Option<Verification> {
-    use presage::{libsignal_service::protocol::IdentityKey, proto::contact_record::IdentityState};
+    use presage::{
+        libsignal_service::protocol::IdentityKey,
+        proto::{contact_record::IdentityState, verified::State},
+    };
     let key = IdentityKey::decode(&contact.identity_key).ok()?;
     Some(Verification {
         identity_key: key.serialize().to_vec(),
-        verified: contact.identity_state() == IdentityState::Verified,
+        state: match contact.identity_state() {
+            IdentityState::Default => State::Default,
+            IdentityState::Verified => State::Verified,
+            IdentityState::Unverified => State::Unverified,
+        },
     })
 }
 
@@ -832,7 +840,8 @@ mod tests {
     #[test]
     fn reads_verifications_from_contact_records() {
         use presage::{
-            libsignal_service::protocol::IdentityKeyPair, proto::contact_record::IdentityState,
+            libsignal_service::protocol::IdentityKeyPair,
+            proto::{contact_record::IdentityState, verified::State},
         };
         let key = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
         let mut contact = presage::proto::ContactRecord {
@@ -844,11 +853,20 @@ mod tests {
             verification(&contact),
             Some(Verification {
                 identity_key: key.serialize().to_vec(),
-                verified: true,
+                state: State::Verified,
             })
         );
+        // Changed since it was verified, as the phone saw it.
         contact.set_identity_state(IdentityState::Unverified);
-        assert_eq!(verification(&contact).map(|v| v.verified), Some(false));
+        assert_eq!(
+            verification(&contact).map(|v| v.state),
+            Some(State::Unverified)
+        );
+        contact.set_identity_state(IdentityState::Default);
+        assert_eq!(
+            verification(&contact).map(|v| v.state),
+            Some(State::Default)
+        );
         contact.identity_key = vec![1, 2, 3];
         assert_eq!(verification(&contact), None);
     }
@@ -857,24 +875,28 @@ mod tests {
     /// meanwhile isn't undone by the phone repeating what it said before.
     #[test]
     fn takes_only_verifications_changed_on_the_phone() {
-        let of = |key: u8, verified| Verification {
+        use presage::proto::verified::State;
+        let of = |key: u8, state| Verification {
             identity_key: vec![key; 33],
-            verified,
+            state,
         };
         let before = HashMap::from([
-            ("alice".to_string(), of(1, false)),
-            ("bob".to_string(), of(2, true)),
+            ("alice".to_string(), of(1, State::Default)),
+            ("bob".to_string(), of(2, State::Verified)),
         ]);
         let now = HashMap::from([
-            ("alice".to_string(), of(1, false)),
-            ("bob".to_string(), of(2, false)),
-            ("carol".to_string(), of(3, true)),
+            ("alice".to_string(), of(1, State::Default)),
+            ("bob".to_string(), of(2, State::Default)),
+            ("carol".to_string(), of(3, State::Verified)),
         ]);
         let changed: Vec<_> = changed_verifications(&before, &now)
             .into_iter()
-            .map(|(aci, v)| (aci.as_str(), v.verified))
+            .map(|(aci, v)| (aci.as_str(), v.state))
             .collect();
-        assert_eq!(changed, [("bob", false), ("carol", true)]);
+        assert_eq!(
+            changed,
+            [("bob", State::Default), ("carol", State::Verified)]
+        );
     }
 
     #[test]

@@ -387,6 +387,7 @@ async fn run_linked(
         preferences: Rc::default(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
+        trust: Rc::default(),
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
@@ -680,6 +681,9 @@ struct Ctx {
     expiring: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
     storage_changed: Rc<tokio::sync::Notify>,
+    /// How far each contact's safety number is trusted, as the UI was last told; see
+    /// [`publish_trust`].
+    trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
 }
 
 /// The thread a conversation id stands for; see [`conversation_id`].
@@ -746,6 +750,7 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
             let mut conversation = register(threads, thread, title, number, timer);
             conversation.trust =
                 trust_given(manager, who, verifications.get(&who.service_id_string())).await;
+            ctx.trust.borrow_mut().insert(who, conversation.trust);
             all.push(conversation);
         }
     }
@@ -1402,12 +1407,15 @@ async fn take_verifications(
         else {
             continue;
         };
-        let quiet = verifications.first;
+        let verifier = Verifier::Elsewhere {
+            quiet: verifications.first,
+        };
+        // One failing doesn't hold back the others: the storage service won't be read for them
+        // again until the phone changes something.
         if let Err(error) =
-            remember_verification(manager, ctx, *who, &key, verification.verified, quiet).await
+            remember_verification(manager, ctx, *who, &key, verification.state, verifier).await
         {
             warn!(%error, "failed to keep a verification from the phone");
-            return;
         }
     }
     if let Err(error) = ctx
@@ -2003,6 +2011,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
         announce_identity_change(manager, ctx, names, content.metadata.sender).await;
+        refresh_trust(manager, ctx).await;
     }
     match &content.body {
         ContentBody::ReceiptMessage(receipt) => return on_receipt(ctx, receipt).await,
@@ -2455,7 +2464,18 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
             Some((key, group)) => {
                 group_conversation(manager, &ctx.threads, &mut Names::new(), key, group).await
             }
-            None => register(&ctx.threads, thread, title, subtitle, timer),
+            None => {
+                let contact = match thread {
+                    Thread::Contact(who) => Some(who),
+                    Thread::Group(_) => None,
+                };
+                let mut conversation = register(&ctx.threads, thread, title, subtitle, timer);
+                if let Some(who) = contact {
+                    conversation.trust = trust_of(manager, &ctx.tables, who).await;
+                    ctx.trust.borrow_mut().insert(who, conversation.trust);
+                }
+                conversation
+            }
         };
         conversation.settings = ctx
             .tables
@@ -2611,22 +2631,10 @@ async fn show_identity_notes(
     let Ok(recent) = manager.store().messages(&thread, since..).await else {
         return;
     };
-    let mut changed = false;
-    for content in recent.flatten() {
-        let Some(state) = identity_note(&content) else {
-            continue;
-        };
-        changed |= state == presage::proto::verified::State::Default;
+    for content in recent.flatten().filter(|c| identity_note(c).is_some()) {
         if let Some(message) = to_chat_message(manager, names, id.clone(), &content).await {
             let _ = ctx.events.send(Event::Message(message));
         }
-    }
-    // A new key isn't verified, even if the old one was.
-    if changed {
-        let _ = ctx.events.send(Event::Trust {
-            conversation: id,
-            trust: trust_of(manager, &ctx.tables, contact).await,
-        });
     }
 }
 
@@ -2843,6 +2851,8 @@ async fn handle(
     if to_storage && ctx.preferences.get().sync_to_phone {
         ctx.storage_changed.notify_one();
     }
+    // Sending may have met a new key of a verified contact.
+    refresh_trust(manager, ctx).await;
     result
 }
 
@@ -3513,38 +3523,77 @@ async fn trust_of(manager: &Mgr, tables: &LocalStore, who: ServiceId) -> crate::
 }
 
 /// [`trust_of`] with what is kept about `who`'s verification already read; their key is only
-/// looked up if they were verified.
+/// looked up if there is something to compare it with.
 async fn trust_given(
     manager: &Mgr,
     who: ServiceId,
     verification: Option<&crate::local::Verification>,
 ) -> crate::Trust {
-    if !verification.is_some_and(|v| v.verified) {
+    use presage::proto::verified::State;
+    if !verification.is_some_and(|v| v.state != State::Default) {
         return crate::Trust::Unverified;
     }
     trust(verification, identity_of(manager, who).await.as_ref())
 }
 
 /// How far a safety number is trusted, given what is kept about its verification and the key
-/// the contact has now: verified only for that key; changed if an earlier one was.
+/// the contact has now: verified only for that key; changed if an earlier one was, or if the
+/// change was seen on another device and not confirmed there (Signal's "unverified").
 fn trust(
     verification: Option<&crate::local::Verification>,
     key: Option<&presage::libsignal_service::protocol::IdentityKey>,
 ) -> crate::Trust {
+    use presage::proto::verified::State;
     match (verification, key) {
-        (Some(v), Some(key)) if v.verified && *v.identity_key == *key.serialize() => {
-            crate::Trust::Verified
-        }
-        (Some(v), Some(_)) if v.verified => crate::Trust::Changed,
-        // Not verified, or no key yet: nothing to compare, nothing changed.
+        (Some(v), Some(key)) => match v.state {
+            State::Default => crate::Trust::Unverified,
+            State::Verified if *v.identity_key == *key.serialize() => crate::Trust::Verified,
+            State::Verified | State::Unverified => crate::Trust::Changed,
+        },
+        // Nothing kept, or no key yet: nothing to compare, nothing changed.
         _ => crate::Trust::Unverified,
     }
 }
 
-/// Marks the safety number with a contact verified, or clears that, as Signal's apps do: a
-/// null message to them first, so that what the server sees is an ordinary message to them,
-/// then the change to our other devices with the same padding; then here, with a note in the
-/// chat. Our devices not hearing of it is an error, and nothing changes.
+/// Tells the UI how far `who`'s safety number is trusted, if that isn't what it was last told.
+fn publish_trust(ctx: &Ctx, who: ServiceId, trust: crate::Trust) {
+    if ctx.trust.borrow_mut().insert(who, trust) != Some(trust) {
+        let _ = ctx.events.send(Event::Trust {
+            conversation: conversation_id(&Thread::Contact(who)),
+            trust,
+        });
+    }
+}
+
+/// Works out again how far each contact with a kept verification (few) is trusted, and tells the
+/// UI of those that changed. Their key can change in any message sent or received (the store
+/// notices it first), so this runs after each.
+async fn refresh_trust(manager: &Mgr, ctx: &Ctx) {
+    use presage::proto::verified::State;
+    let Ok(all) = ctx.tables.verifications().await else {
+        return;
+    };
+    for (aci, verification) in all.iter().filter(|(_, v)| v.state != State::Default) {
+        if let Some(who) = ServiceId::parse_from_service_id_string(aci) {
+            let trust = trust_given(manager, who, Some(verification)).await;
+            publish_trust(ctx, who, trust);
+        }
+    }
+}
+
+/// Where a verification comes from: marked here, or taken over from another device's message
+/// or the storage service (`quiet` on the first read, which brings what was set before).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verifier {
+    Here,
+    Elsewhere { quiet: bool },
+}
+
+/// Marks the safety number with a contact verified, or clears that (which also accepts one that
+/// changed): here first, with a note in the chat; then, as Signal's apps do, a null message to
+/// them (so that what the server sees is an ordinary message to them) and the change to our
+/// other devices with the same padding. Not reaching our devices is an error to show, but it
+/// is done here: accepting a change is ours to decide, and writing to them shouldn't wait.
 async fn set_verified(
     manager: &mut Mgr,
     ctx: &Ctx,
@@ -3552,6 +3601,7 @@ async fn set_verified(
     verified: bool,
 ) -> Result<(), String> {
     use presage::libsignal_service::content::NullMessage;
+    use presage::proto::verified::State;
     let thread = ctx.threads.borrow().get(conversation).cloned();
     let who = match thread {
         Some(Thread::Contact(who @ ServiceId::Aci(_))) if who != own_id(manager) => who,
@@ -3560,6 +3610,12 @@ async fn set_verified(
     let key = identity_of(manager, who)
         .await
         .ok_or("there is no safety number with them yet")?;
+    let state = if verified {
+        State::Verified
+    } else {
+        State::Default
+    };
+    remember_verification(manager, ctx, who, &key, state, Verifier::Here).await?;
     let padding = NullMessage::generate(&mut rand::rng()).padding;
     let timestamp = now_millis();
     if let Err(error) = manager
@@ -3579,8 +3635,8 @@ async fn set_verified(
     manager
         .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
-        .map_err(|e| format!("failed to tell your other devices: {e}"))?;
-    remember_verification(manager, ctx, who, &key, verified, false).await
+        .map_err(|e| format!("done here, but your other devices couldn't be told: {e}"))?;
+    Ok(())
 }
 
 /// What tells our other devices that the safety number with `who` (their `key`) is verified,
@@ -3631,79 +3687,96 @@ fn verified_target(
     Some((who, key))
 }
 
-/// Keeps whether `who`'s `key` is verified, notes the change in their chat and shows it, unless
-/// it was already so (or `quiet`).
+/// Keeps the verification `state` of `who`'s `key`, notes the change in their chat and shows it,
+/// unless it was already so. From another device, a key that isn't the one we have for them is
+/// taken over as theirs, as Signal's apps do: the phone compared it.
 async fn remember_verification(
     manager: &Mgr,
     ctx: &Ctx,
     who: ServiceId,
     key: &presage::libsignal_service::protocol::IdentityKey,
-    verified: bool,
-    quiet: bool,
+    state: presage::proto::verified::State,
+    verifier: Verifier,
 ) -> Result<(), String> {
-    use presage::libsignal_service::protocol::{DeviceId, ProtocolAddress};
+    use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
+    use presage::store::Store as _;
     let aci = who.service_id_string();
+    let address = ProtocolAddress::new(aci.clone(), DeviceId::new(1).expect("a device id"));
+    let mut current = identity_of(manager, who).await;
+    if verifier != Verifier::Here && current.as_ref() != Some(key) {
+        let mut store = manager.store().aci_protocol_store();
+        match store.save_identity(&address, key).await {
+            Ok(_) => current = identity_of(manager, who).await,
+            Err(error) => warn!(%error, "failed to take over a key verified on another device"),
+        }
+    }
     let verification = crate::local::Verification {
         identity_key: key.serialize().to_vec(),
-        verified,
+        state,
     };
     let db = |error: sqlx::Error| format!("failed to save: {error}");
     let before = ctx.tables.verification(&aci).await.map_err(db)?;
     if before.as_ref() == Some(&verification) {
         return Ok(());
     }
-    // A note only for their key as it is here: one for another (e.g. the phone verified a key
-    // we don't have yet) would contradict what the details page says.
-    let current = identity_of(manager, who).await;
+    // A note only for their key as it is here: one for another would contradict what the
+    // details page says.
+    let quiet = verifier == (Verifier::Elsewhere { quiet: true });
     let note = verification_note(before.as_ref(), &verification)
         .filter(|_| !quiet && current.as_ref() == Some(key));
     ctx.tables
         .set_verification(&aci, &verification)
         .await
         .map_err(db)?;
-    let conversation = conversation_id(&Thread::Contact(who));
-    let _ = ctx.events.send(Event::Trust {
-        conversation,
-        trust: trust_of(manager, &ctx.tables, who).await,
-    });
+    publish_trust(ctx, who, trust(Some(&verification), current.as_ref()));
     if let Some(state) = note {
         let since = now_millis();
-        let address = ProtocolAddress::new(aci, DeviceId::new(1).expect("a device id"));
-        presage::store::save_trusted_identity_message(manager.store(), &address, *key, state)
+        match presage::store::save_trusted_identity_message(manager.store(), &address, *key, state)
             .await
-            .map_err(|e| format!("failed to save the note: {e}"))?;
-        show_identity_notes(manager, ctx, &mut Names::new(), who, since).await;
+        {
+            Ok(()) => show_identity_notes(manager, ctx, &mut Names::new(), who, since).await,
+            // The verification itself is kept; only its note is missing.
+            Err(error) => warn!(%error, "failed to save the note of a verification"),
+        }
     }
     Ok(())
 }
 
 /// The note in the chat a change of a verification deserves: having verified the key, or having
-/// cleared a verification of it. Nothing for no change, nor for clearing what wasn't verified.
+/// cleared a verification of it. Nothing for no change, for clearing what wasn't verified, nor
+/// for another device seeing their key change (Signal's "unverified": the change notice says so).
 fn verification_note(
     before: Option<&crate::local::Verification>,
     after: &crate::local::Verification,
 ) -> Option<presage::proto::verified::State> {
     use presage::proto::verified::State;
     if before == Some(after) {
-        None
-    } else if after.verified {
-        Some(State::Verified)
-    } else if before.is_some_and(|b| b.verified && b.identity_key == after.identity_key) {
-        Some(State::Unverified)
-    } else {
-        None
+        return None;
+    }
+    match after.state {
+        State::Verified => Some(State::Verified),
+        State::Default
+            if before.is_some_and(|b| {
+                b.state == State::Verified && b.identity_key == after.identity_key
+            }) =>
+        {
+            Some(State::Unverified)
+        }
+        _ => None,
     }
 }
 
-/// Our phone (or another device) verified the safety number with a contact, or cleared that.
+/// Our phone (or another device) verified the safety number with a contact, cleared that, or saw
+/// it change.
 async fn on_verified_elsewhere(manager: &Mgr, ctx: &Ctx, verified: &presage::proto::Verified) {
-    use presage::proto::verified::State;
     let Some((who, key)) = verified_target(verified) else {
         warn!("a verification from another device without whom or which key it is about");
         return;
     };
-    let is = verified.state() == State::Verified;
-    if let Err(error) = remember_verification(manager, ctx, who, &key, is, false).await {
+    let verifier = Verifier::Elsewhere { quiet: false };
+    if let Err(error) =
+        remember_verification(manager, ctx, who, &key, verified.state(), verifier).await
+    {
         warn!(%error, "failed to keep a verification from another device");
     }
 }
@@ -4332,24 +4405,39 @@ mod tests {
     #[test]
     fn verifications_get_a_note_only_when_it_says_something() {
         use crate::local::Verification;
-        use presage::proto::verified::State;
-        let of = |key: u8, verified| Verification {
+        use presage::proto::verified::State::{self, Default as Cleared, Unverified, Verified};
+        let of = |key: u8, state: State| Verification {
             identity_key: vec![key; 33],
-            verified,
+            state,
         };
-        assert_eq!(verification_note(None, &of(1, true)), Some(State::Verified));
-        assert_eq!(verification_note(Some(&of(1, true)), &of(1, true)), None);
+        assert_eq!(verification_note(None, &of(1, Verified)), Some(Verified));
         assert_eq!(
-            verification_note(Some(&of(1, true)), &of(1, false)),
-            Some(State::Unverified)
+            verification_note(Some(&of(1, Verified)), &of(1, Verified)),
+            None
         );
-        assert_eq!(verification_note(None, &of(1, false)), None);
-        assert_eq!(verification_note(Some(&of(1, false)), &of(1, false)), None);
-        // Verified their old key; clearing for the new one says nothing of it.
-        assert_eq!(verification_note(Some(&of(1, true)), &of(2, false)), None);
         assert_eq!(
-            verification_note(Some(&of(1, true)), &of(2, true)),
-            Some(State::Verified)
+            verification_note(Some(&of(1, Verified)), &of(1, Cleared)),
+            Some(Unverified),
+            "cleared"
+        );
+        assert_eq!(verification_note(None, &of(1, Cleared)), None);
+        assert_eq!(
+            verification_note(Some(&of(1, Cleared)), &of(1, Cleared)),
+            None
+        );
+        // Verified their old key; clearing for the new one says nothing of it.
+        assert_eq!(
+            verification_note(Some(&of(1, Verified)), &of(2, Cleared)),
+            None
+        );
+        assert_eq!(
+            verification_note(Some(&of(1, Verified)), &of(2, Verified)),
+            Some(Verified)
+        );
+        // Another device saw their key change: the change notice says so already.
+        assert_eq!(
+            verification_note(Some(&of(1, Verified)), &of(2, Unverified)),
+            None
         );
     }
 
@@ -4405,24 +4493,38 @@ mod tests {
     #[test]
     fn trust_follows_the_key() {
         use crate::{Trust, local::Verification};
-        use presage::libsignal_service::protocol::IdentityKeyPair;
+        use presage::{
+            libsignal_service::protocol::{IdentityKey, IdentityKeyPair},
+            proto::verified::State::{self, Default as Cleared, Unverified, Verified},
+        };
         let old = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
         let new = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
-        let of = |key: &presage::libsignal_service::protocol::IdentityKey, verified| Verification {
+        let of = |key: &IdentityKey, state: State| Verification {
             identity_key: key.serialize().to_vec(),
-            verified,
+            state,
         };
         assert_eq!(trust(None, Some(&new)), Trust::Unverified);
-        assert_eq!(trust(Some(&of(&new, true)), Some(&new)), Trust::Verified);
-        assert_eq!(trust(Some(&of(&old, true)), Some(&new)), Trust::Changed);
-        assert_eq!(trust(Some(&of(&old, false)), Some(&new)), Trust::Unverified);
         assert_eq!(
-            trust(Some(&of(&new, false)), Some(&new)),
+            trust(Some(&of(&new, Verified)), Some(&new)),
+            Trust::Verified
+        );
+        assert_eq!(trust(Some(&of(&old, Verified)), Some(&new)), Trust::Changed);
+        assert_eq!(
+            trust(Some(&of(&old, Cleared)), Some(&new)),
+            Trust::Unverified
+        );
+        assert_eq!(
+            trust(Some(&of(&new, Cleared)), Some(&new)),
             Trust::Unverified,
             "confirmed"
         );
+        // The phone saw it change after it was verified, and it isn't confirmed yet.
         assert_eq!(
-            trust(Some(&of(&old, true)), None),
+            trust(Some(&of(&new, Unverified)), Some(&new)),
+            Trust::Changed
+        );
+        assert_eq!(
+            trust(Some(&of(&old, Verified)), None),
             Trust::Unverified,
             "no key yet"
         );
