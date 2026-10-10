@@ -1399,7 +1399,6 @@ impl ChatState {
         self.details = None;
     }
 
-    /// The details page, if shown: `Some(None)` while it is gathered.
     /// Marks the safety number on the open details page verified, or clears that.
     pub fn set_verified(&mut self, verified: bool) -> Option<Command> {
         let (conversation, details) = self.details.as_ref()?;
@@ -1410,6 +1409,7 @@ impl ChatState {
         })
     }
 
+    /// The details page, if shown: `Some(None)` while it is gathered.
     pub fn details(&self) -> Option<Option<&Details>> {
         self.details.as_ref().map(|(_, details)| details.as_ref())
     }
@@ -3706,10 +3706,6 @@ mod tests {
             .collect()
     }
 
-    /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
-    /// not unread, and no read receipt for it.
-    /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:
-    /// nothing to edit or delete for everyone, and "edit the last one" passes over them.
     /// Verifying acts on the open details page, and only with a safety number to verify; the
     /// answer updates what it shows.
     #[test]
@@ -3751,6 +3747,8 @@ mod tests {
         assert!(state.details().unwrap().unwrap().verified);
     }
 
+    /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:
+    /// nothing to edit or delete for everyone, and "edit the last one" passes over them.
     #[test]
     fn our_notices_cannot_be_edited() {
         let mut state = state();
@@ -3772,6 +3770,8 @@ mod tests {
         assert_eq!(state.editing().unwrap().timestamp, now - 2);
     }
 
+    /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
+    /// not unread, and no read receipt for it.
     #[test]
     fn notices_are_shown_and_nothing_more() {
         let notice = |timestamp| ChatMessage {

@@ -21,11 +21,21 @@ use tracing::{debug, info};
 use crate::{
     ChatSettings, ConversationId, Event, Events,
     local::{LocalStore, Verification},
-    signal::{self, Mgr},
+    signal::Mgr,
 };
 
 /// Items read per request.
 const BATCH: usize = 500;
+
+/// Verifications a read of the storage service found: those the phone changed since the last
+/// read, for the caller to take over (it notes them in the chats), and all it says now, to keep
+/// once they are; see [`LocalStore::set_remote_verifications`].
+pub(crate) struct Verifications {
+    /// The first read of them: what was set before b33p read them, taken over quietly.
+    pub first: bool,
+    pub changed: Vec<(ServiceId, Verification)>,
+    pub now: HashMap<String, Verification>,
+}
 
 /// Takes over what changed on the phone since the last time; tells the UI what changed here.
 /// Returns whether b33p knows what the phone says (it doesn't before the phone has sent the
@@ -34,22 +44,27 @@ pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<bool, String> {
+) -> Result<(bool, Option<Verifications>), String> {
     let Some(service) = manager
         .storage_service()
         .await
         .map_err(|e| format!("failed to reach the storage service: {e}"))?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
-        return Ok(false);
+        return Ok((false, None));
     };
-    let known = tables.storage_version().await.map_err(db)?;
+    // Verifications came later than the rest: read everything again once to get them.
+    let known = if tables.remote_verifications_read().await.map_err(db)? {
+        tables.storage_version().await.map_err(db)?
+    } else {
+        0
+    };
     let Some(manifest) = service
         .manifest_if_changed(known)
         .await
         .map_err(|e| format!("failed to read the storage manifest: {e}"))?
     else {
-        return Ok(true);
+        return Ok((true, None));
     };
     let wanted: Vec<Vec<u8>> = manifest
         .identifiers
@@ -145,26 +160,20 @@ pub(crate) async fn sync(
     let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
     tables.set_folders(&folders).await.map_err(db)?;
     let _ = events.send(Event::Folders(folders));
-    // Verifications the phone changed since last time; ours stand otherwise.
+    // Verifications the phone changed since last time; ours stand otherwise. The caller takes
+    // them over (with notes in the chats) and then keeps what the phone said.
     let verified_before = tables.remote_verifications().await.map_err(db)?;
-    let mut verified_changed = Vec::new();
-    for (aci, verification) in changed_verifications(&verified_before, &verifications) {
-        tables
-            .set_verification(aci, verification)
-            .await
-            .map_err(db)?;
-        verified_changed.extend(ServiceId::parse_from_service_id_string(aci));
-    }
-    tables
-        .set_remote_verifications(&verifications)
-        .await
-        .map_err(db)?;
-    for who in verified_changed {
-        let _ = events.send(Event::Verified {
-            conversation: ConversationId::contact(&who.service_id_string()),
-            verified: signal::is_verified(manager, tables, who).await,
-        });
-    }
+    let first = !tables.remote_verifications_read().await.map_err(db)?;
+    let verified_changed: Vec<(ServiceId, Verification)> =
+        changed_verifications(&verified_before, &verifications)
+            .into_iter()
+            .filter_map(|(aci, v)| {
+                Some((
+                    ServiceId::parse_from_service_id_string(aci)?,
+                    Verification::clone(v),
+                ))
+            })
+            .collect();
     for (position, id) in pins.iter().enumerate() {
         remote.entry(id.clone()).or_default().pinned = Some(position as u32);
     }
@@ -189,7 +198,14 @@ pub(crate) async fn sync(
             break;
         }
     }
-    Ok(true)
+    Ok((
+        true,
+        Some(Verifications {
+            first,
+            changed: verified_changed,
+            now: verifications,
+        }),
+    ))
 }
 
 /// The verifications that changed on the phone since it said `before`; the rest are left as

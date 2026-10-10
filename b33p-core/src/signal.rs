@@ -1347,7 +1347,8 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
     const SETTLE: Duration = Duration::from_secs(2);
     loop {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
-            Ok(known) => {
+            Ok((known, verifications)) => {
+                take_verifications(&manager, &ctx, verifications).await;
                 if known && !ctx.events.send(Event::StorageRead) {
                     return;
                 }
@@ -1379,6 +1380,39 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
     }
 }
 
+/// Takes over the verifications the storage service says the phone changed (quietly on the
+/// first read, which brings what was set before), then keeps what it said.
+async fn take_verifications(
+    manager: &Mgr,
+    ctx: &Ctx,
+    verifications: Option<crate::storage::Verifications>,
+) {
+    let Some(verifications) = verifications else {
+        return;
+    };
+    for (who, verification) in &verifications.changed {
+        let Ok(key) =
+            presage::libsignal_service::protocol::IdentityKey::decode(&verification.identity_key)
+        else {
+            continue;
+        };
+        let quiet = verifications.first;
+        if let Err(error) =
+            remember_verification(manager, ctx, *who, &key, verification.verified, quiet).await
+        {
+            warn!(%error, "failed to keep a verification from the phone");
+            return;
+        }
+    }
+    if let Err(error) = ctx
+        .tables
+        .set_remote_verifications(&verifications.now)
+        .await
+    {
+        warn!(%error, "failed to keep what the phone says about verifications");
+    }
+}
+
 /// Writes what changed here to the storage service, reading first when the phone changed
 /// something meanwhile; then tells our other devices to fetch it.
 async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
@@ -1386,9 +1420,12 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
     for _ in 0..3 {
         match crate::storage::push(manager, &ctx.tables).await {
             Ok(Written::Stale) => {
-                if let Err(error) = crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
-                    warn!(%error, "failed to read the storage service");
-                    return;
+                match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
+                    Ok((_, verifications)) => take_verifications(manager, ctx, verifications).await,
+                    Err(error) => {
+                        warn!(%error, "failed to read the storage service");
+                        return;
+                    }
                 }
             }
             Ok(Written::Records(_)) => {
@@ -2568,10 +2605,22 @@ async fn show_identity_notes(
     let Ok(recent) = manager.store().messages(&thread, since..).await else {
         return;
     };
-    for content in recent.flatten().filter(|c| identity_note(c).is_some()) {
+    let mut changed = false;
+    for content in recent.flatten() {
+        let Some(state) = identity_note(&content) else {
+            continue;
+        };
+        changed |= state == presage::proto::verified::State::Default;
         if let Some(message) = to_chat_message(manager, names, id.clone(), &content).await {
             let _ = ctx.events.send(Event::Message(message));
         }
+    }
+    // A new key isn't verified, even if the old one was.
+    if changed {
+        let _ = ctx.events.send(Event::Verified {
+            conversation: id,
+            verified: is_verified(manager, &ctx.tables, contact).await,
+        });
     }
 }
 
@@ -3472,7 +3521,6 @@ async fn set_verified(
     verified: bool,
 ) -> Result<(), String> {
     use presage::libsignal_service::content::NullMessage;
-    use presage::proto::verified::State;
     let thread = ctx.threads.borrow().get(conversation).cloned();
     let who = match thread {
         Some(Thread::Contact(who @ ServiceId::Aci(_))) if who != own_id(manager) => who,
@@ -3495,36 +3543,72 @@ async fn set_verified(
     {
         warn!(%error, "failed to send the null message that goes with a verification");
     }
-    let sync = SyncMessage {
-        content: Some(SyncContent::Verified(presage::proto::Verified {
-            destination_aci: Some(who.service_id_string()),
-            destination_aci_binary: Some(who.service_id_binary()),
-            identity_key: Some(key.serialize().to_vec()),
-            state: Some(if verified {
-                State::Verified
-            } else {
-                State::Default
-            } as i32),
-            null_message: padding,
-        })),
-        ..SyncMessage::with_padding(&mut rand::rng())
-    };
+    let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
     manager
         .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
         .map_err(|e| format!("failed to tell your other devices: {e}"))?;
-    remember_verification(manager, ctx, who, &key, verified).await
+    remember_verification(manager, ctx, who, &key, verified, false).await
+}
+
+/// What tells our other devices that the safety number with `who` (their `key`) is verified,
+/// or not anymore: Signal's apps clear it to the default state. `padding` is the null message's
+/// sent to them with it.
+fn verified_sync(
+    who: ServiceId,
+    key: &presage::libsignal_service::protocol::IdentityKey,
+    verified: bool,
+    padding: Option<Vec<u8>>,
+) -> SyncMessage {
+    use presage::proto::verified::State;
+    let state = if verified {
+        State::Verified
+    } else {
+        State::Default
+    };
+    SyncMessage {
+        content: Some(SyncContent::Verified(presage::proto::Verified {
+            destination_aci: Some(who.service_id_string()),
+            destination_aci_binary: Some(who.service_id_binary()),
+            identity_key: Some(key.serialize().to_vec()),
+            state: Some(state as i32),
+            null_message: padding,
+        })),
+        ..SyncMessage::with_padding(&mut rand::rng())
+    }
+}
+
+/// Whom and which key of theirs a verification from another device is about: a contact's ACI
+/// and a key that decodes.
+fn verified_target(
+    verified: &presage::proto::Verified,
+) -> Option<(ServiceId, presage::libsignal_service::protocol::IdentityKey)> {
+    use presage::libsignal_service::protocol::IdentityKey;
+    let who = verified
+        .destination_aci_binary
+        .as_deref()
+        .and_then(ServiceId::parse_from_service_id_binary)
+        .or_else(|| {
+            verified
+                .destination_aci
+                .as_deref()
+                .and_then(ServiceId::parse_from_service_id_string)
+        })
+        .filter(|who| matches!(who, ServiceId::Aci(_)))?;
+    let key = IdentityKey::decode(verified.identity_key.as_deref()?).ok()?;
+    Some((who, key))
 }
 
 /// Keeps whether `who`'s `key` is verified, notes the change in their chat and shows it, unless
-/// it was already so.
+/// it was already so (or `quiet`).
 async fn remember_verification(
     manager: &Mgr,
     ctx: &Ctx,
     who: ServiceId,
     key: &presage::libsignal_service::protocol::IdentityKey,
     verified: bool,
+    quiet: bool,
 ) -> Result<(), String> {
     use presage::libsignal_service::protocol::{DeviceId, ProtocolAddress};
     let aci = who.service_id_string();
@@ -3537,7 +3621,11 @@ async fn remember_verification(
     if before.as_ref() == Some(&verification) {
         return Ok(());
     }
-    let note = verification_note(before.as_ref(), &verification);
+    // A note only for their key as it is here: one for another (e.g. the phone verified a key
+    // we don't have yet) would contradict what the details page says.
+    let current = identity_of(manager, who).await;
+    let note = verification_note(before.as_ref(), &verification)
+        .filter(|_| !quiet && current.as_ref() == Some(key));
     ctx.tables
         .set_verification(&aci, &verification)
         .await
@@ -3578,30 +3666,13 @@ fn verification_note(
 
 /// Our phone (or another device) verified the safety number with a contact, or cleared that.
 async fn on_verified_elsewhere(manager: &Mgr, ctx: &Ctx, verified: &presage::proto::Verified) {
-    use presage::libsignal_service::protocol::IdentityKey;
     use presage::proto::verified::State;
-    let who = verified
-        .destination_aci_binary
-        .as_deref()
-        .and_then(ServiceId::parse_from_service_id_binary)
-        .or_else(|| {
-            verified
-                .destination_aci
-                .as_deref()
-                .and_then(ServiceId::parse_from_service_id_string)
-        });
-    let (Some(who @ ServiceId::Aci(_)), Some(key)) = (
-        who,
-        verified
-            .identity_key
-            .as_deref()
-            .and_then(|key| IdentityKey::decode(key).ok()),
-    ) else {
+    let Some((who, key)) = verified_target(verified) else {
         warn!("a verification from another device without whom or which key it is about");
         return;
     };
     let is = verified.state() == State::Verified;
-    if let Err(error) = remember_verification(manager, ctx, who, &key, is).await {
+    if let Err(error) = remember_verification(manager, ctx, who, &key, is, false).await {
         warn!(%error, "failed to keep a verification from another device");
     }
 }
@@ -4249,6 +4320,53 @@ mod tests {
             verification_note(Some(&of(1, true)), &of(2, true)),
             Some(State::Verified)
         );
+    }
+
+    /// What tells our other devices about a verification is what Signal's apps send: the
+    /// contact's ACI both ways, their serialized key, the state (cleared to the default), and the
+    /// null message's padding; and what they send back is read the same way.
+    #[test]
+    fn verifications_to_and_from_other_devices() {
+        use presage::{libsignal_service::protocol::IdentityKeyPair, proto::verified::State};
+        let who = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000002")
+            .unwrap();
+        let key = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
+        let padding = Some(vec![7; 12]);
+        let verified_of = |sync: SyncMessage| match sync.content {
+            Some(SyncContent::Verified(verified)) => verified,
+            other => panic!("not a verification: {other:?}"),
+        };
+
+        let marked = verified_of(verified_sync(who, &key, true, padding.clone()));
+        assert_eq!(marked.destination_aci, Some(who.service_id_string()));
+        assert_eq!(marked.destination_aci_binary, Some(who.service_id_binary()));
+        assert_eq!(marked.identity_key.as_deref().map(<[u8]>::len), Some(33));
+        assert_eq!(marked.state(), State::Verified);
+        assert_eq!(marked.null_message, padding);
+        let cleared = verified_of(verified_sync(who, &key, false, None));
+        assert_eq!(cleared.state(), State::Default);
+
+        assert_eq!(verified_target(&marked), Some((who, key)));
+        let by_string = presage::proto::Verified {
+            destination_aci_binary: None,
+            ..marked.clone()
+        };
+        assert_eq!(verified_target(&by_string), Some((who, key)));
+        let pni = presage::proto::Verified {
+            destination_aci: None,
+            destination_aci_binary: Some(
+                ServiceId::parse_from_service_id_string("PNI:00000000-0000-0000-0000-000000000002")
+                    .unwrap()
+                    .service_id_binary(),
+            ),
+            ..marked.clone()
+        };
+        assert_eq!(verified_target(&pni), None, "only contacts' ACIs");
+        let keyless = presage::proto::Verified {
+            identity_key: None,
+            ..marked
+        };
+        assert_eq!(verified_target(&keyless), None);
     }
 
     #[test]

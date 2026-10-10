@@ -790,7 +790,7 @@ pub enum Command {
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
     /// Marks the safety number with a contact as verified (compared with theirs), or clears
-    /// that; tells our other devices, and answers with [`Event::Details`].
+    /// that; tells our other devices, and answers with [`Event::Verified`] if it changed.
     SetVerified {
         conversation: ConversationId,
         verified: bool,

@@ -579,6 +579,16 @@ impl LocalStore {
             .collect())
     }
 
+    /// Whether what the storage service says about verifications was ever read: until then,
+    /// the whole manifest is read again even if it didn't change.
+    pub(crate) async fn remote_verifications_read(&self) -> Result<bool, sqlx::Error> {
+        let read: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'remote_verifications'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(read.is_some())
+    }
+
     /// Replaces what the storage service said last about verifications.
     pub(crate) async fn set_remote_verifications(
         &self,
@@ -599,6 +609,12 @@ impl LocalStore {
             .execute(&mut *tx)
             .await?;
         }
+        sqlx::query(
+            "INSERT INTO b33p_meta (key, value) VALUES ('remote_verifications', 1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
     }
 
@@ -894,7 +910,9 @@ mod tests {
             );
 
             let remote = HashMap::from([("alice".to_string(), verified(1, true))]);
+            assert!(!local.remote_verifications_read().await.unwrap());
             local.set_remote_verifications(&remote).await.unwrap();
+            assert!(local.remote_verifications_read().await.unwrap());
             assert_eq!(local.remote_verifications().await.unwrap(), remote);
             local
                 .set_remote_verifications(&HashMap::new())

@@ -56,15 +56,16 @@ PR lands. A CI job (build, test, clippy) later.
 
 By how much they matter, most first:
 
-- **Safety numbers:** a notice when a contact's safety number changes is done (presage#449
-  makes the store report real changes and note them; b33p shows the note as a centred line,
-  without notification, unread count or receipt). Left: marking it verified (and sending that
-  to our other devices; reading what the phone set), and resetting it on a change. Known limits
-  of the notice: it is timed when the change was noticed, so after a long time offline it can
-  sort below the first message with the new key; it shows in the 1:1 chat only, not in shared
-  groups; it appears live when something comes from them or we write to them 1:1 within five
-  minutes of the change (a change met while sending to a group shows when the chat is opened);
-  the live path (`announce_identity_change`) has no test, as it needs a linked manager. This is about trust, so it comes first.
+- **Safety numbers:** done: a notice when a contact's safety number changes (presage#449), and
+  marking it verified or clearing that from the details page, told to our other devices as
+  Signal's apps do and taken over from the phone (its sync messages and the storage service),
+  with notes in the chat. Verified is per key, so a new key isn't. Left: when a verified
+  contact's key changes, Signal blocks sending until you confirm; b33p only shows the notice.
+  Known limits: the change notice is timed when the change was noticed (after a long time
+  offline it can sort below the first message with the new key); notices show in the 1:1 chat
+  only, not in shared groups; a change notice appears live only within five minutes of the
+  change; the parts that need a linked account (`announce_identity_change`, `set_verified`,
+  `remember_verification`) have no test, the rest does.
 - **Groups:** accepting an invitation here (now done on the phone); adding people known only
   by phone number (invite them by PNI); retrying a change that clashed with someone else's;
   the group picture; invite links and join requests.
