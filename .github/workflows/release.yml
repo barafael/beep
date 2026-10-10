@@ -6,8 +6,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    # TEMPORARY: lets the branch test the workflow before it reaches main.
-    branches: [release-ci]
   workflow_dispatch:
 
 permissions:
