@@ -84,7 +84,8 @@ jobs:
           mkdir "$NAME"
           cp target/release/b33p packaging/linux/io.github.barafael.B33p.desktop "$NAME/"
           cp b33p-slint/assets/b33p.svg "$NAME/io.github.barafael.B33p.svg"
-          tar czf "$NAME.tar.gz" "$NAME"
+          # xz, as the .deb uses: 12.1 MB instead of gzip's 17.2 MB for this binary.
+          tar -I "xz -9 -T0" -cf "$NAME.tar.xz" "$NAME"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb
@@ -122,7 +123,7 @@ jobs:
           name: b33p-linux-${{ matrix.arch }}
           path: |
             b33p-*.AppImage
-            b33p-*.tar.gz
+            b33p-*.tar.xz
             b33p-*.deb
           if-no-files-found: error
 
