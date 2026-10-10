@@ -19,6 +19,8 @@ export struct ConversationItem {
     blocked: bool,
     // A group we're no longer in.
     left: bool,
+    // A group we're invited to (and not in yet): Accept or Decline.
+    invited: bool,
     // A contact whose safety number changed since we verified it: nothing is sent until that
     // is confirmed.
     safety-changed: bool,
@@ -2082,6 +2084,8 @@ export component AppWindow inherits Window {
     callback set-verified(bool);
     // Accepts the changed safety number of the contact with this id, to write to them again.
     callback confirm-safety-number(string);
+    // Answers the invitation to the group with this id: join (true) or turn it down.
+    callback answer-invitation(string, bool);
     callback describe-group(string);
     callback set-member-admin(string, bool);
     callback remove-member(string);
@@ -3510,7 +3514,30 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.conversations[root.selected].left: Rectangle {
+                    if root.conversations[root.selected].invited: Rectangle {
+                        background: Palette.alternate-background;
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+                            Text {
+                                text: "You're invited to join this group. Its members see you once you join.";
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                color: Palette.foreground;
+                            }
+                            Button {
+                                text: "Decline";
+                                clicked => { root.answer-invitation(root.conversations[root.selected].id, false); }
+                            }
+                            Button {
+                                text: "Accept";
+                                primary: true;
+                                clicked => { root.answer-invitation(root.conversations[root.selected].id, true); }
+                            }
+                        }
+                    }
+                    if root.conversations[root.selected].left && !root.conversations[root.selected].invited: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 14px;

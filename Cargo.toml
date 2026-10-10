@@ -18,12 +18,13 @@ qrcode = { version = "0.14", default-features = false }
 #   #442 history-transfer key on RegistrationData   #447 wait for the history archive
 #   #443 paged thread reads                         #444 storage service from a linked device
 #   #445 drop sync messages from other accounts     #446 a linked device unlinks itself
-#   #448 create and change groups (needs libsignal-service-rs#473, see the patch below)
+#   #448 create and change groups, accept or decline invitations, retry a clashing change
+#        (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait)
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "2ab558b8eb6422dd815762faf03b05cd0e0b0dd7" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "2ab558b8eb6422dd815762faf03b05cd0e0b0dd7" }
+presage = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b3b7f13f5f681b33d1a39f5bb51809955b073485" }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.

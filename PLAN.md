@@ -47,7 +47,8 @@ so what b33p runs is exactly what is proposed. Nothing waits on a merge.
   (stacked on #442), #443 paged thread reads, #444 storage service from a linked device,
   #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
   and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile),
-  #449 report only real identity changes, and note them.
+  #449 report only real identity changes, and note them, #450 pin an identity required for
+  sending.
 
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
@@ -70,9 +71,11 @@ By how much they matter, most first:
   `remember_verification`, `trust_of`, `deliver`) have no test, the rest does. The first message
   after a verified contact's key changed is held too: the store refuses their new key for
   sending (presage#450 pins the verified one) and the chat waits for "Continue".
-- **Groups:** accepting an invitation here (now done on the phone); adding people known only
-  by phone number (invite them by PNI); retrying a change that clashed with someone else's;
-  the group picture; invite links and join requests.
+- **Groups:** accepting or declining an invitation is done here (presage#448's third commit;
+  invitations to our PNI too), and a change that clashed with someone else's is built again on
+  the latest revision (#448's fourth commit). Left: adding people known only by phone number
+  (needs contact discovery, which b33p doesn't build yet); the group picture; invite links and
+  join requests.
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.

@@ -136,6 +136,17 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     };
+    window.on_answer_invitation({
+        let shared = shared.clone();
+        move |id, accept| {
+            let edit = if accept {
+                b33p_core::GroupEdit::AcceptInvitation
+            } else {
+                b33p_core::GroupEdit::DeclineInvitation
+            };
+            shared.act(|chat| (chat.edit_group(&ConversationId(id.into()), edit), Update::default()));
+        }
+    });
     window.on_confirm_safety_number({
         let shared = shared.clone();
         move |id| {
@@ -1379,6 +1390,7 @@ fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, i
         request: chat.is_request(c),
         blocked: c.settings.blocked,
         left: c.left,
+        invited: c.invited,
         safety_changed: c.trust == b33p_core::Trust::Changed,
         group: c.is_group,
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
