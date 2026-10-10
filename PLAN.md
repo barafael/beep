@@ -56,6 +56,10 @@ so what b33p runs is exactly what is proposed. Nothing waits on a merge.
 Contact discovery brings BoringSSL, so SQLCipher uses a crypto provider in Rust and nothing links
 OpenSSL. On Windows arm64, BoringSSL is built with Ninja and clang-cl (MSVC can't assemble it).
 
+Upstream asks for short pull requests, commits and comments, and `Assisted-by:` rather than
+`Co-Authored-By:` (their AGENTS.md). #444 and #449 are one commit each now; #448 is the feature
+plus the temporary #473 pin.
+
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
 PR lands. A CI job (build, test, clippy) later.
@@ -77,9 +81,9 @@ By how much they matter, most first:
   `remember_verification`, `trust_of`, `deliver`) have no test, the rest does. The first message
   after a verified contact's key changed is held too: the store refuses their new key for
   sending (presage#450 pins the verified one) and the chat waits for "Continue".
-- **Groups:** accepting or declining an invitation is done here (presage#448's third commit;
+- **Groups:** accepting or declining an invitation is done here (presage#448;
   invitations to our PNI too), and a change that clashed with someone else's is built again on
-  the latest revision (#448's fourth commit). People known only by phone number
+  the latest revision. People known only by phone number
   can be found (Signal's contact discovery), then messaged or added. Left: the group picture;
   invite links and join requests.
 - **Storage service:** records for chats the phone has none for (only existing records are
