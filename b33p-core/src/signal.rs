@@ -804,14 +804,18 @@ async fn group_conversation(
         .as_ref()
         .map_or(0, |t| t.duration);
     let people = people(manager, names, &group).await;
-    // Invited without our profile key: joining is done on the phone for now.
+    // Invited (by our ACI, or by our PNI if someone had only our number).
     let ids = &manager.registration_data().service_ids;
-    let invited = group
-        .pending_members
-        .iter()
-        .any(|m| m.uuid == ids.aci || m.uuid == ids.pni);
-    let subtitle = if left && invited {
-        "You're invited to this group: accept on your phone.".into()
+    let invited = left
+        && group.pending_members.iter().any(|m| {
+            use presage::model::ServiceIdType;
+            match m.service_id_type {
+                ServiceIdType::AccountIdentity => m.uuid == ids.aci,
+                ServiceIdType::PhoneNumberIdentity => m.uuid == ids.pni,
+            }
+        });
+    let subtitle = if invited {
+        "You're invited to this group.".into()
     } else if left {
         "You aren't a member of this group.".into()
     } else {
@@ -821,6 +825,7 @@ async fn group_conversation(
     conversation.members = people;
     conversation.admin = admin;
     conversation.left = left;
+    conversation.invited = invited;
     conversation
 }
 
@@ -1083,6 +1088,8 @@ fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
         Edit::RemoveMember(member) => To::RemoveMember(aci(&member)?),
         Edit::SetAdmin(member, admin) => To::SetAdmin(aci(&member)?, admin),
         Edit::Leave => To::Leave,
+        Edit::AcceptInvitation => To::AcceptInvitation,
+        Edit::DeclineInvitation => To::DeclineInvitation,
     })
 }
 
@@ -1159,6 +1166,20 @@ async fn group_notice(
             GroupChange::PromotePendingMember { address, .. } => {
                 let name = display_name(manager, names, address).await;
                 format!("{name} joined the group.")
+            }
+            // Invited by phone number, and joined.
+            GroupChange::PromotePendingPniAciMemberProfileKey(member) => {
+                let name = display_name(manager, names, ServiceId::Aci(member.aci)).await;
+                format!("{name} joined the group.")
+            }
+            GroupChange::DeletePendingMember(invitee) => {
+                // Our own invitation may be for our PNI, which only we can tell is us.
+                let own_pni = ServiceId::Pni(manager.registration_data().service_ids.pni());
+                if invitee == editor_id || (editor_id == own_id(manager) && invitee == own_pni) {
+                    format!("{editor} declined the invitation.")
+                } else {
+                    format!("{editor} withdrew an invitation.")
+                }
             }
             GroupChange::Title(title) => format!("{editor} named the group “{title}”."),
             GroupChange::Description(_) => format!("{editor} changed the group's description."),

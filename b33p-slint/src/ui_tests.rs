@@ -186,6 +186,38 @@ fn a_changed_safety_number_holds_the_composer() {
     assert_eq!(confirmed.borrow().as_deref(), Some("a"));
 }
 
+/// A group we're invited to says so where the composer would be, and answers the invitation.
+#[test]
+fn an_invitation_is_answered_in_the_chat() {
+    let (window, _messages) = window_with_messages(1);
+    let answers = Rc::new(std::cell::RefCell::new(Vec::new()));
+    window.on_answer_invitation({
+        let answers = answers.clone();
+        move |id, accept| answers.borrow_mut().push((id.to_string(), accept))
+    });
+    let text = "You're invited to join this group. Its members see you once you join.";
+    assert!(find(&window, text).is_none());
+    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+        id: "club".into(),
+        title: "Book club".into(),
+        group: true,
+        left: true,
+        invited: true,
+        ..Default::default()
+    }])));
+    settle(&window);
+    assert!(find(&window, text).is_some());
+    for label in ["Decline", "Accept"] {
+        find(&window, label)
+            .expect("offered")
+            .mock_single_click(PointerEventButton::Left);
+    }
+    assert_eq!(
+        *answers.borrow(),
+        [("club".to_string(), false), ("club".to_string(), true)]
+    );
+}
+
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);

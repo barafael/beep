@@ -5692,7 +5692,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=2ab558b8eb6422dd815762faf03b05cd0e0b0dd7#2ab558b8eb6422dd815762faf03b05cd0e0b0dd7"
+source = "git+https://github.com/barafael/presage?rev=ef73609d6480e58e1286960125d79c5435245ef1#ef73609d6480e58e1286960125d79c5435245ef1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5715,7 +5715,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=2ab558b8eb6422dd815762faf03b05cd0e0b0dd7#2ab558b8eb6422dd815762faf03b05cd0e0b0dd7"
+source = "git+https://github.com/barafael/presage?rev=ef73609d6480e58e1286960125d79c5435245ef1#ef73609d6480e58e1286960125d79c5435245ef1"
 dependencies = [
  "async-trait",
  "bytes",

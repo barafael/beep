@@ -11,10 +11,58 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
     ("dana", "Dana", false),
+    // A group we're invited to, not in yet.
+    ("club", "Book club", true),
     ("me", "Note to Self", false),
     // Not accepted: a message request.
     ("stranger", "+44 7700 900123", false),
 ];
+
+/// A mock conversation as it starts out.
+fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
+    Conversation {
+        id: ConversationId(id.into()),
+        title: title.into(),
+        is_group,
+        subtitle: if id == "club" {
+            "You're invited to this group.".into()
+        } else if is_group {
+            "4 members".into()
+        } else if id == "me" {
+            "Messages to yourself".into()
+        } else {
+            "+49 151 23456789".into()
+        },
+        settings: ChatSettings {
+            pinned: (id == "rust").then_some(0),
+            archived: id == "dana",
+            muted_until: (id == "bob").then_some(u64::MAX),
+            accepted: id != "stranger",
+            ..ChatSettings::default()
+        },
+        expire_timer: if id == "alice" { 3600 } else { 0 },
+        note_to_self: id == "me",
+        admin: is_group && id != "club",
+        left: id == "club",
+        invited: id == "club",
+        // Verified once; her key changed since, so writing to her waits for a confirmation.
+        trust: if id == "dana" {
+            crate::Trust::Changed
+        } else {
+            crate::Trust::Unverified
+        },
+        members: if is_group {
+            ["Carol", "Dana", "Eve", "Ferris"]
+                .map(|name| Person {
+                    service_id: name.to_lowercase(),
+                    name: name.into(),
+                })
+                .into()
+        } else {
+            Vec::new()
+        },
+    }
+}
 
 pub fn run(commands: Inbox, events: Events) {
     // `B33P_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
@@ -83,45 +131,7 @@ pub fn run(commands: Inbox, events: Events) {
     }
     let conversations = CONVERSATIONS
         .iter()
-        .map(|&(id, title, is_group)| Conversation {
-            id: ConversationId(id.into()),
-            title: title.into(),
-            is_group,
-            subtitle: if is_group {
-                "4 members".into()
-            } else if id == "me" {
-                "Messages to yourself".into()
-            } else {
-                "+49 151 23456789".into()
-            },
-            settings: ChatSettings {
-                pinned: (id == "rust").then_some(0),
-                archived: id == "dana",
-                muted_until: (id == "bob").then_some(u64::MAX),
-                accepted: id != "stranger",
-                ..ChatSettings::default()
-            },
-            expire_timer: if id == "alice" { 3600 } else { 0 },
-            note_to_self: id == "me",
-            admin: is_group,
-            left: false,
-            // Verified once; her key changed since, so writing to her waits for a confirmation.
-            trust: if id == "dana" {
-                crate::Trust::Changed
-            } else {
-                crate::Trust::Unverified
-            },
-            members: if is_group {
-                ["Carol", "Dana", "Eve", "Ferris"]
-                    .map(|name| Person {
-                        service_id: name.to_lowercase(),
-                        name: name.into(),
-                    })
-                    .into()
-            } else {
-                Vec::new()
-            },
-        })
+        .map(|&(id, title, is_group)| conversation(id, title, is_group))
         .collect();
     let _ = events.send(Event::Conversations(conversations));
     let _ = events.send(Event::Avatar {
@@ -396,6 +406,28 @@ pub fn run(commands: Inbox, events: Events) {
                         format!("You took {member}'s admin rights.")
                     }
                     crate::GroupEdit::Leave => "You left the group.".into(),
+                    crate::GroupEdit::AcceptInvitation | crate::GroupEdit::DeclineInvitation => {
+                        let accept = edit == crate::GroupEdit::AcceptInvitation;
+                        let (_, title, _) = CONVERSATIONS
+                            .iter()
+                            .find(|(id, _, _)| *id == conversation.0)
+                            .copied()
+                            .unwrap_or(("", "", true));
+                        let mut now = self::conversation(&conversation.0, title, true);
+                        now.invited = false;
+                        now.left = !accept;
+                        now.subtitle = if accept {
+                            "4 members".into()
+                        } else {
+                            "You aren't a member of this group.".into()
+                        };
+                        let _ = events.send(Event::Conversations(vec![now]));
+                        if accept {
+                            "You joined the group.".into()
+                        } else {
+                            "You declined the invitation.".into()
+                        }
+                    }
                 };
                 let _ = events.send(Event::Message(ChatMessage {
                     notice: true,

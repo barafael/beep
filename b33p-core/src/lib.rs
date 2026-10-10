@@ -70,6 +70,8 @@ pub struct Conversation {
     pub admin: bool,
     /// A group we are no longer in: it can be read, not written to.
     pub left: bool,
+    /// A group we are invited to (and not in yet): it can be accepted or declined.
+    pub invited: bool,
     /// How far a contact's safety number is trusted; nothing can be written to them while it
     /// [`Trust::Changed`]. Groups and Note to Self: [`Trust::Unverified`].
     pub trust: Trust,
@@ -99,6 +101,10 @@ pub enum GroupEdit {
     /// Makes a member an administrator, or takes that back.
     SetAdmin(String, bool),
     Leave,
+    /// Joins a group we were invited to.
+    AcceptInvitation,
+    /// Turns an invitation down.
+    DeclineInvitation,
 }
 
 /// More about a conversation, for its details page; see [`Command::LoadDetails`].

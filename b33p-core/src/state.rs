@@ -1382,7 +1382,12 @@ impl ChatState {
 
     /// Changes a group.
     pub fn edit_group(&mut self, id: &ConversationId, edit: crate::GroupEdit) -> Option<Command> {
-        let group = self.conversation(id).filter(|c| c.is_group && !c.left)?;
+        use crate::GroupEdit::{AcceptInvitation, DeclineInvitation};
+        let invitation = matches!(edit, AcceptInvitation | DeclineInvitation);
+        // An invitation is answered by someone not in the group yet; anything else needs being in.
+        let group = self
+            .conversation(id)
+            .filter(|c| c.is_group && if invitation { c.invited } else { !c.left })?;
         if let crate::GroupEdit::Title(title) = &edit
             && (title.trim().is_empty() || title.trim() == group.title)
         {
@@ -3720,6 +3725,36 @@ mod tests {
             .conversations()
             .map(|c| c.conversation.id.0.clone())
             .collect()
+    }
+
+    /// An invitation is answered while we're invited, not in the group yet; other changes need
+    /// being in it.
+    #[test]
+    fn invitations_are_answered_before_joining() {
+        use crate::GroupEdit::{AcceptInvitation, DeclineInvitation, Title};
+        let mut state = state();
+        let invited = Conversation {
+            left: true,
+            invited: true,
+            ..conversation("club", true)
+        };
+        state.apply(Event::Conversations(vec![invited]));
+        let club = id("club");
+        assert!(matches!(
+            state.edit_group(&club, AcceptInvitation),
+            Some(Command::EditGroup {
+                edit: AcceptInvitation,
+                ..
+            })
+        ));
+        assert!(state.edit_group(&club, DeclineInvitation).is_some());
+        assert!(
+            state.edit_group(&club, Title("Ours".into())).is_none(),
+            "not in it yet"
+        );
+        // A group we're in has nothing to accept.
+        assert!(state.edit_group(&id("g"), AcceptInvitation).is_none());
+        assert!(state.edit_group(&id("g"), Title("Ours".into())).is_some());
     }
 
     /// Verifying acts on the open details page, and only with a safety number to verify; the
