@@ -53,6 +53,37 @@ impl TextSize {
     }
 }
 
+/// Whether the UI animates its changes (fades, slides).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Animations {
+    /// As the desktop says: off when it asks for reduced motion.
+    #[default]
+    System,
+    On,
+    Off,
+}
+
+impl Animations {
+    pub const ALL: [Self; 3] = [Self::System, Self::On, Self::Off];
+
+    /// Whether to animate, given whether the desktop asks for reduced motion.
+    pub fn enabled(self, system_reduces_motion: bool) -> bool {
+        match self {
+            Self::System => !system_reduces_motion,
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// How much of a message a desktop notification reveals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NotificationContent {
@@ -68,6 +99,7 @@ pub struct Settings {
     pub theme: Theme,
     pub style: WidgetStyle,
     pub text_size: TextSize,
+    pub animations: Animations,
     /// Show profile and group pictures rather than only initials.
     pub show_avatars: bool,
     /// Desktop notifications for incoming messages.
@@ -88,6 +120,7 @@ impl Default for Settings {
             theme: Theme::default(),
             style: WidgetStyle::default(),
             text_size: TextSize::default(),
+            animations: Animations::default(),
             show_avatars: true,
             notifications: true,
             notification_content: NotificationContent::default(),
@@ -136,6 +169,12 @@ impl Settings {
                 ("text_size", "small") => settings.text_size = TextSize::Small,
                 ("text_size", "default") => settings.text_size = TextSize::Default,
                 ("text_size", "large") => settings.text_size = TextSize::Large,
+                ("animations", value) => {
+                    if let Some(animations) = Animations::ALL.into_iter().find(|a| a.key() == value)
+                    {
+                        settings.animations = animations;
+                    }
+                }
                 ("show_avatars", "true") => settings.show_avatars = true,
                 ("show_avatars", "false") => settings.show_avatars = false,
                 ("notifications", "true") => settings.notifications = true,
@@ -186,11 +225,12 @@ impl Settings {
             NotificationContent::Nothing => "nothing",
         };
         format!(
-            "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nshow_avatars = {}\nnotifications = {}\n\
+            "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {notification_content}\nshow_activity = {}\nshow_calendar = {}\n\
              close_to_tray = {}\n\
              read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
             self.style.key(),
+            self.animations.key(),
             self.show_avatars,
             self.notifications,
             self.show_activity,
@@ -220,6 +260,7 @@ mod tests {
                 theme: Theme::Dark,
                 style,
                 text_size: TextSize::Large,
+                animations: Animations::Off,
                 show_avatars: false,
                 notifications: false,
                 notification_content: NotificationContent::NameOnly,
@@ -235,6 +276,21 @@ mod tests {
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }
+    }
+
+    #[test]
+    fn animations_round_trip_and_follow_the_desktop() {
+        for animations in Animations::ALL {
+            let settings = Settings {
+                animations,
+                ..Settings::default()
+            };
+            assert_eq!(Settings::parse(&settings.to_text()), settings);
+        }
+        assert!(Animations::System.enabled(false));
+        assert!(!Animations::System.enabled(true));
+        assert!(Animations::On.enabled(true));
+        assert!(!Animations::Off.enabled(false));
     }
 
     #[test]
