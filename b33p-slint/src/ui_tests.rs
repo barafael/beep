@@ -18,12 +18,15 @@ fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) 
         .window()
         .set_size(slint::LogicalSize::new(800., 500.));
     window.set_screen(Screen::Chats);
-    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+    let ann = ConversationItem {
         id: "a".into(),
         title: "Ann".into(),
         ..Default::default()
-    }])));
+    };
+    window.set_conversations(ModelRc::new(VecModel::from(vec![ann.clone()])));
     window.set_selected(0);
+    window.set_selected_id("a".into());
+    window.set_current(ann);
     let messages = Rc::new(VecModel::from(
         (0..count)
             .map(|n| message(&format!("Message {n}")))
@@ -168,12 +171,14 @@ fn a_changed_safety_number_holds_the_composer() {
     });
     let notice = "Your safety number with Ann changed since you verified it. Compare it again, or continue without.";
     assert!(find(&window, notice).is_none());
-    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+    let changed = ConversationItem {
         id: "a".into(),
         title: "Ann".into(),
         safety_changed: true,
         ..Default::default()
-    }])));
+    };
+    window.set_conversations(ModelRc::new(VecModel::from(vec![changed.clone()])));
+    window.set_current(changed);
     settle(&window);
     assert!(find(&window, notice).is_some());
     find(&window, "Show safety number")
@@ -197,14 +202,17 @@ fn an_invitation_is_answered_in_the_chat() {
     });
     let text = "You're invited to join this group. Its members see you once you join.";
     assert!(find(&window, text).is_none());
-    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+    let club = ConversationItem {
         id: "club".into(),
         title: "Book club".into(),
         group: true,
         left: true,
         invited: true,
         ..Default::default()
-    }])));
+    };
+    window.set_conversations(ModelRc::new(VecModel::from(vec![club.clone()])));
+    window.set_selected_id(club.id.clone());
+    window.set_current(club);
     settle(&window);
     assert!(find(&window, text).is_some());
     for label in ["Decline", "Accept"] {
@@ -308,7 +316,7 @@ fn clicking_a_mention_candidate_picks_it() {
 }
 
 #[test]
-fn forwarding_goes_to_the_clicked_chat() {
+fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
     let (window, _messages) = window_with_messages(3);
     let to = Rc::new(std::cell::RefCell::new(None));
     window.on_forward_to({
@@ -328,6 +336,12 @@ fn forwarding_goes_to_the_clicked_chat() {
     settle(&window);
     find(&window, "Carol")
         .expect("listed")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert_eq!(*to.borrow(), None, "asks first");
+    assert!(find(&window, "Forward to Carol?").is_some());
+    find(&window, "Forward")
+        .expect("confirmable")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(to.borrow().as_deref(), Some("c"));
 }
@@ -356,6 +370,7 @@ fn clicking_a_search_result_shows_it() {
         sender: "Ann".into(),
         when: "Oct 2".into(),
         text: text.into(),
+        snippet: slint::StyledText::from_plain_text(text),
     };
     window.set_search_results(ModelRc::new(VecModel::from(vec![
         result("the moon"),
@@ -447,6 +462,7 @@ fn chat_rows_speak_for_themselves() {
         move |id| *selected.borrow_mut() = Some(id)
     });
     window.set_selected(-1);
+    window.set_selected_id(SharedString::new());
     window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
         id: "b".into(),
         title: "Bob".into(),
