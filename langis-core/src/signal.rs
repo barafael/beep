@@ -571,7 +571,7 @@ async fn link(
 ) -> Result<(Mgr, Option<[u8; 32]>), String> {
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
-        Manager::link_secondary_device_with_history(
+        Manager::link_secondary_device(
             store,
             SignalServers::Production,
             config.device_name.clone(),
@@ -595,7 +595,9 @@ async fn link(
         },
     )
     .await;
-    linked.map_err(|e| format!("linking failed: {e}"))
+    let manager = linked.map_err(|e| format!("linking failed: {e}"))?;
+    let history_key = manager.registration_data().ephemeral_backup_key();
+    Ok((manager, history_key))
 }
 
 fn conversation_id(thread: &Thread) -> ConversationId {
