@@ -1410,6 +1410,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         },
         edited: m.edited_at.is_some(),
         deleted: m.deleted,
+        notice: m.notice,
         expires: m.expires_at.map(|at| state::format_remaining(at, now_millis())).unwrap_or_default().into(),
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,

@@ -76,6 +76,45 @@ fn newest_shown(window: &AppWindow, count: usize) -> Option<(usize, ElementHandl
         .find_map(|n| Some((n, find(window, &format!("Message {n}"))?)))
 }
 
+/// A notice (here, a new safety number) is drawn as a line of text of its own, between
+/// messages, not as one of the contact's messages.
+#[test]
+fn a_notice_is_drawn_as_a_line_not_a_message() {
+    let (window, messages) = window_with_messages(2);
+    let text = "Your safety number with Ann has changed.";
+    messages.push(MessageItem {
+        notice: true,
+        ..message(text)
+    });
+    messages.push(message("After"));
+    settle(&window);
+    let notice = find(&window, text).expect("the notice is shown");
+    let after = find(&window, "After").expect("so is the next message");
+    let before = find(&window, "Message 1").expect("and the one before");
+    assert!(before.absolute_position().y < notice.absolute_position().y);
+    assert!(notice.absolute_position().y < after.absolute_position().y);
+    // Centred in the list, unlike an incoming message, which starts at its left edge.
+    let list = ElementHandle::find_by_element_id(&window, "AppWindow::message-list")
+        .next()
+        .expect("a chat is open");
+    let (left, width) = (list.absolute_position().x, list.size().width);
+    let offset = |e: &ElementHandle| e.absolute_position().x - left;
+    let centre = offset(&notice) + notice.size().width / 2.;
+    assert!(
+        (centre - width / 2.).abs() < 20.,
+        "centred at {centre} in {width}"
+    );
+    assert!(
+        offset(&after) < width * 0.2,
+        "a message starts at the left, at {}",
+        offset(&after)
+    );
+    assert!(
+        offset(&notice) > offset(&after) + 20.,
+        "the notice is indented to the middle"
+    );
+}
+
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);

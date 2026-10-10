@@ -368,13 +368,10 @@ pub fn run(commands: Inbox, events: Events) {
                 };
                 let _ = events.send(Event::Conversations(vec![conversation]));
                 let _ = events.send(Event::GroupCreated(id.clone()));
-                let _ = events.send(Event::Message(message(
-                    &id.0,
-                    "You",
-                    "You created the group.",
-                    now_millis(),
-                    true,
-                )));
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(&id.0, "You", "You created the group.", now_millis(), true)
+                }));
             }
             Ok(Command::EditGroup { conversation, edit }) => {
                 let notice = match edit {
@@ -394,13 +391,10 @@ pub fn run(commands: Inbox, events: Events) {
                     }
                     crate::GroupEdit::Leave => "You left the group.".into(),
                 };
-                let _ = events.send(Event::Message(message(
-                    &conversation.0,
-                    "You",
-                    &notice,
-                    now_millis(),
-                    true,
-                )));
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(&conversation.0, "You", &notice, now_millis(), true)
+                }));
             }
             Ok(Command::LoadStickers) => {
                 // One pack of gradients standing in for stickers.
@@ -682,6 +676,17 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     ..Default::default()
                 }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
+            },
+            // She set up a new phone; what follows came with her new safety number.
+            ChatMessage {
+                notice: true,
+                ..message(
+                    "alice",
+                    "Alice",
+                    "Your safety number with Alice has changed.",
+                    ago(31),
+                    false,
+                )
             },
             ChatMessage {
                 attachments: vec![attachment(
