@@ -68,7 +68,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang cmake pkg-config file desktop-file-utils \
             qt6-base-dev qt6-base-dev-tools qt6-wayland \
-            libasound2-dev libudev-dev libfontconfig-dev libxkbcommon-dev libssl-dev
+            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libssl-dev
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -78,6 +78,26 @@ jobs:
           key: release
       - name: Build
         run: cargo build --release --locked -p langis-slint
+      # The tarball and the .deb use the system's Qt (6.4 or newer); the AppImage brings its own.
+      - name: Package tarball
+        env:
+          NAME: langis-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}
+        run: |
+          mkdir "$NAME"
+          cp target/release/langis packaging/linux/org.langis.Langis.desktop "$NAME/"
+          cp langis-slint/assets/langis.svg "$NAME/org.langis.Langis.svg"
+          tar czf "$NAME.tar.gz" "$NAME"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Package .deb
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+          DEB: langis-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}.deb
+        run: |
+          # A dev build sorts before its release: 0.1.0~dev.abc1234 < 0.1.0.
+          cargo deb -p langis-slint --no-build --deb-version "${LABEL/-/\~}" --output "$DEB"
+          dpkg-deb --info "$DEB"
       - name: Package AppImage
         env:
           ARCH: ${{ matrix.arch }}
@@ -102,7 +122,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: langis-linux-${{ matrix.arch }}
-          path: langis-*.AppImage
+          path: |
+            langis-*.AppImage
+            langis-*.tar.gz
+            langis-*.deb
           if-no-files-found: error
 
   macos:
@@ -182,7 +205,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # SQLCipher encrypts the message store with OpenSSL's libcrypto; there's none on Windows.
-      - uses: actions/cache@v4
+      # Building it takes a quarter of an hour, so it's cached right away, not only if the job passes.
+      - id: openssl-cache
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg-cache
           key: vcpkg-openssl-${{ matrix.triplet }}
@@ -191,6 +216,11 @@ jobs:
           mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
           "$VCPKG_INSTALLATION_ROOT/vcpkg" install openssl:${{ matrix.triplet }}
           echo "OPENSSL_DIR=$VCPKG_INSTALLATION_ROOT\\installed\\${{ matrix.triplet }}" >> "$GITHUB_ENV"
+      - if: steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-openssl-${{ matrix.triplet }}
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
