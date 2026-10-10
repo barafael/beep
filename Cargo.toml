@@ -23,11 +23,11 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait)
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5" }
+presage = { git = "https://github.com/barafael/presage", rev = "7e4492af27be2d7365b5cb2eec3c3f47b5e55e2f" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "068f7c2f591566d911d5fb6cbb63c3f1eee95bd5", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "7e4492af27be2d7365b5cb2eec3c3f47b5e55e2f", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -43,14 +43,14 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 #      down at exit while connections still close
 #   #3 (ours) the Rust crypto provider builds on Windows without OpenSSL
 # Go back to whisperfish's once both have landed.
-libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "8f2ff1561f7a1a9aa1d41272a3ba15d029a3bb16" }
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
 # #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and
 # #476 (send a sync message to ourselves once, not twice).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "8a6e08ab55f0d5859ae6a9c9f9e5adcb4a1c8d94" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "e7bebdcc78ea03bdceb411f24426e82aba619c70" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
