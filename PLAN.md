@@ -57,7 +57,7 @@ PR lands. A CI job (build, test, clippy) later.
 By how much they matter, most first:
 
 - **Safety numbers:** a notice when a contact's safety number changes is done (presage#449
-  makes the store report real changes and note them; langis shows the note as a centred line,
+  makes the store report real changes and note them; b33p shows the note as a centred line,
   without notification, unread count or receipt). Left: marking it verified (and sending that
   to our other devices; reading what the phone set), and resetting it on a change. Known limits
   of the notice: it is timed when the change was noticed, so after a long time offline it can

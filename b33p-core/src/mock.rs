@@ -368,13 +368,10 @@ pub fn run(commands: Inbox, events: Events) {
                 };
                 let _ = events.send(Event::Conversations(vec![conversation]));
                 let _ = events.send(Event::GroupCreated(id.clone()));
-                let _ = events.send(Event::Message(message(
-                    &id.0,
-                    "You",
-                    "You created the group.",
-                    now_millis(),
-                    true,
-                )));
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(&id.0, "You", "You created the group.", now_millis(), true)
+                }));
             }
             Ok(Command::EditGroup { conversation, edit }) => {
                 let notice = match edit {
@@ -394,13 +391,10 @@ pub fn run(commands: Inbox, events: Events) {
                     }
                     crate::GroupEdit::Leave => "You left the group.".into(),
                 };
-                let _ = events.send(Event::Message(message(
-                    &conversation.0,
-                    "You",
-                    &notice,
-                    now_millis(),
-                    true,
-                )));
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(&conversation.0, "You", &notice, now_millis(), true)
+                }));
             }
             Ok(Command::LoadStickers) => {
                 // One pack of gradients standing in for stickers.

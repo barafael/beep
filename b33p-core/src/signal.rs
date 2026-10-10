@@ -2537,7 +2537,7 @@ fn is_identity_change(content: &Content) -> bool {
 }
 
 /// Shows the note of a changed safety number that the store saved while decrypting a message
-/// from `contact` or fetching their keys to send to them (before langis hears of either), in
+/// from `contact` or fetching their keys to send to them (before b33p hears of either), in
 /// their chat if there is one and it isn't blocked. Notes are saved with the time they were
 /// made; the UI ignores one it already has.
 async fn announce_identity_change(manager: &Mgr, ctx: &Ctx, names: &mut Names, contact: ServiceId) {
@@ -2648,19 +2648,23 @@ async fn to_chat_message(
     let attachments = attachments::of_message(data);
     let mut timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0)
         .then(|| data.expire_timer.unwrap_or(0));
+    // Whether it says what changed in the conversation rather than what someone wrote.
+    let mut notice = false;
     if let Some(seconds) = timer_change
         && body.is_empty()
     {
         body = crate::timer_notice(&sender, seconds);
+        notice = true;
     }
     // A change to the group: what it says.
     if body.is_empty()
         && attachments::of_message(data).is_empty()
         && let Some(context) = &data.group_v2
-        && let Some((notice, timer)) = group_notice(manager, names, context, &sender).await
+        && let Some((notice_text, timer)) = group_notice(manager, names, context, &sender).await
     {
-        body = notice;
+        body = notice_text;
         timer_change = timer_change.or(timer);
+        notice = true;
     }
     if body.is_empty() && attachments.is_empty() {
         return None;
@@ -2704,6 +2708,7 @@ async fn to_chat_message(
         styles,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
+        notice,
         preview: data.preview.first().and_then(|preview| {
             // Only for a link the text has (as Signal's clients require): otherwise a card
             // with a trusted site's title and picture could lead somewhere else entirely.
@@ -3328,6 +3333,7 @@ async fn handle_command(
                 sender_id: own_id(manager).service_id_string(),
                 sender: "You".into(),
                 body: crate::timer_notice("You", seconds),
+                notice: true,
                 timestamp,
                 outgoing: true,
                 expire_timer: (seconds > 0).then_some(seconds),

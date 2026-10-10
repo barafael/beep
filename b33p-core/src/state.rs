@@ -1821,6 +1821,7 @@ impl ChatState {
     pub fn can_edit(&self, message: &ChatMessage) -> bool {
         message.outgoing
             && !message.deleted
+            && !message.notice
             && message.unsent.is_none()
             && now_millis().saturating_sub(message.timestamp) < DELETE_FOR_EVERYONE_MS
     }
@@ -1981,7 +1982,7 @@ impl ChatState {
         let index = self
             .messages()
             .enumerate()
-            .filter(|(_, view)| view.message.outgoing)
+            .filter(|(_, view)| view.message.outgoing && !view.message.notice)
             .last()
             .map(|(index, _)| index)?;
         self.edit(index)
@@ -3687,6 +3688,29 @@ mod tests {
 
     /// A notice (e.g. a changed safety number) is shown, but nobody wrote it: no notification,
     /// not unread, and no read receipt for it.
+    /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:
+    /// nothing to edit or delete for everyone, and "edit the last one" passes over them.
+    #[test]
+    fn our_notices_cannot_be_edited() {
+        let mut state = state();
+        let now = now_millis();
+        state.apply(Event::Message(message("a", "You", now - 2, true)));
+        state.apply(Event::Message(ChatMessage {
+            notice: true,
+            body: "You set disappearing messages to 1 hour.".into(),
+            ..message("a", "You", now - 1, true)
+        }));
+        state.select(&id("a"));
+        let at = state.messages().position(|v| v.message.notice).unwrap();
+        let notice = state.messages().nth(at).unwrap().message;
+        assert!(
+            !state.can_edit(notice),
+            "nothing to edit or delete for everyone"
+        );
+        assert!(state.edit_last().is_some(), "the message before it");
+        assert_eq!(state.editing().unwrap().timestamp, now - 2);
+    }
+
     #[test]
     fn notices_are_shown_and_nothing_more() {
         let notice = |timestamp| ChatMessage {
