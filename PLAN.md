@@ -72,9 +72,10 @@ By how much they matter, most first:
   after a verified contact's key changed is held too: the store refuses their new key for
   sending (presage#450 pins the verified one) and the chat waits for "Continue".
 - **Groups:** accepting or declining an invitation is done here (presage#448's third commit;
-  invitations to our PNI too). Left: adding people known only by phone number (invite them by
-  PNI); retrying a change that clashed with someone else's;
-  the group picture; invite links and join requests.
+  invitations to our PNI too), and a change that clashed with someone else's is built again on
+  the latest revision (#448's fourth commit). Left: adding people known only by phone number
+  (needs contact discovery, which b33p doesn't build yet); the group picture; invite links and
+  join requests.
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.
