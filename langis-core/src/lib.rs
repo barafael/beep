@@ -363,6 +363,16 @@ pub struct ChatMessage {
     pub preview: Option<LinkPreview>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
+    /// Ours, shown before it went out: still sending, or it failed. `None` once it is sent,
+    /// and for everything else.
+    pub unsent: Option<Unsent>,
+}
+
+/// One of our messages that hasn't gone out (yet).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unsent {
+    Sending,
+    Failed,
 }
 
 impl ChatMessage {
@@ -685,6 +695,11 @@ pub enum Event {
     /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
     Latest(ChatMessage),
     Message(ChatMessage),
+    /// Sending the message the UI showed at `timestamp` failed; [`Event::Error`] says why.
+    SendFailed {
+        conversation: ConversationId,
+        timestamp: u64,
+    },
     Error(String),
 }
 
@@ -707,6 +722,9 @@ pub enum Command {
     /// empty).
     Send {
         conversation: ConversationId,
+        /// Chosen by the UI, which shows the message while it is sent; the sent message
+        /// ([`Event::Message`]) or [`Event::SendFailed`] has the same.
+        timestamp: u64,
         body: String,
         quote: Option<Quote>,
         files: Vec<std::path::PathBuf>,
@@ -851,7 +869,8 @@ impl Events {
 
 /// What travels to the backend: UI commands, then possibly the order to stop.
 enum Request {
-    Command(Command),
+    // Boxed: commands are big, and few.
+    Command(Box<Command>),
     Shutdown,
 }
 
@@ -862,7 +881,7 @@ impl Inbox {
     /// The next command; `None` once the backend should stop.
     pub(crate) fn recv(&self) -> Option<Command> {
         match self.0.recv() {
-            Ok(Request::Command(command)) => Some(command),
+            Ok(Request::Command(command)) => Some(*command),
             Ok(Request::Shutdown) | Err(_) => None,
         }
     }
@@ -870,7 +889,7 @@ impl Inbox {
     /// Like [`Inbox::recv`], but gives up after `timeout`.
     pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<Command, RecvTimeoutError> {
         match self.0.recv_timeout(timeout)? {
-            Request::Command(command) => Ok(command),
+            Request::Command(command) => Ok(*command),
             Request::Shutdown => Err(RecvTimeoutError::Disconnected),
         }
     }
@@ -890,7 +909,7 @@ impl Commands {
     pub fn send(&self, command: Command) {
         // The backend only goes away when it has failed fatally, which it reports as an event,
         // or when it was shut down.
-        let _ = self.0.send(Request::Command(command));
+        let _ = self.0.send(Request::Command(Box::new(command)));
     }
 }
 

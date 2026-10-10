@@ -11,7 +11,7 @@ use langis_core::state::{
 use langis_core::timeline::{self, Stretch};
 use langis_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
-    HistoryTransfer, now_millis,
+    HistoryTransfer, Unsent, now_millis,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -71,7 +71,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |text| {
-            if shared.act(|chat| (chat.compose(&text), Update::default()))
+            if shared.act(|chat| chat.compose(&text))
                 && let Some(window) = window.upgrade()
             {
                 window.set_draft(SharedString::new());
@@ -989,6 +989,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     }
 
     // After the rows are there.
+    if update.scroll_to_end {
+        window.set_scroll_to_end_serial(window.get_scroll_to_end_serial().wrapping_add(1));
+    }
     if let Some((row, count)) = chat.jump()
         && count as i32 != window.get_jump_serial()
     {
@@ -1012,6 +1015,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             conversations.set_vec(items);
         }
         window.set_selected(chat.selected_index().map_or(-1, |i| i as i32));
+        window.set_selected_id(chat.selected().map_or("", |c| c.id.0.as_str()).into());
         if !chat.searching() {
             window.set_search_text(SharedString::new());
         }
@@ -1395,11 +1399,13 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         attachments: ModelRc::new(VecModel::from(attachments)),
         reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
         text: if m.deleted { "" } else { view.body }.into(),
-        delivery: match (m.outgoing, m.delivery) {
-            (false, _) => 0,
-            (true, Delivery::Sent) => 1,
-            (true, Delivery::Delivered) => 2,
-            (true, Delivery::Read) => 3,
+        delivery: match (m.outgoing, m.unsent, m.delivery) {
+            (false, ..) => 0,
+            (true, Some(Unsent::Sending), _) => -1,
+            (true, Some(Unsent::Failed), _) => -2,
+            (true, None, Delivery::Sent) => 1,
+            (true, None, Delivery::Delivered) => 2,
+            (true, None, Delivery::Read) => 3,
         },
         edited: m.edited_at.is_some(),
         deleted: m.deleted,

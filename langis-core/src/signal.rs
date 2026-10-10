@@ -418,6 +418,7 @@ async fn run_linked(
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
+            warn!(%error, "command failed");
             let _ = events.send(Event::Error(error));
         }
     }
@@ -426,6 +427,7 @@ async fn run_linked(
             command = command_rx.recv() => match command {
                 Some(command) => {
                     if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
+                        warn!(%error, "command failed");
                         let _ = events.send(Event::Error(error));
                     }
                 }
@@ -2829,28 +2831,38 @@ async fn handle_command(
         }
         Command::Send {
             conversation,
+            timestamp,
             body,
             quote,
             files,
             styles,
             mentions,
         } => {
-            let pointers = attachments::upload(manager, &files).await?;
-            let preview = if ctx.preferences.get().link_previews {
-                link_preview(manager, &body).await
-            } else {
-                None
+            let sent = async {
+                let pointers = attachments::upload(manager, &files).await?;
+                let preview = if ctx.preferences.get().link_previews {
+                    link_preview(manager, &body).await
+                } else {
+                    None
+                };
+                let outgoing = Outgoing {
+                    body,
+                    styles,
+                    mentions,
+                    quote,
+                    pointers,
+                    preview,
+                    sticker: None,
+                };
+                send_new(manager, ctx, conversation.clone(), outgoing, timestamp).await
             };
-            let outgoing = Outgoing {
-                body,
-                styles,
-                mentions,
-                quote,
-                pointers,
-                preview,
-                sticker: None,
-            };
-            send_new(manager, ctx, conversation, outgoing).await?;
+            if let Err(error) = sent.await {
+                let _ = ctx.events.send(Event::SendFailed {
+                    conversation,
+                    timestamp,
+                });
+                return Err(error);
+            }
         }
         Command::ViewStory(story) => {
             ctx.tables.story_viewed(&story).await.map_err(db)?;
@@ -2980,7 +2992,7 @@ async fn handle_command(
                 preview: None,
                 sticker: Some(sticker),
             };
-            send_new(manager, ctx, conversation, outgoing).await?;
+            send_new(manager, ctx, conversation, outgoing, now_millis()).await?;
         }
         Command::Block {
             conversation,
@@ -3053,7 +3065,7 @@ async fn handle_command(
                 preview: None,
                 sticker: None,
             };
-            send_new(manager, ctx, conversation, outgoing).await?;
+            send_new(manager, ctx, conversation, outgoing, now_millis()).await?;
         }
         Command::Edit {
             conversation,
@@ -3452,12 +3464,15 @@ struct Outgoing {
     sticker: Option<presage::proto::data_message::Sticker>,
 }
 
-/// Sends a new message and shows it; remembers it for receipts and starts its timer.
+/// Sends a new message and shows it; remembers it for receipts and starts its timer. Fails
+/// only if it didn't go out: what is left to do after that is logged, not returned, so a sent
+/// message always shows.
 async fn send_new(
     manager: &mut Mgr,
     ctx: &Ctx,
     conversation: ConversationId,
     outgoing: Outgoing,
+    timestamp: u64,
 ) -> Result<(), String> {
     let Outgoing {
         body,
@@ -3477,7 +3492,6 @@ async fn send_new(
         .ok_or("unknown conversation")?;
     let (text, ranges) = format::encode(&body, &styles, &mentions);
     // presage fills in the data message's timestamp from the one passed here.
-    let timestamp = now_millis();
     let message = DataMessage {
         body: (!text.is_empty()).then_some(text),
         body_ranges: body_ranges(ranges),
@@ -3497,29 +3511,6 @@ async fn send_new(
     // As receivers will see them, stickers included.
     let shown_attachments = attachments::of_message(&message);
     send_data(manager, &thread, message, timestamp).await?;
-    ctx.tables
-        .set_delivery(&conversation, timestamp, Delivery::Sent)
-        .await
-        .map_err(|e| format!("failed to save: {e}"))?;
-    // Writing to someone accepts the chat.
-    let accepted = ctx
-        .tables
-        .settings(&conversation)
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|s| s.accepted);
-    if !accepted
-        && let Ok(settings) = ctx
-            .tables
-            .update(&conversation, |s| s.accepted = true)
-            .await
-    {
-        let _ = ctx.events.send(Event::Settings {
-            conversation: conversation.clone(),
-            settings,
-        });
-    }
     let own = own_id(manager).service_id_string();
     // presage sent it with the thread's timer.
     let timer = expire_timer(manager, &thread).await;
@@ -3541,6 +3532,32 @@ async fn send_new(
         preview: shown_preview,
         ..Default::default()
     }));
+    if let Err(error) = ctx
+        .tables
+        .set_delivery(&conversation, timestamp, Delivery::Sent)
+        .await
+    {
+        warn!(%error, "failed to save that a message was sent");
+    }
+    // Writing to someone accepts the chat.
+    let accepted = ctx
+        .tables
+        .settings(&conversation)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.accepted);
+    if !accepted
+        && let Ok(settings) = ctx
+            .tables
+            .update(&conversation, |s| s.accepted = true)
+            .await
+    {
+        let _ = ctx.events.send(Event::Settings {
+            conversation: conversation.clone(),
+            settings,
+        });
+    }
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
     Ok(())
 }

@@ -349,6 +349,7 @@ fn everything() -> Update {
         conversations: true,
         messages: MessagesUpdate::Reset,
         rows: true,
+        scroll_to_end: false,
     }
 }
 
@@ -460,13 +461,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                     Action::Reply { key, text } => {
                         shared.act(|chat| {
-                            (
-                                chat.reply(&ConversationId(key), &text),
-                                Update {
-                                    conversations: true,
-                                    ..Update::default()
-                                },
-                            )
+                            let (command, update) = chat.reply(&ConversationId(key), &text);
+                            let read = Update {
+                                conversations: true,
+                                ..Update::default()
+                            };
+                            (command, update.merge(read))
                         });
                     }
                 }

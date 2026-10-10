@@ -112,7 +112,8 @@ export struct MessageItem {
     reactions: [ReactionItem],
     // Plain text, for copying.
     text: string,
-    // Ours: 1 sent, 2 delivered, 3 read; 0 for others' messages.
+    // Ours: 1 sent, 2 delivered, 3 read, -1 still sending, -2 not sent; 0 for others'
+    // messages.
     delivery: int,
     edited: bool,
     deleted: bool,
@@ -943,6 +944,27 @@ component Bubble inherits Rectangle {
                                 font-weight: item.delivery == 3 ? 700 : 400;
                                 color: item.delivery == 3 ? root.ink : parent.faint;
                             }
+                            if item.last && item.delivery == -1: Text {
+                                text: "Sending…";
+                                font-size: 0.72rem;
+                                font-italic: true;
+                                color: parent.faint;
+                            }
+                            // On every bubble that failed, not only a run's last.
+                            if item.delivery == -2: Rectangle {
+                                background: #c4314b;
+                                border-radius: 4px;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    Text {
+                                        text: "Not sent";
+                                        font-size: 0.72rem;
+                                        font-weight: 700;
+                                        color: white;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1761,6 +1783,8 @@ export component AppWindow inherits Window {
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
     in property <int> selected: -1;
+    // The open chat's id, empty if none.
+    in property <string> selected-id;
     in property <bool> can-send;
     in-out property <string> draft;
 
@@ -1928,6 +1952,8 @@ export component AppWindow inherits Window {
     // Scroll the open chat to this row once `jump-serial` changes.
     in property <int> jump-row;
     in property <int> jump-serial;
+    // Scroll the open chat to its end once this changes, e.g. after the user sent something.
+    in property <int> scroll-to-end-serial;
     // A key pressed anywhere (its text, and whether Control, Alt and Shift were held): whether
     // it was a shortcut, which Rust then carried out.
     callback shortcut(string, bool, bool, bool) -> bool;
@@ -2484,12 +2510,32 @@ export component AppWindow inherits Window {
                         message-list.follow = message-list.content-y <= message-list.visible-height - message-list.content-height + 8px;
                     }
                     HorizontalLayout {
+                        // A wheel turn animates the list's scroll, and its `scrolled` comes at
+                        // the start, where the position is still the old one: look again once
+                        // it has settled, or the end reached by the wheel wouldn't count.
+                        settle-timer := Timer {
+                            interval: 250ms;
+                            running: false;
+                            triggered => {
+                                self.running = false;
+                                message-list.follow = message-list.at-end();
+                            }
+                        }
                         message-list := ListView {
                             // Follow new messages only while the newest one is in view, so reading
                             // older messages isn't interrupted. Opening a chat starts at the bottom.
                             property <bool> follow: true;
-                            property <int> conversation: root.selected;
+                            // By id: the open chat's place in the list changes as chats move.
+                            property <string> conversation: root.selected-id;
                             changed conversation => { self.follow = true; }
+                            property <int> scroll-to-end-serial: root.scroll-to-end-serial;
+                            changed scroll-to-end-serial => {
+                                self.follow = true;
+                                self.content-y = min(0px, self.visible-height - self.content-height);
+                            }
+                            function at-end() -> bool {
+                                self.content-y <= self.visible-height - self.content-height + 8px
+                            }
                             // Jumping to a search result: rows have different heights and are only
                             // measured once shown, so the place is estimated from the average and
                             // corrected a few times as they are.
@@ -2510,7 +2556,8 @@ export component AppWindow inherits Window {
                             // Only the user's own scrolling decides; content growing (pictures arriving,
                             // rows being measured) moves the viewport too and must not stop following.
                             scrolled => {
-                                self.follow = self.content-y <= self.visible-height - self.content-height + 8px;
+                                self.follow = self.at-end();
+                                settle-timer.running = true;
                                 if self.content-y > -self.visible-height / 2 {
                                     root.load-older();
                                 }

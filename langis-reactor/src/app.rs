@@ -92,7 +92,8 @@ impl Component for Langis {
                 self.confirmation = Zeroizing::default();
             }
             Message::Send => {
-                if let Some(command) = self.chat.compose(&self.draft) {
+                // The view is built from the state each time, so the update isn't needed.
+                if let (Some(command), _) = self.chat.compose(&self.draft) {
                     self.backend.send(command);
                     self.draft.clear();
                 }
