@@ -953,8 +953,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         MessagesUpdate::Unchanged => {}
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
-                messages.push(message_item(&message, chat, images));
+                messages.push(MessageItem { fresh: true, ..message_item(&message, chat, images) });
             }
+            settle_fresh(window);
         }
         MessagesUpdate::Prepended(n) => {
             // The list keeps what is on screen in place.
@@ -1435,6 +1436,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
             })
             .unwrap_or_default(),
         highlighted: view.highlighted,
+        fresh: false,
     }
 }
 
@@ -1455,6 +1457,25 @@ fn reaction_items(reactions: &[langis_core::Reaction]) -> Vec<ReactionItem> {
 
 /// Like `==`, but comparing the nested lists by content: each item gets new models, which would
 /// never compare equal and so redraw every row with an attachment or a reaction.
+/// Once new rows had time to fade in, they are like the others: shown again (scrolled back to,
+/// or redrawn), they don't fade in again.
+fn settle_fresh(window: &AppWindow) {
+    let window = window.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(500), move || {
+        let Some(window) = window.upgrade() else {
+            return;
+        };
+        let messages = window.get_messages();
+        // The new ones are at the end.
+        for row in (0..messages.row_count()).rev() {
+            match messages.row_data(row) {
+                Some(item) if item.fresh => messages.set_row_data(row, MessageItem { fresh: false, ..item }),
+                _ => break,
+            }
+        }
+    });
+}
+
 fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
     fn same<T: PartialEq>(a: &ModelRc<T>, b: &ModelRc<T>) -> bool {
         a.row_count() == b.row_count() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
