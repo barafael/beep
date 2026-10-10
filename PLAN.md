@@ -67,7 +67,9 @@ By how much they matter, most first:
   offline it can sort below the first message with the new key); notices show in the 1:1 chat
   only, not in shared groups; a change notice appears live only within five minutes of the
   change; the parts that need a linked account (`announce_identity_change`, `set_verified`,
-  `remember_verification`, `trust_of`) have no test, the rest does.
+  `remember_verification`, `trust_of`, `deliver`) have no test, the rest does. The first message
+  after a verified contact's key changed is held too: the store refuses their new key for
+  sending (presage#450 pins the verified one) and the chat waits for "Continue".
 - **Groups:** accepting an invitation here (now done on the phone); adding people known only
   by phone number (invite them by PNI); retrying a change that clashed with someone else's;
   the group picture; invite links and join requests.
