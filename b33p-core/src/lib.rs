@@ -94,6 +94,9 @@ pub struct Details {
     /// The safety number (60 digits) of a 1:1 conversation, to compare in person or by
     /// another channel; `None` if there is no session yet.
     pub safety_number: Option<String>,
+    /// We (here or on another device) verified that safety number: it is the same on their
+    /// phone. A new key of theirs isn't verified.
+    pub verified: bool,
     /// A group's description.
     pub description: Option<String>,
     /// A group's members, with whether each is an admin.
@@ -658,6 +661,12 @@ pub enum Event {
         query: String,
         messages: Vec<ChatMessage>,
     },
+    /// Whether the safety number with a contact is verified now: after it was marked so, or
+    /// cleared, here or on another device, or their key changed.
+    Verified {
+        conversation: ConversationId,
+        verified: bool,
+    },
     /// Answers [`Command::LoadDetails`].
     Details {
         conversation: ConversationId,
@@ -780,6 +789,12 @@ pub enum Command {
     },
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
+    /// Marks the safety number with a contact as verified (compared with theirs), or clears
+    /// that; tells our other devices, and answers with [`Event::Details`].
+    SetVerified {
+        conversation: ConversationId,
+        verified: bool,
+    },
     /// Gathers a conversation's media, files and links from its whole stored history; see
     /// [`Event::Media`].
     LoadMedia(ConversationId),

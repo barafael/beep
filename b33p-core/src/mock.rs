@@ -433,6 +433,30 @@ pub fn run(commands: Inbox, events: Events) {
                     let _ = events.send(Event::Cleared(conversation));
                 }
             }
+            Ok(Command::SetVerified {
+                conversation,
+                verified,
+            }) => {
+                let _ = events.send(Event::Verified {
+                    conversation: conversation.clone(),
+                    verified,
+                });
+                let name = CONVERSATIONS
+                    .iter()
+                    .find(|(id, _, _)| *id == conversation.0)
+                    .map_or("them", |(_, name, _)| *name);
+                let state = if verified { "verified" } else { "unverified" };
+                let _ = events.send(Event::Message(ChatMessage {
+                    notice: true,
+                    ..message(
+                        &conversation.0,
+                        name,
+                        &format!("You marked your safety number with {name} as {state}."),
+                        now_millis(),
+                        false,
+                    )
+                }));
+            }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match conversation.0.as_str() {
                     "rust" => crate::Details {

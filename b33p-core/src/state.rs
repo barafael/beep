@@ -780,6 +780,16 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
+            Event::Verified {
+                conversation,
+                verified,
+            } => {
+                if let Some((shown, Some(details))) = &mut self.details
+                    && *shown == conversation
+                {
+                    details.verified = verified;
+                }
+            }
             Event::Details {
                 conversation,
                 details,
@@ -1390,6 +1400,16 @@ impl ChatState {
     }
 
     /// The details page, if shown: `Some(None)` while it is gathered.
+    /// Marks the safety number on the open details page verified, or clears that.
+    pub fn set_verified(&mut self, verified: bool) -> Option<Command> {
+        let (conversation, details) = self.details.as_ref()?;
+        details.as_ref()?.safety_number.as_ref()?;
+        Some(Command::SetVerified {
+            conversation: conversation.clone(),
+            verified,
+        })
+    }
+
     pub fn details(&self) -> Option<Option<&Details>> {
         self.details.as_ref().map(|(_, details)| details.as_ref())
     }
@@ -3690,6 +3710,47 @@ mod tests {
     /// not unread, and no read receipt for it.
     /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:
     /// nothing to edit or delete for everyone, and "edit the last one" passes over them.
+    /// Verifying acts on the open details page, and only with a safety number to verify; the
+    /// answer updates what it shows.
+    #[test]
+    fn verifying_from_the_details_page() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 1, false)));
+        assert!(state.set_verified(true).is_none(), "no details page open");
+        state.select(&id("a"));
+        assert!(state.open_details().is_some());
+        assert!(state.set_verified(true).is_none(), "details not loaded yet");
+        state.apply(Event::Details {
+            conversation: id("a"),
+            details: crate::Details::default(),
+        });
+        assert!(state.set_verified(true).is_none(), "no safety number yet");
+        state.apply(Event::Details {
+            conversation: id("a"),
+            details: crate::Details {
+                safety_number: Some("12345".into()),
+                ..Default::default()
+            },
+        });
+        assert!(matches!(
+            state.set_verified(true),
+            Some(Command::SetVerified { conversation, verified: true }) if conversation == id("a")
+        ));
+        state.apply(Event::Verified {
+            conversation: id("b"),
+            verified: true,
+        });
+        assert!(
+            !state.details().unwrap().unwrap().verified,
+            "another chat's"
+        );
+        state.apply(Event::Verified {
+            conversation: id("a"),
+            verified: true,
+        });
+        assert!(state.details().unwrap().unwrap().verified);
+    }
+
     #[test]
     fn our_notices_cannot_be_edited() {
         let mut state = state();

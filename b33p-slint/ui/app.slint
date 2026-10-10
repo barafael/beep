@@ -2065,12 +2065,16 @@ export component AppWindow inherits Window {
     in property <string> details-phone;
     // In lines of four groups; empty if there is none.
     in property <string> details-safety-number;
+    // We (here or on another device) verified that safety number, for the key it is now.
+    in property <bool> details-verified;
     in property <string> details-description;
     in property <[MemberItem]> details-members;
     callback open-details;
     callback close-details;
     // Changing the open group from its details page.
     callback rename-group(string);
+    // Marks the safety number verified (true) or clears that.
+    callback set-verified(bool);
     callback describe-group(string);
     callback set-member-admin(string, bool);
     callback remove-member(string);
@@ -2995,11 +2999,22 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                         }
+                                        if root.details-verified: Text {
+                                            text: "✓ Verified: you compared it with theirs.";
+                                            font-size: 0.85rem;
+                                            font-weight: 600;
+                                            color: Palette.accent-background;
+                                        }
                                         HorizontalLayout {
                                             alignment: start;
+                                            spacing: 8px;
                                             Button {
                                                 text: "Copy";
                                                 clicked => { root.copy-text(root.details-safety-number); }
+                                            }
+                                            Button {
+                                                text: root.details-verified ? "Clear verification" : "Mark as verified";
+                                                clicked => { root.set-verified(!root.details-verified); }
                                             }
                                         }
                                     }

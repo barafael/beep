@@ -136,6 +136,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     };
+    window.on_set_verified({
+        let shared = shared.clone();
+        move |verified| {
+            shared.act(|chat| (chat.set_verified(verified), Update::default()));
+        }
+    });
     window.on_rename_group({
         let edit = edit_selected(shared, |text, _| b33p_core::GroupEdit::Title(text));
         move |text| edit(text, false)
@@ -1177,6 +1183,7 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
         groups.chunks(4).map(|line| line.join(" ")).collect::<Vec<_>>().join("\n")
     });
     window.set_details_safety_number(safety.unwrap_or_default().into());
+    window.set_details_verified(details.verified);
     window.set_details_description(details.description.unwrap_or_default().into());
     let members: Vec<MemberItem> = details
         .members

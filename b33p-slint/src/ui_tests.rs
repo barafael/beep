@@ -115,6 +115,42 @@ fn a_notice_is_drawn_as_a_line_not_a_message() {
     );
 }
 
+/// The details page offers to mark the safety number verified, or to clear that, and says
+/// when it is.
+#[test]
+fn the_safety_number_can_be_marked_verified() {
+    let (window, _messages) = window_with_messages(1);
+    let asked = Rc::new(Cell::new(None));
+    window.on_set_verified({
+        let asked = asked.clone();
+        move |verified| asked.set(Some(verified))
+    });
+    // Tall enough for the whole details page: the panel makes only what shows.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 1200.));
+    window.set_details_open(true);
+    window.set_details_safety_number("12345 67890".into());
+    settle(&window);
+    assert!(
+        find(&window, "Copy").is_some(),
+        "the safety number's buttons show"
+    );
+    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_none());
+    find(&window, "Mark as verified")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(asked.get(), Some(true));
+
+    window.set_details_verified(true);
+    settle(&window);
+    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_some());
+    find(&window, "Clear verification")
+        .expect("offered once verified")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(asked.get(), Some(false));
+}
+
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);
