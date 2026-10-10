@@ -76,7 +76,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             if shared.act(|chat| chat.compose(&text))
                 && let Some(window) = window.upgrade()
             {
-                window.set_draft(SharedString::new());
+                // Empty once sent; after an edit, what was being written before it.
+                window.set_draft(shared.chat.borrow().draft().into());
                 shared.refresh(Update::default());
             }
         }
@@ -215,6 +216,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         move || shared.refresh(Update::default())
     });
+    window.on_is_blank(|text| text.trim().is_empty());
     window.on_finish_group_draft({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -474,11 +476,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     });
     window.on_cancel_edit({
         let shared = shared.clone();
+        let window = window.as_weak();
         move || {
             shared.act(|chat| {
                 chat.cancel_edit();
                 (None, Update::default())
             });
+            if let Some(window) = window.upgrade() {
+                window.set_draft(shared.chat.borrow().draft().into());
+            }
         }
     });
     window.on_delete({
@@ -577,16 +583,18 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         }
     });
     window.on_paste({
-        let shared = shared.clone();
+        let window = window.as_weak();
         move || {
-            let Some(files) = crate::clipboard::pasted() else {
-                return false;
-            };
-            shared.act(|chat| {
-                chat.stage_files(files);
-                (None, Update::default())
+            // Not here: the window may own what was copied, and has to be free to hand it over.
+            let window = window.clone();
+            std::thread::spawn(move || {
+                let files: Option<Vec<SharedString>> = crate::clipboard::pasted()
+                    .map(|files| files.iter().map(|f| f.to_string_lossy().as_ref().into()).collect());
+                let _ = window.upgrade_in_event_loop(move |window| match files {
+                    Some(files) => window.invoke_stage_files(ModelRc::new(VecModel::from(files))),
+                    None => window.set_paste_text(window.get_paste_text().wrapping_add(1)),
+                });
             });
-            true
         }
     });
     window.on_files_dropped({
@@ -840,11 +848,16 @@ fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         chat.close_chat_search();
     } else if chat.editing().is_some() {
         chat.cancel_edit();
-        window.set_draft(SharedString::new());
+        window.set_draft(chat.draft().into());
     } else if chat.replying().is_some() {
         chat.cancel_reply();
     } else if window.get_settings_open() {
         window.set_settings_open(false);
+    } else if chat.searching() {
+        let update = chat.search("");
+        drop(chat);
+        shared.refresh(update);
+        return true;
     } else if window.get_narrow() && chat.selected().is_some() {
         let update = chat.deselect();
         drop(chat);
@@ -927,10 +940,14 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         .map(|(query, results)| {
             results
                 .iter()
-                .map(|m| SearchResult {
-                    sender: m.sender.as_str().into(),
-                    when: state::format_time(m.timestamp).into(),
-                    text: state::snippet(&m.body, query).into(),
+                .map(|m| {
+                    let (text, found) = state::snippet(&m.body, query);
+                    SearchResult {
+                        sender: m.sender.as_str().into(),
+                        when: state::format_time(m.timestamp).into(),
+                        snippet: crate::highlighted(&text, found, window.get_accent()),
+                        text: text.into(),
+                    }
                 })
                 .collect()
         })
@@ -958,6 +975,7 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         update_list(&window.get_group_candidates(), candidates, |a, b| a == b);
     }
     window.set_forwarding(chat.forwarding());
+    window.set_forward_preview(chat.forwarded().unwrap_or_default().into());
     if chat.forwarding() {
         let targets: Vec<_> = chat
             .forward_targets(&window.get_forward_filter())
@@ -1057,7 +1075,17 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             conversations.set_vec(items);
         }
         window.set_selected(chat.selected_index().map_or(-1, |i| i as i32));
-        window.set_selected_id(chat.selected().map_or("", |c| c.id.0.as_str()).into());
+        let selected_id = chat.selected().map_or("", |c| c.id.0.as_str());
+        if window.get_selected_id() != selected_id {
+            // Each chat has its own draft, however it was opened.
+            window.set_draft(chat.draft().into());
+        }
+        window.set_selected_id(selected_id.into());
+        window.set_current(
+            chat.selected_view()
+                .map(|view| conversation_item(&view, pinned, chat, images))
+                .unwrap_or_default(),
+        );
         if !chat.searching() {
             window.set_search_text(SharedString::new());
         }

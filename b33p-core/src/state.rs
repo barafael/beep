@@ -4,6 +4,7 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    ops::Range,
     sync::Arc,
 };
 
@@ -298,6 +299,9 @@ pub struct ChatState {
     revealed: HashSet<MessageRef>,
     /// People picked to mention in the draft; their "@Name" becomes a mention when sent.
     draft_mentions: Vec<Person>,
+    /// What was being written in each chat (not an edit), with whom it mentions: it waits
+    /// there while other chats are open, and while editing.
+    drafts: HashMap<ConversationId, (String, Vec<Person>)>,
     /// The message being forwarded, while its target is chosen.
     forwarding: Option<ChatMessage>,
     /// Searching the selected conversation.
@@ -927,7 +931,12 @@ impl ChatState {
             self.highlight = None;
             self.replying = None;
             self.editing = None;
-            self.draft_mentions.clear();
+            self.keep_draft_mentions();
+            self.draft_mentions = self
+                .drafts
+                .get(id)
+                .map(|(_, m)| m.clone())
+                .unwrap_or_default();
             self.staged.clear();
             self.read_mark = self.conversation(id).map(|c| c.settings.last_read);
         }
@@ -1161,6 +1170,7 @@ impl ChatState {
 
     /// Back to the chat list, e.g. on a narrow window that shows one or the other.
     pub fn deselect(&mut self) -> Update {
+        self.keep_draft_mentions();
         self.selected = None;
         self.replying = None;
         self.editing = None;
@@ -1168,6 +1178,38 @@ impl ChatState {
         self.draft_mentions.clear();
         self.staged.clear();
         Update::reset()
+    }
+
+    /// The selected chat's draft, as left there; empty if none.
+    pub fn draft(&self) -> &str {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.drafts.get(id))
+            .map_or("", |(text, _)| text)
+    }
+
+    /// Before leaving the selected chat: its draft keeps whom it mentions.
+    fn keep_draft_mentions(&mut self) {
+        let mentions = std::mem::take(&mut self.draft_mentions);
+        if let Some((_, kept)) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.drafts.get_mut(id))
+        {
+            *kept = mentions;
+        }
+    }
+
+    /// Keeps `text` as the selected chat's draft, unless it is an edit.
+    fn keep_draft(&mut self, text: &str) {
+        let Some(id) = self.selected.clone().filter(|_| self.editing.is_none()) else {
+            return;
+        };
+        if text.is_empty() {
+            self.drafts.remove(&id);
+        } else {
+            self.drafts.entry(id).or_default().0 = text.to_owned();
+        }
     }
 
     /// Sends `text` to the selected conversation, as a reply if one is being written, or
@@ -1193,6 +1235,7 @@ impl ChatState {
             };
             return (Some(command), Update::default());
         }
+        self.drafts.remove(&conversation);
         let command = Command::Send {
             conversation,
             timestamp: now_millis(),
@@ -1365,7 +1408,8 @@ impl ChatState {
     }
 
     /// People who can be chosen: contacts whose name contains `filter`, without those
-    /// already in the group being added to.
+    /// already in the group being added to, and without strangers whose message request is
+    /// unanswered (adding them would answer it).
     pub fn group_candidates(&self, filter: &str) -> Vec<&Conversation> {
         let filter = filter.trim().to_lowercase();
         let already: Vec<String> = self
@@ -1384,6 +1428,7 @@ impl ChatState {
             .conversations
             .iter()
             .filter(|c| !c.is_group && !c.note_to_self && !c.settings.blocked)
+            .filter(|c| !self.is_request(c))
             .filter(|c| !already.contains(&c.id.0))
             .filter(|c| c.title.to_lowercase().contains(&filter))
             .collect();
@@ -1755,15 +1800,29 @@ impl ChatState {
         self.forwarding.is_some()
     }
 
+    /// What the message being forwarded says, to confirm where it goes: its text, or what is
+    /// attached when it has none.
+    pub fn forwarded(&self) -> Option<String> {
+        let message = self.forwarding.as_ref()?;
+        Some(
+            match (message.body.is_empty(), message.attachments.first()) {
+                (true, Some(attachment)) => describe_kind(attachment.kind).to_string(),
+                _ => message.body.clone(),
+            },
+        )
+    }
+
     pub fn cancel_forward(&mut self) {
         self.forwarding = None;
     }
 
-    /// Where a message can be forwarded to: chats whose title contains `filter`, in list order.
+    /// Where a message can be forwarded to: chats whose title contains `filter`, in list order;
+    /// not those it couldn't go to (blocked, left, or asking to write).
     pub fn forward_targets(&self, filter: &str) -> Vec<&Conversation> {
         let filter = filter.trim().to_lowercase();
         self.conversations
             .iter()
+            .filter(|c| self.can_write_to(c))
             .filter(|c| {
                 if filter.is_empty() {
                     // As in the chat list, without the archive split.
@@ -1833,15 +1892,17 @@ impl ChatState {
         let query = mention_query(draft)?;
         let start = draft.len() - query.len() - 1;
         let completed = format!("{}@{} ", &draft[..start], person.name);
+        self.keep_draft(&completed);
         if !self.draft_mentions.contains(&person) {
             self.draft_mentions.push(person);
         }
         Some(completed)
     }
 
-    /// The composer's text changed: tells the conversation we are typing, at most every few
-    /// seconds, or that we stopped once it is empty.
+    /// The composer's text changed: keeps it as the chat's draft, and tells the conversation we
+    /// are typing, at most every few seconds, or that we stopped once it is empty.
     pub fn draft_changed(&mut self, text: &str) -> Option<Command> {
+        self.keep_draft(text);
         let conversation = self.selected.clone()?;
         let now = now_millis();
         let typing = !text.trim().is_empty() && self.editing.is_none();
@@ -2334,19 +2395,29 @@ impl ChatState {
     /// The chat list: groups and conversations that have messages, most recently active
     /// first. Synced contacts never written to stay out of it.
     pub fn conversations(&self) -> impl Iterator<Item = ConversationView<'_>> {
-        self.listed().map(|c| ConversationView {
+        self.listed().map(|c| self.view(c))
+    }
+
+    fn view<'a>(&'a self, c: &'a Conversation) -> ConversationView<'a> {
+        ConversationView {
             conversation: c,
             avatar: self.avatars.get(&c.id),
             last_message: self.last_of(&c.id),
             unread: self.unread.get(&c.id).copied().unwrap_or_default(),
             selected: self.selected.as_ref() == Some(&c.id),
             typing: self.typing(&c.id),
-        })
+        }
     }
 
     pub fn selected(&self) -> Option<&Conversation> {
         let id = self.selected.as_ref()?;
         self.conversations.iter().find(|c| &c.id == id)
+    }
+
+    /// The open conversation as the chat list shows it, also while a search leaves it out of
+    /// [`ChatState::conversations`]: it stays open meanwhile.
+    pub fn selected_view(&self) -> Option<ConversationView<'_>> {
+        self.selected().map(|c| self.view(c))
     }
 
     /// Position of the selected conversation in [`ChatState::conversations`].
@@ -2546,8 +2617,9 @@ impl ChatState {
     }
 }
 
-/// A line of `body` around where it contains `query` (ignoring case), for search results.
-pub fn snippet(body: &str, query: &str) -> String {
+/// A line of `body` around where it contains `query` (ignoring case), for search results; with
+/// where in it the match is (in bytes), to highlight.
+pub fn snippet(body: &str, query: &str) -> (String, Option<Range<usize>>) {
     const AROUND: usize = 40;
     let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     let chars: Vec<char> = flat.chars().collect();
@@ -2569,11 +2641,24 @@ pub fn snippet(body: &str, query: &str) -> String {
     if start > 0 {
         out.push('…');
     }
-    out.extend(&chars[start..end]);
+    let found = match at {
+        Some(at) => {
+            out.extend(&chars[start..at]);
+            let from = out.len();
+            out.extend(&chars[at..at + wanted.len()]);
+            let found = from..out.len();
+            out.extend(&chars[at + wanted.len()..end]);
+            Some(found)
+        }
+        None => {
+            out.extend(&chars[start..end]);
+            None
+        }
+    };
     if end < chars.len() {
         out.push('…');
     }
-    out
+    (out, found)
 }
 
 /// "Ann is typing…", "Ann and Bob are typing…"; empty if nobody is.
@@ -4391,6 +4476,7 @@ mod tests {
             .collect();
         assert_eq!(titles, ["g", "a"]);
         assert_eq!(state.forward_targets("G").len(), 1);
+        assert_eq!(state.forwarded().as_deref(), Some("Ann at 10\nsecond line"));
         let Some(Command::Forward {
             conversation, body, ..
         }) = state.forward_to(&id("g"))
@@ -4403,6 +4489,7 @@ mod tests {
         );
         assert!(!state.forwarding());
         assert!(state.forward_to(&id("g")).is_none(), "once");
+        assert!(state.forwarded().is_none());
     }
 
     #[test]
@@ -4453,11 +4540,21 @@ mod tests {
 
     #[test]
     fn snippets_show_the_match_in_context() {
-        assert_eq!(snippet("see\nthe moon", "MOON"), "see the moon");
+        assert_eq!(
+            snippet("see\nthe moon", "MOON"),
+            ("see the moon".into(), Some(8..12))
+        );
         let long = format!("{} needle {}", "a".repeat(100), "b".repeat(100));
-        let shown = snippet(&long, "needle");
-        assert!(shown.starts_with('…') && shown.ends_with('…') && shown.contains("needle"));
+        let (shown, found) = snippet(&long, "needle");
+        assert!(shown.starts_with('…') && shown.ends_with('…'));
+        assert_eq!(&shown[found.unwrap()], "needle");
         assert!(shown.chars().count() < 140);
+        let (shown, found) = snippet("Grüße aus München", "münchen");
+        assert_eq!(&shown[found.unwrap()], "München");
+        assert_eq!(
+            snippet("nothing here", "moon"),
+            ("nothing here".into(), None)
+        );
     }
 
     #[test]
@@ -4570,6 +4667,78 @@ mod tests {
         state.show_folder(Some(1));
         state.apply(Event::Folders(Vec::new()));
         assert_eq!(state.folder(), None);
+    }
+
+    #[test]
+    fn strangers_asking_to_write_are_not_offered_for_groups() {
+        let mut state = state();
+        let mut ann = conversation("c:ann", false);
+        ann.settings.accepted = true;
+        state.apply(Event::Conversations(vec![
+            ann,
+            conversation("c:stranger", false),
+        ]));
+        state.apply(Event::StorageRead);
+        let names: Vec<_> = state
+            .group_candidates("")
+            .iter()
+            .map(|c| c.id.0.clone())
+            .collect();
+        assert_eq!(names, ["c:ann"]);
+    }
+
+    #[test]
+    fn each_chat_keeps_its_draft() {
+        let mut state = state();
+        let sent = ChatMessage {
+            timestamp: now_millis(),
+            ..message("a", "Me", 0, true)
+        };
+        state.apply(Event::Message(sent));
+        state.apply(Event::Message(message("g", "Bob", 20, false)));
+        state.select(&id("a"));
+        state.draft_changed("for Ann");
+        state.select(&id("g"));
+        assert_eq!(state.draft(), "", "not Ann's");
+        state.draft_changed("for the group");
+        state.select(&id("a"));
+        assert_eq!(state.draft(), "for Ann");
+        // An edit is written over it, and leaves it be.
+        assert!(state.edit_last().is_some());
+        state.draft_changed("corrected");
+        state.cancel_edit();
+        assert_eq!(state.draft(), "for Ann");
+        // Sent, it is gone.
+        assert!(state.compose("for Ann").0.is_some());
+        assert_eq!(state.draft(), "");
+        state.select(&id("g"));
+        assert_eq!(state.draft(), "for the group");
+    }
+
+    #[test]
+    fn forwarding_offers_only_chats_it_can_go_to() {
+        let mut state = state();
+        let mut ann = conversation("c:ann", false);
+        ann.settings.accepted = true;
+        let mut bob = conversation("c:bob", false);
+        bob.settings.accepted = true;
+        bob.settings.blocked = true;
+        state.apply(Event::Conversations(vec![
+            ann,
+            bob,
+            conversation("c:stranger", false),
+        ]));
+        state.apply(Event::StorageRead);
+        for chat in ["c:ann", "c:bob", "c:stranger"] {
+            state.apply(Event::Message(message(chat, "Someone", 10, false)));
+        }
+        let ids: Vec<_> = state
+            .forward_targets("")
+            .iter()
+            .map(|c| c.id.0.clone())
+            .collect();
+        assert!(ids.iter().any(|id| id == "c:ann"));
+        assert!(!ids.iter().any(|id| id == "c:bob" || id == "c:stranger"));
     }
 
     #[test]

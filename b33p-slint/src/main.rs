@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -659,19 +660,49 @@ fn rich_text(body: &str, styles: &[StyleRange], revealed: bool) -> slint::Styled
         .unwrap_or_else(|_| slint::StyledText::from_plain_text(body))
 }
 
+/// `text` with `found` (a byte range in it) bold and in `color`, e.g. a search result's match.
+fn highlighted(text: &str, found: Option<Range<usize>>, color: slint::Color) -> slint::StyledText {
+    found
+        .and_then(|found| highlight_markdown(text, found, color))
+        .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
+        .unwrap_or_else(|| slint::StyledText::from_plain_text(text))
+}
+
+/// See [`highlighted`]; `None` if `found` isn't a part of `text`.
+fn highlight_markdown(text: &str, found: Range<usize>, color: slint::Color) -> Option<String> {
+    if text.get(found.clone()).is_none_or(str::is_empty) {
+        return None;
+    }
+    let mut markdown = String::with_capacity(text.len() + 48);
+    escape(&text[..found.start], &mut markdown);
+    // The joiners keep the markers working next to spaces, as in `markdown`.
+    markdown.push_str(&format!(
+        "<font color=\"#{:02x}{:02x}{:02x}\">**\u{2060}",
+        color.red(),
+        color.green(),
+        color.blue()
+    ));
+    escape(&text[found.clone()], &mut markdown);
+    markdown.push_str("\u{2060}**</font>");
+    escape(&text[found.end..], &mut markdown);
+    Some(markdown)
+}
+
+/// Escapes `text` for Markdown, so that it all shows as typed.
+fn escape(text: &str, out: &mut String) {
+    for c in text.chars() {
+        if c.is_ascii_punctuation() {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+}
+
 /// See [`rich_text`].
 fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
     /// Between markers and text, so emphasis opens and closes whatever the neighbouring
     /// characters are (CommonMark's flanking rules); invisible.
     const JOIN: char = '\u{2060}';
-    fn escape(text: &str, out: &mut String) {
-        for c in text.chars() {
-            if c.is_ascii_punctuation() {
-                out.push('\\');
-            }
-            out.push(c);
-        }
-    }
     fn with_links(text: &str, out: &mut String) {
         let mut rest = text;
         while let Some((start, end)) = find_url(rest) {
@@ -856,5 +887,24 @@ mod tests {
         let spoiler = [range(5, 8, Style::Spoiler)];
         assert_eq!(parse(&spoiler, false), "a\"b\" ▒▒▒ `d` e");
         assert_eq!(parse(&spoiler, true), text);
+    }
+
+    /// A search result's match stands out, whatever surrounds it, and the text stays as it was.
+    #[test]
+    fn highlighting_keeps_the_text() {
+        let accent = slint::Color::from_rgb_u8(0x33, 0x99, 0xff);
+        for (text, found) in [
+            ("Message 249", 0..10),
+            ("…say *hi* to (Ann)!", 13..18),
+            ("Grüße aus München", 12..20),
+            ("a b c", 1..4),
+            ("<b>", 0..3),
+        ] {
+            let markdown = highlight_markdown(text, found, accent).expect("a part of it");
+            let parsed = slint::StyledText::from_markdown(&markdown).expect("valid markdown");
+            assert_eq!(raw(&parsed).replace('\u{2060}', ""), text, "{markdown:?}");
+        }
+        assert_eq!(highlight_markdown("abc", 2..9, accent), None);
+        assert_eq!(raw(&highlighted("abc", None, accent)), "abc");
     }
 }

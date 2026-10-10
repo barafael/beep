@@ -227,6 +227,8 @@ export struct SearchResult {
     when: string,
     // The text around the match.
     text: string,
+    // The same, with the match in bold.
+    snippet: styled-text,
 }
 
 export enum Screen { connecting, password, link, chats }
@@ -295,6 +297,51 @@ component IconButton inherits Rectangle {
     }
 }
 
+// Sends the draft: a paper plane on the accent color, or a check mark while editing a message.
+component SendButton inherits Rectangle {
+    in property <bool> enabled: true;
+    // Saving an edit rather than sending.
+    in property <bool> saving;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.saving ? "Save" : "Send";
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: !root.enabled ? Palette.foreground.with-alpha(0.12)
+        : touch.pressed ? Palette.accent-background.darker(0.2)
+        : touch.has-hover ? Palette.accent-background.brighter(0.1) : Palette.accent-background;
+    animate background { duration: 120ms * Motion.scale; easing: ease-out; }
+    // White, as on our own messages: the style's accent foreground can be dark.
+    property <color> tint: root.enabled ? white : Palette.foreground.with-alpha(0.4);
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    if !root.saving: Path {
+        // Nudged right of center, where a plane's weight is.
+        x: (parent.width - self.width) / 2 + 1px;
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M 2.01 21 L 23 12 L 2.01 3 L 2 10 L 17 12 L 2 14 Z";
+        fill: root.tint;
+        accessible-role: none;
+    }
+    if root.saving: Icon {
+        source: @image-url("@lucide/check.svg");
+        tint: root.tint;
+        width: 20px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
 component Avatar inherits Rectangle {
     in property <string> initials;
     in property <color> tint;
@@ -323,11 +370,35 @@ component Avatar inherits Rectangle {
     }
 }
 
+// How long a chat can be muted for, in seconds (-1 for good).
+global MuteChoices {
+    out property <[{ label: string, seconds: int }]> choices: [
+        { label: "For 1 hour", seconds: 3600 },
+        { label: "For 8 hours", seconds: 28800 },
+        { label: "For 1 week", seconds: 604800 },
+        { label: "Always", seconds: -1 },
+    ];
+}
+
+// How long messages last in a chat with disappearing messages, in seconds (0 for off).
+global TimerChoices {
+    out property <[string]> labels: ["Off", "30 seconds", "5 minutes", "1 hour", "8 hours", "1 day", "1 week", "4 weeks"];
+    out property <[int]> seconds: [0, 30, 300, 3600, 28800, 86400, 604800, 2419200];
+    // The place of `seconds` among the choices; -1 for a time set elsewhere that isn't one.
+    public pure function index-of(seconds: int) -> int {
+        seconds == 0 ? 0 : seconds == 30 ? 1 : seconds == 300 ? 2 : seconds == 3600 ? 3
+            : seconds == 28800 ? 4 : seconds == 86400 ? 5 : seconds == 604800 ? 6
+            : seconds == 2419200 ? 7 : -1
+    }
+}
+
 // What can be done with a conversation, in its context menu and the chat header's menu.
 component ConversationMenu inherits ContextMenuArea {
     in property <ConversationItem> item;
-    // With the disappearing-messages timer (the chat header's menu).
-    in property <bool> with-timer;
+    // The chat header's menu. It opens against the window's right edge, where a submenu has no
+    // room beside it and would open over the menu itself, so it has none: muting for a while
+    // and the disappearing-messages timer are in the chat's details instead.
+    in property <bool> in-header;
     callback toggle-pin;
     // Among the pinned chats: -1 up, 1 down.
     callback move-pin(int);
@@ -335,9 +406,8 @@ component ConversationMenu inherits ContextMenuArea {
     // For this many seconds; -1 for good, 0 to unmute.
     callback mute(int);
     callback archive(bool);
-    callback set-timer(int);
     callback block(bool);
-    // With `with-timer`: the chat's media, files and links, and its details.
+    // With `in-header`: the chat's media, files and links, and its details.
     callback show-media;
     callback show-details;
     property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
@@ -362,36 +432,20 @@ component ConversationMenu inherits ContextMenuArea {
             title: "Unmute";
             activated => { root.mute(0); }
         }
-        if !root.item.muted: Menu {
+        if !root.item.muted && !root.in-header: Menu {
             title: "Mute";
-            MenuItem { title: "For 1 hour"; activated => { root.mute(3600); } }
-            MenuItem { title: "For 8 hours"; activated => { root.mute(28800); } }
-            MenuItem { title: "For 1 week"; activated => { root.mute(604800); } }
-            MenuItem { title: "Always"; activated => { root.mute(-1); } }
+            for choice in MuteChoices.choices: MenuItem {
+                title: choice.label;
+                activated => { root.mute(choice.seconds); }
+            }
         }
-        if root.with-timer: MenuItem {
+        if root.in-header: MenuItem {
             title: "Details";
             activated => { root.show-details(); }
         }
-        if root.with-timer: MenuItem {
+        if root.in-header: MenuItem {
             title: "Media, files and links";
             activated => { root.show-media(); }
-        }
-        if root.with-timer: Menu {
-            title: "Disappearing messages";
-            for choice in [
-                { label: "Off", seconds: 0 },
-                { label: "30 seconds", seconds: 30 },
-                { label: "5 minutes", seconds: 300 },
-                { label: "1 hour", seconds: 3600 },
-                { label: "8 hours", seconds: 28800 },
-                { label: "1 day", seconds: 86400 },
-                { label: "1 week", seconds: 604800 },
-                { label: "4 weeks", seconds: 2419200 },
-            ]: MenuItem {
-                title: (choice.seconds == root.item.timer ? "✓ " : "") + choice.label;
-                activated => { root.set-timer(choice.seconds); }
-            }
         }
         MenuSeparator {}
         MenuItem {
@@ -1649,7 +1703,6 @@ component SectionTitle inherits Text {
 }
 
 component SettingsPage inherits Rectangle {
-    in-out property <int> theme;
     in-out property <int> widget-style;
     in property <string> style-note;
     in-out property <int> text-size;
@@ -1719,18 +1772,7 @@ component SettingsPage inherits Rectangle {
                     alignment: start;
 
                     SectionTitle { text: "Appearance"; }
-                    SettingRow {
-                        label: "Theme";
-                        // Qt styles (System, Fusion) take their colours from the desktop.
-                        hint: root.widget-style <= 1 ? "The System and Fusion styles follow your desktop's colours." : "";
-                        ComboBox {
-                            enabled: root.widget-style > 1;
-                            width: 200px;
-                            model: ["System", "Light", "Dark"];
-                            current-index <=> root.theme;
-                            selected => { root.changed-settings(); }
-                        }
-                    }
+                    // No theme to choose: both styles (Qt's) take their colours from the desktop.
                     SettingRow {
                         label: "Style";
                         hint: root.style-note;
@@ -1870,7 +1912,7 @@ component SettingsPage inherits Rectangle {
                         { keys: "↑", what: "Edit your last message (in an empty composer)" },
                         { keys: "Shift+Enter", what: "New line" },
                         { keys: "Ctrl+V", what: "Paste text, a picture or files" },
-                        { keys: "Esc", what: "Close, or stop replying or editing" },
+                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search" },
                     ]: HorizontalLayout {
                         spacing: 16px;
                         Text {
@@ -1945,9 +1987,12 @@ export component AppWindow inherits Window {
     in property <bool> history-skippable;
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
+    // The open chat's row in `conversations`; -1 if none, or while a search leaves it out.
     in property <int> selected: -1;
     // The open chat's id, empty if none.
     in property <string> selected-id;
+    // The open chat, also while a search leaves it out of `conversations`.
+    in property <ConversationItem> current;
     in property <bool> can-send;
     in-out property <string> draft;
 
@@ -2094,6 +2139,8 @@ export component AppWindow inherits Window {
     in property <bool> group-draft-open;
     in property <bool> group-draft-new;
     in-out property <string> group-draft-name;
+    // Whether text is empty or only spaces, which make no name.
+    pure callback is-blank(string) -> bool;
     in-out property <string> group-draft-filter;
     // What is typed in the chat search, or the group dialog's search, is a phone number to look up.
     in property <bool> search-is-number;
@@ -2167,14 +2214,20 @@ export component AppWindow inherits Window {
     callback post-story-photo;
     // From Rust, once the file picker is done.
     callback story-photo-chosen(string);
-    // Ctrl+V in the composer: attaches a copied picture or files; `false` if the clipboard holds
-    // neither, and the text is pasted as usual.
-    callback paste() -> bool;
+    // Ctrl+V in the composer: attaches a copied picture or files. Rust looks in the clipboard
+    // on a thread of its own (reading it here would hold up the window, which may be what has
+    // to hand it over); if it holds neither, it counts `paste-text` up, and the text is pasted.
+    callback paste;
+    in-out property <int> paste-text;
     // Files dropped onto the open chat, to attach.
     callback files-dropped(DropEvent);
     // Choosing where to forward a message to.
     in property <bool> forwarding;
     in property <[ConversationItem]> forward-targets;
+    // What the message says, to confirm where it goes.
+    in property <string> forward-preview;
+    // The style's accent color, for text Rust formats, e.g. what a search found.
+    out property <color> accent: Palette.accent-background;
     in-out property <string> forward-filter;
     callback forward(int);
     callback forward-to(string);
@@ -2284,7 +2337,7 @@ export component AppWindow inherits Window {
             animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
             HorizontalLayout {
                 // Sidebar: the whole window when narrow and nothing is open.
-                if !root.narrow || (root.selected < 0 && !root.settings-open): Rectangle {
+                if !root.narrow || (root.selected-id == "" && !root.settings-open): Rectangle {
                     // Fixed (but draggable) beside a chat; the whole window when narrow.
                     horizontal-stretch: root.narrow ? 1 : 0;
                     min-width: root.narrow ? 0px : root.sidebar-width;
@@ -2513,7 +2566,6 @@ export component AppWindow inherits Window {
 
                 if root.settings-open: SettingsPage {
                     horizontal-stretch: 1;
-                    theme <=> root.theme;
                     widget-style <=> root.widget-style;
                     style-note: root.style-note;
                     text-size <=> root.text-size;
@@ -2540,7 +2592,7 @@ export component AppWindow inherits Window {
                 }
 
                 // Conversation
-                if !root.settings-open && root.selected < 0 && !root.narrow: Rectangle {
+                if !root.settings-open && root.selected-id == "" && !root.narrow: Rectangle {
                     horizontal-stretch: 1;
                     VerticalLayout {
                         alignment: center;
@@ -2561,14 +2613,14 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                if !root.settings-open && root.selected >= 0: VerticalLayout {
+                if !root.settings-open && root.selected-id != "": VerticalLayout {
                     horizontal-stretch: 1;
                     Rectangle {
                         height: 60px;
                         // The chat's picture and name open its details; the buttons, above, don't.
                         TouchArea {
                             accessible-role: button;
-                            accessible-label: "Details of " + root.conversations[root.selected].title;
+                            accessible-label: "Details of " + root.current.title;
                             accessible-action-default => { self.clicked(); }
                             mouse-cursor: pointer;
                             clicked => { root.open-details(); }
@@ -2587,23 +2639,23 @@ export component AppWindow inherits Window {
                             }
                             Avatar {
                                 width: 36px;
-                                initials: root.conversations[root.selected].initials;
-                                tint: root.conversations[root.selected].avatar-color;
-                                picture: root.conversations[root.selected].avatar;
+                                initials: root.current.initials;
+                                tint: root.current.avatar-color;
+                                picture: root.current.avatar;
                                 y: (parent.height - self.height) / 2;
                             }
                             VerticalLayout {
                                 alignment: center;
                                 horizontal-stretch: 1;
                                 Text {
-                                    text: root.conversations[root.selected].title;
+                                    text: root.current.title;
                                     font-size: 1.1rem;
                                     font-weight: 600;
                                     overflow: elide;
                                     color: Palette.foreground;
                                 }
                                 // Who is typing, or else the subtitle: they cross-fade.
-                                if root.typing != "" || root.conversations[root.selected].subtitle != "" || root.conversations[root.selected].timer > 0: Rectangle {
+                                if root.typing != "" || root.current.subtitle != "" || root.current.timer > 0: Rectangle {
                                     height: subtitle.preferred-height;
                                     // The last one, so it doesn't go blank while fading out.
                                     property <string> typing: root.typing;
@@ -2615,9 +2667,9 @@ export component AppWindow inherits Window {
                                     }
                                     subtitle := Text {
                                         width: parent.width;
-                                        text: root.conversations[root.selected].subtitle
-                                            + (root.conversations[root.selected].timer > 0
-                                                ? (root.conversations[root.selected].subtitle != "" ? " · " : "") + "⏱ " + root.conversations[root.selected].timer-label
+                                        text: root.current.subtitle
+                                            + (root.current.timer > 0
+                                                ? (root.current.subtitle != "" ? " · " : "") + "⏱ " + root.current.timer-label
                                                 : "");
                                         font-size: 0.8rem;
                                         overflow: elide;
@@ -2669,15 +2721,14 @@ export component AppWindow inherits Window {
                             }
                         }
                         chat-menu := ConversationMenu {
-                            item: root.conversations[root.selected];
-                            with-timer: true;
-                            property <string> id: root.conversations[root.selected].id;
+                            item: root.current;
+                            in-header: true;
+                            property <string> id: root.current.id;
                             toggle-pin => { root.toggle-pin(self.id); }
                             move-pin(by) => { root.move-pin(self.id, by); }
                             mark-read(read) => { root.mark-read(self.id, read); }
                             mute(seconds) => { root.mute(self.id, seconds); }
                             archive(archived) => { root.archive(self.id, archived); }
-                            set-timer(seconds) => { root.set-timer(self.id, seconds); }
                             block(blocked) => { root.block(self.id, blocked); }
                             show-media => { root.open-media(); }
                             show-details => { root.open-details(); }
@@ -2790,7 +2841,7 @@ export component AppWindow inherits Window {
                                     item: item;
                                     reply => {
                                         root.reply(index);
-                                        composer.focus();
+                                        focus-composer-timer.running = true;
                                     }
                                     max-bubble-width: message-list.visible-width * 0.7;
                                     fetch-attachment(id) => { root.fetch-attachment(id); }
@@ -2800,7 +2851,7 @@ export component AppWindow inherits Window {
                                     react(emoji) => { root.react(index, emoji); }
                                     edit => {
                                         root.edit(index);
-                                        composer.focus();
+                                        focus-composer-timer.running = true;
                                     }
                                     delete(everyone) => { root.delete(index, everyone); }
                                     copy-text(text) => { root.copy-text(text); }
@@ -2891,13 +2942,6 @@ export component AppWindow inherits Window {
                                     border-radius: 6px;
                                     background: result-touch.has-hover ? Palette.foreground.with-alpha(0.06) : transparent;
                                     animate background { duration: 120ms * Motion.scale; easing: ease-out; }
-                                    result-touch := TouchArea {
-                                        accessible-role: list-item;
-                                        accessible-label: result.sender + ", " + result.when + ": " + result.text;
-                                        accessible-action-default => { self.clicked(); }
-                                        mouse-cursor: pointer;
-                                        clicked => { root.show-result(index); }
-                                    }
                                     result-column := VerticalLayout {
                                         padding: 8px;
                                         spacing: 2px;
@@ -2914,11 +2958,20 @@ export component AppWindow inherits Window {
                                                 color: Palette.foreground.with-alpha(0.55);
                                             }
                                         }
-                                        Text {
-                                            text: result.text;
-                                            wrap: word-wrap;
-                                            color: Palette.foreground.with-alpha(0.8);
+                                        StyledText {
+                                            text: result.snippet;
+                                            accessible-role: text;
+                                            accessible-label: result.text;
+                                            default-color: Palette.foreground.with-alpha(0.8);
                                         }
+                                    }
+                                    // Over the text, which would take the clicks for links otherwise.
+                                    result-touch := TouchArea {
+                                        accessible-role: list-item;
+                                        accessible-label: result.sender + ", " + result.when + ": " + result.text;
+                                        accessible-action-default => { self.clicked(); }
+                                        mouse-cursor: pointer;
+                                        clicked => { root.show-result(index); }
                                     }
                                 }
                             }
@@ -2950,13 +3003,13 @@ export component AppWindow inherits Window {
                                         alignment: center;
                                         Avatar {
                                             width: 96px;
-                                            initials: root.conversations[root.selected].initials;
-                                            tint: root.conversations[root.selected].avatar-color;
-                                            picture: root.conversations[root.selected].avatar;
+                                            initials: root.current.initials;
+                                            tint: root.current.avatar-color;
+                                            picture: root.current.avatar;
                                         }
                                     }
                                     Text {
-                                        text: root.conversations[root.selected].title;
+                                        text: root.current.title;
                                         font-size: 1.4rem;
                                         font-weight: 600;
                                         horizontal-alignment: center;
@@ -2969,7 +3022,7 @@ export component AppWindow inherits Window {
                                         color: Palette.foreground.with-alpha(0.75);
                                     }
                                     Text {
-                                        text: root.details-phone != "" ? root.details-phone : root.conversations[root.selected].subtitle;
+                                        text: root.details-phone != "" ? root.details-phone : root.current.subtitle;
                                         horizontal-alignment: center;
                                         color: Palette.foreground.with-alpha(0.6);
                                     }
@@ -2988,6 +3041,43 @@ export component AppWindow inherits Window {
                                             clicked => {
                                                 root.close-details();
                                                 root.open-media();
+                                            }
+                                        }
+                                    }
+                                    // Muting for a while and the timer, here rather than in the
+                                    // header's menu (see `ConversationMenu`).
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        property <ConversationItem> chat: root.current;
+                                        SectionTitle { text: "Chat"; }
+                                        SettingRow {
+                                            label: "Notifications";
+                                            hint: chat.muted ? "Muted" : "";
+                                            if chat.muted: Button {
+                                                text: "Unmute";
+                                                clicked => { root.mute(chat.id, 0); }
+                                            }
+                                            // In the order of `MuteChoices`, after "On".
+                                            if !chat.muted: ComboBox {
+                                                width: 200px;
+                                                model: ["On", "Off for 1 hour", "Off for 8 hours", "Off for 1 week", "Off"];
+                                                current-index: 0;
+                                                selected => {
+                                                    if self.current-index > 0 {
+                                                        root.mute(chat.id, MuteChoices.choices[self.current-index - 1].seconds);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Only where we can still write: the timer is a message to them.
+                                        if !chat.request && !chat.blocked && !chat.left: SettingRow {
+                                            label: "Disappearing messages";
+                                            hint: chat.timer > 0 && TimerChoices.index-of(chat.timer) < 0 ? "Set to " + chat.timer-label : "";
+                                            ComboBox {
+                                                width: 200px;
+                                                model: TimerChoices.labels;
+                                                current-index: TimerChoices.index-of(chat.timer);
+                                                selected => { root.set-timer(chat.id, TimerChoices.seconds[self.current-index]); }
                                             }
                                         }
                                     }
@@ -3051,14 +3141,14 @@ export component AppWindow inherits Window {
                                             }
                                         }
                                     }
-                                    if root.conversations[root.selected].group && !root.conversations[root.selected].left: VerticalLayout {
+                                    if root.current.group && !root.current.left: VerticalLayout {
                                         spacing: 6px;
                                         SectionTitle { text: "Group"; }
                                         HorizontalLayout {
                                             spacing: 8px;
                                             name-field := LineEdit {
                                                 placeholder-text: "Name";
-                                                text: root.conversations[root.selected].title;
+                                                text: root.current.title;
                                                 accepted => { root.rename-group(self.text); }
                                             }
                                             Button {
@@ -3125,12 +3215,19 @@ export component AppWindow inherits Window {
                                                 color: Palette.foreground.with-alpha(0.6);
                                             }
                                             // Not for ourselves, nor where we're no longer in the group.
-                                            if member.name != "You" && !root.conversations[root.selected].left: VerticalLayout {
+                                            if member.name != "You" && !root.current.left: VerticalLayout {
                                                 alignment: center;
                                                 IconButton {
                                                     icon: @image-url("@lucide/ellipsis-vertical.svg");
                                                     label: "Manage " + member.name;
-                                                    clicked => { member-menu.show({ x: self.x - 160px, y: self.y + self.height }); }
+                                                    // Below the button, in the menu area's coordinates
+                                                    // (it sits in the layout too, below the button).
+                                                    clicked => {
+                                                        member-menu.show({
+                                                            x: self.x - member-menu.x - 160px,
+                                                            y: self.y + self.height - member-menu.y,
+                                                        });
+                                                    }
                                                 }
                                                 member-menu := ContextMenuArea {
                                                     enabled: false;
@@ -3387,10 +3484,7 @@ export component AppWindow inherits Window {
                                     icon: @image-url("@lucide/x.svg");
                                     label: "Stop editing";
                                     tint: Palette.foreground.with-alpha(0.6);
-                                    clicked => {
-                                        root.cancel-edit();
-                                        root.draft = "";
-                                    }
+                                    clicked => { root.cancel-edit(); }
                                 }
                             }
                         }
@@ -3499,27 +3593,35 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.conversations[root.selected].request: Rectangle {
+                    if root.current.request: request-bar := Rectangle {
                         background: Palette.alternate-background;
+                        // Blocking and deleting can't be undone, and these buttons are where the
+                        // composer is in other chats: they ask first. The answer: 1 delete, 2 block
+                        // (as `respond` takes it), 0 while not asking.
+                        property <int> confirming;
+                        property <string> chat: root.selected-id;
+                        changed chat => { self.confirming = 0; }
                         VerticalLayout {
                             padding: 14px;
                             spacing: 10px;
                             Text {
-                                text: root.conversations[root.selected].title + " wants to message you. They won't know you've seen their messages until you accept.";
+                                text: request-bar.confirming == 1 ? "Delete this chat and its messages?"
+                                    : request-bar.confirming == 2 ? "Block " + root.current.title + "? They won't be able to message or call you."
+                                    : root.current.title + " wants to message you. They won't know you've seen their messages until you accept.";
                                 wrap: word-wrap;
                                 horizontal-alignment: center;
                                 color: Palette.foreground;
                             }
-                            HorizontalLayout {
+                            if request-bar.confirming == 0: HorizontalLayout {
                                 alignment: center;
                                 spacing: 8px;
                                 Button {
                                     text: "Block";
-                                    clicked => { root.respond(2); }
+                                    clicked => { request-bar.confirming = 2; }
                                 }
                                 Button {
                                     text: "Delete";
-                                    clicked => { root.respond(1); }
+                                    clicked => { request-bar.confirming = 1; }
                                 }
                                 Button {
                                     text: "Accept";
@@ -3527,9 +3629,22 @@ export component AppWindow inherits Window {
                                     clicked => { root.respond(0); }
                                 }
                             }
+                            if request-bar.confirming != 0: HorizontalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                Button {
+                                    text: "Cancel";
+                                    clicked => { request-bar.confirming = 0; }
+                                }
+                                Button {
+                                    text: request-bar.confirming == 1 ? "Delete" : "Block";
+                                    primary: true;
+                                    clicked => { root.respond(request-bar.confirming); }
+                                }
+                            }
                         }
                     }
-                    if root.conversations[root.selected].invited: Rectangle {
+                    if root.current.invited: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 12px;
@@ -3543,21 +3658,21 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Decline";
-                                clicked => { root.answer-invitation(root.conversations[root.selected].id, false); }
+                                clicked => { root.answer-invitation(root.current.id, false); }
                             }
                             Button {
                                 text: "Accept";
                                 primary: true;
-                                clicked => { root.answer-invitation(root.conversations[root.selected].id, true); }
+                                clicked => { root.answer-invitation(root.current.id, true); }
                             }
                         }
                     }
-                    if root.conversations[root.selected].left && !root.conversations[root.selected].invited: Rectangle {
+                    if root.current.left && !root.current.invited: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 14px;
                             Text {
-                                text: root.conversations[root.selected].subtitle;
+                                text: root.current.subtitle;
                                 wrap: word-wrap;
                                 horizontal-alignment: center;
                                 horizontal-stretch: 1;
@@ -3565,13 +3680,13 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.conversations[root.selected].safety-changed: Rectangle {
+                    if root.current.safety-changed: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 12px;
                             spacing: 12px;
                             Text {
-                                text: "Your safety number with " + root.conversations[root.selected].title + " changed since you verified it. Compare it again, or continue without.";
+                                text: "Your safety number with " + root.current.title + " changed since you verified it. Compare it again, or continue without.";
                                 wrap: word-wrap;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
@@ -3583,11 +3698,11 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Continue";
-                                clicked => { root.confirm-safety-number(root.conversations[root.selected].id); }
+                                clicked => { root.confirm-safety-number(root.current.id); }
                             }
                         }
                     }
-                    if root.conversations[root.selected].blocked: Rectangle {
+                    if root.current.blocked: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 12px;
@@ -3601,27 +3716,39 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 text: "Unblock";
-                                clicked => { root.block(root.conversations[root.selected].id, false); }
+                                clicked => { root.block(root.current.id, false); }
                             }
                         }
                     }
                     // Not for requests, blocked chats, groups left or a changed safety number: they get
                     // their bar above instead.
                     Rectangle {
-                        property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked || root.conversations[root.selected].left || root.conversations[root.selected].safety-changed;
+                        property <bool> hidden: root.current.request || root.current.blocked || root.current.left || root.current.safety-changed;
                         height: self.hidden ? 0px : composer-row.preferred-height;
                         clip: true;
+                        // A chat opens ready to write in, wherever it was opened from (the search
+                        // field would otherwise keep the focus, and typing there hides the chat).
+                        property <string> chat: root.selected-id;
+                        function focus-if-writable() {
+                            if !self.hidden {
+                                focus-composer-timer.running = true;
+                            }
+                        }
+                        init => { self.focus-if-writable(); }
+                        changed chat => { self.focus-if-writable(); }
+                        // Back to writing once a message was forwarded, or not.
+                        property <bool> forwarding: root.forwarding;
+                        changed forwarding => {
+                            if !self.forwarding { self.focus-if-writable(); }
+                        }
                     composer-row := HorizontalLayout {
-                        // The editor's frame and margins around its text. They differ between Qt
-                        // styles, so the editor tells once laid out (a guess until then). Above the
-                        // text it is Slint's padding and border (4px + 1px, in every style); the rest
-                        // is below, where the style keeps room for a scroll bar.
-                        in-out property <length> editor-chrome: 32px;
-                        property <length> editor-top: 5px;
                         property <length> line: one-line-measure.preferred-height;
-                        // What is beside the editor centers on its last line, wherever that is.
+                        // The field's height for one line: the send button's, unless the text is
+                        // set larger.
+                        property <length> one-line-height: max(send-button.height, self.line + 8px);
+                        // What is beside the field lines up with its last line, wherever that is.
                         function last-line-padding(height: length) -> length {
-                            max(0px, self.editor-chrome - self.editor-top + self.line / 2 - height / 2)
+                            max(0px, (self.one-line-height - height) / 2)
                         }
                         width: parent.width;
                         padding: 12px;
@@ -3790,7 +3917,7 @@ export component AppWindow inherits Window {
                                             clicked => {
                                                 root.draft = root.draft + emoji;
                                                 root.draft-edited(root.draft);
-                                                composer.focus();
+                                                focus-composer-timer.running = true;
                                             }
                                         }
                                         Text { text: emoji; font-size: 1.2rem; }
@@ -3798,16 +3925,26 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        // Grows with the draft, up to a few lines. The draft is measured by an invisible
-                        // copy, since the editor's own content height depends on its height.
-                        Rectangle {
+                        // Grows with the draft, up to a few lines, then scrolls. A plain text input
+                        // in a field of our own: the native TextEdit keeps room below its text for a
+                        // scroll bar, so a line of it sat at the top of a box two lines high. The
+                        // draft is measured by an invisible copy, which wraps like the input.
+                        composer-field := Rectangle {
                             horizontal-stretch: 1;
-                            // Room for the style's frame and padding, so no scroll bar shows for a line.
-                            property <length> chrome: composer-row.editor-chrome;
-                            height: clamp(measure.preferred-height + self.chrome, composer-row.line + self.chrome, 150px);
+                            // A word too long for a line would otherwise make this as wide as the
+                            // word, pushing the chat past the window; the input breaks it instead.
+                            min-width: 0px;
+                            property <length> pad-x: 10px;
+                            property <length> pad-y: (composer-row.one-line-height - composer-row.line) / 2;
+                            height: clamp(measure.preferred-height, composer-row.line, 150px - 2 * self.pad-y) + 2 * self.pad-y;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: composer.has-focus ? Palette.accent-background : Palette.border;
+                            animate border-color { duration: 120ms * Motion.scale; easing: ease-out; }
+                            background: Palette.control-background;
                             measure := Text {
                                 visible: false;
-                                width: parent.width - 20px;
+                                width: composer.width;
                                 text: root.draft + " ";
                                 wrap: word-wrap;
                             }
@@ -3815,52 +3952,132 @@ export component AppWindow inherits Window {
                                 visible: false;
                                 text: " ";
                             }
-                            composer := TextEdit {
-                                width: parent.width;
-                                height: parent.height;
-                                // Assigned, not bound: the height depends on it.
-                                changed visible-height => {
-                                    composer-row.editor-chrome = self.height - self.visible-height;
-                                }
-                                text <=> root.draft;
-                                placeholder-text: root.editing ? "Edit message" : "Message";
-                                wrap: word-wrap;
-                                edited(text) => { root.draft-edited(text); }
-                                // Enter sends; Shift+Enter starts a new line.
-                                key-pressed(event) => {
-                                    if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
-                                        root.pick-mention(0);
-                                        return accept;
+                            // Focuses the input, with the caret at the end, once the menu an action
+                            // was picked from has closed: closing it gives the focus back to wherever
+                            // it was before.
+                            focus-composer-timer := Timer {
+                                interval: 1ms;
+                                running: false;
+                                // Or where the caret was, e.g. after the field's own menu.
+                                in-out property <bool> to-end: true;
+                                triggered => {
+                                    self.running = false;
+                                    composer.focus();
+                                    if self.to-end {
+                                        composer.set-selection-offsets(2147483647, 2147483647);
                                     }
-                                    if event.text == Key.Return && !event.modifiers.shift {
-                                        if root.can-send { root.send(root.draft); }
-                                        return accept;
-                                    }
-                                    if event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste() {
-                                        return accept;
-                                    }
-                                    if event.text == Key.UpArrow && root.draft == "" {
-                                        root.edit-last();
-                                        return accept;
-                                    }
-                                    return reject;
+                                    self.to-end = true;
                                 }
                             }
-                            // Clicks below the text don't reach it (the style keeps room there, for
-                            // a scroll bar): clicking there starts writing too.
+                            // Text from the clipboard, once Rust found it holds nothing to attach.
+                            property <int> paste-text: root.paste-text;
+                            changed paste-text => { composer.paste(); }
+                            // After the field's menu, which may have been opened from elsewhere.
+                            function focus-in-place() {
+                                focus-composer-timer.to-end = false;
+                                focus-composer-timer.running = true;
+                            }
+                            // Clicks beside the text, in the field's margins, start writing too.
                             TouchArea {
-                                y: composer-row.editor-top + measure.preferred-height;
-                                height: max(0px, parent.height - self.y);
                                 mouse-cursor: text;
                                 clicked => { composer.focus(); }
+                            }
+                            Text {
+                                x: parent.pad-x;
+                                y: parent.pad-y;
+                                width: composer-scroll.width;
+                                text: root.draft == "" && composer.preedit-text == "" ? (root.editing ? "Edit message" : "Message") : "";
+                                color: Palette.foreground.with-alpha(0.5);
+                                overflow: elide;
+                                accessible-role: none;
+                            }
+                            ContextMenuArea {
+                                x: parent.pad-x;
+                                y: parent.pad-y;
+                                width: parent.width - 2 * parent.pad-x;
+                                height: parent.height - 2 * parent.pad-y;
+                                Menu {
+                                    MenuItem {
+                                        title: "Cut";
+                                        enabled: root.draft != "";
+                                        activated => { composer.cut(); composer-field.focus-in-place(); }
+                                    }
+                                    MenuItem {
+                                        title: "Copy";
+                                        enabled: root.draft != "";
+                                        activated => { composer.copy(); composer-field.focus-in-place(); }
+                                    }
+                                    MenuItem {
+                                        title: "Paste";
+                                        activated => {
+                                            root.paste();
+                                            composer-field.focus-in-place();
+                                        }
+                                    }
+                                    MenuItem {
+                                        title: "Select all";
+                                        enabled: root.draft != "";
+                                        activated => { composer.select-all(); composer-field.focus-in-place(); }
+                                    }
+                                }
+                                // Scrolled by the wheel or by moving the caret; dragging selects.
+                                composer-scroll := Flickable {
+                                    interactive: false;
+                                    content-height: composer.height;
+                                    // Shorter text leaves no gap below it.
+                                    changed content-height => {
+                                        self.content-y = max(self.content-y, self.height - self.content-height);
+                                    }
+                                    composer := TextInput {
+                                        width: composer-scroll.width;
+                                        height: max(composer-scroll.height, measure.preferred-height);
+                                        text <=> root.draft;
+                                        single-line: false;
+                                        wrap: word-wrap;
+                                        color: Palette.foreground;
+                                        selection-background-color: Palette.selection-background;
+                                        selection-foreground-color: Palette.selection-foreground;
+                                        accessible-placeholder-text: root.editing ? "Edit message" : "Message";
+                                        edited => { root.draft-edited(self.text); }
+                                        // The caret stays in view.
+                                        cursor-position-changed(at) => {
+                                            if at.y + composer-scroll.content-y < 0px {
+                                                composer-scroll.content-y = -at.y;
+                                            } else if at.y + composer-row.line + composer-scroll.content-y > composer-scroll.height {
+                                                composer-scroll.content-y = composer-scroll.height - at.y - composer-row.line;
+                                            }
+                                        }
+                                        // Enter sends; Shift+Enter starts a new line.
+                                        key-pressed(event) => {
+                                            if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
+                                                root.pick-mention(0);
+                                                return accept;
+                                            }
+                                            if event.text == Key.Return && !event.modifiers.shift {
+                                                if root.can-send { root.send(root.draft); }
+                                                return accept;
+                                            }
+                                            if event.modifiers.control && (event.text == "v" || event.text == "V") {
+                                                root.paste();
+                                                return accept;
+                                            }
+                                            if event.text == Key.UpArrow && root.draft == "" {
+                                                root.edit-last();
+                                                // Ready to add to the end, as when typing it.
+                                                self.set-selection-offsets(2147483647, 2147483647);
+                                                return accept;
+                                            }
+                                            return reject;
+                                        }
+                                    }
+                                }
                             }
                         }
                         VerticalLayout {
                             alignment: end;
-                            padding-bottom: composer-row.last-line-padding(send-button.preferred-height);
-                            send-button := Button {
-                                text: root.editing ? "Save" : "Send";
-                                primary: true;
+                            padding-bottom: composer-row.last-line-padding(send-button.height);
+                            send-button := SendButton {
+                                saving: root.editing;
                                 enabled: root.can-send;
                                 clicked => { root.send(root.draft); composer.focus(); }
                             }
@@ -3873,7 +4090,7 @@ export component AppWindow inherits Window {
     }
 
     // Files dragged from elsewhere onto the open chat are attached.
-    if root.screen == Screen.chats && root.selected >= 0 && !root.settings-open: DropArea {
+    if root.screen == Screen.chats && root.selected-id != "" && !root.settings-open: DropArea {
         can-drop(event) => { return DragAction.copy; }
         dropped(event) => {
             root.files-dropped(event);
@@ -3899,7 +4116,7 @@ export component AppWindow inherits Window {
 
     // Stories, over everything.
     if root.stories-open: Rectangle {
-        background: #101418f0;
+        background: #101418;
         // Fades in as it appears.
         opacity: 0;
         init => { self.opacity = 1; }
@@ -4199,18 +4416,20 @@ export component AppWindow inherits Window {
                                 horizontal-stretch: 1;
                                 color: Palette.foreground;
                             }
-                            Rectangle {
-                                width: 22px;
-                                height: 22px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 11px;
-                                border-width: 2px;
-                                border-color: candidate.chosen ? Palette.accent-background : Palette.border;
-                                background: candidate.chosen ? Palette.accent-background : transparent;
-                                if candidate.chosen: Text {
-                                    text: "✓";
-                                    color: white;
-                                    font-weight: 700;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    border-width: 2px;
+                                    border-color: candidate.chosen ? Palette.accent-background : Palette.border;
+                                    background: candidate.chosen ? Palette.accent-background : transparent;
+                                    if candidate.chosen: Text {
+                                        text: "✓";
+                                        color: white;
+                                        font-weight: 700;
+                                    }
                                 }
                             }
                         }
@@ -4226,7 +4445,7 @@ export component AppWindow inherits Window {
                     Button {
                         text: root.group-draft-new ? "Create" : "Add";
                         primary: true;
-                        enabled: root.group-draft-new ? root.group-draft-name != "" : root.group-draft-chosen > 0;
+                        enabled: root.group-draft-new ? !root.is-blank(root.group-draft-name) : root.group-draft-chosen > 0;
                         clicked => { root.finish-group-draft(); }
                     }
                 }
@@ -4234,7 +4453,8 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Choosing where to forward a message to, over everything else.
+    // Choosing where to forward a message to, over everything else; then confirming it, since
+    // it goes out at once.
     if root.forwarding: Rectangle {
         // Fades in as it opens.
         opacity: 0;
@@ -4244,9 +4464,21 @@ export component AppWindow inherits Window {
         TouchArea {
             clicked => { root.cancel-forward(); }
         }
-        Rectangle {
+        forward-dialog := Rectangle {
+            // The chat picked, until confirmed.
+            property <string> picked-id;
+            property <string> picked-title;
+            property <bool> confirming: self.picked-id != "";
+            function pick(id: string, title: string) {
+                self.picked-id = id;
+                self.picked-title = title;
+                confirm-keys.focus();
+            }
             width: min(420px, parent.width - 32px);
-            height: min(520px, parent.height - 32px);
+            height: self.confirming ? min(confirm-layout.preferred-height, parent.height - 32px)
+                : min(520px, parent.height - 32px);
+            animate height { duration: 160ms * Motion.scale; easing: ease-out; }
+            clip: true;
             // Grows into place as the dimmed background fades in.
             property <float> grown: 0;
             init => { self.grown = 1; }
@@ -4260,6 +4492,7 @@ export component AppWindow inherits Window {
             // Clicks inside don't close it.
             TouchArea {}
             VerticalLayout {
+                visible: !forward-dialog.confirming;
                 padding: 16px;
                 spacing: 10px;
                 Text {
@@ -4268,11 +4501,17 @@ export component AppWindow inherits Window {
                     font-weight: 600;
                     color: Palette.foreground;
                 }
-                LineEdit {
+                forward-search := LineEdit {
                     placeholder-text: "Search";
                     text <=> root.forward-filter;
                     init => { self.focus(); }
                     edited => { root.forward-filter-edited(); }
+                    // Enter picks the first chat found.
+                    accepted => {
+                        if root.forward-targets.length > 0 {
+                            forward-dialog.pick(root.forward-targets[0].id, root.forward-targets[0].title);
+                        }
+                    }
                 }
                 ListView {
                     vertical-stretch: 1;
@@ -4286,7 +4525,7 @@ export component AppWindow inherits Window {
                             accessible-label: "Forward to " + target.title;
                             accessible-action-default => { self.clicked(); }
                             mouse-cursor: pointer;
-                            clicked => { root.forward-to(target.id); }
+                            clicked => { forward-dialog.pick(target.id, target.title); }
                         }
                         HorizontalLayout {
                             padding: 6px;
@@ -4311,6 +4550,71 @@ export component AppWindow inherits Window {
                     Button {
                         text: "Cancel";
                         clicked => { root.cancel-forward(); }
+                    }
+                }
+            }
+            // Enter forwards, as the primary button does.
+            confirm-keys := FocusScope {
+                enabled: forward-dialog.confirming;
+                key-pressed(event) => {
+                    if event.text == Key.Return {
+                        root.forward-to(forward-dialog.picked-id);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            confirm-layout := VerticalLayout {
+                visible: forward-dialog.confirming;
+                y: 0;
+                height: self.preferred-height;
+                alignment: start;
+                padding: 16px;
+                spacing: 12px;
+                Text {
+                    text: "Forward to " + forward-dialog.picked-title + "?";
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                    color: Palette.foreground;
+                }
+                // The message, as a quote.
+                Rectangle {
+                    border-radius: 6px;
+                    background: Palette.foreground.with-alpha(0.06);
+                    clip: true;
+                    Rectangle {
+                        x: 0;
+                        width: 3px;
+                        background: Palette.accent-background;
+                    }
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 13px;
+                        Text {
+                            text: root.forward-preview;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            max-height: 5 * 1.4rem;
+                            color: Palette.foreground.with-alpha(0.8);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Back";
+                        clicked => {
+                            forward-dialog.picked-id = "";
+                            forward-dialog.picked-title = "";
+                            forward-search.focus();
+                        }
+                    }
+                    Button {
+                        text: "Forward";
+                        primary: true;
+                        clicked => { root.forward-to(forward-dialog.picked-id); }
                     }
                 }
             }
