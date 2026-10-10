@@ -162,10 +162,11 @@ pub fn buckets(history: &[ChatMessage], span: Span) -> Vec<Bucket> {
             buckets.push(std::mem::replace(&mut current, Bucket::new(next, index)));
             end = end_of(span.after(next));
         }
-        if message.outgoing {
-            current.mine += 1;
-        } else {
-            current.others += 1;
+        match (message.notice, message.outgoing) {
+            // A notice (e.g. a new safety number) is nobody's message.
+            (true, _) => {}
+            (false, true) => current.mine += 1,
+            (false, false) => current.others += 1,
         }
         for attachment in &message.attachments {
             match attachment.kind {
@@ -336,6 +337,18 @@ mod tests {
 
     fn date(y: i16, m: i8, d: i8) -> Date {
         Date::new(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn notices_are_nobodys_messages() {
+        let day = date(2026, 10, 10);
+        let notice = ChatMessage {
+            notice: true,
+            ..message(day, false)
+        };
+        let history = [message(day, false), notice, message(day, true)];
+        let buckets = buckets(&history, Span::Week);
+        assert_eq!((buckets[0].others, buckets[0].mine), (1, 1));
     }
 
     #[test]

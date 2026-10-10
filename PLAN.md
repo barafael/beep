@@ -62,7 +62,9 @@ By how much they matter, most first:
   to our other devices; reading what the phone set), and resetting it on a change. Known limits
   of the notice: it is timed when the change was noticed, so after a long time offline it can
   sort below the first message with the new key; it shows in the 1:1 chat only, not in shared
-  groups. This is about trust, so it comes first.
+  groups; it appears live when something comes from them or we write to them 1:1 within five
+  minutes of the change (a change met while sending to a group shows when the chat is opened);
+  the live path (`announce_identity_change`) has no test, as it needs a linked manager. This is about trust, so it comes first.
 - **Groups:** accepting an invitation here (now done on the phone); adding people known only
   by phone number (invite them by PNI); retrying a change that clashed with someone else's;
   the group picture; invite links and join requests.

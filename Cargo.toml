@@ -21,8 +21,8 @@ qrcode = { version = "0.14", default-features = false }
 #   #448 create and change groups (needs libsignal-service-rs#473, see the patch below)
 #   #449 report only real identity changes, and note them in the contact's thread
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "70132c551fcda93e8e5484133e8c9f8a8b5f3cf2" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "70132c551fcda93e8e5484133e8c9f8a8b5f3cf2" }
+presage = { git = "https://github.com/barafael/presage", rev = "30fcc362516ee0174f9bb7345f413867d58cc74e" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "30fcc362516ee0174f9bb7345f413867d58cc74e" }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
