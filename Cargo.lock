@@ -660,6 +660,91 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "b33p-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "apple-native-keyring-store",
+ "argon2",
+ "async-channel",
+ "base64 0.23.1",
+ "chrono",
+ "crossbeam-channel",
+ "directories",
+ "futures",
+ "getrandom 0.4.3",
+ "hex",
+ "hkdf",
+ "hmac",
+ "image",
+ "jiff",
+ "keyring-core",
+ "libsignal-account-keys",
+ "libsignal-message-backup",
+ "mime_guess",
+ "open",
+ "presage",
+ "presage-store-sqlite",
+ "protobuf",
+ "qrcode",
+ "rand 0.9.5",
+ "reqwest",
+ "reqwest-websocket",
+ "rustls",
+ "serde",
+ "sha2 0.10.9",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "windows-native-keyring-store",
+ "zbus",
+ "zbus-secret-service-keyring-store",
+ "zeroize",
+]
+
+[[package]]
+name = "b33p-notify"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "futures-lite",
+ "futures-util",
+ "tracing",
+ "windows",
+ "windows-registry",
+ "zbus",
+]
+
+[[package]]
+name = "b33p-slint"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "async-channel",
+ "b33p-core",
+ "b33p-notify",
+ "blurhash",
+ "directories",
+ "i-slint-backend-testing",
+ "i-slint-core",
+ "lucide-static-svg",
+ "open",
+ "png",
+ "rfd",
+ "rodio",
+ "signal-hook",
+ "slint",
+ "slint-build",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+ "windows-registry",
+ "zbus",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3749,91 +3834,6 @@ dependencies = [
  "euclid",
  "polycool",
  "smallvec",
-]
-
-[[package]]
-name = "langis-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "apple-native-keyring-store",
- "argon2",
- "async-channel",
- "base64 0.23.1",
- "chrono",
- "crossbeam-channel",
- "directories",
- "futures",
- "getrandom 0.4.3",
- "hex",
- "hkdf",
- "hmac",
- "image",
- "jiff",
- "keyring-core",
- "libsignal-account-keys",
- "libsignal-message-backup",
- "mime_guess",
- "open",
- "presage",
- "presage-store-sqlite",
- "protobuf",
- "qrcode",
- "rand 0.9.5",
- "reqwest",
- "reqwest-websocket",
- "rustls",
- "serde",
- "sha2 0.10.9",
- "sha2 0.11.0",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
- "windows-native-keyring-store",
- "zbus",
- "zbus-secret-service-keyring-store",
- "zeroize",
-]
-
-[[package]]
-name = "langis-notify"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "futures-lite",
- "futures-util",
- "tracing",
- "windows",
- "windows-registry",
- "zbus",
-]
-
-[[package]]
-name = "langis-slint"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "async-channel",
- "blurhash",
- "directories",
- "i-slint-backend-testing",
- "i-slint-core",
- "langis-core",
- "langis-notify",
- "lucide-static-svg",
- "open",
- "png",
- "rfd",
- "rodio",
- "signal-hook",
- "slint",
- "slint-build",
- "tracing",
- "tracing-subscriber",
- "windows",
- "windows-registry",
- "zbus",
 ]
 
 [[package]]

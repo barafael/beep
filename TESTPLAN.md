@@ -1,16 +1,16 @@
 # Test plan
 
 Manual checks against a real Signal account, for what automated tests can't cover: the
-Signal servers, the phone, and the desktop around langis. Each check says what to do and what
-should happen. Note anything that differs, with the log (`RUST_LOG=langis=debug` helps).
+Signal servers, the phone, and the desktop around b33p. Each check says what to do and what
+should happen. Note anything that differs, with the log (`RUST_LOG=b33p=debug` helps).
 
 ## Before you start
 
-- Build and run: `cargo run --release -p langis-slint`.
+- Build and run: `cargo run --release -p b33p-slint`.
 - Have your phone at hand, and ideally a second person (or a second Signal account) who can
   write to you, react, edit and delete. A small test group with them helps for the group checks.
-- Back up first if you care about the local history: langis's data lives in
-  `~/.local/share/langis` (the database is encrypted; keep its key or password).
+- Back up first if you care about the local history: b33p's data lives in
+  `~/.local/share/b33p` (the database is encrypted; keep its key or password).
 - Turn **Settings → Account → Sync chat settings to your phone** off until section 2.13.
 
 Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
@@ -21,19 +21,19 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 
 ### 1.1 Read state and receipts
 
-1. Have someone send you a message while langis is open but another chat is selected.
+1. Have someone send you a message while b33p is open but another chat is selected.
    - The chat shows an unread badge; the tray icon gets its red dot.
 2. Open the chat.
    - The badge goes away. On **their** phone the message shows as read (two filled ticks),
      if read receipts are on for both of you.
    - On **your** phone, the chat is no longer unread.
 3. Have them send another message, and read it on your **phone** first.
-   - In langis the chat's unread count goes away without opening it.
-4. Quit langis with an unread chat, start it again.
+   - In b33p the chat's unread count goes away without opening it.
+4. Quit b33p with an unread chat, start it again.
    - The unread count is still there.
-5. With a chat open but langis's window **not** focused (another window in front), have them
+5. With a chat open but b33p's window **not** focused (another window in front), have them
    write.
-   - It counts as unread and notifies; focusing langis reads it.
+   - It counts as unread and notifies; focusing b33p reads it.
 6. Right-click a read chat → **Mark as unread**: the chat closes and shows a dot. Open it again:
    the dot goes.
 7. Open a chat with unread messages from before: a **New messages** line sits above the first
@@ -44,7 +44,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. Send a message to someone whose phone is on.
    - Under it: ✓ when sent, ✓✓ when delivered, bold ✓✓ when they read it (if they send read
      receipts).
-2. Restart langis; the ticks of older messages stay.
+2. Restart b33p; the ticks of older messages stay.
 
 ### 1.3 Typing indicators
 
@@ -52,7 +52,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    - The chat list shows "<name> is typing…" instead of the preview, and so does the chat
      header. It goes away when they stop or after about 15 seconds.
 2. The same in a group: "<name> is typing…" appears in the right group.
-3. Type in langis: on their phone, you show as typing. Clear the composer: it stops.
+3. Type in b33p: on their phone, you show as typing. Clear the composer: it stops.
 4. Turn **Settings → Privacy → Typing indicators** off: they no longer see you typing.
 
 ### 1.4 Edits and deletions
@@ -60,7 +60,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. Right-click one of your messages → **Edit**, change the text, Enter.
    - It shows the new text and "edited"; on their phone too.
 2. Press ↑ in an empty composer: your last message goes into editing. Esc cancels.
-3. Have them edit a message: it changes in langis and shows "edited".
+3. Have them edit a message: it changes in b33p and shows "edited".
 4. Right-click your message → **Delete for everyone**.
    - It reads "This message was deleted." here and on their phone.
 5. **Delete for me** on any message: it goes away here only.
@@ -73,7 +73,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 2. Send a message: it shows ⏱ with the time left and disappears after 30 seconds, here and
    on their phone.
 3. Have them send one: its timer starts when you read it.
-4. Change the timer on the phone: langis shows the notice and the new timer in the header.
+4. Change the timer on the phone: b33p shows the notice and the new timer in the header.
 5. Group chats: see 3.1.
 
 ### 1.6 Formatting
@@ -107,12 +107,12 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 
 ### 1.10 Settings from the phone (reading the storage service)
 
-1. On the phone, pin a chat, mute another, archive a third. Restart langis.
-   - langis shows them pinned, muted, archived.
-2. With langis running, change one of them on the phone.
-   - langis follows within a few seconds.
-3. Pin a chat only in langis, then pin a different one on the phone.
-   - The phone's pins come first; langis's own pin stays after them.
+1. On the phone, pin a chat, mute another, archive a third. Restart b33p.
+   - b33p shows them pinned, muted, archived.
+2. With b33p running, change one of them on the phone.
+   - b33p follows within a few seconds.
+3. Pin a chat only in b33p, then pin a different one on the phone.
+   - The phone's pins come first; b33p's own pin stays after them.
 
 ### 1.11 Note to Self
 
@@ -134,7 +134,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. In a long chat, Ctrl+F (or 🔍), type a word from an old message.
    - Results list sender, date and the text around the word.
 2. Click an old result.
-   - langis loads back to it, scrolls there and outlines the message.
+   - b33p loads back to it, scrolls there and outlines the message.
 3. A word that isn't there: "No messages found."
 
 ### 2.3 Media, files and links
@@ -173,13 +173,13 @@ edit, reply, settings).
 2. **Accept**: the composer appears; they can see your name and picture; your phone no longer
    shows it as a request.
 3. With another request: **Delete** removes the chat, also on the phone. **Block** blocks them.
-4. Answer a request on the phone: langis follows.
+4. Answer a request on the phone: b33p follows.
 
 ### 2.8 Blocking
 
 1. Chat menu → **Block**: an "Unblock" bar replaces the composer; new messages from them don't
    show or notify. On the phone, they show as blocked.
-2. Block someone on the phone: langis blocks them too.
+2. Block someone on the phone: b33p blocks them too.
 3. **Unblock**, both ways.
 
 ### 2.9 Media
@@ -197,14 +197,14 @@ edit, reply, settings).
 
 ### 2.11 Stickers
 
-1. Install a sticker pack on the phone; restart langis.
+1. Install a sticker pack on the phone; restart b33p.
 2. ▦ next to the emoji button: the pack shows as a tab with its stickers.
 3. Click one: it is sent and shows as a sticker here and on their phone.
 
 ### 2.12 Chat folders
 
 1. Make a folder on the phone (Settings → Chats → Chat folders), e.g. with two chats, or "all
-   groups". Restart langis.
+   groups". Restart b33p.
    - Its tab shows above the chat list and filters it as on the phone; the "only unread" and
      "muted" options are respected.
 2. Delete the folder on the phone: the tab goes after the next sync.
@@ -215,13 +215,13 @@ This writes to your account's shared settings. Do it one step at a time and chec
 after each.
 
 1. Turn **Settings → Account → Sync chat settings to your phone** on.
-2. Pin **one** chat in langis. Within a few seconds the phone shows it pinned.
+2. Pin **one** chat in b33p. Within a few seconds the phone shows it pinned.
    - Check that nothing else changed on the phone: other pins, mutes, archived chats,
      folders, your profile, privacy settings.
 3. Unpin it again: unpinned on the phone.
 4. Mute, archive, block, mark unread one chat each: the phone follows each time.
-5. Make a change on the phone and, within a few seconds, a different one in langis: both
-   survive (langis reads the phone's change first, then writes its own).
+5. Make a change on the phone and, within a few seconds, a different one in b33p: both
+   survive (b33p reads the phone's change first, then writes its own).
 6. If anything on the phone changed that shouldn't have: turn the setting off and send me the
    log (`wrote to the storage service` lines).
 
@@ -242,7 +242,7 @@ part of a test. Every change below reaches all members' phones.
 
 1. **+** above the chat list → pick two people → name the group → **Create**.
    - The group opens; it reads "You created the group." On their phones the group appears with
-     both of you as members, and they can write to it; their messages arrive in langis.
+     both of you as members, and they can write to it; their messages arrive in b33p.
    - On **your** phone the group appears too.
 2. Group details (click its name) → change the **name**, then the **description**.
    - Notices "You changed the group name to …" here, and the change on every phone.
@@ -255,18 +255,18 @@ part of a test. Every change below reaches all members' phones.
    phones; they can no longer write to it.
 7. Changes by others: have someone rename the group, add or remove someone, change the timer
    on their phone.
-   - langis shows a notice for each ("Alice changed the group name to …") and the new state.
-8. Restart langis: the notices of 1–7 are still there.
-9. A group where you are not an admin and only admins may edit (set on the phone): langis says
+   - b33p shows a notice for each ("Alice changed the group name to …") and the new state.
+8. Restart b33p: the notices of 1–7 are still there.
+9. A group where you are not an admin and only admins may edit (set on the phone): b33p says
    the change failed (the error shows), and nothing changes.
-10. **Leave group** while you are its only admin: langis asks you to make someone else an admin
+10. **Leave group** while you are its only admin: b33p asks you to make someone else an admin
     first. Do that (5), then **Leave group** (details, confirm with "Really leave?").
     - A banner says you aren't a member; the composer is gone. On the others' phones you left
       the group.
 11. Have someone remove you from a group.
     - The notice "… removed You." and the same banner; you can no longer write to it.
 12. Have someone who doesn't have your profile key yet add you to a group (it invites you).
-    - The group says you're invited and to accept on your phone; accept there, and langis
+    - The group says you're invited and to accept on your phone; accept there, and b33p
       lets you write once the next group message arrives.
 13. With one member's phone off or unreachable, rename a group: the change still goes through
     here and for the others (no error), and that member sees it later.
@@ -311,7 +311,7 @@ phone or a second person.
    then online): within five minutes message requests are told apart from accepted chats
    (Settings from the phone are read; see 1.10).
 4. A message request's notification: typing a reply in the notification popup does nothing
-   (it would accept the request). Accept it in langis, then replying from a notification works.
+   (it would accept the request). Accept it in b33p, then replying from a notification works.
 5. Block someone, then have them write to you from a fresh install (an undecryptable
    message): nothing shows in their chat, and the log has no "reset the session" for them.
 6. In a group, have a member change the timer or remove someone: the notice shows (their

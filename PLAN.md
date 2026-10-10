@@ -1,6 +1,6 @@
 # Plan
 
-What is left to make langis a full Signal client on the desktop. Payments and calls are out
+What is left to make b33p a full Signal client on the desktop. Payments and calls are out
 of scope. Steps go in order: each builds on the one before.
 
 ## Where it stands
@@ -36,9 +36,9 @@ done when every check is ✅ or has an issue noted here.
 
 ## 2. Make the build stand on its own
 
-Done: every change we need in presage and libsignal-service is offered upstream, and langis
+Done: every change we need in presage and libsignal-service is offered upstream, and b33p
 builds from branch `langis/integration` of each fork: upstream main plus our open pull requests,
-so what langis runs is exactly what is proposed. Nothing waits on a merge.
+so what b33p runs is exactly what is proposed. Nothing waits on a merge.
 
 - libsignal-service-rs: #473 group calls, #474 drop sync messages from other accounts on the
   PNI receive path too (a security fix; reproducer in `~/libsignal-pni-sync-repro`).
