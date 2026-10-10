@@ -728,6 +728,12 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     let mut names = Names::new();
     // Only verified contacts can have a changed safety number; the rest need no key lookup.
     let verifications = ctx.tables.verifications().await.unwrap_or_default();
+    // The store's pins follow what is kept (also for verifications from before pinning).
+    for (aci, verification) in &verifications {
+        if let Some(who) = ServiceId::parse_from_service_id_string(aci) {
+            pin_verified(manager, who, verification).await;
+        }
+    }
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             let thread = Thread::Contact(ServiceId::Aci(contact.uuid.into()));
@@ -1736,22 +1742,83 @@ async fn group_context(manager: &Mgr, key: &[u8; 32]) -> GroupContextV2 {
     }
 }
 
+/// Why sending failed: the store refused the identity a contact has now for sending (one other
+/// than the verified one pinned for them, see [`pin_verified`]), or anything else.
+enum SendError {
+    Untrusted(ServiceId),
+    Other(String),
+}
+
+impl From<SendError> for String {
+    fn from(error: SendError) -> Self {
+        match error {
+            SendError::Untrusted(_) => {
+                "Their safety number changed since you verified it: confirm it to send.".into()
+            }
+            SendError::Other(error) => error,
+        }
+    }
+}
+
+/// The contact whose identity a failed send refused, if that is why it failed: libsignal says
+/// so directly, or libsignal-service when setting up a session with their new key.
+fn untrusted(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> Option<ServiceId> {
+    use presage::libsignal_service::{prelude::MessageSenderError, protocol::SignalProtocolError};
+    let protocol = |error: &SignalProtocolError| match error {
+        SignalProtocolError::UntrustedIdentity(address) => {
+            ServiceId::parse_from_service_id_string(address.name())
+        }
+        _ => None,
+    };
+    match error {
+        PresageError::MessageSenderError(error) => match error.as_ref() {
+            MessageSenderError::UntrustedIdentity { address } => Some(*address),
+            MessageSenderError::ProtocolError(error) => protocol(error),
+            _ => None,
+        },
+        PresageError::ProtocolError(error) => protocol(error),
+        _ => None,
+    }
+}
+
 /// Sends to a contact, or to everyone in a group.
 async fn send_to(
     manager: &mut Mgr,
     thread: &Thread,
     body: ContentBody,
     timestamp: u64,
-) -> Result<(), String> {
+) -> Result<(), SendError> {
     let sent = match thread {
         Thread::Contact(recipient) => manager.send_message(*recipient, body, timestamp).await,
         Thread::Group(key) => manager.send_message_to_group(key, body, timestamp).await,
     };
-    sent.map_err(|e| format!("failed to send: {e}"))
+    sent.map_err(|error| match untrusted(&error) {
+        Some(who) => SendError::Untrusted(who),
+        None => SendError::Other(format!("failed to send: {error}")),
+    })
+}
+
+/// [`send_to`], holding the chat of a contact whose identity it refused: their verified safety
+/// number changed, which they may not have heard of yet (the new key came with sending).
+async fn deliver(
+    manager: &mut Mgr,
+    ctx: &Ctx,
+    thread: &Thread,
+    body: ContentBody,
+    timestamp: u64,
+) -> Result<(), String> {
+    match send_to(manager, thread, body, timestamp).await {
+        Err(SendError::Untrusted(who)) => {
+            hold_changed(manager, ctx, who).await;
+            Err(SendError::Untrusted(who).into())
+        }
+        sent => sent.map_err(String::from),
+    }
 }
 
 async fn send_data(
     manager: &mut Mgr,
+    ctx: &Ctx,
     thread: &Thread,
     mut message: DataMessage,
     timestamp: u64,
@@ -1759,8 +1826,9 @@ async fn send_data(
     if let Thread::Group(key) = thread {
         message.group_v2 = Some(group_context(manager, key).await);
     }
-    send_to(
+    deliver(
         manager,
+        ctx,
         thread,
         ContentBody::DataMessage(message),
         timestamp,
@@ -1771,6 +1839,7 @@ async fn send_data(
 /// Replaces the text of our message sent at `target`.
 async fn send_edit(
     manager: &mut Mgr,
+    ctx: &Ctx,
     thread: &Thread,
     target: u64,
     mut message: DataMessage,
@@ -1783,7 +1852,7 @@ async fn send_edit(
         target_sent_timestamp: Some(target),
         data_message: Some(message),
     });
-    send_to(manager, thread, edit, timestamp).await
+    deliver(manager, ctx, thread, edit, timestamp).await
 }
 
 fn own_id(manager: &Mgr) -> ServiceId {
@@ -2969,7 +3038,7 @@ async fn handle_command(
                 }),
                 ..Default::default()
             };
-            send_data(manager, &thread, message, now_millis()).await?;
+            send_data(manager, ctx, &thread, message, now_millis()).await?;
             let reaction = Reaction {
                 emoji,
                 sender_id: own_id(manager).service_id_string(),
@@ -3279,7 +3348,15 @@ async fn handle_command(
             {
                 data.preview.push(sent);
             }
-            send_edit(manager, &thread, target.timestamp, data.clone(), timestamp).await?;
+            send_edit(
+                manager,
+                ctx,
+                &thread,
+                target.timestamp,
+                data.clone(),
+                timestamp,
+            )
+            .await?;
             // For after a restart; the state keeps the text before by itself.
             ctx.tables
                 .record_edit(&conversation, &target, timestamp, &previous)
@@ -3329,7 +3406,7 @@ async fn handle_command(
                 }),
                 ..Default::default()
             };
-            send_data(manager, &thread, message, now_millis()).await?;
+            send_data(manager, ctx, &thread, message, now_millis()).await?;
             ctx.tables
                 .record_deleted(&conversation, &target)
                 .await
@@ -3427,7 +3504,7 @@ async fn handle_command(
                 expire_timer: Some(seconds),
                 ..Default::default()
             };
-            send_data(manager, &thread, message, timestamp).await?;
+            send_data(manager, ctx, &thread, message, timestamp).await?;
             let _ = events.send(Event::Message(ChatMessage {
                 conversation,
                 sender_id: own_id(manager).service_id_string(),
@@ -3728,6 +3805,7 @@ async fn remember_verification(
         .set_verification(&aci, &verification)
         .await
         .map_err(db)?;
+    pin_verified(manager, who, &verification).await;
     publish_trust(ctx, who, trust(Some(&verification), current.as_ref()));
     if let Some(state) = note {
         let since = now_millis();
@@ -3763,6 +3841,39 @@ fn verification_note(
             Some(State::Unverified)
         }
         _ => None,
+    }
+}
+
+/// Keeps the store's pin in step with a kept verification: a verified key is the only one sent
+/// to (a new one of theirs is refused for sending, see [`deliver`]); clearing it, or accepting
+/// a change, lifts that; a change not confirmed yet keeps it.
+async fn pin_verified(manager: &Mgr, who: ServiceId, verification: &crate::local::Verification) {
+    use presage::{libsignal_service::protocol::IdentityKey, proto::verified::State};
+    let pinned = match verification.state {
+        State::Verified => match IdentityKey::decode(&verification.identity_key) {
+            Ok(key) => manager.store().pin_identity(&who, &key).await,
+            Err(_) => return,
+        },
+        State::Default => manager.store().unpin_identity(&who).await,
+        State::Unverified => return,
+    };
+    if let Err(error) = pinned {
+        warn!(%error, "failed to pin or unpin a verified safety number");
+    }
+}
+
+/// Holds the chat with `who`, whose identity the store refused for sending: their verified key
+/// is pinned, so their new one wasn't taken and isn't known here; keeping the pinned one as
+/// "unverified" (changed, not confirmed) says so until they confirm or verify again.
+async fn hold_changed(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
+    use presage::proto::verified::State;
+    let Some(key) = identity_of(manager, who).await else {
+        return;
+    };
+    if let Err(error) =
+        remember_verification(manager, ctx, who, &key, State::Unverified, Verifier::Here).await
+    {
+        warn!(%error, "failed to hold a chat whose safety number changed");
     }
 }
 
@@ -3957,7 +4068,7 @@ async fn send_new(
     };
     // As receivers will see them, stickers included.
     let shown_attachments = attachments::of_message(&message);
-    let sent = send_data(manager, &thread, message, timestamp).await;
+    let sent = send_data(manager, ctx, &thread, message, timestamp).await;
     // Sending may have met their new safety number, in the keys fetched to write to them.
     if let Thread::Contact(recipient) = thread {
         announce_identity_change(manager, ctx, &mut Names::new(), recipient).await;
@@ -4174,7 +4285,7 @@ async fn respond(
                 flags: Some(Flags::ProfileKeyUpdate as u32),
                 ..Default::default()
             };
-            send_data(manager, thread, message, now_millis()).await?;
+            send_data(manager, ctx, thread, message, now_millis()).await?;
             Type::Accept
         }
         RequestResponse::Delete => {
@@ -4229,7 +4340,10 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
     }
     let body = ContentBody::TypingMessage(message);
     if let Err(error) = send_to(&mut manager, &thread, body, timestamp).await {
-        debug!(%error, "failed to send a typing indicator");
+        debug!(
+            error = String::from(error),
+            "failed to send a typing indicator"
+        );
     }
 }
 
@@ -4528,6 +4642,31 @@ mod tests {
             Trust::Unverified,
             "no key yet"
         );
+    }
+
+    /// A send the store refused for a contact's identity is recognised in each way it comes
+    /// back, and names that contact; other failures are just failures.
+    #[test]
+    fn a_refused_identity_names_the_contact() {
+        use presage::libsignal_service::{
+            prelude::MessageSenderError,
+            protocol::{DeviceId, ProtocolAddress, SignalProtocolError},
+        };
+        let who = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000002")
+            .unwrap();
+        let address = ProtocolAddress::new(who.service_id_string(), DeviceId::new(1).unwrap());
+        let refused = || SignalProtocolError::UntrustedIdentity(address.clone());
+        let errors: [PresageError<presage_store_sqlite::SqliteStoreError>; 3] = [
+            MessageSenderError::UntrustedIdentity { address: who }.into(),
+            MessageSenderError::ProtocolError(refused()).into(),
+            PresageError::ProtocolError(refused()),
+        ];
+        for error in &errors {
+            assert_eq!(untrusted(error), Some(who), "{error}");
+        }
+        let other: PresageError<presage_store_sqlite::SqliteStoreError> =
+            MessageSenderError::MaximumRetriesLimitExceeded.into();
+        assert_eq!(untrusted(&other), None);
     }
 
     #[test]
