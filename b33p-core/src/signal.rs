@@ -722,6 +722,8 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     let mut all = Vec::new();
     // Group members are mostly contacts; others are looked up once each.
     let mut names = Names::new();
+    // Only verified contacts can have a changed safety number; the rest need no key lookup.
+    let verifications = ctx.tables.verifications().await.unwrap_or_default();
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             let thread = Thread::Contact(ServiceId::Aci(contact.uuid.into()));
@@ -740,7 +742,11 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
                 ServiceId::Aci(contact.uuid.into()).service_id_string(),
                 title.clone(),
             );
-            all.push(register(threads, thread, title, number, timer));
+            let who = ServiceId::Aci(contact.uuid.into());
+            let mut conversation = register(threads, thread, title, number, timer);
+            conversation.trust =
+                trust_given(manager, who, verifications.get(&who.service_id_string())).await;
+            all.push(conversation);
         }
     }
     let contacts = all.len();
@@ -2617,9 +2623,9 @@ async fn show_identity_notes(
     }
     // A new key isn't verified, even if the old one was.
     if changed {
-        let _ = ctx.events.send(Event::Verified {
+        let _ = ctx.events.send(Event::Trust {
             conversation: id,
-            verified: is_verified(manager, &ctx.tables, contact).await,
+            trust: trust_of(manager, &ctx.tables, contact).await,
         });
     }
 }
@@ -3440,7 +3446,7 @@ async fn details(manager: &mut Mgr, tables: &LocalStore, thread: &Thread) -> cra
             }
             if *who != own_id(manager) {
                 details.safety_number = safety_number(manager, *who).await;
-                details.verified = is_verified(manager, tables, *who).await;
+                details.trust = trust_of(manager, tables, *who).await;
             }
             if let (ServiceId::Aci(aci), Ok(Some(key))) =
                 (who, manager.store().profile_key(who).await)
@@ -3499,15 +3505,40 @@ async fn identity_of(
         .ok()?
 }
 
-/// Whether we verified the safety number with `who` as it is now: a new key of theirs isn't.
-pub(crate) async fn is_verified(manager: &Mgr, tables: &LocalStore, who: ServiceId) -> bool {
-    let Some(key) = identity_of(manager, who).await else {
-        return false;
-    };
-    matches!(
-        tables.verification(&who.service_id_string()).await,
-        Ok(Some(v)) if v.verified && *v.identity_key == *key.serialize()
-    )
+/// How far the safety number with `who` is trusted: verified for the key they have now, or
+/// verified before and changed since.
+async fn trust_of(manager: &Mgr, tables: &LocalStore, who: ServiceId) -> crate::Trust {
+    let verification = tables.verification(&who.service_id_string()).await;
+    trust_given(manager, who, verification.ok().flatten().as_ref()).await
+}
+
+/// [`trust_of`] with what is kept about `who`'s verification already read; their key is only
+/// looked up if they were verified.
+async fn trust_given(
+    manager: &Mgr,
+    who: ServiceId,
+    verification: Option<&crate::local::Verification>,
+) -> crate::Trust {
+    if !verification.is_some_and(|v| v.verified) {
+        return crate::Trust::Unverified;
+    }
+    trust(verification, identity_of(manager, who).await.as_ref())
+}
+
+/// How far a safety number is trusted, given what is kept about its verification and the key
+/// the contact has now: verified only for that key; changed if an earlier one was.
+fn trust(
+    verification: Option<&crate::local::Verification>,
+    key: Option<&presage::libsignal_service::protocol::IdentityKey>,
+) -> crate::Trust {
+    match (verification, key) {
+        (Some(v), Some(key)) if v.verified && *v.identity_key == *key.serialize() => {
+            crate::Trust::Verified
+        }
+        (Some(v), Some(_)) if v.verified => crate::Trust::Changed,
+        // Not verified, or no key yet: nothing to compare, nothing changed.
+        _ => crate::Trust::Unverified,
+    }
 }
 
 /// Marks the safety number with a contact verified, or clears that, as Signal's apps do: a
@@ -3631,9 +3662,9 @@ async fn remember_verification(
         .await
         .map_err(db)?;
     let conversation = conversation_id(&Thread::Contact(who));
-    let _ = ctx.events.send(Event::Verified {
+    let _ = ctx.events.send(Event::Trust {
         conversation,
-        verified: is_verified(manager, &ctx.tables, who).await,
+        trust: trust_of(manager, &ctx.tables, who).await,
     });
     if let Some(state) = note {
         let since = now_millis();
@@ -4367,6 +4398,34 @@ mod tests {
             ..marked
         };
         assert_eq!(verified_target(&keyless), None);
+    }
+
+    /// Verified only for the key it was verified for; a new key of a verified contact is a
+    /// change to confirm; clearing (for any key) leaves nothing to confirm.
+    #[test]
+    fn trust_follows_the_key() {
+        use crate::{Trust, local::Verification};
+        use presage::libsignal_service::protocol::IdentityKeyPair;
+        let old = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
+        let new = *IdentityKeyPair::generate(&mut rand::rng()).identity_key();
+        let of = |key: &presage::libsignal_service::protocol::IdentityKey, verified| Verification {
+            identity_key: key.serialize().to_vec(),
+            verified,
+        };
+        assert_eq!(trust(None, Some(&new)), Trust::Unverified);
+        assert_eq!(trust(Some(&of(&new, true)), Some(&new)), Trust::Verified);
+        assert_eq!(trust(Some(&of(&old, true)), Some(&new)), Trust::Changed);
+        assert_eq!(trust(Some(&of(&old, false)), Some(&new)), Trust::Unverified);
+        assert_eq!(
+            trust(Some(&of(&new, false)), Some(&new)),
+            Trust::Unverified,
+            "confirmed"
+        );
+        assert_eq!(
+            trust(Some(&of(&old, true)), None),
+            Trust::Unverified,
+            "no key yet"
+        );
     }
 
     #[test]

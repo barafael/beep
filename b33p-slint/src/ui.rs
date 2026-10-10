@@ -136,6 +136,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             });
         }
     };
+    window.on_confirm_safety_number({
+        let shared = shared.clone();
+        move |id| {
+            shared.act(|chat| (chat.confirm_safety_number(&ConversationId(id.into())), Update::default()));
+        }
+    });
     window.on_set_verified({
         let shared = shared.clone();
         move |verified| {
@@ -1183,7 +1189,8 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
         groups.chunks(4).map(|line| line.join(" ")).collect::<Vec<_>>().join("\n")
     });
     window.set_details_safety_number(safety.unwrap_or_default().into());
-    window.set_details_verified(details.verified);
+    window.set_details_verified(details.trust == b33p_core::Trust::Verified);
+    window.set_details_safety_changed(details.trust == b33p_core::Trust::Changed);
     window.set_details_description(details.description.unwrap_or_default().into());
     let members: Vec<MemberItem> = details
         .members
@@ -1372,6 +1379,7 @@ fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, i
         request: chat.is_request(c),
         blocked: c.settings.blocked,
         left: c.left,
+        safety_changed: c.trust == b33p_core::Trust::Changed,
         group: c.is_group,
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
         can_move_down: c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned),

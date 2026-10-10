@@ -542,6 +542,23 @@ impl LocalStore {
         }))
     }
 
+    /// Every contact we verified or cleared the verification of, by ACI.
+    pub(crate) async fn verifications(&self) -> Result<HashMap<String, Verification>, sqlx::Error> {
+        let rows = sqlx::query("SELECT aci, identity_key, verified FROM b33p_verification")
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let verification = Verification {
+                    identity_key: row.get(1),
+                    verified: row.get::<i64, _>(2) != 0,
+                };
+                (row.get(0), verification)
+            })
+            .collect())
+    }
+
     /// Remembers whether we verified the contact with this ACI, for this key of theirs.
     pub(crate) async fn set_verification(
         &self,

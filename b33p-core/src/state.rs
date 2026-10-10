@@ -780,14 +780,18 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
-            Event::Verified {
+            Event::Trust {
                 conversation,
-                verified,
+                trust,
             } => {
                 if let Some((shown, Some(details))) = &mut self.details
                     && *shown == conversation
                 {
-                    details.verified = verified;
+                    details.trust = trust;
+                }
+                if let Some(listed) = self.conversations.iter_mut().find(|c| c.id == conversation) {
+                    listed.trust = trust;
+                    update.conversations = true;
                 }
             }
             Event::Details {
@@ -1090,14 +1094,26 @@ impl ChatState {
     }
 
     /// Whether anything may be sent to `conversation` now: once caught up, and not to a
-    /// blocked chat, a group we left, or a message request not answered yet. Every way of
+    /// blocked chat, a group we left, a contact whose verified safety number changed (until
+    /// that is confirmed), or a message request not answered yet. Every way of
     /// sending (composing, replying from a notification, forwarding, stickers, reactions)
     /// goes by this.
     pub fn can_write_to(&self, conversation: &Conversation) -> bool {
         self.synced
             && !conversation.settings.blocked
             && !conversation.left
+            && conversation.trust != crate::Trust::Changed
             && !self.is_request(conversation)
+    }
+
+    /// Accepts the new safety number of a contact whose verified one changed, so that they can
+    /// be written to again: it is no longer verified (that takes comparing it again).
+    pub fn confirm_safety_number(&self, id: &ConversationId) -> Option<Command> {
+        let conversation = self.conversation(id)?;
+        (conversation.trust == crate::Trust::Changed).then(|| Command::SetVerified {
+            conversation: id.clone(),
+            verified: false,
+        })
     }
 
     /// Adds files to send with the next message.
@@ -3732,19 +3748,55 @@ mod tests {
             state.set_verified(true),
             Some(Command::SetVerified { conversation, verified: true }) if conversation == id("a")
         ));
-        state.apply(Event::Verified {
+        state.apply(Event::Trust {
             conversation: id("b"),
-            verified: true,
+            trust: crate::Trust::Verified,
         });
-        assert!(
-            !state.details().unwrap().unwrap().verified,
+        assert_eq!(
+            state.details().unwrap().unwrap().trust,
+            crate::Trust::Unverified,
             "another chat's"
         );
-        state.apply(Event::Verified {
+        state.apply(Event::Trust {
             conversation: id("a"),
-            verified: true,
+            trust: crate::Trust::Verified,
         });
-        assert!(state.details().unwrap().unwrap().verified);
+        assert_eq!(
+            state.details().unwrap().unwrap().trust,
+            crate::Trust::Verified
+        );
+    }
+
+    /// When the safety number of a contact we verified changes, nothing is sent to them until
+    /// that is confirmed (or it is verified again), as Signal asks.
+    #[test]
+    fn a_changed_verified_safety_number_stops_sending_until_confirmed() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "a", 1, false)));
+        state.select(&id("a"));
+        assert!(state.can_compose("hi"), "writable before");
+        assert!(
+            state.confirm_safety_number(&id("a")).is_none(),
+            "nothing to confirm"
+        );
+
+        state.apply(Event::Trust {
+            conversation: id("a"),
+            trust: crate::Trust::Changed,
+        });
+        assert!(!state.can_compose("hi"));
+        assert!(state.compose("hi").0.is_none(), "not sent");
+        assert!(state.react(0, "👍").is_none(), "no reaction either");
+        assert!(matches!(
+            state.confirm_safety_number(&id("a")),
+            Some(Command::SetVerified { conversation, verified: false }) if conversation == id("a")
+        ));
+
+        state.apply(Event::Trust {
+            conversation: id("a"),
+            trust: crate::Trust::Unverified,
+        });
+        assert!(state.can_compose("hi"), "writable once confirmed");
     }
 
     /// Our own notices (a timer we set, a change we made to a group) aren't messages we wrote:

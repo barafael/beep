@@ -19,6 +19,9 @@ export struct ConversationItem {
     blocked: bool,
     // A group we're no longer in.
     left: bool,
+    // A contact whose safety number changed since we verified it: nothing is sent until that
+    // is confirmed.
+    safety-changed: bool,
     // A group: we may manage it (name, members).
     group: bool,
     // Among the pinned ones.
@@ -2067,6 +2070,8 @@ export component AppWindow inherits Window {
     in property <string> details-safety-number;
     // We (here or on another device) verified that safety number, for the key it is now.
     in property <bool> details-verified;
+    // Verified before, but their key changed since.
+    in property <bool> details-safety-changed;
     in property <string> details-description;
     in property <[MemberItem]> details-members;
     callback open-details;
@@ -2075,6 +2080,8 @@ export component AppWindow inherits Window {
     callback rename-group(string);
     // Marks the safety number verified (true) or clears that.
     callback set-verified(bool);
+    // Accepts the changed safety number of the contact with this id, to write to them again.
+    callback confirm-safety-number(string);
     callback describe-group(string);
     callback set-member-admin(string, bool);
     callback remove-member(string);
@@ -2999,6 +3006,13 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                         }
+                                        if root.details-safety-changed: Text {
+                                            text: "Changed since you verified it: compare it with theirs again.";
+                                            wrap: word-wrap;
+                                            font-size: 0.85rem;
+                                            font-weight: 600;
+                                            color: Palette.foreground;
+                                        }
                                         if root.details-verified: Text {
                                             text: "✓ Verified: you compared it with theirs.";
                                             font-size: 0.85rem;
@@ -3509,6 +3523,28 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.conversations[root.selected].safety-changed: Rectangle {
+                        background: Palette.alternate-background;
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+                            Text {
+                                text: "Your safety number with " + root.conversations[root.selected].title + " changed since you verified it. Compare it again, or continue without.";
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                color: Palette.foreground;
+                            }
+                            Button {
+                                text: "Show safety number";
+                                clicked => { root.open-details(); }
+                            }
+                            Button {
+                                text: "Continue";
+                                clicked => { root.confirm-safety-number(root.conversations[root.selected].id); }
+                            }
+                        }
+                    }
                     if root.conversations[root.selected].blocked: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
@@ -3527,9 +3563,10 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    // Not for requests and blocked chats: they get their bar above instead.
+                    // Not for requests, blocked chats, groups left or a changed safety number: they get
+                    // their bar above instead.
                     Rectangle {
-                        property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked || root.conversations[root.selected].left;
+                        property <bool> hidden: root.conversations[root.selected].request || root.conversations[root.selected].blocked || root.conversations[root.selected].left || root.conversations[root.selected].safety-changed;
                         height: self.hidden ? 0px : composer-row.preferred-height;
                         clip: true;
                     composer-row := HorizontalLayout {

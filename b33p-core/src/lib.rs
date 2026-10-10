@@ -70,6 +70,22 @@ pub struct Conversation {
     pub admin: bool,
     /// A group we are no longer in: it can be read, not written to.
     pub left: bool,
+    /// How far a contact's safety number is trusted; nothing can be written to them while it
+    /// [`Trust::Changed`]. Groups and Note to Self: [`Trust::Unverified`].
+    pub trust: Trust,
+}
+
+/// How far the safety number with a contact is trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Trust {
+    /// Not compared, or cleared.
+    #[default]
+    Unverified,
+    /// Compared with theirs and marked verified, for the key they have now.
+    Verified,
+    /// Verified before, but their key changed since: confirm (or verify again) before writing
+    /// to them, as Signal asks.
+    Changed,
 }
 
 /// A change to a group; see [`Command::EditGroup`]. Members are service IDs.
@@ -94,9 +110,9 @@ pub struct Details {
     /// The safety number (60 digits) of a 1:1 conversation, to compare in person or by
     /// another channel; `None` if there is no session yet.
     pub safety_number: Option<String>,
-    /// We (here or on another device) verified that safety number: it is the same on their
-    /// phone. A new key of theirs isn't verified.
-    pub verified: bool,
+    /// How far that safety number is trusted: verified (here or on another device) for the key
+    /// they have now, or changed since it was.
+    pub trust: Trust,
     /// A group's description.
     pub description: Option<String>,
     /// A group's members, with whether each is an admin.
@@ -661,11 +677,11 @@ pub enum Event {
         query: String,
         messages: Vec<ChatMessage>,
     },
-    /// Whether the safety number with a contact is verified now: after it was marked so, or
-    /// cleared, here or on another device, or their key changed.
-    Verified {
+    /// How far the safety number with a contact is trusted now: after it was marked verified,
+    /// or cleared, here or on another device, or their key changed.
+    Trust {
         conversation: ConversationId,
-        verified: bool,
+        trust: Trust,
     },
     /// Answers [`Command::LoadDetails`].
     Details {
@@ -790,7 +806,8 @@ pub enum Command {
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
     /// Marks the safety number with a contact as verified (compared with theirs), or clears
-    /// that; tells our other devices, and answers with [`Event::Verified`] if it changed.
+    /// that (which also accepts a changed one); tells our other devices, and answers with
+    /// [`Event::Trust`] if it changed.
     SetVerified {
         conversation: ConversationId,
         verified: bool,

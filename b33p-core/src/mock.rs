@@ -105,6 +105,12 @@ pub fn run(commands: Inbox, events: Events) {
             note_to_self: id == "me",
             admin: is_group,
             left: false,
+            // Verified once; her key changed since, so writing to her waits for a confirmation.
+            trust: if id == "dana" {
+                crate::Trust::Changed
+            } else {
+                crate::Trust::Unverified
+            },
             members: if is_group {
                 ["Carol", "Dana", "Eve", "Ferris"]
                     .map(|name| Person {
@@ -437,9 +443,13 @@ pub fn run(commands: Inbox, events: Events) {
                 conversation,
                 verified,
             }) => {
-                let _ = events.send(Event::Verified {
+                let _ = events.send(Event::Trust {
                     conversation: conversation.clone(),
-                    verified,
+                    trust: if verified {
+                        crate::Trust::Verified
+                    } else {
+                        crate::Trust::Unverified
+                    },
                 });
                 let name = CONVERSATIONS
                     .iter()
