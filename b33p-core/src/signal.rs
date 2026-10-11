@@ -636,6 +636,27 @@ fn register(
     }
 }
 
+/// Adds `thread` to the list of whom we block, the way current Signal apps read it. Those known
+/// only by their phone `number` are listed by it; left out, the phone would unblock them, as it
+/// takes the list as the whole one.
+fn list_blocked(blocked: &mut sync_message::Blocked, thread: &Thread, number: Option<String>) {
+    match thread {
+        Thread::Contact(who @ ServiceId::Aci(_)) => {
+            blocked.acis.push(who.service_id_string());
+            blocked.acis_binary.push(who.service_id_binary());
+        }
+        Thread::Contact(_) => blocked.numbers.extend(number),
+        Thread::Group(key) => blocked.group_ids.push(group_identifier(key).to_vec()),
+    }
+}
+
+/// A contact's phone number as Signal sends it: "+4915123456789".
+async fn e164_of(manager: &Mgr, who: ServiceId) -> Option<String> {
+    use presage::libsignal_service::prelude::phonenumber::Mode;
+    let contact = manager.store().contact_by_id(&who).await.ok()??;
+    Some(contact.phone_number?.format().mode(Mode::E164).to_string())
+}
+
 /// A phone number as people write it: "+49 151 23456789".
 fn display_number(
     number: &presage::libsignal_service::prelude::phonenumber::PhoneNumber,
@@ -1035,9 +1056,9 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
     }
     let sync = SyncMessage {
         viewed: vec![sync_message::Viewed {
+            sender_aci_binary: aci_binary(&story.author_id),
             sender_aci: Some(story.author_id),
             timestamp: Some(story.timestamp),
-            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1054,6 +1075,20 @@ fn member_aci(id: &str) -> Option<presage::libsignal_service::protocol::Aci> {
         ServiceId::Aci(aci) => Some(aci),
         ServiceId::Pni(_) => None,
     }
+}
+
+/// The message a reaction is to. Current Signal apps name its author only in binary.
+fn reaction_target(reaction: &presage::proto::data_message::Reaction) -> Option<MessageRef> {
+    Some(MessageRef {
+        author_id: ServiceId::Aci(reaction.parse_target_author_aci()?).service_id_string(),
+        timestamp: reaction.target_sent_timestamp?,
+    })
+}
+
+/// An ACI in the binary form current Signal apps read: they ignore the string fields b33p also
+/// fills, for older clients. `None` for anything but an ACI.
+fn aci_binary(id: &str) -> Option<Vec<u8>> {
+    member_aci(id).map(|aci| ServiceId::Aci(aci).service_id_binary())
 }
 
 /// Refuses to leave a group we are the only admin of, while others are in it: it would be
@@ -2180,7 +2215,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             content: Some(SyncContent::Blocked(blocked)),
             ..
         }) => {
-            on_blocked_elsewhere(ctx, blocked).await;
+            on_blocked_elsewhere(manager, ctx, blocked).await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
@@ -2365,7 +2400,7 @@ fn named_conversation(
 }
 
 /// The phone's whole list of whom we block: everything else is unblocked.
-async fn on_blocked_elsewhere(ctx: &Ctx, blocked: &sync_message::Blocked) {
+async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::Blocked) {
     let mut now_blocked = std::collections::HashSet::new();
     for aci in &blocked.acis {
         now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
@@ -2379,6 +2414,17 @@ async fn on_blocked_elsewhere(ctx: &Ctx, blocked: &sync_message::Blocked) {
     let Ok(all) = ctx.tables.conversations().await else {
         return;
     };
+    // Those known only by their phone number are listed by it.
+    if !blocked.numbers.is_empty() {
+        for id in all.keys() {
+            if let Some(Thread::Contact(who @ ServiceId::Pni(_))) = thread_of(id)
+                && let Some(number) = e164_of(manager, who).await
+                && blocked.numbers.contains(&number)
+            {
+                now_blocked.insert(id.clone());
+            }
+        }
+    }
     let mut changed = Vec::new();
     for (id, mut settings) in all {
         let blocked = now_blocked.remove(&id);
@@ -2529,10 +2575,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
     let mut read: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
     for entry in reads {
         let (Some(sender), Some(timestamp)) = (
-            entry
-                .sender_aci
-                .as_deref()
-                .and_then(ServiceId::parse_from_service_id_string),
+            entry.parse_sender_aci().map(ServiceId::Aci),
             entry.timestamp,
         ) else {
             continue;
@@ -2815,10 +2858,7 @@ async fn to_reaction(
     };
     let outgoing = is_outgoing(manager, content);
     let reaction = data.reaction.as_ref()?;
-    let target = MessageRef {
-        author_id: reaction.target_author_aci.clone()?,
-        timestamp: reaction.target_sent_timestamp?,
-    };
+    let target = reaction_target(reaction)?;
     let sender = display_name(manager, names, author_of(manager, content)).await;
     let reaction_view = Reaction {
         emoji: reaction.emoji.clone().unwrap_or_default(),
@@ -2894,11 +2934,8 @@ async fn to_chat_message(
     }
     let quote = match &data.quote {
         Some(quote) => {
-            let author = match quote
-                .author_aci
-                .as_deref()
-                .and_then(ServiceId::parse_from_service_id_string)
-            {
+            let author_id = quote.parse_author_aci().map(ServiceId::Aci);
+            let author = match author_id {
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
@@ -2912,7 +2949,9 @@ async fn to_chat_message(
                 )
                 .await
                 .0,
-                author_id: quote.author_aci.clone().unwrap_or_default(),
+                author_id: author_id
+                    .map(|id| id.service_id_string())
+                    .unwrap_or_default(),
                 timestamp: quote.id.unwrap_or_default(),
             })
         }
@@ -3093,8 +3132,8 @@ async fn handle_command(
                     emoji: Some(emoji.clone()),
                     remove: Some(remove),
                     target_author_aci: Some(target.author_id.clone()),
+                    target_author_aci_binary: aci_binary(&target.author_id),
                     target_sent_timestamp: Some(target.timestamp),
-                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -4225,6 +4264,7 @@ async fn send_new(
             .map(|quote| presage::proto::data_message::Quote {
                 id: Some(quote.timestamp),
                 author_aci: Some(quote.author_id.clone()),
+                author_aci_binary: aci_binary(&quote.author_id),
                 text: Some(quote.text.clone()),
                 ..Default::default()
             }),
@@ -4413,11 +4453,14 @@ async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
     };
     let mut blocked = sync_message::Blocked::default();
     for id in all.iter().filter(|(_, s)| s.blocked).map(|(id, _)| id) {
-        match thread_of(id) {
-            Some(Thread::Contact(who)) => blocked.acis.push(who.service_id_string()),
-            Some(Thread::Group(key)) => blocked.group_ids.push(group_identifier(&key).to_vec()),
-            None => {}
-        }
+        let Some(thread) = thread_of(id) else {
+            continue;
+        };
+        let number = match thread {
+            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(&manager, who).await,
+            _ => None,
+        };
+        list_blocked(&mut blocked, &thread, number);
     }
     let sync = SyncMessage {
         content: Some(SyncContent::Blocked(blocked)),
@@ -4475,7 +4518,10 @@ async fn respond(
         ..Default::default()
     };
     match thread {
-        Thread::Contact(who) => answer.thread_aci = Some(who.service_id_string()),
+        Thread::Contact(who) => {
+            answer.thread_aci = Some(who.service_id_string());
+            answer.thread_aci_binary = Some(who.service_id_binary());
+        }
         Thread::Group(key) => answer.group_id = Some(group_identifier(key).to_vec()),
     }
     let sync = SyncMessage {
@@ -4545,9 +4591,9 @@ async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) 
     let read = messages
         .into_iter()
         .map(|message| sync_message::Read {
+            sender_aci_binary: aci_binary(&message.author_id),
             sender_aci: Some(message.author_id),
             timestamp: Some(message.timestamp),
-            ..Default::default()
         })
         .collect();
     let sync = SyncMessage {
@@ -4835,6 +4881,66 @@ mod tests {
 
     /// A number typed internationally, or the way our own country writes them, is the same
     /// number; text that isn't one, or an invalid number, is none.
+    /// Current Signal apps fill only the binary ACI fields, and read only those when given
+    /// both; b33p reads either and fills both.
+    #[test]
+    fn acis_are_read_and_written_in_binary_too() {
+        use presage::proto::data_message::Reaction;
+        let id = "00000000-0000-0000-0000-000000000007";
+        let aci = ServiceId::parse_from_service_id_string(id).unwrap();
+        let binary = aci_binary(id).unwrap();
+        assert_eq!(binary, aci.service_id_binary());
+        assert_eq!(binary.len(), 16);
+        assert_eq!(aci_binary(&format!("PNI:{id}")), None);
+        assert_eq!(aci_binary("not an id"), None);
+
+        let target = MessageRef {
+            author_id: id.into(),
+            timestamp: 5,
+        };
+        let from_phone = Reaction {
+            target_author_aci_binary: Some(binary.clone()),
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&from_phone), Some(target.clone()));
+        let from_older_client = Reaction {
+            target_author_aci: Some(id.into()),
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&from_older_client), Some(target));
+        let nameless = Reaction {
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&nameless), None);
+    }
+
+    /// The phone takes the list as the whole one and unblocks everyone left out of it, so
+    /// everyone must be in it in a form it reads.
+    #[test]
+    fn the_blocked_list_names_everyone_as_the_phone_reads_them() {
+        let aci = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000007")
+            .unwrap();
+        let pni =
+            ServiceId::parse_from_service_id_string("PNI:00000000-0000-0000-0000-000000000008")
+                .unwrap();
+        let mut blocked = sync_message::Blocked::default();
+        list_blocked(&mut blocked, &Thread::Contact(aci), None);
+        list_blocked(
+            &mut blocked,
+            &Thread::Contact(pni),
+            Some("+4915123456789".into()),
+        );
+        // Without a known number there is nothing to name them by.
+        list_blocked(&mut blocked, &Thread::Contact(pni), None);
+        assert_eq!(blocked.acis, [aci.service_id_string()]);
+        assert_eq!(blocked.acis_binary, [aci.service_id_binary()]);
+        assert_eq!(blocked.numbers, ["+4915123456789"]);
+        assert!(blocked.group_ids.is_empty());
+    }
+
     #[test]
     fn numbers_are_read_the_way_our_country_writes_them() {
         use presage::libsignal_service::prelude::phonenumber;
