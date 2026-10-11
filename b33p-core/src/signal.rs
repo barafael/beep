@@ -424,6 +424,7 @@ async fn run_linked(
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
     preferences: &Rc<Cell<Preferences>>,
 ) -> bool {
+    let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
@@ -431,6 +432,7 @@ async fn run_linked(
         preferences: preferences.clone(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
+        storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
         trust: Rc::default(),
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
@@ -442,6 +444,18 @@ async fn run_linked(
             warn!(%error, "failed to request contacts");
         }
     }
+    if !storage_read {
+        // Just linked: who is blocked comes with the phone's settings, which take a while (and
+        // the storage key to read them with may have been missed). Signal's apps ask for both.
+        for kind in [
+            sync_message::request::Type::Blocked,
+            sync_message::request::Type::Keys,
+        ] {
+            request_sync(&manager, kind).await;
+        }
+    }
+    // Before receiving starts, or what arrives meanwhile would count twice (or not at all).
+    send_unread(&manager, &ctx).await;
 
     send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
@@ -755,6 +769,9 @@ struct Ctx {
     expiring: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
     storage_changed: Rc<tokio::sync::Notify>,
+    /// Whether the phone's settings (who was accepted, who is blocked) have been read from the
+    /// storage service: not yet right after linking.
+    storage_read: Rc<tokio::sync::watch::Sender<bool>>,
     /// How far each contact's safety number is trusted, as the UI was last told; see
     /// [`publish_trust`].
     trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
@@ -776,13 +793,78 @@ fn group_identifier(master_key: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Adds what b33p remembers about each conversation.
-async fn with_settings(ctx: &Ctx, conversations: &mut [Conversation]) {
-    let mut remembered = ctx.tables.conversations().await.unwrap_or_else(|error| {
-        warn!(%error, "failed to read conversation settings");
-        HashMap::new()
-    });
+/// Conversations new to b33p (all of them, right after linking with the history) count as read
+/// up to their newest stored message, or every chat would start out unread. This happens before
+/// receiving starts: a message received in the meantime would count as read with them.
+async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversation]) {
+    let mut remembered = match ctx.tables.conversations().await {
+        Ok(remembered) => remembered,
+        Err(error) => {
+            warn!(%error, "failed to read conversation settings");
+            return;
+        }
+    };
     for conversation in conversations {
-        conversation.settings = remembered.remove(&conversation.id).unwrap_or_default();
+        conversation.settings = match remembered.remove(&conversation.id) {
+            Some(settings) => settings,
+            None => {
+                let thread = ctx.threads.borrow().get(&conversation.id).cloned();
+                let newest = match thread {
+                    Some(thread) => newest_stored(manager, &thread).await,
+                    None => 0,
+                };
+                first_settings(ctx, &conversation.id, newest).await
+            }
+        };
+    }
+}
+
+/// The settings of a conversation, made for one b33p has kept none for yet: read up to `read`,
+/// so that what comes after it counts as unread (and not, later, as read along with it).
+async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) -> ChatSettings {
+    match ctx.tables.settings(id).await {
+        Ok(Some(settings)) => settings,
+        Ok(None) => ctx
+            .tables
+            .mark_read(id, read)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(%error, "failed to remember a conversation");
+                ChatSettings::default()
+            }),
+        Err(error) => {
+            warn!(%error, "failed to read a conversation's settings");
+            ChatSettings::default()
+        }
+    }
+}
+
+/// When the newest content stored in a thread was sent, or 0 for none.
+async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
+    match manager.store().messages_before(thread, None, 1).await {
+        Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
+        Err(error) => {
+            warn!(%error, "failed to read a thread's newest message");
+            0
+        }
+    }
+}
+
+/// Asks our primary device to send something it keeps (the blocked list, the storage key).
+async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
+    let sync = SyncMessage {
+        content: Some(SyncContent::Request(sync_message::Request {
+            r#type: Some(kind.into()),
+        })),
+        ..SyncMessage::with_padding(&mut rand::rng())
+    };
+    let own = own_id(manager);
+    if let Err(error) = manager
+        .clone()
+        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .await
+    {
+        warn!(%error, ?kind, "failed to ask the primary device");
     }
 }
 
@@ -853,7 +935,7 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
             all.push(group_conversation(manager, threads, &mut names, key, group).await);
         }
     }
-    with_settings(ctx, &mut all).await;
+    with_settings(manager, ctx, &mut all).await;
     let _ = ctx.events.send(Event::Conversations(all));
     if let Ok(folders) = ctx.tables.folders().await {
         let _ = ctx.events.send(Event::Folders(folders));
@@ -912,13 +994,8 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
     let mut conversation =
         group_conversation(manager, &ctx.threads, &mut Names::new(), key, group).await;
     let id = conversation.id.clone();
-    conversation.settings = ctx
-        .tables
-        .settings(&id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    // A group that is new here has nothing unread yet.
+    conversation.settings = first_settings(ctx, &id, 0).await;
     let _ = ctx.events.send(Event::Conversations(vec![conversation]));
 }
 
@@ -1311,8 +1388,7 @@ async fn people(
 }
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
-/// activity and show previews before any history is opened; then how many messages in each
-/// are unread.
+/// activity and show previews before any history is opened.
 async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
     let threads: Vec<_> = ctx
         .threads
@@ -1321,38 +1397,42 @@ async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
         .map(|(id, thread)| (id.clone(), thread.clone()))
         .collect();
     let mut names = Names::new();
-    let mut unread = Vec::new();
-    let mut remembered = match ctx.tables.conversations().await {
-        Ok(remembered) => remembered,
-        Err(error) => {
-            warn!(%error, "failed to read conversation settings");
-            return;
-        }
-    };
     for (id, thread) in threads {
         // Only for the preview and the order: `LoadHistory` replaces it with the full message
         // (delivery, edits, …).
         let Some(latest) = latest_message(&manager, &mut names, &id, &thread).await else {
             continue;
         };
-        let timestamp = latest.timestamp;
         if !ctx.events.send(Event::Latest(latest)) {
             return;
         }
-        match remembered.remove(&id) {
-            Some(settings) => {
-                let count = count_unread(&manager, &thread, settings.last_read).await;
-                if count > 0 {
-                    unread.push((id, count));
-                }
-            }
-            // New to b33p (first start, or just linked with history): what is there counts
-            // as read, or every chat would start out unread.
-            None => {
-                if let Err(error) = ctx.tables.mark_read(&id, timestamp).await {
-                    warn!(%error, "failed to remember a conversation");
-                }
-            }
+    }
+}
+
+/// Sends how many messages in each conversation are unread. Before receiving starts: each
+/// message received after counts itself.
+async fn send_unread(manager: &Mgr, ctx: &Ctx) {
+    let threads: Vec<_> = ctx
+        .threads
+        .borrow()
+        .iter()
+        .map(|(id, thread)| (id.clone(), thread.clone()))
+        .collect();
+    let remembered = match ctx.tables.conversations().await {
+        Ok(remembered) => remembered,
+        Err(error) => {
+            warn!(%error, "failed to read conversation settings");
+            return;
+        }
+    };
+    let mut unread = Vec::new();
+    for (id, thread) in threads {
+        let Some(settings) = remembered.get(&id) else {
+            continue;
+        };
+        let count = count_unread(manager, &thread, settings.last_read).await;
+        if count > 0 {
+            unread.push((id, count));
         }
     }
     let _ = ctx.events.send(Event::Unread(unread));
@@ -1482,6 +1562,9 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
                 take_verifications(&manager, &ctx, verifications).await;
                 if known && !ctx.events.send(Event::StorageRead) {
                     return;
+                }
+                if known {
+                    ctx.storage_read.send_replace(true);
                 }
                 if known && ctx.preferences.get().sync_to_phone {
                     write_storage(&mut manager, &ctx).await;
@@ -2192,7 +2275,8 @@ async fn handle_received(
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
-            let conversation = ensure_conversation(manager, ctx, Thread::Contact(sender)).await;
+            let conversation =
+                ensure_conversation(manager, ctx, Thread::Contact(sender), now_millis()).await;
             let name = sender_name(manager, names, sender).await;
             let body = if reset {
                 format!(
@@ -2327,7 +2411,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
-    let id = ensure_conversation(manager, ctx, thread.clone()).await;
+    let id = ensure_conversation(manager, ctx, thread.clone(), content.timestamp()).await;
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
         && let Some(context) = data_of(content)
@@ -2694,8 +2778,14 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
     }
 }
 
-/// Registers `thread` and announces it to the UI if it's the first we hear of it.
-async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> ConversationId {
+/// Registers `thread` and announces it to the UI if it's the first we hear of it, by something
+/// sent at `first`: that and what follows it are unread.
+async fn ensure_conversation(
+    manager: &Mgr,
+    ctx: &Ctx,
+    thread: Thread,
+    first: u64,
+) -> ConversationId {
     let id = conversation_id(&thread);
     if !ctx.threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
@@ -2728,13 +2818,7 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
                 conversation
             }
         };
-        conversation.settings = ctx
-            .tables
-            .settings(&id)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        conversation.settings = first_settings(ctx, &id, first.saturating_sub(1)).await;
         info!(title = conversation.title, "new conversation");
         ctx.events.send(Event::Conversations(vec![conversation]));
     }
@@ -3358,7 +3442,7 @@ async fn handle_command(
                 .await
                 .map_err(|e| format!("failed to create the group: {e}"))?;
             let thread = Thread::Group(key);
-            let id = ensure_conversation(manager, ctx, thread.clone()).await;
+            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             // Ours, so not a request.
             ctx.tables
                 .update(&id, |s| s.accepted = true)
@@ -3636,17 +3720,12 @@ async fn handle_command(
                 return Ok(());
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
-            // Not to unanswered message requests: they'd tell a stranger we read it. Nor to
-            // anyone we block.
-            let receipts = ctx.preferences.get().read_receipts
-                && !is_unanswered_request(ctx, &conversation).await;
-            let mut receipted = Vec::new();
-            for message in messages.iter().filter(|_| receipts) {
-                if !is_blocked(ctx, &ConversationId::contact(&message.author_id)).await {
-                    receipted.push(message.clone());
-                }
-            }
-            tokio::task::spawn_local(send_read(manager.clone(), messages, receipted));
+            tokio::task::spawn_local(send_read(
+                manager.clone(),
+                ctx.clone(),
+                conversation,
+                messages,
+            ));
         }
         Command::MarkUnread(conversation) => {
             ctx.tables
@@ -4644,17 +4723,51 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
     }
 }
 
-/// Tells our other devices we read `messages`, and the senders of those `receipted`.
-async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipted: Vec<MessageRef>) {
-    let timestamp = now_millis();
+/// Tells our other devices we read `messages` in `conversation`, and their senders, if read
+/// receipts are on and they may know.
+async fn send_read(
+    mut manager: Mgr,
+    ctx: Ctx,
+    conversation: ConversationId,
+    messages: Vec<MessageRef>,
+) {
     let own = own_id(&manager);
-    let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
-    for message in &receipted {
-        by_author
-            .entry(&message.author_id)
-            .or_default()
-            .push(message.timestamp);
+    let read = messages
+        .iter()
+        .map(|message| sync_message::Read {
+            sender_aci_binary: aci_binary(&message.author_id),
+            sender_aci: Some(message.author_id.clone()),
+            timestamp: Some(message.timestamp),
+        })
+        .collect();
+    let sync = SyncMessage {
+        read,
+        ..Default::default()
+    };
+    if let Err(error) = manager
+        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .await
+    {
+        debug!(%error, "failed to tell our other devices what was read");
     }
+    // Whether this is a message request, and who is blocked, comes with the phone's settings.
+    // Right after linking they haven't been read yet, so wait: a read receipt would tell a
+    // stranger we read their message.
+    let _ = ctx.storage_read.subscribe().wait_for(|read| *read).await;
+    // Not to unanswered message requests, nor to anyone we block.
+    if !ctx.preferences.get().read_receipts || is_unanswered_request(&ctx, &conversation).await {
+        return;
+    }
+    let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
+    for message in &messages {
+        if !is_blocked(&ctx, &ConversationId::contact(&message.author_id)).await {
+            by_author
+                .entry(&message.author_id)
+                .or_default()
+                .push(message.timestamp);
+        }
+    }
+    let timestamp = now_millis();
     for (author, timestamps) in by_author {
         let Some(author) = ServiceId::parse_from_service_id_string(author) else {
             continue;
@@ -4672,24 +4785,6 @@ async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipted: Vec<M
         {
             debug!(%error, "failed to send a read receipt");
         }
-    }
-    let read = messages
-        .into_iter()
-        .map(|message| sync_message::Read {
-            sender_aci_binary: aci_binary(&message.author_id),
-            sender_aci: Some(message.author_id),
-            timestamp: Some(message.timestamp),
-        })
-        .collect();
-    let sync = SyncMessage {
-        read,
-        ..Default::default()
-    };
-    if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
-        .await
-    {
-        debug!(%error, "failed to tell our other devices what was read");
     }
 }
 
@@ -5100,6 +5195,44 @@ mod tests {
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A conversation new to b33p is read up to what was there when it came, so what arrives
+    /// after stays unread; one it has settings for keeps them.
+    #[test]
+    fn a_new_conversation_is_read_up_to_its_start() {
+        let dir = std::env::temp_dir().join(format!("b33p-first-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.join("local.db3"))
+                .create_if_missing(true);
+            let (events, _ui) = async_channel::unbounded();
+            let ctx = Ctx {
+                threads: Rc::default(),
+                events: Events(events),
+                tables: LocalStore::open(options).await.unwrap(),
+                preferences: Rc::new(Cell::new(Preferences::default())),
+                expiring: Rc::default(),
+                storage_changed: Rc::default(),
+                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
+                trust: Rc::default(),
+            };
+            let ann = ConversationId::contact("ann");
+            assert_eq!(first_settings(&ctx, &ann, 10).await.last_read, 10);
+            ctx.tables
+                .update(&ann, |s| s.marked_unread = true)
+                .await
+                .unwrap();
+            let kept = first_settings(&ctx, &ann, 20).await;
+            assert_eq!(kept.last_read, 10);
+            assert!(kept.marked_unread);
+        });
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
