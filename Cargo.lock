@@ -736,7 +736,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "b33p-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "b33p-notify"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "futures-lite",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "b33p-slint"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "async-channel",

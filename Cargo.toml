@@ -3,7 +3,7 @@ members = ["b33p-core", "b33p-notify", "b33p-slint"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # libsignal and presage are AGPL-3.0-only, so anything linking them must be too.
 license = "AGPL-3.0-only"
