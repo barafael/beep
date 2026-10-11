@@ -26,6 +26,8 @@ jobs:
       label: ${{ steps.version.outputs.label }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - id: version
         name: Version from the tag, else from Cargo.toml
         run: |
@@ -60,6 +62,8 @@ jobs:
       QMAKE: /usr/lib/qt6/bin/qmake
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -74,6 +78,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
+          lookup-only: true
       - name: Build
         run: cargo build --release --locked -p b33p-slint
       # The tarball and the .deb use the system's Qt (6.4 or newer); the AppImage brings its own.
@@ -153,6 +158,8 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: brew install librsvg
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
@@ -162,6 +169,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
+          lookup-only: true
       - name: Build
         run: cargo build --release --locked -p b33p-slint
       - name: Package app bundle and disk image
@@ -209,6 +217,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # BoringSSL (contact discovery) assembles GNU-style .S files on arm64, which MSVC can't, and
       # Visual Studio projects then link without them. Ninja and clang-cl build them.
       - if: matrix.arch == 'aarch64'
@@ -230,6 +240,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
+          lookup-only: true
       - name: Build
         # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
         shell: pwsh
@@ -264,6 +275,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          (cd dist && sha256sum b33p-* > SHA256SUMS)
           prerelease=()
           [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
           gh release create "$GITHUB_REF_NAME" dist/* \

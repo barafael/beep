@@ -1,0 +1,51 @@
+[graph]
+all-features = true
+
+[advisories]
+db-path = "$CARGO_HOME/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Direct dependencies only; `cargo audit` still lists transitive ones.
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+# AGPL-3.0-only project. Slint: the GPL-3.0-only side of its multi-license.
+allow = [
+    "0BSD",
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-only",
+    "ISC",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[[licenses.clarify]]
+# rusqlite workspace member without a license field; MIT per the root LICENSE.
+crate = "sqlcipher-crypto-provider"
+expression = "MIT"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[sources.allow-org]
+github = ["barafael", "signalapp"]

@@ -153,7 +153,7 @@ enum Download {
 }
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
-async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), Download> {
+async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result<(), Download> {
     let too_big = || {
         format!(
             "The message history is larger than {} MB, which no phone sends.",
