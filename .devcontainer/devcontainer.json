@@ -1,0 +1,16 @@
+{
+  "name": "b33p",
+  "build": { "dockerfile": "Containerfile" },
+  "workspaceFolder": "/workspaces/beep",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/beep,type=bind",
+  "mounts": [
+    "source=${localEnv:HOME}/.cargo/registry,target=/usr/local/cargo/registry,type=bind",
+    "source=${localEnv:HOME}/.cargo/git,target=/usr/local/cargo/git,type=bind"
+  ],
+  "containerEnv": {
+    "CARGO_TARGET_DIR": "/workspaces/beep/target/devcontainer"
+  },
+  "customizations": {
+    "vscode": { "extensions": ["rust-lang.rust-analyzer"] }
+  }
+}

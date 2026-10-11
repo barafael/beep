@@ -1,0 +1,12 @@
+# cmake, clang: BoringSSL (contact discovery); protoc: protocol types; Qt 6: the UI backend.
+FROM docker.io/library/rust:1-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang cmake pkg-config protobuf-compiler \
+        qt6-base-dev qt6-base-dev-tools qt6-wayland \
+        libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup component add clippy rustfmt
+
+ENV QMAKE=/usr/lib/qt6/bin/qmake
