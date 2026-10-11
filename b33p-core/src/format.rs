@@ -101,28 +101,43 @@ pub struct WireRange {
 }
 
 /// Text received from Signal, made readable: each mention's placeholder becomes "@Name"
-/// (`names` has a name per mention range; one without reads "@…"), and the styles move to
-/// byte positions of the result.
+/// (`names` has a name per mention range; one without reads "@…"), and the styles and
+/// mentions move to byte positions of the result.
 pub fn decode(
     body: &str,
     ranges: &[WireRange],
     names: &[(u32, String)],
-) -> (String, Vec<StyleRange>) {
+) -> (String, Vec<StyleRange>, Vec<Mention>) {
     let mut out = String::with_capacity(body.len());
+    // Looked up by position rather than searched per character: senders choose how many
+    // ranges there are. The first range or name at a position counts.
+    let mut mentions = std::collections::HashMap::new();
+    for range in ranges {
+        if let RangeValue::Mention(who) = &range.value {
+            mentions.entry(range.start).or_insert((range.length, who));
+        }
+    }
+    let mut mentioned = Vec::new();
+    let mut named = std::collections::HashMap::new();
+    for (start, name) in names {
+        named.entry(*start).or_insert(name.as_str());
+    }
     // Where each UTF-16 position of `body` ended up in `out`.
     let mut at = Vec::with_capacity(body.len() + 1);
     let mut position = 0u32;
     let mut skip_until = 0u32;
     for c in body.chars() {
-        let mention = ranges
-            .iter()
-            .find(|r| r.start == position && matches!(r.value, RangeValue::Mention(_)));
         at.extend(std::iter::repeat_n(out.len(), c.len_utf16()));
-        if let Some(mention) = mention {
-            let name = names.iter().find(|(start, _)| *start == position);
+        if let Some((length, who)) = mentions.get(&position) {
+            let start = out.len();
             out.push('@');
-            out.push_str(name.map_or("…", |(_, name)| name));
-            skip_until = position + mention.length;
+            out.push_str(named.get(&position).unwrap_or(&"…"));
+            mentioned.push(Mention {
+                start,
+                end: out.len(),
+                service_id: (*who).clone(),
+            });
+            skip_until = position.saturating_add(*length);
         }
         if position >= skip_until {
             match c {
@@ -144,7 +159,7 @@ pub fn decode(
             RangeValue::Mention(_) => None,
         })
         .collect();
-    (out, styles)
+    (out, styles, mentioned)
 }
 
 /// Text as Signal sends it: each mention ("@Name" at its bytes) becomes a placeholder, and
@@ -219,6 +234,96 @@ pub fn find_url(text: &str) -> Option<(usize, usize)> {
         at = start + end.max(1);
     }
     None
+}
+
+/// A name someone chose for themselves or a group (or a page title), fit to show on one line
+/// among other text: line breaks and other control characters become spaces, and direction
+/// overrides and isolates go, which would otherwise reorder the text around the name.
+pub fn name(text: &str) -> String {
+    let directional = |c: char| matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let line_break = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    let spaced: String = text
+        .chars()
+        .filter(|c| !directional(*c))
+        .map(|c| if line_break(c) { ' ' } else { c })
+        .collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `body` with its spoilers hidden, each of their characters but spaces shown as `▒`: where
+/// they can't be revealed, like notifications, the chat list and quotes.
+pub fn hide_spoilers(body: &str, styles: &[StyleRange]) -> String {
+    let hidden = |at: usize| {
+        styles
+            .iter()
+            .any(|s| s.style == Style::Spoiler && s.start <= at && at < s.end)
+    };
+    body.char_indices()
+        .map(|(at, c)| {
+            if hidden(at) && !c.is_whitespace() {
+                '▒'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Text that [`parse`] reads back as `body` with `styles`: the formatting as typed shortcuts,
+/// for editing a message. Formatting the shortcuts can't say is left out, but spoilers are kept
+/// whenever they can be, so that editing doesn't reveal them.
+pub fn typed(body: &str, styles: &[StyleRange]) -> String {
+    let valid: Vec<&StyleRange> = styles
+        .iter()
+        .filter(|s| {
+            s.start < s.end
+                && s.end <= body.len()
+                && body.is_char_boundary(s.start)
+                && body.is_char_boundary(s.end)
+        })
+        .collect();
+    let spoilers: Vec<&StyleRange> = valid
+        .iter()
+        .copied()
+        .filter(|s| s.style == Style::Spoiler)
+        .collect();
+    for kept in [valid, spoilers] {
+        let text = with_markers(body, &kept);
+        let mut expected: Vec<StyleRange> = kept.into_iter().cloned().collect();
+        expected.sort_by_key(|s| (s.start, s.end));
+        if parse(&text) == (body.to_owned(), expected) {
+            return text;
+        }
+    }
+    body.to_owned()
+}
+
+/// `body` with each of `styles` as a pair of markers around its text.
+fn with_markers(body: &str, styles: &[&StyleRange]) -> String {
+    let marker = |style| {
+        MARKERS
+            .iter()
+            .find(|(_, s)| *s == style)
+            .map_or("", |(marker, _)| marker)
+    };
+    // At the same place: closing before opening, inner ones closing first and outer ones
+    // opening first, so that they nest.
+    let mut markers: Vec<(usize, bool, usize, &str)> = Vec::new();
+    for s in styles {
+        let length = s.end - s.start;
+        markers.push((s.start, true, usize::MAX - length, marker(s.style)));
+        markers.push((s.end, false, length, marker(s.style)));
+    }
+    markers.sort_by_key(|&(at, opens, order, _)| (at, opens, order));
+    let mut text = String::with_capacity(body.len() + 4 * styles.len());
+    let mut from = 0;
+    for (at, _, _, marker) in markers {
+        text.push_str(&body[from..at]);
+        text.push_str(marker);
+        from = at;
+    }
+    text.push_str(&body[from..]);
+    text
 }
 
 /// The address in `word` (no whitespace), as a byte range in it.
@@ -342,6 +447,88 @@ mod tests {
         );
     }
 
+    /// Editing a message starts from its text as typed: the same formatting comes back out,
+    /// and spoilers whenever they can.
+    #[test]
+    fn formatting_is_typed_back() {
+        let range = |start, end, style| StyleRange { start, end, style };
+        let spoiler = range(8, 12, Style::Spoiler);
+        let nested = vec![range(0, 15, Style::Bold), range(9, 15, Style::Italic)];
+        for (body, styles, typed_as, kept) in [
+            ("plain", vec![], "plain", vec![]),
+            (
+                "the butler did it",
+                vec![range(4, 10, Style::Spoiler)],
+                "the ||butler|| did it",
+                vec![range(4, 10, Style::Spoiler)],
+            ),
+            (
+                "bold and italic",
+                nested.clone(),
+                "*bold and _italic_*",
+                nested,
+            ),
+            (
+                "mono",
+                vec![range(0, 4, Style::Monospace)],
+                "`mono`",
+                vec![range(0, 4, Style::Monospace)],
+            ),
+            // Shortcuts other than spoilers can't start inside a word.
+            (
+                "unbelievable",
+                vec![range(2, 8, Style::Bold), spoiler.clone()],
+                "unbeliev||able||",
+                vec![spoiler],
+            ),
+        ] {
+            let typed = typed(body, &styles);
+            assert_eq!(typed, typed_as);
+            assert_eq!(parse(&typed), (body.to_owned(), kept));
+        }
+    }
+
+    #[test]
+    fn spoilers_are_hidden_where_they_cant_be_revealed() {
+        let spoiler = StyleRange {
+            start: 4,
+            end: 14,
+            style: Style::Spoiler,
+        };
+        assert_eq!(
+            hide_spoilers("the butler 🦀 did it", &[spoiler]),
+            "the ▒▒▒▒▒▒ ▒ did it"
+        );
+    }
+
+    #[test]
+    fn names_stay_on_their_line_and_in_their_place() {
+        assert_eq!(name("Ann"), "Ann");
+        assert_eq!(name("  Ann\nMarie\r\n\tB. "), "Ann Marie B.");
+        // "Bob" written to look like "gnp.exe" read backwards.
+        assert_eq!(name("Bob \u{202e}exe.gnp\u{202c}"), "Bob exe.gnp");
+        assert_eq!(name("\u{2067}علي\u{2069}"), "علي");
+        assert_eq!(name("\u{2028}"), "");
+    }
+
+    /// Ranges come from the sender, whatever their numbers.
+    #[test]
+    fn decoding_takes_any_ranges() {
+        let mention = |start, length| WireRange {
+            start,
+            length,
+            value: RangeValue::Mention("id".into()),
+        };
+        let (text, ..) = decode("\u{FFFC} hi", &[mention(0, u32::MAX)], &[]);
+        assert_eq!(text, "@…");
+        let (text, ..) = decode(
+            "\u{FFFC} hi",
+            &[mention(0, 1), mention(0, 5)],
+            &[(0, "Ann".into()), (0, "Bob".into())],
+        );
+        assert_eq!(text, "@Ann hi");
+    }
+
     #[test]
     fn mentions_and_styles_survive_the_round_trip() {
         // "é" is one UTF-16 unit but two bytes; "🦀" two units, four bytes.
@@ -371,7 +558,7 @@ mod tests {
                 },
             ]
         );
-        let (back, back_styles) = decode(&wire, &ranges, &[(7, "Ann".into())]);
+        let (back, back_styles, _) = decode(&wire, &ranges, &[(7, "Ann".into())]);
         assert_eq!(back, text);
         assert_eq!(back_styles, styles);
     }
@@ -389,6 +576,8 @@ mod tests {
             &[(3, "Alice".into())],
         );
         assert_eq!(decoded.0, "Hi @Alice, see you");
+        let alice = &decoded.2[0];
+        assert_eq!(&decoded.0[alice.start..alice.end], "@Alice");
         // An emoji before the mention takes two UTF-16 units.
         let decoded = decode("🎉 \u{FFFC}!", &[mention(3)], &[(3, "Bob".into())]);
         assert_eq!(decoded.0, "🎉 @Bob!");

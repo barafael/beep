@@ -19,8 +19,9 @@ b33p-notify = { path = "../b33p-notify" }
 # Slint's defaults bring both the winit and the Qt backend; each platform picks one below.
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
 # Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
-# Pinned to the version slint itself pins.
-i-slint-core = "=1.18.1"
+# Internal, so within slint's minor version: slint pins its exact patch, which this follows,
+# rather than holding slint back on `cargo update`.
+i-slint-core = "~1.18.1"
 tracing = "0.1"
 async-channel = "2"
 # Whether the desktop asks for reduced motion (`motion.rs`).
@@ -82,7 +83,11 @@ windows-registry = "0.100"
 
 [dev-dependencies]
 # Slint's headless backend for the UI tests in `src/ui_tests.rs`; the version slint pins.
-i-slint-backend-testing = "=1.18.1"
+i-slint-backend-testing = "~1.18.1"
+# Slint's Markdown parser, which `StyledText` keeps to itself: the property tests in
+# `src/markdown.rs` check the links and text it makes of message text.
+i-slint-common = { version = "~1.18.1", features = ["markdown"] }
+proptest = "1"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs

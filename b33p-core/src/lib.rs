@@ -50,6 +50,22 @@ impl ConversationId {
     pub fn contact(service_id: &str) -> Self {
         Self(format!("c:{service_id}"))
     }
+
+    /// The group whose master key is `master_key`.
+    pub fn group(master_key: &[u8]) -> Self {
+        let key: String = master_key.iter().map(|b| format!("{b:02x}")).collect();
+        Self(format!("g:{key}"))
+    }
+
+    /// The service ID of the person a 1:1 conversation is with.
+    pub fn contact_id(&self) -> Option<&str> {
+        self.0.strip_prefix("c:")
+    }
+
+    /// A group conversation's master key, in hex.
+    pub fn group_key(&self) -> Option<&str> {
+        self.0.strip_prefix("g:")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -398,6 +414,8 @@ pub struct ChatMessage {
     pub preview: Option<LinkPreview>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
+    /// Whom it mentions, as "@Name" in [`ChatMessage::body`].
+    pub mentions: Vec<Mention>,
     /// Ours, shown before it went out: still sending, or it failed. `None` once it is sent,
     /// and for everything else.
     pub unsent: Option<Unsent>,
@@ -909,12 +927,16 @@ pub enum Command {
 pub struct Config {
     /// Name shown in the phone's "Linked devices" list.
     pub device_name: String,
+    /// What the backend does on our behalf from the start, before (and whether or not) a
+    /// [`Command::Preferences`] changes it: the password prompt and linking come first.
+    pub preferences: Preferences,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             device_name: "b33p".into(),
+            preferences: Preferences::default(),
         }
     }
 }

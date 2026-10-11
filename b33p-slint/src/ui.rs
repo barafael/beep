@@ -28,14 +28,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     }
     show_settings(&window, &shared.settings.borrow(), &shared.style_note());
     window.set_device_name(shared.device_name.as_str().into());
-    // The window owns the models; `vec_model` gets them back for updates.
-    window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
-    window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
-    window.set_media_tiles(ModelRc::new(VecModel::<AttachmentItem>::default()));
-    window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
-    window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
-    window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
-    window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
+    set_up_models(&window);
 
     window.window().on_close_requested({
         let shared = shared.clone();
@@ -127,9 +120,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         move |answer| {
             use b33p_core::RequestResponse;
             let response = match answer {
-                0 => RequestResponse::Accept,
-                1 => RequestResponse::Delete,
-                _ => RequestResponse::Block,
+                RequestAnswer::Accept => RequestResponse::Accept,
+                RequestAnswer::Delete => RequestResponse::Delete,
+                RequestAnswer::Block => RequestResponse::Block,
             };
             shared.act(|chat| {
                 let id = chat.selected().map(|c| c.id.clone());
@@ -699,6 +692,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     window.on_attach({
         let window = window.as_weak();
         move || {
+            // The files go to the chat they were picked for: not to another one opened meanwhile.
+            let chat = window.upgrade().map(|window| window.get_selected_id());
             // The dialog blocks until the user is done, so it gets its own thread.
             let window = window.clone();
             std::thread::spawn(move || {
@@ -711,7 +706,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
                     .map(|f| f.to_string_lossy().as_ref().into())
                     .collect();
                 let _ = window.upgrade_in_event_loop(move |window| {
-                    window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                    if Some(window.get_selected_id()) == chat {
+                        window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                    }
                 });
             });
         }
@@ -862,6 +859,8 @@ impl Window {
 
 /// The settings page shows choices by index, in the order of these enums.
 fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
+    // As build.rs chooses: Qt on Linux.
+    window.set_qt(cfg!(target_os = "linux"));
     window.set_theme(match settings.theme {
         Theme::System => 0,
         Theme::Light => 1,
@@ -994,6 +993,16 @@ fn shortcut(
 
 /// Esc closes what is open, the innermost first.
 fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
+    let closed = close_front(shared, window);
+    if closed {
+        // What had the focus may have closed with it.
+        window.set_escaped(window.get_escaped().wrapping_add(1));
+    }
+    closed
+}
+
+/// Closes the innermost of what is open; whether there was something.
+fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
     let mut chat = shared.chat.borrow_mut();
     if window.get_stories_open() {
         if chat.current_story().is_some() {
@@ -1056,7 +1065,7 @@ fn chat_action<A>(
 
 /// Brings the window in line with `chat`, touching only what `update` says changed (plus the
 /// cheap status properties).
-fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update) {
+pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update) {
     if update.screen {
         match chat.screen() {
             state::Screen::Connecting => window.set_screen(Screen::Connecting),
@@ -1089,14 +1098,6 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     );
     window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
-    let draft = window.get_draft();
-    window.set_can_send(chat.can_compose(&draft));
-    let candidates: Vec<SharedString> = chat
-        .mention_candidates(&draft)
-        .iter()
-        .map(|p| p.name.as_str().into())
-        .collect();
-    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
     let staged: Vec<SharedString> = chat
         .staged()
         .iter()
@@ -1200,7 +1201,13 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             .unwrap_or_default()
             .into(),
     );
-    window.set_editing(chat.editing().is_some());
+    // An edit that ended without being sent (its message was deleted, here or elsewhere)
+    // leaves the composer to the draft again, so its text can't be sent as a new message.
+    let editing = chat.editing().is_some();
+    if window.get_editing() && !editing {
+        window.set_draft(chat.draft().into());
+    }
+    window.set_editing(editing);
     window.set_selected_count(chat.selection().len() as i32);
     window.set_selection_text(chat.selected_text().into());
     window.set_can_forward_selection(chat.can_forward_selection());
@@ -1308,6 +1315,15 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             window.set_search_text(SharedString::new());
         }
     }
+    // Last, once switching chats or ending an edit has put the right draft in the composer.
+    let draft = window.get_draft();
+    window.set_can_send(chat.can_compose(&draft));
+    let candidates: Vec<SharedString> = chat
+        .mention_candidates(&draft)
+        .iter()
+        .map(|p| p.name.as_str().into())
+        .collect();
+    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
 }
 
 /// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
@@ -1494,7 +1510,9 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
             }
         })
         .collect();
-    window.set_details_members(ModelRc::new(VecModel::from(members)));
+    // Row by row: a new model would rebuild the rows, closing a member's menu under the
+    // pointer whenever anything happens.
+    update_list(&window.get_details_members(), members, |a, b| a == b);
 }
 
 /// The media overview.
@@ -1680,7 +1698,20 @@ fn render_calendar(window: &AppWindow, chat: &ChatState) {
     window.set_calendar(ModelRc::new(VecModel::from(years)));
 }
 
-/// The `VecModel` behind a model set up in [`create`].
+/// Gives the window the models that [`render`] keeps up to date: the window owns them, and
+/// [`vec_model`] gets them back for updates.
+pub(crate) fn set_up_models(window: &AppWindow) {
+    window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
+    window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
+    window.set_media_tiles(ModelRc::new(VecModel::<AttachmentItem>::default()));
+    window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
+    window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
+    window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
+    window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
+    window.set_details_members(ModelRc::new(VecModel::<MemberItem>::default()));
+}
+
+/// The `VecModel` behind a model set up in [`set_up_models`].
 fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
     model
         .as_any()
@@ -1775,12 +1806,12 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
         text: if m.deleted { "" } else { view.body }.into(),
         delivery: match (m.outgoing, m.unsent, m.delivery) {
-            (false, ..) => 0,
-            (true, Some(Unsent::Sending), _) => -1,
-            (true, Some(Unsent::Failed), _) => -2,
-            (true, None, Delivery::Sent) => 1,
-            (true, None, Delivery::Delivered) => 2,
-            (true, None, Delivery::Read) => 3,
+            (false, ..) => DeliveryState::Incoming,
+            (true, Some(Unsent::Sending), _) => DeliveryState::Sending,
+            (true, Some(Unsent::Failed), _) => DeliveryState::Failed,
+            (true, None, Delivery::Sent) => DeliveryState::Sent,
+            (true, None, Delivery::Delivered) => DeliveryState::Delivered,
+            (true, None, Delivery::Read) => DeliveryState::Read,
         },
         edited: m.edited_at.is_some(),
         deleted: m.deleted,

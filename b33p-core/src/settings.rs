@@ -146,7 +146,13 @@ impl Settings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, self.to_text())
+        // Whole or not at all: a file cut short (a crash, a full disk) would read as defaults,
+        // privacy settings included. Written beside it, then put in its place.
+        let written = path.with_extension("conf.new");
+        let mut file = std::fs::File::create(&written)?;
+        std::io::Write::write_all(&mut file, self.to_text().as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(written, path)
     }
 
     /// `key = value` lines. Unknown keys and values are ignored, so older and newer versions

@@ -3,7 +3,7 @@ members = ["b33p-core", "b33p-notify", "b33p-slint"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # libsignal and presage are AGPL-3.0-only, so anything linking them must be too.
 license = "AGPL-3.0-only"
@@ -24,12 +24,15 @@ qrcode = { version = "0.14", default-features = false }
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
 #   (not yet proposed) the provisioning link logged at debug instead of info
+#   #452 no panic on a group master key of the wrong length
+#   #453 only a message's sender deletes or edits it
+#   #454 write transactions take the lock up front
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "225c5967f614c989568ad4649f7bd5cba547010d" }
+presage = { git = "https://github.com/barafael/presage", rev = "af7ddf9e5e21c8aca35ec78e0019b8e7ae7da9ab" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "225c5967f614c989568ad4649f7bd5cba547010d", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "af7ddf9e5e21c8aca35ec78e0019b8e7ae7da9ab", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -62,10 +65,11 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
 # #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and
-# #476 (send a sync message to ourselves once, not twice).
+# #476 (send a sync message to ourselves once, not twice) and #478 (a read timeout instead of
+# one for the whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "e7bebdcc78ea03bdceb411f24426e82aba619c70" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "b56ff531c368ed24dbac9706d050316cb0d5397a" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
