@@ -476,12 +476,23 @@ impl ChatState {
                 self.older.insert(conversation.clone(), older);
                 self.loading_older.remove(&conversation);
                 let history = self.history.entry(conversation.clone()).or_default();
-                let mut added = 0;
+                let first = history.first().map(|m| (m.timestamp, m.sender_id.clone()));
+                let (mut added, mut replaced) = (0, 0);
                 // The stored history is complete (delivery, edits, …); it replaces what came
                 // before it, e.g. the bare newest message from `Event::Latest`.
                 for message in messages {
-                    added += usize::from(upsert(history, message));
+                    if upsert(history, message) {
+                        added += 1;
+                    } else {
+                        replaced += 1;
+                    }
                 }
+                // An older page goes before what is shown, unless some of it falls between
+                // (messages that came late): then the rows are redone.
+                let before_first = first.map_or(history.len(), |(timestamp, sender)| {
+                    history.partition_point(|m| message_key(m) < (timestamp, sender.as_str()))
+                });
+                let only_prepended = before_first == added;
                 // This page's reactions are older than those already waiting.
                 let waiting = self
                     .pending_reactions
@@ -492,6 +503,7 @@ impl ChatState {
                 for (target, reaction, remove) in reactions {
                     if history.iter().any(|m| m.is(&target)) {
                         apply_reaction(history, &target, reaction, remove);
+                        replaced += 1;
                     } else {
                         waiting.push((target, reaction, remove));
                     }
@@ -507,11 +519,14 @@ impl ChatState {
                     self.queued.push(command);
                 }
                 if self.selected.as_ref() == Some(&conversation) {
-                    if newest_page {
+                    if newest_page || !only_prepended {
                         update.messages = MessagesUpdate::Reset;
-                        self.mark_seen();
                     } else if added > 0 {
                         update.messages = MessagesUpdate::Prepended(added);
+                    }
+                    update.rows |= replaced > 0;
+                    if newest_page {
+                        self.mark_seen();
                     }
                     self.continue_jump();
                 }
@@ -575,6 +590,15 @@ impl ChatState {
                 let Some(pos) = insert(history, message) else {
                     return update;
                 };
+                // Reactions that came before it (to a message on its way).
+                if let Some(waiting) = self.pending_reactions.get_mut(&id) {
+                    let reference = history[pos].reference();
+                    for (target, reaction, remove) in
+                        waiting.extract_if(.., |(t, ..)| *t == reference)
+                    {
+                        apply_reaction(history, &target, reaction, remove);
+                    }
+                }
                 let appended = pos + 1 == history.len();
                 if let Some(timer) = history[pos].timer_change
                     && let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id)
@@ -2846,6 +2870,8 @@ pub fn initials(title: &str) -> String {
         .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
         .take(2)
         .flat_map(char::to_uppercase)
+        // Some letters are more than one in uppercase ("ﬃ" is "FFI").
+        .take(2)
         .collect();
     if letters.is_empty() {
         "?".into()
@@ -5295,6 +5321,685 @@ mod read_props {
             }
             let unread: Vec<u64> = sent.iter().copied().filter(|t| !read.contains(t)).map(|t| (t - base) / 1000).collect();
             prop_assert!(unread.is_empty(), "never marked read (no receipt, timer never started): {unread:?} of {:?}", sent.iter().map(|t| (t - base) / 1000).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    //! The Slint UI keeps its message rows in sync only through the `Update`s that `apply` and the
+    //! actions return (b33p-slint/src/ui.rs `render`), merged per batch of events (main.rs). This
+    //! replays that bookkeeping on a plain Vec and checks it against `messages()`.
+    use super::*;
+    use crate::{AfterFinding, Delivery, Reaction};
+    use proptest::prelude::*;
+    use std::sync::OnceLock;
+
+    const CONVS: [&str; 2] = ["a", "g"];
+    const SENDERS: [&str; 3] = ["alice", "bob", "me"];
+
+    fn base() -> u64 {
+        static BASE: OnceLock<u64> = OnceLock::new();
+        // An hour ago, on the minute: recent enough to edit and delete for everyone.
+        *BASE.get_or_init(|| (now_millis() - 3_600_000) / 60_000 * 60_000)
+    }
+
+    fn ts(t: u8) -> u64 {
+        base() + u64::from(t) * 1000
+    }
+
+    fn cid(c: usize) -> ConversationId {
+        ConversationId(CONVS[c].into())
+    }
+
+    fn msg(c: usize, sender: usize, t: u8) -> ChatMessage {
+        ChatMessage {
+            conversation: cid(c),
+            sender_id: SENDERS[sender].into(),
+            sender: SENDERS[sender].into(),
+            body: format!("{}@{t}", SENDERS[sender]),
+            timestamp: ts(t),
+            outgoing: sender == 2,
+            ..Default::default()
+        }
+    }
+
+    fn target(sender: usize, t: u8) -> MessageRef {
+        MessageRef {
+            author_id: SENDERS[sender].into(),
+            timestamp: ts(t),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum Ev {
+        Msg(usize, usize, u8),
+        Latest(usize, usize, u8),
+        History {
+            conv: usize,
+            msgs: Vec<(usize, u8)>,
+            older: Option<u8>,
+        },
+        Edited(usize, usize, u8),
+        Deleted(usize, usize, u8),
+        Expiring(usize, usize, u8),
+        Expired(usize, Vec<(usize, u8)>),
+        Cleared(usize),
+        Delivered(usize, Vec<u8>),
+        Reaction {
+            conv: usize,
+            sender: usize,
+            t: u8,
+            from: usize,
+            remove: bool,
+        },
+        Sent(usize),
+        SendFailed(usize),
+        Found(usize),
+    }
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Batch(Vec<Ev>),
+        Select(usize),
+        Deselect,
+        Compose,
+        LoadOlder,
+        Delete(usize, bool),
+        Edit(usize),
+        ReplyTo(usize),
+        Reveal(usize),
+        NotificationReply(usize),
+        Archive,
+    }
+
+    fn ev() -> impl Strategy<Value = Ev> {
+        let conv = 0usize..2;
+        let sender = 0usize..3;
+        let t = 0u8..12;
+        prop_oneof![
+            6 => (conv.clone(), sender.clone(), t.clone()).prop_map(|(c, s, t)| Ev::Msg(c, s, t)),
+            1 => (conv.clone(), sender.clone(), t.clone()).prop_map(|(c, s, t)| Ev::Latest(c, s, t)),
+            4 => (conv.clone(), prop::collection::vec((sender.clone(), t.clone()), 0..5), prop::option::of(t.clone()))
+                .prop_map(|(conv, msgs, older)| Ev::History { conv, msgs, older }),
+            1 => (conv.clone(), sender.clone(), t.clone()).prop_map(|(c, s, t)| Ev::Edited(c, s, t)),
+            1 => (conv.clone(), sender.clone(), t.clone()).prop_map(|(c, s, t)| Ev::Deleted(c, s, t)),
+            1 => (conv.clone(), sender.clone(), t.clone()).prop_map(|(c, s, t)| Ev::Expiring(c, s, t)),
+            1 => (conv.clone(), prop::collection::vec((sender.clone(), t.clone()), 0..3)).prop_map(|(c, v)| Ev::Expired(c, v)),
+            1 => conv.clone().prop_map(Ev::Cleared),
+            1 => (conv.clone(), prop::collection::vec(t.clone(), 0..3)).prop_map(|(c, v)| Ev::Delivered(c, v)),
+            1 => (conv.clone(), sender.clone(), t.clone(), sender.clone(), any::<bool>())
+                .prop_map(|(conv, sender, t, from, remove)| Ev::Reaction { conv, sender, t, from, remove }),
+            2 => (0usize..4).prop_map(Ev::Sent),
+            1 => (0usize..4).prop_map(Ev::SendFailed),
+            1 => conv.prop_map(Ev::Found),
+        ]
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            8 => prop::collection::vec(ev(), 1..5).prop_map(Op::Batch),
+            3 => (0usize..2).prop_map(Op::Select),
+            1 => Just(Op::Deselect),
+            2 => Just(Op::Compose),
+            2 => Just(Op::LoadOlder),
+            2 => (0usize..8, any::<bool>()).prop_map(|(i, e)| Op::Delete(i, e)),
+            1 => (0usize..8).prop_map(Op::Edit),
+            1 => (0usize..8).prop_map(Op::ReplyTo),
+            1 => (0usize..8).prop_map(Op::Reveal),
+            1 => (0usize..2).prop_map(Op::NotificationReply),
+            1 => Just(Op::Archive),
+        ]
+    }
+
+    /// What a row of the UI's model shows, as far as telling messages apart goes.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Row {
+        timestamp: u64,
+        sender_id: String,
+        body: String,
+        unsent: Option<Unsent>,
+        delivery: Delivery,
+        deleted: bool,
+        reactions: usize,
+        expires_at: Option<u64>,
+    }
+
+    fn row(view: &MessageView) -> Row {
+        let m = view.message;
+        Row {
+            timestamp: m.timestamp,
+            sender_id: m.sender_id.clone(),
+            body: view.body.to_owned(),
+            unsent: m.unsent,
+            delivery: m.delivery,
+            deleted: m.deleted,
+            reactions: m.reactions.len(),
+            expires_at: m.expires_at,
+        }
+    }
+
+    /// ui.rs `render`, for the message rows: a Slint `VecModel` ignores `set_row_data` past its
+    /// end and panics on `insert` past it.
+    fn render(model: &mut Vec<Row>, chat: &ChatState, update: Update) {
+        match update.messages {
+            MessagesUpdate::Unchanged => {}
+            MessagesUpdate::Appended(n) => model.extend(chat.last_messages(n).map(|m| row(&m))),
+            MessagesUpdate::Prepended(n) => {
+                let items: Vec<Row> = chat.messages().take(n + 1).map(|m| row(&m)).collect();
+                for (r, item) in items.into_iter().enumerate() {
+                    if r < n {
+                        model.insert(r, item);
+                    } else if r < model.len() {
+                        model[r] = item;
+                    }
+                }
+            }
+            MessagesUpdate::Reset => *model = chat.messages().map(|m| row(&m)).collect(),
+        }
+        if update.rows && update.messages != MessagesUpdate::Reset {
+            for (r, m) in chat.messages().enumerate() {
+                if r < model.len() {
+                    model[r] = row(&m);
+                }
+            }
+        }
+    }
+
+    struct Sim {
+        chat: ChatState,
+        model: Vec<Row>,
+        /// Sends shown while sending: conversation and timestamp.
+        sending: Vec<(ConversationId, u64)>,
+        log: Vec<String>,
+    }
+
+    impl Sim {
+        fn new() -> Self {
+            let mut chat = ChatState::default();
+            chat.apply(Event::Linked {
+                account: "me".into(),
+            });
+            chat.apply(Event::Synced);
+            chat.apply(Event::Conversations(vec![
+                Conversation {
+                    id: cid(0),
+                    title: "Alice".into(),
+                    settings: ChatSettings {
+                        accepted: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                Conversation {
+                    id: cid(1),
+                    title: "Group".into(),
+                    is_group: true,
+                    settings: ChatSettings {
+                        accepted: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ]));
+            chat.set_window_focused(true);
+            Sim {
+                chat,
+                model: Vec::new(),
+                sending: Vec::new(),
+                log: Vec::new(),
+            }
+        }
+
+        fn event(&mut self, e: &Ev) -> Option<Event> {
+            Some(match e.clone() {
+                Ev::Msg(c, s, t) => Event::Message(msg(c, s, t)),
+                Ev::Latest(c, s, t) => Event::Latest(msg(c, s, t)),
+                Ev::History { conv, msgs, older } => Event::History {
+                    conversation: cid(conv),
+                    messages: {
+                        let mut m: Vec<ChatMessage> =
+                            msgs.iter().map(|&(s, t)| msg(conv, s, t)).collect();
+                        m.sort_by_key(|m| (m.timestamp, m.sender_id.clone()));
+                        m
+                    },
+                    reactions: Vec::new(),
+                    older: older.map(ts),
+                },
+                Ev::Edited(c, s, t) => Event::Edited {
+                    conversation: cid(c),
+                    target: target(s, t),
+                    message: ChatMessage {
+                        body: "edited".into(),
+                        ..msg(c, s, t)
+                    },
+                },
+                Ev::Deleted(c, s, t) => Event::Deleted {
+                    conversation: cid(c),
+                    target: target(s, t),
+                },
+                Ev::Expiring(c, s, t) => Event::Expiring {
+                    conversation: cid(c),
+                    expiries: vec![(target(s, t), now_millis() + 600_000)],
+                },
+                Ev::Expired(c, v) => Event::Expired {
+                    conversation: cid(c),
+                    targets: v.iter().map(|&(s, t)| target(s, t)).collect(),
+                },
+                Ev::Cleared(c) => Event::Cleared(cid(c)),
+                Ev::Delivered(c, v) => Event::Delivered {
+                    conversation: cid(c),
+                    timestamps: v.iter().map(|&t| ts(t)).collect(),
+                    delivery: Delivery::Read,
+                },
+                Ev::Reaction {
+                    conv,
+                    sender,
+                    t,
+                    from,
+                    remove,
+                } => Event::Reaction {
+                    conversation: cid(conv),
+                    target: target(sender, t),
+                    reaction: Reaction {
+                        emoji: "👍".into(),
+                        sender_id: SENDERS[from].into(),
+                        sender: SENDERS[from].into(),
+                        outgoing: from == 2,
+                    },
+                    remove,
+                },
+                Ev::Sent(i) => {
+                    if self.sending.is_empty() {
+                        return None;
+                    }
+                    let (conversation, timestamp) = self.sending.remove(i % self.sending.len());
+                    Event::Message(ChatMessage {
+                        conversation,
+                        sender_id: "me".into(),
+                        sender: "me".into(),
+                        body: "sent".into(),
+                        timestamp,
+                        outgoing: true,
+                        ..Default::default()
+                    })
+                }
+                Ev::SendFailed(i) => {
+                    if self.sending.is_empty() {
+                        return None;
+                    }
+                    let (conversation, timestamp) = self.sending[i % self.sending.len()].clone();
+                    Event::SendFailed {
+                        conversation,
+                        timestamp,
+                    }
+                }
+                Ev::Found(c) => Event::Found {
+                    conversation: cid(c),
+                    then: AfterFinding::Open,
+                },
+            })
+        }
+
+        fn note_send(&mut self, command: &Option<Command>) {
+            if let Some(Command::Send {
+                conversation,
+                timestamp,
+                ..
+            }) = command
+            {
+                self.sending.push((conversation.clone(), *timestamp));
+            }
+        }
+
+        fn run(&mut self, op: &Op) {
+            let update = match op {
+                Op::Batch(events) => {
+                    self.chat.set_window_focused(true);
+                    let mut update = Update::default();
+                    for e in events {
+                        if let Some(event) = self.event(e) {
+                            let u = self.chat.apply(event.clone());
+                            self.log
+                                .push(format!("  apply {event:?} -> {:?}", u.messages));
+                            update = update.merge(u);
+                        }
+                    }
+                    update
+                }
+                Op::Select(c) => {
+                    self.chat.select(&cid(*c));
+                    Update::reset()
+                }
+                Op::Deselect => self.chat.deselect(),
+                Op::Compose => {
+                    let (command, update) = self.chat.compose("hello");
+                    self.note_send(&command);
+                    update
+                }
+                Op::LoadOlder => {
+                    self.chat.load_older();
+                    Update::default()
+                }
+                Op::Delete(i, everyone) => self.chat.delete(*i, *everyone).1,
+                Op::Edit(i) => {
+                    self.chat.edit(*i);
+                    let (command, update) = self.chat.compose("changed");
+                    self.note_send(&command);
+                    update
+                }
+                Op::ReplyTo(i) => self.chat.reply_to(*i),
+                Op::Reveal(i) => self.chat.reveal(*i),
+                Op::NotificationReply(c) => {
+                    let (command, update) = self.chat.reply(&cid(*c), "thanks");
+                    self.note_send(&command);
+                    update.merge(Update {
+                        conversations: true,
+                        ..Update::default()
+                    })
+                }
+                Op::Archive => match self.chat.selected.clone() {
+                    Some(id) => {
+                        self.chat.archive(&id, true);
+                        // Unarchive right away so the chat can be selected again.
+                        self.chat.archive(&id, false);
+                        Update::reset()
+                    }
+                    None => Update::default(),
+                },
+            };
+            self.chat.take_commands();
+            self.log.push(format!("{op:?} -> {update:?}"));
+            render(&mut self.model, &self.chat, update);
+        }
+
+        fn shown(&self) -> Vec<(u64, String)> {
+            self.model
+                .iter()
+                .map(|r| (r.timestamp, r.sender_id.clone()))
+                .collect()
+        }
+
+        fn truth(&self) -> Vec<(u64, String)> {
+            self.chat
+                .messages()
+                .map(|m| (m.message.timestamp, m.message.sender_id.clone()))
+                .collect()
+        }
+    }
+
+    fn rel(rows: &[(u64, String)]) -> Vec<String> {
+        rows.iter()
+            .map(|(t, s)| format!("{s}@{}", (t.saturating_sub(base())) / 1000))
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 3000, max_shrink_iters: 20000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        /// After every batch of events and every action, the UI's rows are the messages of
+        /// `messages()`, in order: same count, same message in each row.
+        #[test]
+        fn ui_rows_follow_messages(ops in prop::collection::vec(op(), 1..30)) {
+            let mut sim = Sim::new();
+            for op in &ops {
+                sim.run(op);
+                let (shown, truth) = (sim.shown(), sim.truth());
+                prop_assert!(
+                    shown == truth,
+                    "after {:?}\nUI rows:  {:?}\nmessages: {:?}\nlog:\n{}",
+                    op, rel(&shown), rel(&truth), sim.log.join("\n")
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 3000, max_shrink_iters: 20000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        /// Weaker: rows hold the right messages *and* show their current state (body, delivery,
+        /// deletion, reactions, expiry).
+        #[test]
+        fn ui_rows_show_current_state(ops in prop::collection::vec(op(), 1..30)) {
+            let mut sim = Sim::new();
+            for op in &ops {
+                sim.run(op);
+                if sim.shown() != sim.truth() {
+                    // Covered by `ui_rows_follow_messages`.
+                    return Ok(());
+                }
+                let truth: Vec<Row> = sim.chat.messages().map(|m| row(&m)).collect();
+                prop_assert!(
+                    sim.model == truth,
+                    "after {:?}\nUI rows:  {:?}\nmessages: {:?}\nlog:\n{}",
+                    op, sim.model, truth, sim.log.join("\n")
+                );
+            }
+        }
+    }
+
+    /// The realistic shape of what `ui_rows_follow_messages` finds: two messages arrive late
+    /// (sent before the oldest loaded one), then the older page that has a message between
+    /// them is loaded.
+    #[test]
+    fn late_messages_then_an_older_page() {
+        let mut sim = Sim::new();
+        let a = cid(0);
+        sim.run(&Op::Select(0));
+        // The newest page: messages at 10 and 11; older ones before 10 are still stored.
+        sim.run(&Op::Batch(vec![Ev::History {
+            conv: 0,
+            msgs: vec![(0, 10), (2, 11)],
+            older: Some(10),
+        }]));
+        // Two messages Alice sent earlier arrive only now (her phone was offline).
+        sim.run(&Op::Batch(vec![Ev::Msg(0, 0, 3)]));
+        sim.run(&Op::Batch(vec![Ev::Msg(0, 0, 5)]));
+        // Scrolled to the top: the page before 10 comes, with what was stored between them.
+        sim.run(&Op::LoadOlder);
+        let update = sim.chat.apply(Event::History {
+            conversation: a.clone(),
+            messages: vec![
+                msg(0, 1, 2),
+                msg(0, 0, 3),
+                msg(0, 1, 4),
+                msg(0, 0, 5),
+                msg(0, 1, 6),
+            ],
+            reactions: Vec::new(),
+            older: None,
+        });
+        render(&mut sim.model, &sim.chat, update);
+        println!(
+            "update {update:?}\nUI rows:  {:?}\nmessages: {:?}",
+            rel(&sim.shown()),
+            rel(&sim.truth())
+        );
+        assert_eq!(rel(&sim.shown()), rel(&sim.truth()));
+    }
+
+    /// The same, reached by picking a search result in the older page: the UI scrolls to the
+    /// result's row, which shows another message, and the result itself isn't in the list.
+    #[test]
+    fn search_result_in_an_older_page() {
+        let mut sim = Sim::new();
+        let a = cid(0);
+        sim.run(&Op::Select(0));
+        sim.run(&Op::Batch(vec![Ev::History {
+            conv: 0,
+            msgs: vec![(0, 10), (2, 11)],
+            older: Some(10),
+        }]));
+        sim.run(&Op::Batch(vec![Ev::Msg(0, 0, 3)]));
+        sim.run(&Op::Batch(vec![Ev::Msg(0, 0, 5)]));
+        sim.chat.open_chat_search();
+        sim.chat.search_chat("bob");
+        sim.chat.apply(Event::SearchResults {
+            conversation: a.clone(),
+            query: "bob".into(),
+            messages: vec![msg(0, 1, 6)],
+        });
+        let update = sim.chat.show_result(0);
+        render(&mut sim.model, &sim.chat, update);
+        let commands = sim.chat.take_commands();
+        assert!(
+            matches!(
+                commands.as_slice(),
+                [Command::LoadHistory {
+                    before: Some(_),
+                    ..
+                }]
+            ),
+            "{commands:?}"
+        );
+        let update = sim.chat.apply(Event::History {
+            conversation: a.clone(),
+            messages: vec![
+                msg(0, 1, 2),
+                msg(0, 0, 3),
+                msg(0, 1, 4),
+                msg(0, 0, 5),
+                msg(0, 1, 6),
+            ],
+            reactions: Vec::new(),
+            older: None,
+        });
+        render(&mut sim.model, &sim.chat, update);
+        let (row, _) = sim.chat.jump().expect("scrolls to the result");
+        let at_row = &sim.model[row];
+        println!(
+            "jump row {row}: UI shows {}@{} there; result bob@6 shown at all: {}",
+            at_row.sender_id,
+            (at_row.timestamp - base()) / 1000,
+            sim.model
+                .iter()
+                .any(|r| r.sender_id == "bob" && r.timestamp == ts(6))
+        );
+        assert_eq!(
+            (at_row.sender_id.as_str(), at_row.timestamp),
+            ("bob", ts(6))
+        );
+    }
+}
+
+#[cfg(test)]
+mod helper_props {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn piece() -> impl Strategy<Value = String> {
+        prop_oneof![
+            6 => prop::sample::select(vec![
+                "a", "B", "c", "x", " ", "  ", "\n", "\t", "é", "É", "🦀", "e\u{0301}", "İ", "ı", "ẞ", "ß",
+                "Ω", "ω", "\u{212A}", "k", "K", "Σ", "σ", "ς", "\u{00A0}", "\u{3000}", "ǅ", "ﬃ", "ŉ",
+                "Ⅻ", "ǰ", "ΐ", "@", ".", "*", "<", "#",
+            ]).prop_map(str::to_string),
+            1 => any::<char>().prop_map(|c| c.to_string()),
+        ]
+    }
+
+    fn text() -> impl Strategy<Value = String> {
+        prop::collection::vec(piece(), 0..40).prop_map(|v| v.concat())
+    }
+
+    /// Lowercase by char, with both sigmas the same (snippet compares per char).
+    fn fold(c: char) -> String {
+        let s: String = c.to_lowercase().collect();
+        if s == "ς" { "σ".into() } else { s }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 20000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        #[test]
+        fn snippet_highlights_a_match(body in text(), query in text()) {
+            let (text, found) = snippet(&body, &query);
+            if let Some(found) = found.clone() {
+                let part = text.get(found.clone());
+                prop_assert!(part.is_some_and(|p| !p.is_empty()), "{found:?} in {text:?}");
+                let shown: Vec<String> = part.unwrap().chars().map(fold).collect();
+                let wanted: Vec<String> = query.trim().to_lowercase().chars().map(fold).collect();
+                prop_assert_eq!(shown, wanted, "{:?} {:?} -> {:?} {:?}", body, query, text, found);
+            }
+        }
+
+        /// When the flattened body contains the query (char by char, ignoring case), it is found.
+        #[test]
+        fn snippet_finds_what_is_there(prefix in text(), needle in "[a-zA-Z]{1,5}", suffix in text()) {
+            let body = format!("{prefix}{needle}{suffix}");
+            let (_, found) = snippet(&body, &needle);
+            let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            let same_len = flat.to_lowercase().chars().count() == flat.chars().count();
+            prop_assert!(found.is_some() || !same_len, "{body:?} / {needle:?}");
+        }
+
+        #[test]
+        fn initials_are_at_most_two(title in text()) {
+            let initials = initials(&title);
+            prop_assert!(!initials.is_empty());
+            prop_assert!(initials.chars().count() <= 2, "{title:?} -> {initials:?}");
+        }
+
+        #[test]
+        fn formatting_never_panics(t in any::<u64>(), now in any::<u64>(), len in any::<usize>(), id in ".*") {
+            let _ = format_size(t);
+            let _ = format_remaining(t, now);
+            let _ = format_list_time(t);
+            let _ = format_time(t);
+            let _ = format_clock(t);
+            let _ = looks_like_number(&id);
+            let index = avatar_index(&ConversationId(id), len);
+            prop_assert!(index < len.max(1));
+        }
+
+        #[test]
+        fn list_time_and_day_labels_never_panic(t in any::<u64>(), n in any::<i64>()) {
+            let now = jiff::Timestamp::from_millisecond(n.rem_euclid(253_402_207_200_000 - 86_400_000))
+                .unwrap()
+                .to_zoned(jiff::tz::TimeZone::system());
+            let _ = format_list_time_at(t, &now);
+            let _ = day_label(t, &now);
+        }
+
+        #[test]
+        fn timers_read_back(seconds in prop_oneof![1u32..100_000, any::<u32>()]) {
+            let text = crate::format_timer(seconds);
+            let (n, unit) = text.split_once(' ').unwrap();
+            let n: u64 = n.parse().unwrap();
+            let size = match unit.trim_end_matches('s') {
+                "week" => 604_800u64,
+                "day" => 86_400,
+                "hour" => 3_600,
+                "minute" => 60,
+                "second" => 1,
+                other => panic!("{other}"),
+            };
+            prop_assert_eq!(n * size, u64::from(seconds), "{}", text);
+            prop_assert_eq!(n == 1, !unit.ends_with('s'), "{}", text);
+            let _ = crate::timer_notice("You", seconds);
+        }
+
+        #[test]
+        fn mentions_are_where_they_say(body in text(), names in prop::collection::vec("[a-zA-Z é🦀]{0,5}", 0..4)) {
+            let people: Vec<Person> = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| Person { service_id: format!("id{i}"), name: n.clone() })
+                .collect();
+            let mentions = mentions_in(&body, &people);
+            let mut last_end = 0;
+            for m in &mentions {
+                prop_assert!(m.start < m.end && m.end <= body.len());
+                prop_assert!(body.is_char_boundary(m.start) && body.is_char_boundary(m.end));
+                prop_assert!(m.start >= last_end, "overlap {mentions:?}");
+                last_end = m.end;
+                let person = people.iter().find(|p| p.service_id == m.service_id).unwrap();
+                prop_assert_eq!(&body[m.start..m.end], format!("@{}", person.name));
+            }
+            if let Some(query) = mention_query(&body) {
+                prop_assert!(body.ends_with(query));
+                prop_assert!(body[..body.len() - query.len()].ends_with('@'));
+            }
         }
     }
 }
