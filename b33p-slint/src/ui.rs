@@ -1,5 +1,5 @@
-// Included by `main.rs` next to the UI Slint generates (`AppWindow`, `MessageItem`, …) for the
-// widget style b33p ships.
+//! The window: what Slint generates from `ui/app.slint` (`AppWindow`, `MessageItem`, …), wired
+//! to the chat state.
 
 use std::rc::Rc;
 
@@ -17,10 +17,11 @@ use b33p_core::{
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::{Images, Shared, Ui, qr_image};
+use crate::generated::*;
+use crate::{Images, Shared, qr_image};
 
-/// Builds this style's window for `shared`, showing what `shared` holds. Not shown yet.
-pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
+/// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
+pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     let window = AppWindow::new()?;
     if Backend::mock_requested() {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
@@ -85,7 +86,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_unlock({
         let shared = shared.clone();
         move |password, confirmation| {
-            shared.act(|chat| (chat.unlock(&password, &confirmation), Update { screen: true, ..Update::default() }));
+            shared.act(|chat| {
+                (
+                    chat.unlock(&password, &confirmation),
+                    Update {
+                        screen: true,
+                        ..Update::default()
+                    },
+                )
+            });
         }
     });
     window.on_draft_edited({
@@ -99,7 +108,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         move |id| toggle(id, ())
     });
     window.on_move_pin(chat_action(shared, |chat, id, by| chat.move_pin_by(id, by)));
-    window.on_mark_read(chat_action(shared, |chat, id, read: bool| chat.mark_unread(id, !read)));
+    window.on_mark_read(chat_action(shared, |chat, id, read: bool| {
+        chat.mark_unread(id, !read)
+    }));
     window.on_mute(chat_action(shared, |chat, id, seconds: i32| {
         let until = match seconds {
             0 => None,
@@ -108,7 +119,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         };
         chat.mute(id, until)
     }));
-    window.on_block(chat_action(shared, |chat, id, blocked| chat.block(id, blocked)));
+    window.on_block(chat_action(shared, |chat, id, blocked| {
+        chat.block(id, blocked)
+    }));
     window.on_respond({
         let shared = shared.clone();
         move |answer| {
@@ -120,11 +133,16 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             };
             shared.act(|chat| {
                 let id = chat.selected().map(|c| c.id.clone());
-                (id.and_then(|id| chat.respond(&id, response)), Update::reset())
+                (
+                    id.and_then(|id| chat.respond(&id, response)),
+                    Update::reset(),
+                )
             });
         }
     });
-    window.on_archive(chat_action(shared, |chat, id, archived| chat.archive(id, archived)));
+    window.on_archive(chat_action(shared, |chat, id, archived| {
+        chat.archive(id, archived)
+    }));
     window.on_set_timer(chat_action(shared, |chat, id, seconds: i32| {
         chat.set_timer(id, u32::try_from(seconds).ok()?)
     }));
@@ -133,7 +151,10 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         move |text: SharedString, flag: bool| {
             shared.act(|chat| {
                 let id = chat.selected().map(|c| c.id.clone());
-                (id.and_then(|id| chat.edit_group(&id, edit(text.to_string(), flag))), Update::default())
+                (
+                    id.and_then(|id| chat.edit_group(&id, edit(text.to_string(), flag))),
+                    Update::default(),
+                )
             });
         }
     };
@@ -145,20 +166,34 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             } else {
                 b33p_core::GroupEdit::DeclineInvitation
             };
-            shared.act(|chat| (chat.edit_group(&ConversationId(id.into()), edit), Update::default()));
+            shared.act(|chat| {
+                (
+                    chat.edit_group(&ConversationId(id.into()), edit),
+                    Update::default(),
+                )
+            });
         }
     });
     window.on_find_number({
         let shared = shared.clone();
         move |number, open| {
-            let then = if open { b33p_core::AfterFinding::Open } else { b33p_core::AfterFinding::Choose };
+            let then = if open {
+                b33p_core::AfterFinding::Open
+            } else {
+                b33p_core::AfterFinding::Choose
+            };
             shared.act(|chat| (chat.find_number(&number, then), Update::default()));
         }
     });
     window.on_confirm_safety_number({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.confirm_safety_number(&ConversationId(id.into())), Update::default()));
+            shared.act(|chat| {
+                (
+                    chat.confirm_safety_number(&ConversationId(id.into())),
+                    Update::default(),
+                )
+            });
         }
     });
     window.on_set_verified({
@@ -221,7 +256,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            let Some(window) = window.upgrade() else { return };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let name = window.get_group_draft_name();
             shared.act(|chat| (chat.finish_group_draft(&name), Update::default()));
         }
@@ -242,7 +279,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_open_story({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.open_story(&ConversationId(id.into())), Update::default()));
+            shared.act(|chat| {
+                (
+                    chat.open_story(&ConversationId(id.into())),
+                    Update::default(),
+                )
+            });
         }
     });
     window.on_step_story({
@@ -264,12 +306,18 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            let Some(window) = window.upgrade() else { return };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let text = window.get_story_text().to_string();
             let at = window.get_story_group().max(0) as usize;
-            let group = window.get_story_group_ids().row_data(at).map(|id| ConversationId(id.into()));
+            let group = window
+                .get_story_group_ids()
+                .row_data(at)
+                .map(|id| ConversationId(id.into()));
             let sent = shared.act(|chat| {
-                let command = group.and_then(|g| chat.send_story(&g, b33p_core::NewStory::Text(text)));
+                let command =
+                    group.and_then(|g| chat.send_story(&g, b33p_core::NewStory::Text(text)));
                 (command, Update::default())
             });
             if sent {
@@ -288,7 +336,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
                     .pick_file();
                 if let Some(path) = picked {
                     let path: SharedString = path.to_string_lossy().as_ref().into();
-                    let _ = window.upgrade_in_event_loop(move |window| window.invoke_story_photo_chosen(path));
+                    let _ = window.upgrade_in_event_loop(move |window| {
+                        window.invoke_story_photo_chosen(path)
+                    });
                 }
             });
         }
@@ -297,12 +347,20 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |path| {
-            let Some(window) = window.upgrade() else { return };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let at = window.get_story_group().max(0) as usize;
-            let group = window.get_story_group_ids().row_data(at).map(|id| ConversationId(id.into()));
+            let group = window
+                .get_story_group_ids()
+                .row_data(at)
+                .map(|id| ConversationId(id.into()));
             shared.act(|chat| {
                 let story = b33p_core::NewStory::Picture(std::path::PathBuf::from(path.as_str()));
-                (group.and_then(|g| chat.send_story(&g, story)), Update::default())
+                (
+                    group.and_then(|g| chat.send_story(&g, story)),
+                    Update::default(),
+                )
             });
         }
     });
@@ -398,7 +456,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_forward_to({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.forward_to(&ConversationId(id.into())), Update::default()));
+            shared.act(|chat| {
+                (
+                    chat.forward_to(&ConversationId(id.into())),
+                    Update::default(),
+                )
+            });
         }
     });
     window.on_forward_filter_edited({
@@ -418,8 +481,13 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |index| {
-            let Some(window) = window.upgrade() else { return };
-            let draft = shared.chat.borrow_mut().pick_mention(&window.get_draft(), index as usize);
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let draft = shared
+                .chat
+                .borrow_mut()
+                .pick_mention(&window.get_draft(), index as usize);
             if let Some(draft) = draft {
                 window.set_draft(draft.into());
                 shared.refresh(Update::default());
@@ -448,7 +516,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |key, control, alt, shift| {
-            let Some(window) = window.upgrade() else { return false };
+            let Some(window) = window.upgrade() else {
+                return false;
+            };
             shortcut(&shared, &window, &key, control, alt, shift)
         }
     });
@@ -503,7 +573,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            let Some(window) = window.upgrade() else { return };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             let settings = read_settings(&window);
             window.set_font_scale(settings.text_size.scale());
             shared.apply_settings(settings);
@@ -514,13 +586,29 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_fetch_attachment({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.fetch_attachment(&AttachmentId(id.into())), Update { rows: true, ..Update::default() }));
+            shared.act(|chat| {
+                (
+                    chat.fetch_attachment(&AttachmentId(id.into())),
+                    Update {
+                        rows: true,
+                        ..Update::default()
+                    },
+                )
+            });
         }
     });
     window.on_save_attachment({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.save_attachment(&AttachmentId(id.into())), Update { rows: true, ..Update::default() }));
+            shared.act(|chat| {
+                (
+                    chat.save_attachment(&AttachmentId(id.into())),
+                    Update {
+                        rows: true,
+                        ..Update::default()
+                    },
+                )
+            });
         }
     });
     window.on_react({
@@ -547,14 +635,21 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_open_attachment({
         let shared = shared.clone();
         move |id| {
-            shared.act(|chat| (chat.open_attachment(&AttachmentId(id.into())), Update::default()));
+            shared.act(|chat| {
+                (
+                    chat.open_attachment(&AttachmentId(id.into())),
+                    Update::default(),
+                )
+            });
         }
     });
     window.on_open_calendar({
         let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            let Some(window) = window.upgrade() else { return };
+            let Some(window) = window.upgrade() else {
+                return;
+            };
             render_calendar(&window, &shared.chat.borrow());
             window.set_calendar_open(true);
         }
@@ -574,8 +669,14 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             // The dialog blocks until the user is done, so it gets its own thread.
             let window = window.clone();
             std::thread::spawn(move || {
-                let files = rfd::FileDialog::new().set_title("Attach files").pick_files().unwrap_or_default();
-                let files: Vec<SharedString> = files.iter().map(|f| f.to_string_lossy().as_ref().into()).collect();
+                let files = rfd::FileDialog::new()
+                    .set_title("Attach files")
+                    .pick_files()
+                    .unwrap_or_default();
+                let files: Vec<SharedString> = files
+                    .iter()
+                    .map(|f| f.to_string_lossy().as_ref().into())
+                    .collect();
                 let _ = window.upgrade_in_event_loop(move |window| {
                     window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
                 });
@@ -588,8 +689,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
             // Not here: the window may own what was copied, and has to be free to hand it over.
             let window = window.clone();
             std::thread::spawn(move || {
-                let files: Option<Vec<SharedString>> = crate::clipboard::pasted()
-                    .map(|files| files.iter().map(|f| f.to_string_lossy().as_ref().into()).collect());
+                let files: Option<Vec<SharedString>> = crate::clipboard::pasted().map(|files| {
+                    files
+                        .iter()
+                        .map(|f| f.to_string_lossy().as_ref().into())
+                        .collect()
+                });
                 let _ = window.upgrade_in_event_loop(move |window| match files {
                     Some(files) => window.invoke_stage_files(ModelRc::new(VecModel::from(files))),
                     None => window.set_paste_text(window.get_paste_text().wrapping_add(1)),
@@ -600,7 +705,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     window.on_files_dropped({
         let shared = shared.clone();
         move |event| {
-            let Ok(paths) = event.data.file_paths() else { return };
+            let Ok(paths) = event.data.file_paths() else {
+                return;
+            };
             let files: Vec<_> = paths.map(std::path::Path::to_path_buf).collect();
             shared.act(|chat| {
                 chat.stage_files(files);
@@ -657,26 +764,28 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<dyn Ui>, slint::PlatformError> {
     Ok(Rc::new(Window(window)))
 }
 
-struct Window(AppWindow);
+pub struct Window(AppWindow);
 
-impl Ui for Window {
-    fn render(&self, chat: &ChatState, images: &Images, update: Update) {
+impl Window {
+    /// Brings the window in line with `chat`, touching only what `update` says changed.
+    pub fn render(&self, chat: &ChatState, images: &Images, update: Update) {
         render(&self.0, chat, images, update);
     }
 
-    fn show(&self) -> Result<(), slint::PlatformError> {
+    pub fn show(&self) -> Result<(), slint::PlatformError> {
         self.0.show()
     }
 
-    fn hide(&self) {
+    pub fn hide(&self) {
         if let Err(error) = self.0.hide() {
             tracing::warn!(%error, "failed to close a window");
         }
     }
 
-    /// On Wayland the compositor decides; it lets b33p to the front when given an
+    /// Shows the window and brings it to the front, e.g. after a notification or the tray icon
+    /// was clicked. On Wayland the compositor decides; it lets b33p to the front when given an
     /// activation token (see `Shared::activate`), and may only highlight it otherwise.
-    fn raise(&self) {
+    pub fn raise(&self) {
         self.0.window().set_minimized(false);
         if let Err(error) = self.0.show() {
             tracing::warn!(%error, "failed to show the window");
@@ -691,17 +800,18 @@ impl Ui for Window {
         }
     }
 
-    fn visible(&self) -> bool {
+    pub fn visible(&self) -> bool {
         self.0.window().is_visible()
     }
 
-    /// Slint's public API doesn't offer this yet, but both the Qt and the winit backend keep it
-    /// up to date internally.
-    fn active(&self) -> bool {
+    /// Whether the window is the active one. Slint's public API doesn't offer this yet, but both
+    /// the Qt and the winit backend keep it up to date internally.
+    pub fn active(&self) -> bool {
         i_slint_core::window::WindowInner::from_pub(self.0.window()).active()
     }
 
-    fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str) {
+    /// What plays: the attachment (empty for nothing), paused, progress 0…1, and the time.
+    pub fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str) {
         let playback = self.0.global::<Playback>();
         playback.set_id(id.into());
         playback.set_paused(paused);
@@ -709,8 +819,11 @@ impl Ui for Window {
         playback.set_time(time.into());
     }
 
-    fn set_animations(&self, enabled: bool) {
-        self.0.global::<Motion>().set_scale(if enabled { 1.0 } else { 0.0 });
+    /// Whether changes animate (fades, slides) or happen at once.
+    pub fn set_animations(&self, enabled: bool) {
+        self.0
+            .global::<Motion>()
+            .set_scale(if enabled { 1.0 } else { 0.0 });
     }
 }
 
@@ -721,7 +834,10 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         Theme::Light => 1,
         Theme::Dark => 2,
     });
-    let style = WidgetStyle::ALL.iter().position(|s| *s == settings.style).unwrap_or_default();
+    let style = WidgetStyle::ALL
+        .iter()
+        .position(|s| *s == settings.style)
+        .unwrap_or_default();
     window.set_widget_style(style as i32);
     window.set_style_note(style_note.into());
     window.set_text_size(match settings.text_size {
@@ -729,7 +845,10 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         TextSize::Default => 1,
         TextSize::Large => 2,
     });
-    let animations = Animations::ALL.iter().position(|a| *a == settings.animations).unwrap_or_default();
+    let animations = Animations::ALL
+        .iter()
+        .position(|a| *a == settings.animations)
+        .unwrap_or_default();
     window.set_animations(animations as i32);
     window.set_show_avatars(settings.show_avatars);
     window.set_notifications(settings.notifications);
@@ -757,8 +876,14 @@ fn read_settings(window: &AppWindow) -> Settings {
             2 => Theme::Dark,
             _ => Theme::System,
         },
-        style: WidgetStyle::ALL.get(window.get_widget_style() as usize).copied().unwrap_or_default(),
-        animations: Animations::ALL.get(window.get_animations() as usize).copied().unwrap_or_default(),
+        style: WidgetStyle::ALL
+            .get(window.get_widget_style() as usize)
+            .copied()
+            .unwrap_or_default(),
+        animations: Animations::ALL
+            .get(window.get_animations() as usize)
+            .copied()
+            .unwrap_or_default(),
         text_size: match window.get_text_size() {
             0 => TextSize::Small,
             2 => TextSize::Large,
@@ -784,7 +909,14 @@ fn read_settings(window: &AppWindow) -> Settings {
 }
 
 /// Carries out the shortcut for a key pressed anywhere in the window; whether it was one.
-fn shortcut(shared: &Rc<Shared>, window: &AppWindow, key: &str, control: bool, alt: bool, shift: bool) -> bool {
+fn shortcut(
+    shared: &Rc<Shared>,
+    window: &AppWindow,
+    key: &str,
+    control: bool,
+    alt: bool,
+    shift: bool,
+) -> bool {
     use slint::platform::Key;
     let is = |k: Key| key.chars().eq(std::iter::once(char::from(k)));
     let open = |f: &dyn Fn(&mut ChatState) -> Option<Option<b33p_core::Command>>| {
@@ -907,7 +1039,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_history_status(
         match chat.transfer() {
             None | Some(HistoryTransfer::Finished) => String::new(),
-            Some(HistoryTransfer::Waiting) => "Waiting for your phone to send your message history…".into(),
+            Some(HistoryTransfer::Waiting) => {
+                "Waiting for your phone to send your message history…".into()
+            }
             Some(HistoryTransfer::Downloading) => "Downloading your message history…".into(),
             Some(HistoryTransfer::Importing { messages }) => {
                 format!("Importing your message history… {messages} messages")
@@ -919,13 +1053,21 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_error(chat.error().unwrap_or_default().into());
     let draft = window.get_draft();
     window.set_can_send(chat.can_compose(&draft));
-    let candidates: Vec<SharedString> =
-        chat.mention_candidates(&draft).iter().map(|p| p.name.as_str().into()).collect();
+    let candidates: Vec<SharedString> = chat
+        .mention_candidates(&draft)
+        .iter()
+        .map(|p| p.name.as_str().into())
+        .collect();
     window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
     let staged: Vec<SharedString> = chat
         .staged()
         .iter()
-        .map(|path| path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()).as_ref().into())
+        .map(|path| {
+            path.file_name()
+                .map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy())
+                .as_ref()
+                .into()
+        })
         .collect();
     window.set_staged(ModelRc::new(VecModel::from(staged)));
     render_media(window, chat, images);
@@ -934,7 +1076,9 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     render_stories(window, chat, images);
     let search = chat.chat_search();
     window.set_chat_search_open(search.is_some());
-    window.set_chat_search_busy(search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()));
+    window.set_chat_search_busy(
+        search.is_some_and(|(query, results)| !query.is_empty() && results.is_none()),
+    );
     let results: Vec<SearchResult> = search
         .and_then(|(query, results)| Some((query, results?)))
         .map(|(query, results)| {
@@ -968,7 +1112,10 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
                 title: c.title.as_str().into(),
                 initials: state::initials(&c.title).into(),
                 color: avatar_color(&c.id),
-                avatar: chat.avatar(&c.id).map(|a| images.avatar(&c.id, a)).unwrap_or_default(),
+                avatar: chat
+                    .avatar(&c.id)
+                    .map(|a| images.avatar(&c.id, a))
+                    .unwrap_or_default(),
                 chosen: chosen.contains(&c.id),
             })
             .collect();
@@ -985,7 +1132,10 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
                 title: c.title.as_str().into(),
                 initials: state::initials(&c.title).into(),
                 avatar_color: avatar_color(&c.id),
-                avatar: chat.avatar(&c.id).map(|a| images.avatar(&c.id, a)).unwrap_or_default(),
+                avatar: chat
+                    .avatar(&c.id)
+                    .map(|a| images.avatar(&c.id, a))
+                    .unwrap_or_default(),
                 ..Default::default()
             })
             .collect();
@@ -995,12 +1145,23 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     window.set_archived_count(archived as i32);
     window.set_archived_unread(archived_unread as i32);
     window.set_showing_archived(chat.showing_archived());
-    let folders: Vec<SharedString> = chat.folders().iter().map(|f| f.name.as_str().into()).collect();
-    let unread: Vec<i32> = (0..folders.len()).map(|at| chat.folder_unread(at) as i32).collect();
+    let folders: Vec<SharedString> = chat
+        .folders()
+        .iter()
+        .map(|f| f.name.as_str().into())
+        .collect();
+    let unread: Vec<i32> = (0..folders.len())
+        .map(|at| chat.folder_unread(at) as i32)
+        .collect();
     window.set_folders(ModelRc::new(VecModel::from(folders)));
     window.set_folder_unread(ModelRc::new(VecModel::from(unread)));
     window.set_folder(chat.folder().map_or(-1, |at| at as i32));
-    window.set_typing(chat.selected().map(|c| state::typing_label(&chat.typing(&c.id))).unwrap_or_default().into());
+    window.set_typing(
+        chat.selected()
+            .map(|c| state::typing_label(&chat.typing(&c.id)))
+            .unwrap_or_default()
+            .into(),
+    );
     window.set_editing(chat.editing().is_some());
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
@@ -1012,13 +1173,20 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
         MessagesUpdate::Unchanged => {}
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
-                messages.push(MessageItem { fresh: true, ..message_item(&message, chat, images) });
+                messages.push(MessageItem {
+                    fresh: true,
+                    ..message_item(&message, chat, images)
+                });
             }
             settle_fresh(window);
         }
         MessagesUpdate::Prepended(n) => {
             // The list keeps what is on screen in place.
-            let items: Vec<_> = chat.messages().take(n + 1).map(|m| message_item(&m, chat, images)).collect();
+            let items: Vec<_> = chat
+                .messages()
+                .take(n + 1)
+                .map(|m| message_item(&m, chat, images))
+                .collect();
             for (row, item) in items.into_iter().enumerate() {
                 if row < n {
                     messages.insert(row, item);
@@ -1028,9 +1196,11 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
                 }
             }
         }
-        MessagesUpdate::Reset => {
-            messages.set_vec(chat.messages().map(|m| message_item(&m, chat, images)).collect::<Vec<_>>())
-        }
+        MessagesUpdate::Reset => messages.set_vec(
+            chat.messages()
+                .map(|m| message_item(&m, chat, images))
+                .collect::<Vec<_>>(),
+        ),
     }
     if update.messages != MessagesUpdate::Unchanged {
         render_activity(window, chat);
@@ -1042,7 +1212,10 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     if update.rows && update.messages != MessagesUpdate::Reset {
         for (row, message) in chat.messages().enumerate() {
             let item = message_item(&message, chat, images);
-            if !messages.row_data(row).is_some_and(|old| same_message(&old, &item)) {
+            if !messages
+                .row_data(row)
+                .is_some_and(|old| same_message(&old, &item))
+            {
                 messages.set_row_data(row, item);
             }
         }
@@ -1061,7 +1234,10 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
 
     if update.conversations {
         let pinned = chat.pinned().len();
-        let items: Vec<_> = chat.conversations().map(|c| conversation_item(&c, pinned, chat, images)).collect();
+        let items: Vec<_> = chat
+            .conversations()
+            .map(|c| conversation_item(&c, pinned, chat, images))
+            .collect();
         let conversations = window.get_conversations();
         let conversations = vec_model(&conversations);
         // Update in place where possible so the list keeps its scroll position.
@@ -1094,7 +1270,11 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
 
 /// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
 /// position. `same` compares rows (nested models compare by identity otherwise).
-fn update_list<T: Clone + 'static>(model: &ModelRc<T>, items: Vec<T>, same: impl Fn(&T, &T) -> bool) {
+fn update_list<T: Clone + 'static>(
+    model: &ModelRc<T>,
+    items: Vec<T>,
+    same: impl Fn(&T, &T) -> bool,
+) {
     let model = vec_model(model);
     if model.row_count() != items.len() {
         model.set_vec(items);
@@ -1178,11 +1358,16 @@ fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
     let ids: Vec<ConversationId> = groups.iter().map(|c| c.id.clone()).collect();
     let titles: Vec<SharedString> = groups.iter().map(|c| c.title.as_str().into()).collect();
     let offered: Vec<SharedString> = window.get_story_group_ids().iter().collect();
-    if !offered.iter().map(SharedString::as_str).eq(ids.iter().map(|id| id.0.as_str()))
+    if !offered
+        .iter()
+        .map(SharedString::as_str)
+        .eq(ids.iter().map(|id| id.0.as_str()))
         || !window.get_story_groups().iter().eq(titles.iter().cloned())
     {
         let chosen = offered.get(window.get_story_group().max(0) as usize);
-        let at = chosen.and_then(|c| ids.iter().position(|id| id.0 == c.as_str())).unwrap_or(0);
+        let at = chosen
+            .and_then(|c| ids.iter().position(|id| id.0 == c.as_str()))
+            .unwrap_or(0);
         let ids: Vec<SharedString> = ids.iter().map(|id| id.0.as_str().into()).collect();
         window.set_story_groups(ModelRc::new(VecModel::from(titles)));
         window.set_story_group_ids(ModelRc::new(VecModel::from(ids)));
@@ -1198,14 +1383,23 @@ fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
                 ..Default::default()
             };
             match &story.content {
-                b33p_core::StoryContent::Text { text, foreground, background } => {
+                b33p_core::StoryContent::Text {
+                    text,
+                    foreground,
+                    background,
+                } => {
                     item.text_story = true;
                     item.text = text.as_str().into();
                     item.foreground = Color::from_argb_encoded(*foreground | 0xff00_0000);
                     item.background = Color::from_argb_encoded(*background | 0xff00_0000);
                 }
                 b33p_core::StoryContent::Picture(picture) => {
-                    let shown = attachment_item(picture, chat.attachment(&picture.id), chat.saved(&picture.id), images);
+                    let shown = attachment_item(
+                        picture,
+                        chat.attachment(&picture.id),
+                        chat.saved(&picture.id),
+                        images,
+                    );
                     // Phone-shaped: as tall as the window allows.
                     let scale = (560. / shown.height.max(1.)).min(360. / shown.width.max(1.));
                     item.picture = AttachmentItem {
@@ -1234,7 +1428,11 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
     // Four groups of five digits per line, as on phones.
     let safety = details.safety_number.map(|number| {
         let groups: Vec<&str> = number.split_whitespace().collect();
-        groups.chunks(4).map(|line| line.join(" ")).collect::<Vec<_>>().join("\n")
+        groups
+            .chunks(4)
+            .map(|line| line.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n")
     });
     window.set_details_safety_number(safety.unwrap_or_default().into());
     window.set_details_verified(details.trust == b33p_core::Trust::Verified);
@@ -1279,10 +1477,15 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
     let rows: Vec<MediaRow> = overview
         .media
         .chunks(PER_ROW)
-        .map(|row| MediaRow { tiles: ModelRc::new(VecModel::from(row.iter().map(|a| tile(a)).collect::<Vec<_>>())) })
+        .map(|row| MediaRow {
+            tiles: ModelRc::new(VecModel::from(
+                row.iter().map(|a| tile(a)).collect::<Vec<_>>(),
+            )),
+        })
         .collect();
     update_list(&window.get_media_rows(), rows, |a, b| {
-        a.tiles.row_count() == b.tiles.row_count() && a.tiles.iter().zip(b.tiles.iter()).all(|(x, y)| x == y)
+        a.tiles.row_count() == b.tiles.row_count()
+            && a.tiles.iter().zip(b.tiles.iter()).all(|(x, y)| x == y)
     });
     let files: Vec<SharedItem> = overview
         .files
@@ -1310,7 +1513,11 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
 
 /// The open chat's activity strip, or none while it is turned off.
 fn render_activity(window: &AppWindow, chat: &ChatState) {
-    let items = if window.get_show_activity() { activity_items(chat) } else { Vec::new() };
+    let items = if window.get_show_activity() {
+        activity_items(chat)
+    } else {
+        Vec::new()
+    };
     window.set_activity(ModelRc::new(VecModel::from(items)));
 }
 
@@ -1323,10 +1530,21 @@ fn activity_items(chat: &ChatState) -> Vec<ActivityItem> {
     let span = chat.activity_span();
     let buckets = chat.activity(span);
     // Square roots, so a quiet week still shows beside a busy one.
-    let busiest = buckets.iter().map(|b| b.mine.max(b.others)).max().unwrap_or(0).max(1) as f32;
+    let busiest = buckets
+        .iter()
+        .map(|b| b.mine.max(b.others))
+        .max()
+        .unwrap_or(0)
+        .max(1) as f32;
     let scale = |n: u32| (n as f32 / busiest).sqrt();
     let stretches = timeline::fold_quiet(buckets, span, FOLD);
-    let weight = |s: &Stretch| if matches!(s, Stretch::Quiet { .. }) { QUIET_WEIGHT } else { 1.0 };
+    let weight = |s: &Stretch| {
+        if matches!(s, Stretch::Quiet { .. }) {
+            QUIET_WEIGHT
+        } else {
+            1.0
+        }
+    };
     let total: f32 = stretches.iter().map(weight).sum();
     let count = chat.messages().len();
     let mut y = 0.0;
@@ -1337,7 +1555,13 @@ fn activity_items(chat: &ChatState) -> Vec<ActivityItem> {
         .map(|(i, stretch)| {
             let height = weight(stretch) / total;
             let end = stretches.get(i + 1).map_or(count, Stretch::first);
-            let mut item = ActivityItem { y, height, first: stretch.first() as i32, end: end as i32, ..Default::default() };
+            let mut item = ActivityItem {
+                y,
+                height,
+                first: stretch.first() as i32,
+                end: end as i32,
+                ..Default::default()
+            };
             y += height;
             match stretch {
                 Stretch::Active(bucket) => {
@@ -1353,7 +1577,8 @@ fn activity_items(chat: &ChatState) -> Vec<ActivityItem> {
                 }
                 Stretch::Quiet { from, until, .. } => {
                     item.quiet = true;
-                    item.label = format!("{} – {}", from.strftime("%B %Y"), until.strftime("%B %Y")).into();
+                    item.label =
+                        format!("{} – {}", from.strftime("%B %Y"), until.strftime("%B %Y")).into();
                     item.summary = Stretch::quiet_summary(*from, *until).into();
                 }
             }
@@ -1366,14 +1591,22 @@ fn activity_items(chat: &ChatState) -> Vec<ActivityItem> {
 fn render_calendar(window: &AppWindow, chat: &ChatState) {
     let days = chat.activity(timeline::Span::Day);
     let busiest = days.iter().map(|d| d.messages()).max().unwrap_or(0).max(1) as f32;
-    let mut summary = days.first().map(|d| d.start.strftime("Since %B %Y · ").to_string()).unwrap_or_default();
+    let mut summary = days
+        .first()
+        .map(|d| d.start.strftime("Since %B %Y · ").to_string())
+        .unwrap_or_default();
     summary.push_str(&timeline::Bucket::total(&days).summary());
     let years: Vec<CalendarYear> = timeline::calendar(&days)
         .into_iter()
         .rev()
         .map(|year| {
             if year.total.messages() == 0 {
-                return CalendarYear { year: year.year.to_string().into(), summary: "No messages".into(), quiet: true, ..Default::default() };
+                return CalendarYear {
+                    year: year.year.to_string().into(),
+                    summary: "No messages".into(),
+                    quiet: true,
+                    ..Default::default()
+                };
             }
             let cells: Vec<DayCell> = year
                 .days
@@ -1383,9 +1616,16 @@ fn render_calendar(window: &AppWindow, chat: &ChatState) {
                     DayCell {
                         column: day.column.into(),
                         row: day.row.into(),
-                        level: if n == 0 { 0.0 } else { (n as f32 / busiest).sqrt() },
+                        level: if n == 0 {
+                            0.0
+                        } else {
+                            (n as f32 / busiest).sqrt()
+                        },
                         label: day.label.into(),
-                        summary: day.bucket.map_or_else(|| "No messages".into(), |b| b.summary()).into(),
+                        summary: day
+                            .bucket
+                            .map_or_else(|| "No messages".into(), |b| b.summary())
+                            .into(),
                         first: day.bucket.map_or(0, |b| b.first as i32),
                         active: n > 0,
                         outside: day.bucket.is_none(),
@@ -1395,7 +1635,12 @@ fn render_calendar(window: &AppWindow, chat: &ChatState) {
             let months: Vec<i32> = year.months.iter().map(|&c| c.into()).collect();
             CalendarYear {
                 year: year.year.to_string().into(),
-                summary: format!("{} · {}% from you", year.total.summary(), year.total.mine_percent()).into(),
+                summary: format!(
+                    "{} · {}% from you",
+                    year.total.summary(),
+                    year.total.mine_percent()
+                )
+                .into(),
                 quiet: false,
                 days: ModelRc::new(VecModel::from(cells)),
                 months: ModelRc::new(VecModel::from(months)),
@@ -1408,19 +1653,34 @@ fn render_calendar(window: &AppWindow, chat: &ChatState) {
 
 /// The `VecModel` behind a model set up in [`create`].
 fn vec_model<T: Clone + 'static>(model: &ModelRc<T>) -> &VecModel<T> {
-    model.as_any().downcast_ref().expect("models are VecModels, set up in create")
+    model
+        .as_any()
+        .downcast_ref()
+        .expect("models are VecModels, set up in create")
 }
 
-fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, images: &Images) -> ConversationItem {
+fn conversation_item(
+    view: &ConversationView,
+    pinned: usize,
+    chat: &ChatState,
+    images: &Images,
+) -> ConversationItem {
     let c = view.conversation;
     ConversationItem {
         id: c.id.0.as_str().into(),
         title: c.title.as_str().into(),
         initials: state::initials(&c.title).into(),
         avatar_color: avatar_color(&c.id),
-        avatar: view.avatar.map(|avatar| images.avatar(&c.id, avatar)).unwrap_or_default(),
+        avatar: view
+            .avatar
+            .map(|avatar| images.avatar(&c.id, avatar))
+            .unwrap_or_default(),
         preview: view.preview().into(),
-        time: view.last_message.map(|m| state::format_list_time(m.timestamp)).unwrap_or_default().into(),
+        time: view
+            .last_message
+            .map(|m| state::format_list_time(m.timestamp))
+            .unwrap_or_default()
+            .into(),
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
@@ -1431,7 +1691,10 @@ fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, i
         safety_changed: c.trust == b33p_core::Trust::Changed,
         group: c.is_group,
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
-        can_move_down: c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned),
+        can_move_down: c
+            .settings
+            .pinned
+            .is_some_and(|at| (at as usize) + 1 < pinned),
         muted: view.muted(),
         marked_unread: view.marked_unread(),
         archived: c.settings.archived,
@@ -1444,14 +1707,19 @@ fn conversation_item(view: &ConversationView, pinned: usize, chat: &ChatState, i
 /// A stable colour per person or group, for avatars without a picture and group senders' names.
 fn avatar_color(id: &ConversationId) -> Color {
     // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
-    const PALETTE: [u32; 8] = [0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0];
+    const PALETTE: [u32; 8] = [
+        0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0,
+    ];
     Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
 }
 
 fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> MessageItem {
     let m = view.message;
-    let attachments: Vec<_> =
-        m.attachments.iter().map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)).collect();
+    let attachments: Vec<_> = m
+        .attachments
+        .iter()
+        .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
+        .collect();
     let in_group = chat.selected().is_some_and(|c| c.is_group) && !m.outgoing;
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
@@ -1465,7 +1733,10 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         first: view.first_of_run,
         last: view.last_of_run,
         avatar_column: in_group,
-        sender_avatar: view.sender_avatar.map(|picture| images.avatar(&sender, picture)).unwrap_or_default(),
+        sender_avatar: view
+            .sender_avatar
+            .map(|picture| images.avatar(&sender, picture))
+            .unwrap_or_default(),
         sender_initials: state::initials(&m.sender).into(),
         sender_color: avatar_color(&sender),
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
@@ -1484,13 +1755,21 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         edited: m.edited_at.is_some(),
         deleted: m.deleted,
         notice: m.notice,
-        expires: m.expires_at.map(|at| state::format_remaining(at, now_millis())).unwrap_or_default().into(),
+        expires: m
+            .expires_at
+            .map(|at| state::format_remaining(at, now_millis()))
+            .unwrap_or_default()
+            .into(),
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,
         can_forward: ChatState::can_forward(m),
         preview_url: m.preview.as_ref().map_or("", |p| p.url.as_str()).into(),
         preview_title: m.preview.as_ref().map_or("", |p| p.title.as_str()).into(),
-        preview_description: m.preview.as_ref().map_or("", |p| p.description.as_str()).into(),
+        preview_description: m
+            .preview
+            .as_ref()
+            .map_or("", |p| p.description.as_str())
+            .into(),
         preview_site: m
             .preview
             .as_ref()
@@ -1506,7 +1785,12 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
                 let item = attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images);
                 // A preview's picture stays small.
                 let scale = (150. / item.height.max(1.)).min(1.);
-                AttachmentItem { can_save: false, width: item.width * scale, height: item.height * scale, ..item }
+                AttachmentItem {
+                    can_save: false,
+                    width: item.width * scale,
+                    height: item.height * scale,
+                    ..item
+                }
             })
             .unwrap_or_default(),
         highlighted: view.highlighted,
@@ -1518,12 +1802,19 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
 fn reaction_items(reactions: &[b33p_core::Reaction]) -> Vec<ReactionItem> {
     let mut items: Vec<ReactionItem> = Vec::new();
     for reaction in reactions {
-        match items.iter_mut().find(|item| item.emoji.as_str() == reaction.emoji) {
+        match items
+            .iter_mut()
+            .find(|item| item.emoji.as_str() == reaction.emoji)
+        {
             Some(item) => {
                 item.count += 1;
                 item.mine |= reaction.outgoing;
             }
-            None => items.push(ReactionItem { emoji: reaction.emoji.as_str().into(), count: 1, mine: reaction.outgoing }),
+            None => items.push(ReactionItem {
+                emoji: reaction.emoji.as_str().into(),
+                count: 1,
+                mine: reaction.outgoing,
+            }),
         }
     }
     items
@@ -1543,7 +1834,13 @@ fn settle_fresh(window: &AppWindow) {
         // The new ones are at the end.
         for row in (0..messages.row_count()).rev() {
             match messages.row_data(row) {
-                Some(item) if item.fresh => messages.set_row_data(row, MessageItem { fresh: false, ..item }),
+                Some(item) if item.fresh => messages.set_row_data(
+                    row,
+                    MessageItem {
+                        fresh: false,
+                        ..item
+                    },
+                ),
                 _ => break,
             }
         }
@@ -1556,7 +1853,11 @@ fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
     }
     same(&a.attachments, &b.attachments)
         && same(&a.reactions, &b.reactions)
-        && MessageItem { attachments: b.attachments.clone(), reactions: b.reactions.clone(), ..a.clone() } == *b
+        && MessageItem {
+            attachments: b.attachments.clone(),
+            reactions: b.reactions.clone(),
+            ..a.clone()
+        } == *b
 }
 
 fn attachment_item(
@@ -1566,16 +1867,25 @@ fn attachment_item(
     images: &Images,
 ) -> AttachmentItem {
     let kind = attachment.kind;
-    let inline = matches!(kind, AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::Video);
+    let inline = matches!(
+        kind,
+        AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::Video
+    );
     let picture = match download {
         Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => Some(picture),
         _ => None,
     };
     // Fit into the bubble, keeping the shape the sender reported (or the picture has).
-    let (max, fallback) = if kind == AttachmentKind::Sticker { (128.0, (128.0, 128.0)) } else { (280.0, (240.0, 180.0)) };
+    let (max, fallback) = if kind == AttachmentKind::Sticker {
+        (128.0, (128.0, 128.0))
+    } else {
+        (280.0, (240.0, 180.0))
+    };
     let (w, h) = match picture {
         Some(p) => (p.width as f32, p.height as f32),
-        None if attachment.width > 0 && attachment.height > 0 => (attachment.width as f32, attachment.height as f32),
+        None if attachment.width > 0 && attachment.height > 0 => {
+            (attachment.width as f32, attachment.height as f32)
+        }
         None => fallback,
     };
     let scale = (max / w.max(h)).min(1.0);
@@ -1594,23 +1904,34 @@ fn attachment_item(
         Some(SaveState::Saving) => "Saving…".into(),
         Some(SaveState::Saved(path)) => format!(
             "Saved to {}",
-            path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("disk")
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("disk")
         ),
         Some(SaveState::Failed(error)) => format!("Couldn't save: {error}"),
-        None => failed.clone().map(|error| format!("{error} Click to retry.")).unwrap_or_default(),
+        None => failed
+            .clone()
+            .map(|error| format!("{error} Click to retry."))
+            .unwrap_or_default(),
     };
     AttachmentItem {
         id: attachment.id.0.as_str().into(),
         inline,
         hidden: kind == AttachmentKind::LongText,
         fetch: download.is_none() && state::shown_inline(kind),
-        picture: picture.map(|p| images.attachments.get(&attachment.id, p)).unwrap_or_default(),
+        picture: picture
+            .map(|p| images.attachments.get(&attachment.id, p))
+            .unwrap_or_default(),
         width: w * scale,
         height: h * scale,
         label: label.into(),
         status: status.into(),
         can_retry: failed.is_some() && state::shown_inline(kind),
-        can_save: !matches!(kind, AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker),
+        can_save: !matches!(
+            kind,
+            AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker
+        ),
         placeholder: attachment
             .blurhash
             .as_deref()

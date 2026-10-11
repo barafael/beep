@@ -28,42 +28,20 @@ mod tray;
 #[cfg(test)]
 mod ui_tests;
 
-/// The UI, compiled per Slint widget style (see `build.rs`). The app has one, the native (Qt)
-/// style, with `ui.rs` on top: Fusion is the same UI, in Qt's Fusion style.
-mod styles {
-    pub mod native {
-        include!(concat!(env!("OUT_DIR"), "/app_native.rs"));
-        include!("ui.rs");
-    }
-    /// For the UI tests, which run without Qt: only the window, they drive it themselves.
+/// The UI Slint compiles from `ui/app.slint` (see `build.rs`): in the native style for the app,
+/// in Fluent for the tests, which run without Qt. `ui.rs` builds on whichever it is.
+mod generated {
+    #[cfg(not(test))]
+    include!(concat!(env!("OUT_DIR"), "/app_native.rs"));
     #[cfg(test)]
-    pub mod fluent {
-        include!(concat!(env!("OUT_DIR"), "/app_fluent.rs"));
-    }
+    include!(concat!(env!("OUT_DIR"), "/app_fluent.rs"));
 }
+mod ui;
 
 const APP: AppInfo = AppInfo {
     id: "io.github.barafael.B33p",
     name: "b33p",
 };
-
-/// A window in one of the styles; see `ui.rs`.
-pub trait Ui {
-    /// Brings the window in line with `chat`, touching only what `update` says changed.
-    fn render(&self, chat: &ChatState, images: &Images, update: Update);
-    fn show(&self) -> Result<(), slint::PlatformError>;
-    fn hide(&self);
-    /// Shows the window and brings it to the front, e.g. after a notification or the tray icon
-    /// was clicked. See [`Shared::activate`].
-    fn raise(&self);
-    fn visible(&self) -> bool;
-    /// Whether the window is the active one.
-    fn active(&self) -> bool;
-    /// What plays: the attachment (empty for nothing), paused, progress 0…1, and the time.
-    fn show_playback(&self, id: &str, paused: bool, progress: f32, time: &str);
-    /// Whether changes animate (fades, slides) or happen at once.
-    fn set_animations(&self, enabled: bool);
-}
 
 /// Everything that outlives a window: the chat state, the way to the backend, settings and
 /// caches. UI callbacks ask `ChatState` what to do through [`Shared::act`].
@@ -77,7 +55,7 @@ pub struct Shared {
     /// The Qt style this process started with. Qt picks it once, so changing between the
     /// system style and Fusion waits for a restart.
     qt_style_at_start: QtStyle,
-    ui: RefCell<Option<Rc<dyn Ui>>>,
+    ui: RefCell<Option<Rc<ui::Window>>>,
     tray: RefCell<Option<tray::Tray>>,
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
     /// e.g. for the password, until the chats are there.
@@ -112,7 +90,7 @@ impl QtStyle {
 }
 
 impl Shared {
-    fn ui(&self) -> Option<Rc<dyn Ui>> {
+    fn ui(&self) -> Option<Rc<ui::Window>> {
         self.ui.borrow().clone()
     }
 
@@ -431,7 +409,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .commands
         .send(Command::Preferences(settings.preferences));
 
-    let ui = styles::native::create(&shared)?;
+    let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
     shared.apply_motion();
     // The desktop's reduced-motion preference, as it is and as it changes.
@@ -575,7 +553,7 @@ fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
 }
 
 /// Pictures converted to Slint images once, so re-rendering lists neither copies pixels again
-/// nor makes unchanged rows look changed. Shared by all styles' windows.
+/// nor makes unchanged rows look changed.
 #[derive(Default)]
 pub struct Images {
     avatars: ImageCache<ConversationId>,
