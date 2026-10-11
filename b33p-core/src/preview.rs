@@ -45,7 +45,9 @@ fn client() -> Option<reqwest::Client> {
                 .timeout(Duration::from_secs(8))
                 .redirect(redirect)
                 .dns_resolver(Arc::new(PublicOnly))
-                .user_agent("Mozilla/5.0 (compatible; b33p link preview)")
+                // Signal Desktop's (ts/linkPreviews/linkPreviewFetch.ts): sites can't tell the
+                // client apart.
+                .user_agent("WhatsApp/2")
                 .build()
                 .ok()
         })

@@ -2553,12 +2553,19 @@ impl ChatState {
     }
 
     /// Asks for an inline attachment of a message being shown, unless it is already there or
-    /// on its way. After a failure, asking again retries.
+    /// on its way. After a failure, asking again retries. Not in a message request, as in
+    /// Signal's apps.
     pub fn fetch_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
         if matches!(
             self.attachments.get(id),
             Some(AttachmentState::Loading | AttachmentState::Ready(_))
         ) {
+            return None;
+        }
+        let story = self.current_story().is_some_and(|(story, _, _)| {
+            matches!(&story.content, crate::StoryContent::Picture(picture) if &picture.id == id)
+        });
+        if !story && self.selected().is_some_and(|chat| self.is_request(chat)) {
             return None;
         }
         let attachment = self
@@ -5079,6 +5086,14 @@ mod tests {
         state.apply(Event::StorageRead);
         assert!(state.is_request(&chat(&state)));
         assert!(!state.can_compose("hi"));
+        state.apply(Event::Message(with_attachment(
+            "a",
+            11,
+            "p",
+            AttachmentKind::Image,
+        )));
+        let photo = AttachmentId("p".into());
+        assert!(state.fetch_attachment(&photo).is_none(), "a request");
         assert!(matches!(
             state.respond(&id("a"), RequestResponse::Accept),
             Some(Command::Respond {
@@ -5088,6 +5103,7 @@ mod tests {
         ));
         assert!(!state.is_request(&chat(&state)));
         assert!(state.can_compose("hi"));
+        assert!(state.fetch_attachment(&photo).is_some(), "accepted");
         // Blocked chats can't be written to; deleting clears the chat.
         state.block(&id("a"), true);
         assert!(!state.can_compose("hi"));
