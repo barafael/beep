@@ -1825,6 +1825,8 @@ async fn send_to(
 
 /// [`send_to`], holding the chat of a contact whose identity it refused: their verified safety
 /// number changed, which they may not have heard of yet (the new key came with sending).
+/// Nothing goes to a group while that holds for one of its members: presage would reach the
+/// others before refusing them, and report the message as failed, so a retry would repeat it.
 async fn deliver(
     manager: &mut Mgr,
     ctx: &Ctx,
@@ -1832,6 +1834,16 @@ async fn deliver(
     body: ContentBody,
     timestamp: u64,
 ) -> Result<(), String> {
+    if let Thread::Group(key) = thread {
+        let held = held_members(manager, ctx, key).await;
+        if !held.is_empty() {
+            return Err(format!(
+                "Not sent: your safety number with {} changed since you verified it. Confirm it \
+                 in their chat first.",
+                held.join(", ")
+            ));
+        }
+    }
     match send_to(manager, thread, body, timestamp).await {
         Err(SendError::Untrusted(who)) => {
             hold_changed(manager, ctx, who).await;
@@ -1839,6 +1851,29 @@ async fn deliver(
         }
         sent => sent.map_err(String::from),
     }
+}
+
+/// The names of the members of group `key` whose verified safety number changed and isn't
+/// confirmed yet (see [`hold_changed`]), as the UI was last told.
+async fn held_members(manager: &Mgr, ctx: &Ctx, key: &[u8; 32]) -> Vec<String> {
+    let Ok(Some(group)) = manager.store().group(*key).await else {
+        return Vec::new();
+    };
+    let held: Vec<ServiceId> = {
+        let trust = ctx.trust.borrow();
+        group
+            .members
+            .iter()
+            .map(|member| ServiceId::Aci(member.aci))
+            .filter(|who| trust.get(who) == Some(&crate::Trust::Changed))
+            .collect()
+    };
+    let mut names = Names::new();
+    let mut found = Vec::with_capacity(held.len());
+    for who in held {
+        found.push(sender_name(manager, &mut names, who).await);
+    }
+    found
 }
 
 async fn send_data(
