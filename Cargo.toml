@@ -42,15 +42,15 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Branch styled-text-selection-1.18 of our Slint fork: 1.18.1 plus selecting text in a
 # `StyledText` (`selectable`, `selected-text`), which the messages need. Drop this once it has
 # landed upstream and a release carries it.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
 # Its helper crates too, or the crates.io slint crates would link a second copy of them.
-vtable = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-vtable-macro = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-const-field-offset = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
-const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+vtable = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+vtable-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+const-field-offset = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
 
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
 # langis/integration of our fork: whisperfish's plus two pull requests:
