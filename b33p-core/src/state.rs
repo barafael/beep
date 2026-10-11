@@ -261,6 +261,14 @@ pub struct ChatState {
     /// Most recently active first; see [`ChatState::sort_conversations`].
     conversations: Vec<Conversation>,
     unread: HashMap<ConversationId, u32>,
+    /// Incoming messages that came while their chat wasn't looked at, dated before what was
+    /// read already (late, e.g. from a group): unread although `last_read` says otherwise.
+    late: HashMap<ConversationId, Vec<MessageRef>>,
+    /// Chats opened before their stored history was here: read once it is.
+    opened_unloaded: HashSet<ConversationId>,
+    /// Messages counted as read this session, so none is again (one dated in the future stays
+    /// after `last_read`, which never passes the present).
+    read: HashSet<MessageRef>,
     /// Per conversation, sorted and unique by [`message_key`].
     history: HashMap<ConversationId, Vec<ChatMessage>>,
     avatars: HashMap<ConversationId, Arc<Picture>>,
@@ -492,6 +500,12 @@ impl ChatState {
                     self.sort_conversations();
                     update.conversations = true;
                 }
+                if newest_page
+                    && self.opened_unloaded.remove(&conversation)
+                    && let Some(command) = self.mark_read(conversation.clone())
+                {
+                    self.queued.push(command);
+                }
                 if self.selected.as_ref() == Some(&conversation) {
                     if newest_page {
                         update.messages = MessagesUpdate::Reset;
@@ -574,6 +588,7 @@ impl ChatState {
                 let looking =
                     self.selected.as_ref() == Some(&id) && self.notifications.window_focused;
                 let notice = history[pos].notice;
+                let reference = history[pos].reference();
                 if !outgoing && !notice {
                     let message = &history[pos];
                     // A photo or sticker alone says what it is.
@@ -590,6 +605,12 @@ impl ChatState {
                     } else {
                         MessagesUpdate::Reset
                     };
+                }
+                if !outgoing && !notice {
+                    let last_read = self.conversation(&id).map(|c| c.settings.last_read);
+                    if last_read.is_some_and(|last_read| reference.timestamp <= last_read) {
+                        self.late.entry(id.clone()).or_default().push(reference);
+                    }
                 }
                 if looking {
                     self.mark_seen();
@@ -874,10 +895,20 @@ impl ChatState {
             .find(|m| m.is(target))
     }
 
-    /// The selected conversation is in front of the user: its messages count as read.
+    /// The selected conversation is in front of the user: its messages count as read. Not
+    /// before its stored history is here, though: only part of what is unread is known until
+    /// then, and the rest would be passed over for good. The history's arrival marks it.
     fn mark_seen(&mut self) {
-        if let Some(command) = self.selected.clone().and_then(|id| self.mark_read(id)) {
-            self.queued.push(command);
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        if self.loaded.contains(&id) {
+            if let Some(command) = self.mark_read(id) {
+                self.queued.push(command);
+            }
+        } else {
+            self.unread.remove(&id);
+            self.opened_unloaded.insert(id);
         }
     }
 
@@ -887,18 +918,29 @@ impl ChatState {
         self.unread.remove(&id);
         let conversation = self.conversations.iter_mut().find(|c| c.id == id)?;
         let settings = &mut conversation.settings;
+        let late = self.late.remove(&id).unwrap_or_default();
         let unread: Vec<&ChatMessage> = self
             .history
             .get(&id)
-            .map(|history| unread_after(history, settings.last_read).collect())
+            .map(|history| {
+                history
+                    .iter()
+                    .filter(|m| !m.outgoing && !m.notice)
+                    .filter(|m| m.timestamp > settings.last_read || late.contains(&m.reference()))
+                    .filter(|m| !self.read.contains(&m.reference()))
+                    .collect()
+            })
             .unwrap_or_default();
         if unread.is_empty() && !settings.marked_unread {
             return None;
         }
         settings.marked_unread = false;
+        // Senders choose their messages' dates: one from the future mustn't make everything
+        // until then count as read.
         if let Some(newest) = unread.iter().map(|m| m.timestamp).max() {
-            settings.last_read = newest;
+            settings.last_read = settings.last_read.max(newest.min(now_millis()));
         }
+        self.read.extend(unread.iter().map(|m| m.reference()));
         let expiring = unread
             .iter()
             .filter_map(|m| Some((m.reference(), m.expire_timer?)))
@@ -4077,6 +4119,7 @@ mod tests {
         assert_eq!(state.unread_total(), 1, "only the real message");
         state.set_window_focused(true);
         state.select(&id("a"));
+        history_arrives(&mut state, "a");
         assert!(
             matches!(
                 &state.take_commands()[..],
@@ -4097,6 +4140,66 @@ mod tests {
         assert!(view.first_of_run && view.last_of_run, "a run of its own");
     }
 
+    /// The chat's stored history, as far as this state has it (nothing more).
+    fn history_arrives(state: &mut ChatState, chat: &str) {
+        state.apply(Event::History {
+            conversation: id(chat),
+            messages: Vec::new(),
+            reactions: Vec::new(),
+            older: None,
+        });
+    }
+
+    /// What arrived while b33p was closed is read with the rest once its page is here, not
+    /// only what was known when the chat was opened (the newest, from `Event::Latest`), and
+    /// so is a message that came late, dated before what was read. A message dated in the
+    /// future doesn't make everything until then count as read.
+    #[test]
+    fn reading_covers_everything_unread() {
+        let mut state = state();
+        state.set_window_focused(true);
+        state.apply(Event::Latest(message("a", "Ann", 50, false)));
+        state.select(&id("a"));
+        state.apply(Event::History {
+            conversation: id("a"),
+            messages: [10, 20, 30, 40, 50]
+                .map(|ts| message("a", "Ann", ts, false))
+                .into(),
+            reactions: Vec::new(),
+            older: None,
+        });
+        let read = |state: &mut ChatState| -> Vec<u64> {
+            state
+                .take_commands()
+                .into_iter()
+                .flat_map(|command| match command {
+                    Command::MarkRead { messages, .. } => messages,
+                    _ => Vec::new(),
+                })
+                .map(|m| m.timestamp)
+                .collect()
+        };
+        let mut all = read(&mut state);
+        all.sort_unstable();
+        assert_eq!(all, [10, 20, 30, 40, 50]);
+
+        // Late, while another chat is open.
+        state.select(&id("g"));
+        state.apply(Event::Message(message("a", "Ann", 35, false)));
+        assert_eq!(state.unread_total(), 1);
+        state.select(&id("a"));
+        assert_eq!(read(&mut state), [35]);
+
+        // From the future: the mark stays in the present, and the message is read once.
+        let future = now_millis() + 365 * 24 * 3600 * 1000;
+        state.apply(Event::Message(message("a", "Ann", future, false)));
+        assert_eq!(read(&mut state), [future]);
+        assert!(state.conversation(&id("a")).unwrap().settings.last_read <= now_millis());
+        state.set_window_focused(false);
+        state.set_window_focused(true);
+        assert!(read(&mut state).is_empty());
+    }
+
     #[test]
     fn viewing_a_chat_reads_it_and_queues_receipts_once() {
         let mut state = state();
@@ -4105,6 +4208,10 @@ mod tests {
         state.apply(Event::Message(message("a", "Ann", 20, false)));
         assert_eq!(state.unread_total(), 2);
         state.select(&id("a"));
+        // Read once what is stored has arrived: until then, more may be unread than is known.
+        assert!(state.take_commands().is_empty());
+        assert_eq!(state.unread_total(), 0, "the badge goes at once");
+        history_arrives(&mut state, "a");
         let commands = state.take_commands();
         assert!(matches!(
             &commands[..],
@@ -4247,6 +4354,7 @@ mod tests {
         let mut state = state();
         state.apply(Event::Message(message("a", "Ann", 10, false)));
         state.select(&id("a"));
+        history_arrives(&mut state, "a");
         state.take_commands();
         assert!(matches!(
             state.mark_unread(&id("a"), true),
@@ -4255,6 +4363,7 @@ mod tests {
         assert!(state.selected().is_none());
         assert_eq!(state.unread_total(), 1);
         state.select(&id("a"));
+        history_arrives(&mut state, "a");
         assert!(
             matches!(&state.take_commands()[..], [Command::MarkRead { messages, .. }] if messages.is_empty())
         );
@@ -5131,6 +5240,61 @@ mod edit_props {
             .map(|(what, shown)| format!("{what}: {shown}"))
             .collect();
             prop_assert!(leaks.is_empty(), "spoiler {secret:?} of {body:?} shown in {leaks:#?}");
+        }
+    }
+}
+#[cfg(test)]
+mod read_props {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 2000, failure_persistence: None, ..ProptestConfig::default() })]
+
+        /// With the chat open in a focused window, every incoming message that arrives is read:
+        /// it goes into a MarkRead (a read receipt), and a disappearing one's timer is started.
+        #[test]
+        fn every_message_seen_in_an_open_chat_is_marked_read(arrivals in prop::collection::vec((0u64..20, any::<bool>()), 1..8)) {
+            let base = now_millis() - 3_600_000;
+            let id = ConversationId("a".into());
+            let mut chat = ChatState::default();
+            chat.apply(Event::Linked { account: "me".into() });
+            chat.apply(Event::Synced);
+            chat.apply(Event::Conversations(vec![Conversation {
+                id: id.clone(),
+                title: "Alice".into(),
+                settings: ChatSettings { accepted: true, ..Default::default() },
+                ..Default::default()
+            }]));
+            chat.select(&id);
+            chat.apply(Event::History { conversation: id.clone(), messages: Vec::new(), reactions: Vec::new(), older: None });
+            chat.set_window_focused(true);
+            let mut read = Vec::new();
+            let mut expiring = Vec::new();
+            let mut sent = Vec::new();
+            for (t, disappearing) in arrivals {
+                let message = ChatMessage {
+                    conversation: id.clone(),
+                    sender_id: "alice".into(),
+                    sender: "Alice".into(),
+                    body: format!("at {t}"),
+                    timestamp: base + t * 1000,
+                    expire_timer: disappearing.then_some(3600),
+                    ..Default::default()
+                };
+                if !sent.contains(&message.timestamp) {
+                    sent.push(message.timestamp);
+                }
+                chat.apply(Event::Message(message));
+                for command in chat.take_commands() {
+                    if let Command::MarkRead { messages, expiring: e, .. } = command {
+                        read.extend(messages.into_iter().map(|m| m.timestamp));
+                        expiring.extend(e.into_iter().map(|(m, _)| m.timestamp));
+                    }
+                }
+            }
+            let unread: Vec<u64> = sent.iter().copied().filter(|t| !read.contains(t)).map(|t| (t - base) / 1000).collect();
+            prop_assert!(unread.is_empty(), "never marked read (no receipt, timer never started): {unread:?} of {:?}", sent.iter().map(|t| (t - base) / 1000).collect::<Vec<_>>());
         }
     }
 }
