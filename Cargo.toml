@@ -21,13 +21,14 @@ qrcode = { version = "0.14", default-features = false }
 #   #448 create and change groups, accept or decline invitations, retry a clashing change
 #        (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
-#   #450 pin an identity required for sending (verified contacts' changed keys wait)
+#   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
+#        the key a pin refused, so that it can be shown and taken over
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "7e4492af27be2d7365b5cb2eec3c3f47b5e55e2f" }
+presage = { git = "https://github.com/barafael/presage", rev = "779fb7def262492b01ab797d55da794ffe81c14d" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "7e4492af27be2d7365b5cb2eec3c3f47b5e55e2f", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "779fb7def262492b01ab797d55da794ffe81c14d", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
