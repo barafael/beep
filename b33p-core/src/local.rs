@@ -209,6 +209,13 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 ];
 
 impl LocalStore {
+    /// Begins a transaction that writes, taking the write lock at once: presage writes to the
+    /// same database, and a deferred transaction that reads before it writes fails with
+    /// `SQLITE_BUSY`, which no busy timeout waits out, when it writes in between.
+    async fn begin_write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+        self.db.begin_with("BEGIN IMMEDIATE").await
+    }
+
     pub(crate) async fn open(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         // Little traffic: a couple of connections are plenty.
         let db = SqlitePoolOptions::new()
@@ -334,7 +341,7 @@ impl LocalStore {
         &self,
         settings: &[(ConversationId, ChatSettings)],
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         for (id, s) in settings {
             sqlx::query(
                 "INSERT INTO b33p_conversation
@@ -380,7 +387,7 @@ impl LocalStore {
         remote: &HashMap<ConversationId, ChatSettings>,
         version: u64,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query("DELETE FROM b33p_remote")
             .execute(&mut *tx)
             .await?;
@@ -508,7 +515,7 @@ impl LocalStore {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query("DELETE FROM b33p_folder")
             .execute(&mut *tx)
             .await?;
@@ -610,7 +617,7 @@ impl LocalStore {
         &self,
         remote: &HashMap<String, Verification>,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query("DELETE FROM b33p_remote_verification")
             .execute(&mut *tx)
             .await?;
@@ -636,7 +643,7 @@ impl LocalStore {
 
     /// Pins exactly `order`, in that order; everything else is unpinned.
     pub(crate) async fn set_pins(&self, order: &[ConversationId]) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE b33p_conversation SET pinned = NULL")
             .execute(&mut *tx)
             .await?;
@@ -669,7 +676,7 @@ impl LocalStore {
         messages: &[(ConversationId, u64)],
         delivery: Delivery,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         for (conversation, ts) in messages {
             sqlx::query(
                 "INSERT INTO b33p_delivery (conversation, ts, state) VALUES (?, ?, ?)
@@ -798,7 +805,7 @@ impl LocalStore {
         conversation: &ConversationId,
         expiries: &[(MessageRef, u64)],
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         for (message, expires_at) in expiries {
             let (conversation, author, ts) = key(conversation, message);
             sqlx::query("INSERT OR IGNORE INTO b33p_expiry (conversation, author, ts, expires_at) VALUES (?, ?, ?, ?)")
@@ -855,7 +862,7 @@ impl LocalStore {
         &self,
         messages: &[(ConversationId, MessageRef)],
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         for (conversation, message) in messages {
             let (conversation, author, ts) = key(conversation, message);
             for statement in [
