@@ -354,6 +354,7 @@ async fn session(
             reset(store.clone(), &paths).await?;
             link_with_history(
                 store.clone(),
+                &tables,
                 &config,
                 &events,
                 &mut command_rx,
@@ -365,6 +366,7 @@ async fn session(
         Err(PresageError::NotYetRegisteredError) => {
             link_with_history(
                 store.clone(),
+                &tables,
                 &config,
                 &events,
                 &mut command_rx,
@@ -401,6 +403,7 @@ async fn session(
         // Linking clears the dead registration; the conversations stay.
         linked = link_with_history(
             store.clone(),
+            &tables,
             &config,
             &events,
             &mut command_rx,
@@ -510,6 +513,7 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
 /// Returns the commands that arrived during the transfer, or `None` if the UI went away.
 async fn link_with_history(
     store: SqliteStore,
+    tables: &LocalStore,
     config: &Config,
     events: &Events,
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
@@ -538,7 +542,7 @@ async fn link_with_history(
         write_marker(paths)?;
         let mut pending = Vec::new();
         let result = {
-            let transfer = transfer::receive_history(&manager, key, &paths.dir, events);
+            let transfer = transfer::receive_history(&manager, key, &paths.dir, tables, events);
             pin_mut!(transfer);
             loop {
                 tokio::select! {
@@ -649,7 +653,7 @@ async fn link(
     Ok((manager, history_key))
 }
 
-fn conversation_id(thread: &Thread) -> ConversationId {
+pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
     ConversationId(match thread {
         Thread::Contact(id) => format!("c:{}", id.service_id_string()),
         Thread::Group(key) => format!("g:{}", hex::encode(key)),
