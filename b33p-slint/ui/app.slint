@@ -558,15 +558,9 @@ component ConversationRow inherits Rectangle {
                 }
                 // Always there: it grows in with the first unread message and shrinks away once
                 // read (a row drawn with it is simply there).
+                // No `changed` handler here: rows come and go as the list changes, and Slint (1.18)
+                // can run one for a row already dropped, which aborts.
                 Rectangle {
-                    // The last count, so it doesn't read 0 while shrinking away.
-                    property <int> unread: item.unread;
-                    property <int> shown: item.unread;
-                    changed unread => {
-                        if self.unread > 0 {
-                            self.shown = self.unread;
-                        }
-                    }
                     width: item.unread > 0 ? max(18px, badge.preferred-width + 10px) : 0px;
                     animate width { duration: 150ms * Motion.scale; easing: ease-out; }
                     opacity: item.unread > 0 ? 1 : 0;
@@ -577,7 +571,8 @@ component ConversationRow inherits Rectangle {
                     // Muted chats count quietly.
                     background: item.muted ? Palette.foreground.with-alpha(0.35) : Palette.accent-background;
                     badge := Text {
-                        text: parent.shown;
+                        // Nothing while shrinking away, rather than 0.
+                        text: item.unread > 0 ? item.unread : "";
                         // White on the accent, whatever the style's accent text colour is.
                         color: white;
                         font-size: 0.75rem;
@@ -609,13 +604,9 @@ component AttachmentView inherits VerticalLayout {
     // Outgoing bubbles use the accent colour, so their text is white for contrast with any.
     property <color> ink: outgoing ? white : Palette.alternate-foreground;
     spacing: 4px;
-    // The list only creates rows that are on screen, so this downloads only what is seen. A
-    // view kept for another attachment (the next story, a reused row) fetches that one.
+    // The list only creates rows that are on screen, so this downloads only what is seen.
+    // (A view kept for another attachment, like the next story, is told by its owner.)
     init => {
-        if root.item.fetch { root.fetch(root.item.id); }
-    }
-    property <string> shown: root.item.id;
-    changed shown => {
         if root.item.fetch { root.fetch(root.item.id); }
     }
 
@@ -2789,6 +2780,14 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            load-older-timer := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    root.load-older();
+                                }
+                            }
                             message-list := ListView {
                                 // Follow new messages only while the newest one is in view, so reading
                                 // older messages isn't interrupted. Opening a chat starts at the bottom.
@@ -2842,9 +2841,11 @@ export component AppWindow inherits Window {
                                         self.content-y = min(0px, self.visible-height - self.content-height);
                                         end-timer.running = true;
                                     }
-                                    // Nothing to scroll yet: there may be more before.
+                                    // Nothing to scroll yet: there may be more before. Asked for once
+                                    // the change handlers ran: Rust changes the rows, which mustn't
+                                    // happen while Slint is still running them.
                                     if self.content-height < self.visible-height {
-                                        root.load-older();
+                                        load-older-timer.running = true;
                                     }
                                     if self.settling > 0 {
                                         self.settling -= 1;
@@ -4357,6 +4358,22 @@ export component AppWindow inherits Window {
                                 outgoing: false;
                                 fetch(id) => { root.fetch-attachment(id); }
                                 open(id) => { root.open-attachment(id); }
+                            }
+                            // The view stays from one picture story to the next: it fetches only
+                            // when made, so the next is asked for here. Not from the change
+                            // handler itself: fetching redraws, which mustn't happen while Slint
+                            // runs its change handlers.
+                            property <string> picture: root.story.text-story ? "" : root.story.picture.id;
+                            changed picture => { next-picture.running = true; }
+                            next-picture := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    if !root.story.text-story && root.story.picture.fetch {
+                                        root.fetch-attachment(root.story.picture.id);
+                                    }
+                                }
                             }
                         }
                         TouchArea {
