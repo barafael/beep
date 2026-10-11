@@ -64,6 +64,11 @@ serde = { version = "1", features = ["derive"], optional = true }
 jiff = "0.2"
 async-channel = "2"
 
+
+[dev-dependencies]
+# Property tests of the chat state (`state.rs`).
+proptest = "1"
+
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
