@@ -50,14 +50,10 @@ mod tests {
         // Four quiet modules on each side, and the pixels are RGBA.
         assert_eq!(side, (qr.width + 8) * 2);
         assert_eq!(pixels.len(), side * side * 4);
+        let (pixels, _) = pixels.as_chunks::<4>();
+        assert!(pixels.contains(&[0, 0, 0, 0xff]), "no dark modules");
         assert!(
-            pixels.chunks_exact(4).any(|p| p == [0, 0, 0, 0xff]),
-            "no dark modules"
-        );
-        assert!(
-            pixels
-                .chunks_exact(4)
-                .any(|p| p == [0xff, 0xff, 0xff, 0xff]),
+            pixels.contains(&[0xff, 0xff, 0xff, 0xff]),
             "no light modules"
         );
     }

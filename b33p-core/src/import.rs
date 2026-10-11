@@ -31,6 +31,8 @@ use presage::{
 use protobuf::Message as _;
 
 /// What a frame turns into, ready to be stored.
+// Records are stored one frame at a time; boxing would add an allocation per message.
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Record {
     Contact {
