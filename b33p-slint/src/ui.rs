@@ -31,7 +31,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     // The window owns the models; `vec_model` gets them back for updates.
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
-    window.set_media_rows(ModelRc::new(VecModel::<MediaRow>::default()));
+    window.set_media_tiles(ModelRc::new(VecModel::<AttachmentItem>::default()));
     window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
     window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
@@ -1499,36 +1499,23 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
 
 /// The media overview.
 fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
-    const PER_ROW: usize = 4;
-    const TILE: f32 = 110.;
     let media = chat.media();
     window.set_media_open(media.is_some());
     window.set_media_busy(matches!(media, Some(None)));
     let Some(Some(overview)) = media else {
         // Nothing left over for the next chat's.
-        vec_model(&window.get_media_rows()).set_vec(Vec::new());
+        vec_model(&window.get_media_tiles()).set_vec(Vec::new());
         vec_model(&window.get_media_files()).set_vec(Vec::new());
         vec_model(&window.get_media_links()).set_vec(Vec::new());
         return;
     };
-    let tile = |a: &Attachment| AttachmentItem {
-        width: TILE,
-        height: TILE,
-        ..attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)
-    };
-    let rows: Vec<MediaRow> = overview
+    // The UI lays the tiles out by its width; their size here is beside the point.
+    let tiles: Vec<AttachmentItem> = overview
         .media
-        .chunks(PER_ROW)
-        .map(|row| MediaRow {
-            tiles: ModelRc::new(VecModel::from(
-                row.iter().map(|a| tile(a)).collect::<Vec<_>>(),
-            )),
-        })
+        .iter()
+        .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
         .collect();
-    update_list(&window.get_media_rows(), rows, |a, b| {
-        a.tiles.row_count() == b.tiles.row_count()
-            && a.tiles.iter().zip(b.tiles.iter()).all(|(x, y)| x == y)
-    });
+    update_list(&window.get_media_tiles(), tiles, |a, b| a == b);
     let files: Vec<SharedItem> = overview
         .files
         .iter()

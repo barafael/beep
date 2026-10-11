@@ -208,11 +208,6 @@ export struct StickerRow {
     tiles: [StickerTile],
 }
 
-// A row of the media overview's grid.
-export struct MediaRow {
-    tiles: [AttachmentItem],
-}
-
 // A file or link in the media overview, with who sent it when.
 export struct SharedItem {
     attachment: AttachmentItem,
@@ -801,57 +796,62 @@ component AttachmentView inherits VerticalLayout {
     }
 }
 
-// Quick reactions, as in Signal's own apps.
-component ReactionPicker inherits PopupWindow {
+// Quick reactions, as in Signal's own apps: a bar over the bubble, there while the pointer
+// rests on the message or on the bar itself.
+component ReactionPicker inherits Rectangle {
+    in property <bool> shown;
+    // The pointer came onto it, or left it. Told at once as it comes (the message underneath
+    // loses the pointer in the same event, and must not take the bar away meanwhile), so a
+    // callback rather than a property watched for changes.
+    callback hovered(bool);
     callback picked(string);
-    Rectangle {
-        // Fades in as it appears.
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
-        border-radius: 18px;
-        background: Palette.alternate-background;
-        border-width: 1px;
-        border-color: Palette.border;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #0003;
-        HorizontalLayout {
-            padding: 4px;
-            spacing: 2px;
-            for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
-                width: 32px;
-                height: 32px;
-                border-radius: 16px;
-                background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
-                animate background { duration: 120ms * Motion.scale; easing: ease-out; }
-                touch := TouchArea {
-                    accessible-role: button;
-                    accessible-label: "React with " + emoji;
-                    accessible-action-default => { self.clicked(); }
-                    mouse-cursor: pointer;
-                    clicked => { root.picked(emoji); }
-                }
-                Text { text: emoji; font-size: 1.2rem; }
+    width: 210px;
+    height: 40px;
+    visible: root.shown;
+    // Fades in as it appears.
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
+    border-radius: self.height / 2;
+    background: Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: #0003;
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move {
+                root.hovered(true);
+            }
+        }
+        changed has-hover => {
+            if !self.has-hover {
+                root.hovered(false);
             }
         }
     }
-}
-
-component HoverButtons inherits HorizontalLayout {
-    in property <bool> shown;
-    callback react;
-    callback reply;
-    IconButton {
-        label: "React";
-        icon: @image-url("@lucide/face-slightly-smiling-plus.svg");
-        shown: root.shown;
-        clicked => { root.react(); }
-    }
-    IconButton {
-        label: "Reply";
-        icon: @image-url("@lucide/reply.svg");
-        shown: root.shown;
-        clicked => { root.reply(); }
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 2px;
+        for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: 16px;
+            background: emoji-touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+            emoji-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: "React with " + emoji;
+                accessible-action-default => { self.clicked(); }
+                mouse-cursor: pointer;
+                clicked => { root.picked(emoji); }
+                // The buttons take the pointer from the bar's own area.
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.move {
+                        root.hovered(true);
+                    }
+                }
+            }
+            Text { text: emoji; font-size: 1.2rem; }
+        }
     }
 }
 
@@ -908,15 +908,27 @@ component Bubble inherits Rectangle {
     }
     animate flash { duration: 900ms * Motion.scale; easing: ease-out; }
 
-
-    picker := ReactionPicker {
-        x: item.outgoing ? root.width - 230px : 16px;
-        y: -36px;
-        picked(emoji) => { root.react(emoji); }
+    // The pointer is on the message, or on the reaction bar over it (which reaches past the
+    // row, and takes the pointer off `hover`; the bar is in a conditional, so it reports).
+    property <bool> picker-hovered;
+    property <bool> hovered: hover.has-hover || root.picker-hovered;
+    property <bool> can-react: !item.deleted && !item.notice && !root.selecting;
+    // The reaction bar comes once the pointer has rested on the message a moment (not while
+    // it merely crosses the list), and goes when the pointer leaves it and the bar.
+    property <bool> picker-shown;
+    changed hovered => {
+        if !self.hovered {
+            self.picker-shown = false;
+        }
+    }
+    Timer {
+        interval: 350ms;
+        running: root.hovered && root.can-react && !root.picker-shown;
+        triggered => { root.picker-shown = true; }
     }
 
     // Around the content, not under it: it stays hovered over the text and pictures, which
-    // take the pointer themselves (links), so the message's buttons show there too.
+    // take the pointer themselves (links), so the message's button shows there too.
     hover := TouchArea {
         VerticalLayout {
             if item.first-unread: HorizontalLayout {
@@ -995,11 +1007,12 @@ component Bubble inherits Rectangle {
                 // Beside the bubble on the side facing the middle, shown on hover.
                 if item.outgoing: VerticalLayout {
                     alignment: center;
-                    HoverButtons {
+                    IconButton {
+                        label: "Reply";
+                        icon: @image-url("@lucide/reply.svg");
                         visible: !item.deleted;
-                        shown: hover.has-hover;
-                        react => { picker.show(); }
-                        reply => { root.reply(); }
+                        shown: root.hovered;
+                        clicked => { root.reply(); }
                     }
                 }
                 VerticalLayout {
@@ -1019,9 +1032,10 @@ component Bubble inherits Rectangle {
                         // Darkened, so white text reads even on a light accent (Breeze's dark scheme).
                         background: (item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background)
                             .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1)
-                            // A touch lighter under the pointer, so the row the buttons belong to is clear.
-                            .mix(Palette.foreground, hover.has-hover ? 0.94 : 1);
-                        animate background { duration: 100ms * Motion.scale; easing: ease-out; }
+                            // A whisper lighter under the pointer: just enough to say which row
+                            // the button belongs to, not enough to catch the eye as it passes.
+                            .mix(Palette.foreground, root.hovered ? 0.98 : 1);
+                        animate background { duration: 160ms * Motion.scale; easing: ease-out; }
                         // Paler until it went out.
                         opacity: item.delivery == -1 ? 0.7 : 1;
                         animate opacity { duration: 250ms * Motion.scale; easing: ease-out; }
@@ -1152,7 +1166,7 @@ component Bubble inherits Rectangle {
                                 }
                             }
                             // Once per run, on its last message; always if it changed or goes away.
-                            if item.last || item.edited || item.expires != "": HorizontalLayout {
+                            if item.last || item.edited || item.expires != "": meta := HorizontalLayout {
                                 alignment: end;
                                 spacing: 4px;
                                 property <color> faint: root.ink.with-alpha(0.65);
@@ -1172,12 +1186,21 @@ component Bubble inherits Rectangle {
                                     font-size: 0.72rem;
                                     color: parent.faint;
                                 }
-                                // ✓ sent, ✓✓ delivered, ✓✓ in full white once read.
-                                if item.last && item.delivery > 0: Text {
-                                    text: item.delivery == 1 ? "✓" : "✓✓";
-                                    font-size: 0.72rem;
-                                    font-weight: item.delivery == 3 ? 700 : 400;
-                                    color: item.delivery == 3 ? root.ink : parent.faint;
+                                // ✓ sent, ✓✓ delivered; read: ✓✓ cut out of a filled pill, so it
+                                // tells from delivered at a glance.
+                                if item.last && item.delivery > 0: Rectangle {
+                                    width: 22px;
+                                    border-radius: self.height / 2;
+                                    background: item.delivery == 3 ? root.ink : transparent;
+                                    accessible-role: text;
+                                    accessible-label: item.delivery == 1 ? "Sent" : item.delivery == 2 ? "Delivered" : "Read";
+                                    Icon {
+                                        source: item.delivery == 1 ? @image-url("@lucide/check.svg") : @image-url("@lucide/check-check.svg");
+                                        width: 14px;
+                                        tint: item.delivery == 3 ? Palette.accent-background.darker(0.35) : meta.faint;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                                 if item.last && item.delivery == -1: Text {
                                     text: "Sending…";
@@ -1203,6 +1226,20 @@ component Bubble inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+                        }
+                        picker := ReactionPicker {
+                            x: item.outgoing ? parent.width - self.width : 0;
+                            // Over the bubble's edge by a little, so the pointer can move up onto it
+                            // without ever leaving both.
+                            y: 6px - self.height;
+                            shown: root.picker-shown && root.can-react;
+                            hovered(on) => { root.picker-hovered = on; }
+                            picked(emoji) => {
+                                // Gone with the pointer still on it: it won't say it left.
+                                root.picker-hovered = false;
+                                root.picker-shown = false;
+                                root.react(emoji);
                             }
                         }
                         // Picked: a check at the corner facing the middle.
@@ -1256,11 +1293,12 @@ component Bubble inherits Rectangle {
                 }
                 if !item.outgoing: VerticalLayout {
                     alignment: center;
-                    HoverButtons {
+                    IconButton {
+                        label: "Reply";
+                        icon: @image-url("@lucide/reply.svg");
                         visible: !item.deleted;
-                        shown: hover.has-hover;
-                        react => { picker.show(); }
-                        reply => { root.reply(); }
+                        shown: root.hovered;
+                        clicked => { root.reply(); }
                     }
                 }
             }
@@ -1294,7 +1332,7 @@ component Bubble inherits Rectangle {
             }
             if !item.deleted && !item.notice: MenuItem {
                 title: "React…";
-                activated => { picker.show(); }
+                activated => { root.picker-shown = true; }
             }
             if TextSelection.owner == root.index && TextSelection.text != "": MenuItem {
                 title: "Copy selection";
@@ -2270,7 +2308,7 @@ export component AppWindow inherits Window {
     in property <bool> media-open;
     // Gathering them.
     in property <bool> media-busy;
-    in property <[MediaRow]> media-rows;
+    in property <[AttachmentItem]> media-tiles;
     in property <[SharedItem]> media-files;
     in property <[SharedItem]> media-links;
     in-out property <int> media-tab;
@@ -3430,22 +3468,30 @@ export component AppWindow inherits Window {
                                     height: 20px;
                                 }
                             }
-                            property <bool> empty: root.media-tab == 0 ? root.media-rows.length == 0
+                            property <bool> empty: root.media-tab == 0 ? root.media-tiles.length == 0
                                 : root.media-tab == 1 ? root.media-files.length == 0 : root.media-links.length == 0;
                             if !root.media-busy && self.empty: Text {
                                 text: root.media-tab == 0 ? "No photos or videos yet." : root.media-tab == 1 ? "No files yet." : "No links yet.";
                                 horizontal-alignment: center;
                                 color: Palette.foreground.with-alpha(0.6);
                             }
-                            if root.media-tab == 0: ListView {
+                            if root.media-tab == 0: media-list := ListView {
                                 vertical-stretch: 1;
-                                for row in root.media-rows: HorizontalLayout {
-                                    spacing: 4px;
-                                    padding-bottom: 4px;
+                                // As many tiles across as fit at 110px, stretched to fill the width.
+                                property <length> gap: 4px;
+                                property <int> columns: max(1, floor((self.visible-width + self.gap) / (110px + self.gap)));
+                                property <length> tile: (self.visible-width - (self.columns - 1) * self.gap) / self.columns;
+                                for row in floor((root.media-tiles.length + media-list.columns - 1) / media-list.columns): HorizontalLayout {
+                                    spacing: media-list.gap;
+                                    padding-bottom: media-list.gap;
                                     alignment: start;
-                                    for tile in row.tiles: Rectangle {
-                                        width: 110px;
-                                        height: 110px;
+                                    for column in media-list.columns: Rectangle {
+                                        property <int> at: row * media-list.columns + column;
+                                        property <AttachmentItem> tile: root.media-tiles[self.at];
+                                        // The grid's last row may not be full.
+                                        visible: self.at < root.media-tiles.length;
+                                        width: media-list.tile;
+                                        height: media-list.tile;
                                         border-radius: 6px;
                                         clip: true;
                                         background: Palette.alternate-background;

@@ -42,8 +42,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.2 Delivery ticks
 
 1. Send a message to someone whose phone is on.
-   - Under it: ✓ when sent, ✓✓ when delivered, bold ✓✓ when they read it (if they send read
-     receipts).
+   - Under it: ✓ when sent, ✓✓ when delivered, ✓✓ on a filled pill when they read it (if they
+     send read receipts).
 2. Restart b33p; the ticks of older messages stay.
 
 ### 1.3 Typing indicators
