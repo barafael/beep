@@ -56,16 +56,18 @@ type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
 pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
+    // Kept across unlocking, linking and relinking, which take commands too.
+    let preferences = Rc::new(Cell::new(config.preferences));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
+    let (result, closed) = match unlock(&runtime, &local, &commands, &events, &preferences) {
         Ok(Some((store, tables, closed))) => (
             local.block_on(
                 &runtime,
-                session(config, store, tables, commands, events.clone()),
+                session(config, store, tables, commands, events.clone(), preferences),
             ),
             Some(closed),
         ),
@@ -159,6 +161,7 @@ fn unlock(
     local: &LocalSet,
     commands: &Inbox,
     events: &Events,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(SqliteStore, LocalStore, Closed)>, String> {
     let paths = Paths::new()?;
     let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
@@ -210,7 +213,7 @@ fn unlock(
             new,
             error: error.take(),
         });
-        let Some(password) = wait_for_password(commands) else {
+        let Some(password) = wait_for_password(commands, preferences) else {
             return Ok(None);
         };
         // The UI checks this too, but the key is the only way back into the messages, so the
@@ -248,10 +251,14 @@ fn check_new_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_password(commands: &Inbox) -> Option<Password> {
+fn wait_for_password(commands: &Inbox, preferences: &Cell<Preferences>) -> Option<Password> {
     // Nothing else can be done before the database is open, so other commands are dropped.
     commands.iter().find_map(|command| match command {
         Command::Unlock(password) => Some(password),
+        Command::Preferences(changed) => {
+            preferences.set(changed);
+            None
+        }
         _ => None,
     })
 }
@@ -318,6 +325,7 @@ async fn session(
     tables: LocalStore,
     commands: Inbox,
     events: Events,
+    preferences: Rc<Cell<Preferences>>,
 ) -> Result<(), String> {
     // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
     // shutdown, which closes `command_rx`.
@@ -344,10 +352,26 @@ async fn session(
                     .into(),
             ));
             reset(store.clone(), &paths).await?;
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(PresageError::NotYetRegisteredError) => {
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
@@ -357,7 +381,16 @@ async fn session(
         let Some((manager, pending)) = linked else {
             return Ok(());
         };
-        if !run_linked(manager, pending, &events, &tables, &mut command_rx).await {
+        if !run_linked(
+            manager,
+            pending,
+            &events,
+            &tables,
+            &mut command_rx,
+            &preferences,
+        )
+        .await
+        {
             return Ok(());
         }
         let _ = events.send(Event::Error(
@@ -366,8 +399,15 @@ async fn session(
                 .into(),
         ));
         // Linking clears the dead registration; the conversations stay.
-        linked =
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?;
+        linked = link_with_history(
+            store.clone(),
+            &config,
+            &events,
+            &mut command_rx,
+            &paths,
+            &preferences,
+        )
+        .await?;
     }
 }
 
@@ -379,12 +419,13 @@ async fn run_linked(
     events: &Events,
     tables: &LocalStore,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    preferences: &Rc<Cell<Preferences>>,
 ) -> bool {
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
         tables: tables.clone(),
-        preferences: Rc::default(),
+        preferences: preferences.clone(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
         trust: Rc::default(),
@@ -473,10 +514,17 @@ async fn link_with_history(
     events: &Events,
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
     paths: &Paths,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(Mgr, Vec<Command>)>, String> {
     loop {
         // Nothing can be done before linking, so commands are dropped until then.
-        let ui_closed = async { while commands.recv().await.is_some() {} };
+        let ui_closed = async {
+            while let Some(command) = commands.recv().await {
+                if let Command::Preferences(changed) = command {
+                    preferences.set(changed);
+                }
+            }
+        };
         let (manager, key) = tokio::select! {
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),

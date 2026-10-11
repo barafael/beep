@@ -908,12 +908,16 @@ pub enum Command {
 pub struct Config {
     /// Name shown in the phone's "Linked devices" list.
     pub device_name: String,
+    /// What the backend does on our behalf from the start, before (and whether or not) a
+    /// [`Command::Preferences`] changes it: the password prompt and linking come first.
+    pub preferences: Preferences,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             device_name: "b33p".into(),
+            preferences: Preferences::default(),
         }
     }
 }
