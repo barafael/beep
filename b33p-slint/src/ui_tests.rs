@@ -9,7 +9,7 @@ use i_slint_backend_testing::ElementHandle;
 use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::styles::fluent::{AppWindow, ConversationItem, MessageItem, Screen};
+use crate::generated::{AppWindow, ConversationItem, MessageItem, Screen};
 
 fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
     i_slint_backend_testing::init_no_event_loop();
@@ -366,7 +366,7 @@ fn clicking_a_search_result_shows_it() {
     });
     window.set_chat_search_open(true);
     window.set_chat_search_text("moon".into());
-    let result = |text: &str| crate::styles::fluent::SearchResult {
+    let result = |text: &str| crate::generated::SearchResult {
         sender: "Ann".into(),
         when: "Oct 2".into(),
         text: text.into(),
