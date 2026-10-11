@@ -504,7 +504,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     chat.set_window_focused(focused);
                     batch.fold(Update::default(), |update, event| {
                         if let Event::Error(error) = &event {
-                            tracing::error!("{error}");
+                            tracing::error!("{}", b33p_core::scrub::scrub(error));
                         }
                         update.merge(chat.apply(event))
                     })

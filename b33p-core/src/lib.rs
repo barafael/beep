@@ -17,6 +17,7 @@ mod mock;
 mod preview;
 mod qr;
 pub mod scratch;
+pub mod scrub;
 pub mod settings;
 #[cfg(feature = "signal")]
 mod signal;

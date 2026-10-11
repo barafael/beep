@@ -45,7 +45,9 @@ use crate::{
     Reaction, Style, StyleRange, apply_reaction, attachments,
     format::{self, RangeValue, WireRange},
     local::LocalStore,
-    now_millis, transfer,
+    now_millis,
+    scrub::scrub,
+    transfer,
     vault::{self, KeySource, KeyringKey},
 };
 
@@ -419,7 +421,7 @@ async fn run_linked(
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
-            warn!(%error, "command failed");
+            warn!(error = %scrub(&error), "command failed");
             let _ = events.send(Event::Error(error));
         }
     }
@@ -428,7 +430,7 @@ async fn run_linked(
             command = command_rx.recv() => match command {
                 Some(command) => {
                     if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
-                        warn!(%error, "command failed");
+                        warn!(error = %scrub(&error), "command failed");
                         let _ = events.send(Event::Error(error));
                     }
                 }
@@ -520,7 +522,7 @@ async fn link_with_history(
             }
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
-                warn!(%error, "message history transfer failed");
+                warn!(error = %scrub(&error), "message history transfer failed");
                 let _ = events.send(Event::Error(format!(
                     "{error} Link this device again to retry."
                 )));
@@ -606,6 +608,13 @@ fn conversation_id(thread: &Thread) -> ConversationId {
         Thread::Contact(id) => format!("c:{}", id.service_id_string()),
         Thread::Group(key) => format!("g:{}", hex::encode(key)),
     })
+}
+
+/// A short, stable name for `id` in the log. The ID itself names the contact, or holds the
+/// group's master key, so it must not be written out.
+fn tag(id: &ConversationId) -> String {
+    use sha2::Digest as _;
+    hex::encode(&sha2::Sha256::digest(id.0.as_bytes())[..4])
 }
 
 /// Remembers how to reach a conversation and describes it for the UI; settings are added by
@@ -1721,7 +1730,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
                 }
                 None => {
                     failed += 1;
-                    debug!(conversation = id.0, "could not decode avatar");
+                    debug!(conversation = %tag(&id), "could not decode avatar");
                 }
             },
             Ok(None) => none += 1,
@@ -1731,7 +1740,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             }
             Err(error) => {
                 failed += 1;
-                debug!(conversation = id.0, %error, "failed to fetch avatar");
+                debug!(conversation = %tag(&id), %error, "failed to fetch avatar");
             }
         }
     }
@@ -1838,7 +1847,7 @@ async fn deliver(
         let held = held_members(manager, ctx, key).await;
         if !held.is_empty() {
             return Err(format!(
-                "Not sent: your safety number with {} changed since you verified it. Confirm it \
+                "Not sent: your safety number with “{}” changed since you verified it. Confirm it \
                  in their chat first.",
                 held.join(", ")
             ));
@@ -2613,7 +2622,7 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
             .ok()
             .flatten()
             .unwrap_or_default();
-        info!(title = conversation.title, "new conversation");
+        info!(conversation = %tag(&id), "new conversation");
         ctx.events.send(Event::Conversations(vec![conversation]));
     }
     id
