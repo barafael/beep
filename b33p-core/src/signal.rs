@@ -1724,7 +1724,7 @@ async fn sweep_expired(manager: Mgr, ctx: Ctx) {
             }
             deleted.push((conversation, message));
         }
-        if let Err(error) = ctx.tables.forget_expired(&deleted).await {
+        if let Err(error) = ctx.tables.forget(&deleted).await {
             warn!(%error, "failed to forget disappearing messages");
             tokio::time::sleep(RETRY).await;
             continue;
@@ -2501,8 +2501,8 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             author_id: author.service_id_string(),
             timestamp,
         };
-        if let Err(error) = ctx.tables.record_deleted(&id, &target).await {
-            warn!(%error, "failed to remember a deletion");
+        if let Err(error) = erase_deleted(manager, ctx, &id, &thread, &target).await {
+            warn!(%error, "failed to erase a deleted message");
         }
         return events.send(Event::Deleted {
             conversation: id,
@@ -3054,6 +3054,45 @@ fn author_of(manager: &Mgr, content: &Content) -> ServiceId {
     } else {
         content.metadata.sender
     }
+}
+
+/// Why: deleted content must not stay on disk (cf. CVE-2018-14023).
+async fn erase_deleted(
+    manager: &Mgr,
+    ctx: &Ctx,
+    conversation: &ConversationId,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Result<(), String> {
+    let mut store = manager.store().clone();
+    erase_from_store(&mut store, thread, target).await?;
+    ctx.tables
+        .record_deleted(conversation, target)
+        .await
+        .map_err(|error| format!("failed to save: {error}"))
+}
+
+/// The store keys messages by (thread, timestamp); the sender check keeps another author's
+/// message at the same time.
+async fn erase_from_store(
+    store: &mut SqliteStore,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Result<bool, String> {
+    let stored = store
+        .message(thread, target.timestamp)
+        .await
+        .map_err(|e| format!("failed to look up a deleted message: {e}"))?;
+    let Some(content) = stored else {
+        return Ok(false);
+    };
+    if content.metadata.sender.service_id_string() != target.author_id {
+        return Ok(false);
+    }
+    store
+        .delete_message(thread, target.timestamp)
+        .await
+        .map_err(|e| format!("failed to erase a deleted message: {e}"))
 }
 
 /// How the UI names someone: "You" for us.
@@ -3740,10 +3779,7 @@ async fn handle_command(
                 ..Default::default()
             };
             send_data(manager, ctx, &thread, message, now_millis()).await?;
-            ctx.tables
-                .record_deleted(&conversation, &target)
-                .await
-                .map_err(db)?;
+            erase_deleted(manager, ctx, &conversation, &thread, &target).await?;
         }
         Command::Delete {
             conversation,
@@ -3756,6 +3792,10 @@ async fn handle_command(
                 .delete_message(&thread, target.timestamp)
                 .await
                 .map_err(|e| format!("failed to delete: {e}"))?;
+            ctx.tables
+                .forget(&[(conversation, target)])
+                .await
+                .map_err(db)?;
         }
         Command::Typing {
             conversation,
@@ -4901,6 +4941,75 @@ mod tests {
         assert!(!from_our_account(own, &content(other, sync())));
         assert!(from_our_account(own, &content(other, data())));
         assert!(from_our_account(own, &content(own, data())));
+    }
+
+    #[test]
+    fn deleting_for_everyone_erases_only_the_authors_message() {
+        use presage::libsignal_service::{content::Metadata, push_service::DEFAULT_DEVICE_ID};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut store = SqliteStore::open(":memory:", OnNewIdentity::Trust)
+                .await
+                .unwrap();
+            let who = |n: u8| {
+                ServiceId::parse_from_service_id_string(&format!(
+                    "00000000-0000-0000-0000-0000000000{n:02}"
+                ))
+                .unwrap()
+            };
+            let (alice, bob) = (who(1), who(2));
+            let thread = Thread::Contact(alice);
+            let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis).unwrap();
+            store
+                .save_message(
+                    &thread,
+                    Content {
+                        metadata: Metadata {
+                            sender: alice,
+                            destination: bob,
+                            sender_device: *DEFAULT_DEVICE_ID,
+                            pni_verified: None,
+                            client_timestamp: at(10),
+                            server_timestamp: at(11),
+                            needs_receipt: false,
+                            unidentified_sender: false,
+                            was_plaintext: false,
+                            server_guid: None,
+                        },
+                        body: ContentBody::DataMessage(DataMessage {
+                            body: Some("secret".into()),
+                            timestamp: Some(10),
+                            ..Default::default()
+                        }),
+                    },
+                )
+                .await
+                .unwrap();
+            let named = |author: ServiceId| MessageRef {
+                author_id: author.service_id_string(),
+                timestamp: 10,
+            };
+            assert!(
+                !erase_from_store(&mut store, &thread, &named(bob))
+                    .await
+                    .unwrap()
+            );
+            assert!(store.message(&thread, 10).await.unwrap().is_some());
+            assert!(
+                erase_from_store(&mut store, &thread, &named(alice))
+                    .await
+                    .unwrap()
+            );
+            assert!(store.message(&thread, 10).await.unwrap().is_none());
+            assert!(
+                !erase_from_store(&mut store, &thread, &named(alice))
+                    .await
+                    .unwrap()
+            );
+        });
     }
 
     /// What the store saves when a contact's safety number changes is recognised as that note
