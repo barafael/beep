@@ -609,8 +609,13 @@ component AttachmentView inherits VerticalLayout {
     // Outgoing bubbles use the accent colour, so their text is white for contrast with any.
     property <color> ink: outgoing ? white : Palette.alternate-foreground;
     spacing: 4px;
-    // The list only creates rows that are on screen, so this downloads only what is seen.
+    // The list only creates rows that are on screen, so this downloads only what is seen. A
+    // view kept for another attachment (the next story, a reused row) fetches that one.
     init => {
+        if root.item.fetch { root.fetch(root.item.id); }
+    }
+    property <string> shown: root.item.id;
+    changed shown => {
         if root.item.fetch { root.fetch(root.item.id); }
     }
 
@@ -1097,8 +1102,9 @@ component Bubble inherits Rectangle {
                                     }
                                 }
                             }
-                            // Once per run, on its last message; always if it changed or goes away.
-                            if item.last || item.edited || item.expires != "": HorizontalLayout {
+                            // Once per run, on its last message; always if it changed, goes away or
+                            // failed to go out.
+                            if item.last || item.edited || item.expires != "" || item.delivery == -2: HorizontalLayout {
                                 alignment: end;
                                 spacing: 4px;
                                 property <color> faint: root.ink.with-alpha(0.65);
@@ -2023,7 +2029,8 @@ export component AppWindow inherits Window {
     in property <[CalendarYear]> calendar;
     in property <string> calendar-summary;
     callback open-calendar;
-    changed selected => { root.calendar-open = false; }
+    // By id: the open chat's place in the list changes as chats move.
+    changed selected-id => { root.calendar-open = false; }
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -2245,8 +2252,13 @@ export component AppWindow inherits Window {
         clipboard.copy();
     }
 
+    // Bumped when Esc closed something: what had the focus may be gone with it, and keys would
+    // then go nowhere until a click.
+    in-out property <int> escaped;
+    changed escaped => { keys.focus(); }
+
     // Shortcuts that work wherever the focus is; see `shortcut`.
-    FocusScope {
+    keys := FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     capture-key-pressed(event) => {
@@ -2313,9 +2325,12 @@ export component AppWindow inherits Window {
         }
 
         if root.screen == Screen.password: PasswordScreen {
-            // Fades in, as each screen does.
+            // Fades in, as each screen does; ready to type into.
             opacity: 0;
-            init => { self.opacity = 1; }
+            init => {
+                self.opacity = 1;
+                self.focus();
+            }
             animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
             new: root.password-new;
             error: root.password-error;
@@ -2780,7 +2795,12 @@ export component AppWindow inherits Window {
                                 property <bool> follow: true;
                                 // By id: the open chat's place in the list changes as chats move.
                                 property <string> conversation: root.selected-id;
-                                changed conversation => { self.follow = true; }
+                                // Back to the left too: a wide row once scrolled sideways would
+                                // leave the next chat's rows out of view.
+                                changed conversation => {
+                                    self.follow = true;
+                                    self.content-x = 0;
+                                }
                                 property <int> scroll-to-end-serial: root.scroll-to-end-serial;
                                 changed scroll-to-end-serial => {
                                     self.follow = true;
@@ -3073,11 +3093,28 @@ export component AppWindow inherits Window {
                                         if !chat.request && !chat.blocked && !chat.left: SettingRow {
                                             label: "Disappearing messages";
                                             hint: chat.timer > 0 && TimerChoices.index-of(chat.timer) < 0 ? "Set to " + chat.timer-label : "";
-                                            ComboBox {
+                                            timer-box := ComboBox {
                                                 width: 200px;
                                                 model: TimerChoices.labels;
                                                 current-index: TimerChoices.index-of(chat.timer);
-                                                selected => { root.set-timer(chat.id, TimerChoices.seconds[self.current-index]); }
+                                                // Each change is a message to every member: only the one
+                                                // stopped at goes, not each passed with the arrows or wheel.
+                                                property <int> pending: -1;
+                                                property <duration> picked-at;
+                                                selected => {
+                                                    self.pending = self.current-index;
+                                                    self.picked-at = animation-tick();
+                                                }
+                                            }
+                                            Timer {
+                                                interval: 100ms;
+                                                running: timer-box.pending >= 0;
+                                                triggered => {
+                                                    if animation-tick() - timer-box.picked-at >= 500ms {
+                                                        root.set-timer(chat.id, TimerChoices.seconds[timer-box.pending]);
+                                                        timer-box.pending = -1;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -3437,7 +3474,8 @@ export component AppWindow inherits Window {
                                     mouse-cursor: pointer;
                                     clicked => {
                                         root.pick-mention(index);
-                                        composer.focus();
+                                        // Back to writing, after the name.
+                                        focus-composer-timer.running = true;
                                     }
                                 }
                                 Text {
@@ -3741,6 +3779,9 @@ export component AppWindow inherits Window {
                         changed forwarding => {
                             if !self.forwarding { self.focus-if-writable(); }
                         }
+                        // And once Esc closed what was in front (which may have had the focus).
+                        property <int> escaped: root.escaped;
+                        changed escaped => { self.focus-if-writable(); }
                     composer-row := HorizontalLayout {
                         property <length> line: one-line-measure.preferred-height;
                         // The field's height for one line: the send button's, unless the text is
@@ -4051,6 +4092,8 @@ export component AppWindow inherits Window {
                                         key-pressed(event) => {
                                             if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
                                                 root.pick-mention(0);
+                                                // The name ends the draft: on after it.
+                                                self.set-selection-offsets(2147483647, 2147483647);
                                                 return accept;
                                             }
                                             if event.text == Key.Return && !event.modifiers.shift {
