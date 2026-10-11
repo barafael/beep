@@ -24,6 +24,10 @@ use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Event, 
 
 /// Content type Signal uses for the full text of long messages.
 pub(crate) const LONG_TEXT: &str = "text/x-signal-plain";
+/// Longer long text isn't fetched: anyone can send one, and the chat would show all of it.
+const LONG_TEXT_FETCHED: u64 = 1024 * 1024;
+/// How much of a long text is shown, as in Signal's desktop app.
+const LONG_TEXT_SHOWN: usize = 64 * 1024;
 
 /// Longest edge of pictures sent to the UI: a 320 px bubble at 2x.
 const PICTURE_EDGE: u32 = 640;
@@ -163,12 +167,13 @@ pub(crate) async fn fetch(
     limit: Rc<Semaphore>,
 ) {
     let content = async {
+        if attachment.kind == AttachmentKind::LongText && attachment.size > LONG_TEXT_FETCHED {
+            return Err("This message is too long to show.".to_string());
+        }
         let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
         let data = download(servers, &attachment).await?;
         match attachment.kind {
-            AttachmentKind::LongText => Ok(AttachmentContent::Text(
-                String::from_utf8_lossy(&data).into_owned(),
-            )),
+            AttachmentKind::LongText => Ok(AttachmentContent::Text(shown_text(&data))),
             AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                 Ok(AttachmentContent::Audio(data.into()))
             }
@@ -194,6 +199,16 @@ pub(crate) async fn fetch(
     });
 }
 
+/// What a long text shows: up to [`LONG_TEXT_SHOWN`] bytes of it, cut between characters.
+fn shown_text(data: &[u8]) -> String {
+    let text = String::from_utf8_lossy(data);
+    if text.len() <= LONG_TEXT_SHOWN {
+        return text.into_owned();
+    }
+    let end = text.floor_char_boundary(LONG_TEXT_SHOWN);
+    format!("{}…", &text[..end])
+}
+
 /// Downloads an attachment into the downloads folder and reports where as
 /// [`Event::AttachmentSaved`].
 pub(crate) async fn save(
@@ -208,6 +223,7 @@ pub(crate) async fn save(
         let path = free_path(&attachment)?;
         std::fs::write(&path, data)
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        mark_downloaded(&path);
         Ok(path)
     }
     .await;
@@ -311,7 +327,8 @@ pub(crate) fn clean_opened() {
 }
 
 /// File types the desktop would run rather than show, by extension: Signal Desktop's list,
-/// plus what Linux desktops and shells run. The sender names the file, so "Open" on one of
+/// plus what else Windows runs or mounts (shortcuts, disk images), and what macOS and Linux
+/// desktops and shells run. The sender names the file, so "Open" on one of
 /// these would run a program of the sender's choosing; they can still be saved, and run on
 /// purpose from there.
 #[rustfmt::skip]
@@ -319,29 +336,48 @@ const DANGEROUS_EXTENSIONS: &[&str] = &[
     "ade",
     "adp",
     "apk",
+    "app",
     "appimage",
     "application",
     "appref-ms",
+    "appx",
+    "appxbundle",
+    "bash",
     "bat",
     "cab",
     "chm",
     "cmd",
     "com",
+    "command",
     "cpl",
+    "deb",
     "desktop",
     "diagcab",
+    "diagcfg",
+    "diagpkg",
     "dll",
     "dmg",
     "exe",
+    "fileloc",
+    "flatpakref",
+    "flatpakrepo",
     "hta",
+    "img",
+    "inetloc",
+    "inf",
     "ins",
+    "iso",
     "isp",
     "jar",
     "js",
     "jse",
     "lib",
+    "library-ms",
     "lnk",
     "mde",
+    "mht",
+    "mhtml",
+    "mpkg",
     "msc",
     "msi",
     "msix",
@@ -350,26 +386,75 @@ const DANGEROUS_EXTENSIONS: &[&str] = &[
     "mst",
     "nsh",
     "pif",
+    "pkg",
+    "pl",
     "ps1",
+    "psc1",
     "psm1",
+    "psrc",
     "py",
     "pyw",
+    "rb",
     "reg",
+    "rpm",
     "run",
+    "scf",
     "scr",
     "sct",
+    "search-ms",
+    "searchconnector-ms",
+    "settingcontent-ms",
     "sh",
     "shb",
+    "snap",
     "sys",
+    "terminal",
+    "tool",
     "url",
     "vb",
     "vbe",
     "vbs",
+    "vhd",
+    "vhdx",
     "vxd",
+    "webloc",
+    "website",
+    "workflow",
     "wsc",
     "wsf",
     "wsh",
+    "xbap",
 ];
+
+/// Marks a received file as downloaded from the internet, as browsers do, so that Windows and
+/// macOS warn before running it (Mark of the Web, Gatekeeper's quarantine). Linux desktops
+/// have no such mark.
+fn mark_downloaded(path: &std::path::Path) {
+    #[cfg(windows)]
+    let marked = {
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        // Zone 3: the internet.
+        std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+    };
+    #[cfg(target_os = "macos")]
+    let marked = {
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        // Downloaded (0081), when, by whom.
+        let value = format!("0081;{:08x};b33p;", since.as_secs());
+        xattr::set(path, "com.apple.quarantine", value.as_bytes())
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let marked: std::io::Result<()> = {
+        let _ = path;
+        Ok(())
+    };
+    if let Err(error) = marked {
+        tracing::debug!(%error, "couldn't mark a file as downloaded");
+    }
+}
 
 /// Whether opening a file called `name` with the desktop's default app could run it.
 pub(crate) fn is_dangerous(name: &str) -> bool {
@@ -407,6 +492,7 @@ pub(crate) async fn open(
         let path = dir.join(name);
         crate::vault::write_private(&path, &data)
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        mark_downloaded(&path);
         open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
     }
     .await;
@@ -514,6 +600,17 @@ fn extension(content_type: &str) -> &str {
 mod tests {
     use super::*;
 
+    /// Anyone can send a long text, so only the start of a very long one is shown.
+    #[test]
+    fn long_text_shows_its_start() {
+        assert_eq!(shown_text(b"short"), "short");
+        let long = "é".repeat(LONG_TEXT_SHOWN);
+        let shown = shown_text(long.as_bytes());
+        assert!(shown.len() <= LONG_TEXT_SHOWN + '…'.len_utf8());
+        assert!(shown.ends_with("é…"));
+        assert_eq!(shown_text(&[0xff]), "\u{fffd}");
+    }
+
     fn pointer(content_type: &str, flags: u32) -> AttachmentPointer {
         AttachmentPointer {
             attachment_identifier: Some(AttachmentIdentifier::CdnKey("abc".into())),
@@ -564,6 +661,11 @@ mod tests {
             "x.sh",
             "notes.js",
             "a.lnk",
+            "share.scf",
+            "disk.iso",
+            "page.mht",
+            "open.SettingContent-ms",
+            "site.webloc",
         ] {
             assert!(is_dangerous(name), "{name}");
         }

@@ -109,20 +109,28 @@ pub fn decode(
     names: &[(u32, String)],
 ) -> (String, Vec<StyleRange>) {
     let mut out = String::with_capacity(body.len());
+    // Looked up by position rather than searched per character: senders choose how many
+    // ranges there are. The first range or name at a position counts.
+    let mut mentions = std::collections::HashMap::new();
+    for range in ranges {
+        if matches!(range.value, RangeValue::Mention(_)) {
+            mentions.entry(range.start).or_insert(range.length);
+        }
+    }
+    let mut named = std::collections::HashMap::new();
+    for (start, name) in names {
+        named.entry(*start).or_insert(name.as_str());
+    }
     // Where each UTF-16 position of `body` ended up in `out`.
     let mut at = Vec::with_capacity(body.len() + 1);
     let mut position = 0u32;
     let mut skip_until = 0u32;
     for c in body.chars() {
-        let mention = ranges
-            .iter()
-            .find(|r| r.start == position && matches!(r.value, RangeValue::Mention(_)));
         at.extend(std::iter::repeat_n(out.len(), c.len_utf16()));
-        if let Some(mention) = mention {
-            let name = names.iter().find(|(start, _)| *start == position);
+        if let Some(length) = mentions.get(&position) {
             out.push('@');
-            out.push_str(name.map_or("…", |(_, name)| name));
-            skip_until = position + mention.length;
+            out.push_str(named.get(&position).unwrap_or(&"…"));
+            skip_until = position.saturating_add(*length);
         }
         if position >= skip_until {
             match c {
@@ -195,20 +203,41 @@ pub fn encode(body: &str, styles: &[StyleRange], mentions: &[Mention]) -> (Strin
     (out, ranges)
 }
 
+/// A name someone chose for themselves or a group (or a page title), fit to show on one line
+/// among other text: line breaks and other control characters become spaces, and direction
+/// overrides and isolates go, which would otherwise reorder the text around the name.
+pub fn name(text: &str) -> String {
+    let directional = |c: char| matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let line_break = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    let spaced: String = text
+        .chars()
+        .filter(|c| !directional(*c))
+        .map(|c| if line_break(c) { ' ' } else { c })
+        .collect();
+    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
 pub fn find_url(text: &str) -> Option<(usize, usize)> {
-    let start = ["https://", "http://"]
-        .iter()
-        .filter_map(|scheme| text.find(scheme))
-        .min()?;
-    let tail = &text[start..];
-    let length = tail
-        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
-        .unwrap_or(tail.len());
-    let url =
-        tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
-    // Just a scheme is no address.
-    (url.len() > "https://".len()).then_some((start, start + url.len()))
+    let mut from = 0;
+    loop {
+        let start = from
+            + ["https://", "http://"]
+                .iter()
+                .filter_map(|scheme| text[from..].find(scheme))
+                .min()?;
+        let tail = &text[start..];
+        let length = tail
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+            .unwrap_or(tail.len());
+        let url = tail[..length]
+            .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
+        // Just a scheme is no address, but one may follow it.
+        if url.len() > "https://".len() {
+            return Some((start, start + url.len()));
+        }
+        from = start + "http".len();
+    }
 }
 
 /// The web addresses in `text`, in order.
@@ -225,6 +254,34 @@ pub fn links(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_stay_on_their_line_and_in_their_place() {
+        assert_eq!(name("Ann"), "Ann");
+        assert_eq!(name("  Ann\nMarie\r\n\tB. "), "Ann Marie B.");
+        // "Bob" written to look like "gnp.exe" read backwards.
+        assert_eq!(name("Bob \u{202e}exe.gnp\u{202c}"), "Bob exe.gnp");
+        assert_eq!(name("\u{2067}علي\u{2069}"), "علي");
+        assert_eq!(name("\u{2028}"), "");
+    }
+
+    /// Ranges come from the sender, whatever their numbers.
+    #[test]
+    fn decoding_takes_any_ranges() {
+        let mention = |start, length| WireRange {
+            start,
+            length,
+            value: RangeValue::Mention("id".into()),
+        };
+        let (text, _) = decode("\u{FFFC} hi", &[mention(0, u32::MAX)], &[]);
+        assert_eq!(text, "@…");
+        let (text, _) = decode(
+            "\u{FFFC} hi",
+            &[mention(0, 1), mention(0, 5)],
+            &[(0, "Ann".into()), (0, "Bob".into())],
+        );
+        assert_eq!(text, "@Ann hi");
+    }
 
     #[test]
     fn mentions_and_styles_survive_the_round_trip() {
