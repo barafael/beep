@@ -23,10 +23,9 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
-#   and, not proposed yet: no panic on a group master key of the wrong length
-#   (pr/received-no-panic), only a message's sender deletes or edits it
-#   (pr/sender-owns-message), write transactions take the lock up front
-#   (pr/immediate-transactions)
+#   #452 no panic on a group master key of the wrong length
+#   #453 only a message's sender deletes or edits it
+#   #454 write transactions take the lock up front
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
 presage = { git = "https://github.com/barafael/presage", rev = "af7ddf9e5e21c8aca35ec78e0019b8e7ae7da9ab" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
@@ -52,9 +51,8 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
 # #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and
-# #476 (send a sync message to ourselves once, not twice), and, not proposed yet, a read timeout
-# instead of one for the whole request, so the history download isn't cut off
-# (pr/transfer-read-timeout).
+# #476 (send a sync message to ourselves once, not twice) and #478 (a read timeout instead of
+# one for the whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
 libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "b56ff531c368ed24dbac9706d050316cb0d5397a" }
