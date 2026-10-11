@@ -1290,6 +1290,10 @@ impl ChatState {
             return (None, Update::default());
         };
         self.typing_sent = None;
+        // An edit of a message that has gone since is no edit.
+        if self.editing().is_none() {
+            self.editing = None;
+        }
         let (body, styles) = format::parse(text.trim());
         let mentions = mentions_in(&body, &std::mem::take(&mut self.draft_mentions));
         if let Some(target) = self.editing.take() {
@@ -4443,6 +4447,26 @@ mod tests {
         });
         assert_eq!(update.messages, MessagesUpdate::Reset);
         assert_eq!(state.messages().len(), 0);
+    }
+
+    /// Once the message being edited is gone, the composer writes a new message again.
+    #[test]
+    fn an_edit_of_a_gone_message_is_a_new_message() {
+        let mut state = state();
+        state.select(&id("a"));
+        state.apply(Event::Message(ChatMessage {
+            timestamp: now_millis(),
+            ..message("a", "You", 0, true)
+        }));
+        let ours = state.messages().position(|m| m.message.outgoing).unwrap();
+        assert!(state.edit(ours).is_some());
+        let target = state.editing().unwrap().reference();
+        state.apply(Event::Expired {
+            conversation: id("a"),
+            targets: vec![target],
+        });
+        assert!(state.editing().is_none());
+        assert!(matches!(state.compose("new").0, Some(Command::Send { .. })));
     }
 
     #[test]

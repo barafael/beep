@@ -69,12 +69,35 @@ fn highlight_markdown(text: &str, found: Range<usize>, color: slint::Color) -> O
 
 /// Escapes `text` for Markdown, so that it all shows as typed.
 fn escape(text: &str, out: &mut String) {
+    let mut run = 0;
     for c in text.chars() {
-        if c.is_ascii_punctuation() {
-            out.push('\\');
-        }
-        out.push(markdown_char(c));
+        breakable(c, &mut run, out);
+        push_escaped(c, out);
     }
+}
+
+fn push_escaped(c: char, out: &mut String) {
+    if c.is_ascii_punctuation() {
+        out.push('\\');
+    }
+    out.push(markdown_char(c));
+}
+
+/// Lets a line break inside a word longer than a bubble is wide (a hash, a key, an address)
+/// by putting an invisible break opportunity before every [`WORD_PART`]th character of it:
+/// otherwise the bubble would be as wide as that word, past the chat's edge. `run` counts the
+/// word's characters so far.
+fn breakable(c: char, run: &mut usize, out: &mut String) {
+    /// No word that wraps would be this long.
+    const WORD_PART: usize = 24;
+    if c.is_whitespace() {
+        *run = 0;
+        return;
+    }
+    if *run > 0 && run.is_multiple_of(WORD_PART) {
+        out.push('\u{200b}');
+    }
+    *run += 1;
 }
 
 /// See [`rich_text`].
@@ -210,7 +233,11 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             };
             markdown.push_str(&fence);
             markdown.push_str(pad);
-            markdown.extend(text.chars().map(markdown_char));
+            let mut run = 0;
+            for c in text.chars() {
+                breakable(c, &mut run, &mut markdown);
+                markdown.push(markdown_char(c));
+            }
             markdown.push_str(pad);
             markdown.push_str(&fence);
         } else if let Some(url) = url {
@@ -219,7 +246,9 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             markdown.push('[');
             escape(text, &mut markdown);
             markdown.push_str("](<");
-            escape(url, &mut markdown);
+            for c in url.chars() {
+                push_escaped(c, &mut markdown);
+            }
             markdown.push_str(">)");
         } else {
             escape(text, &mut markdown);
@@ -240,8 +269,9 @@ mod tests {
 
     use super::*;
 
+    /// The text shown, without the invisible break opportunities.
     fn raw(text: &slint::StyledText) -> String {
-        i_slint_core::styled_text::get_raw_text(text).into_owned()
+        i_slint_core::styled_text::get_raw_text(text).replace('\u{200b}', "")
     }
 
     #[test]
@@ -333,7 +363,9 @@ mod tests {
     }
 
     fn tidy(text: &str) -> String {
-        let text = text.replace('\u{2060}', "").replace(['\u{a0}', '\r'], " ");
+        let text = text
+            .replace(['\u{2060}', '\u{200b}'], "")
+            .replace(['\u{a0}', '\r'], " ");
         // Trailing spaces of a line don't show, and CommonMark drops them.
         let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches(' ')).collect();
         lines.join("\n").trim_end().to_owned()
@@ -454,6 +486,30 @@ mod tests {
                 prop_assert_eq!(shown(&paragraphs.unwrap()), typed, "{:?}", markdown);
             }
         }
+    }
+
+    /// A word longer than a bubble is wide can break, so the bubble stays within the chat; an
+    /// address in it still leads where it says.
+    #[test]
+    fn long_words_can_break() {
+        let hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        let url = format!("https://example.org/{hash}");
+        let body = format!("sha256: {hash} {url}");
+        let mono = [StyleRange {
+            start: 0,
+            end: 6,
+            style: Style::Monospace,
+        }];
+        let markdown = markdown(&body, &mono, true);
+        let paragraphs = parse(&markdown).unwrap();
+        let text = &paragraphs[0].text;
+        assert!(text.contains('\u{200b}'));
+        assert!(
+            text.split(['\u{200b}', ' '])
+                .all(|part| part.chars().count() <= 24)
+        );
+        assert_eq!(paragraphs[0].links[0].1, url);
+        assert_eq!(shown(&paragraphs), body);
     }
 
     /// The reviewed ways a link could lead somewhere other than it shows.

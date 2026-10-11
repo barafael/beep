@@ -558,15 +558,9 @@ component ConversationRow inherits Rectangle {
                 }
                 // Always there: it grows in with the first unread message and shrinks away once
                 // read (a row drawn with it is simply there).
+                // No `changed` handler here: rows come and go as the list changes, and Slint (1.18)
+                // can run one for a row already dropped, which aborts.
                 Rectangle {
-                    // The last count, so it doesn't read 0 while shrinking away.
-                    property <int> unread: item.unread;
-                    property <int> shown: item.unread;
-                    changed unread => {
-                        if self.unread > 0 {
-                            self.shown = self.unread;
-                        }
-                    }
                     width: item.unread > 0 ? max(18px, badge.preferred-width + 10px) : 0px;
                     animate width { duration: 150ms * Motion.scale; easing: ease-out; }
                     opacity: item.unread > 0 ? 1 : 0;
@@ -577,7 +571,8 @@ component ConversationRow inherits Rectangle {
                     // Muted chats count quietly.
                     background: item.muted ? Palette.foreground.with-alpha(0.35) : Palette.accent-background;
                     badge := Text {
-                        text: parent.shown;
+                        // Nothing while shrinking away, rather than 0.
+                        text: item.unread > 0 ? item.unread : "";
                         // White on the accent, whatever the style's accent text colour is.
                         color: white;
                         font-size: 0.75rem;
@@ -610,6 +605,7 @@ component AttachmentView inherits VerticalLayout {
     property <color> ink: outgoing ? white : Palette.alternate-foreground;
     spacing: 4px;
     // The list only creates rows that are on screen, so this downloads only what is seen.
+    // (A view kept for another attachment, like the next story, is told by its owner.)
     init => {
         if root.item.fetch { root.fetch(root.item.id); }
     }
@@ -1097,8 +1093,9 @@ component Bubble inherits Rectangle {
                                     }
                                 }
                             }
-                            // Once per run, on its last message; always if it changed or goes away.
-                            if item.last || item.edited || item.expires != "": HorizontalLayout {
+                            // Once per run, on its last message; always if it changed, goes away or
+                            // failed to go out.
+                            if item.last || item.edited || item.expires != "" || item.delivery == -2: HorizontalLayout {
                                 alignment: end;
                                 spacing: 4px;
                                 property <color> faint: root.ink.with-alpha(0.65);
@@ -2023,7 +2020,8 @@ export component AppWindow inherits Window {
     in property <[CalendarYear]> calendar;
     in property <string> calendar-summary;
     callback open-calendar;
-    changed selected => { root.calendar-open = false; }
+    // By id: the open chat's place in the list changes as chats move.
+    changed selected-id => { root.calendar-open = false; }
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -2245,8 +2243,13 @@ export component AppWindow inherits Window {
         clipboard.copy();
     }
 
+    // Bumped when Esc closed something: what had the focus may be gone with it, and keys would
+    // then go nowhere until a click.
+    in-out property <int> escaped;
+    changed escaped => { keys.focus(); }
+
     // Shortcuts that work wherever the focus is; see `shortcut`.
-    FocusScope {
+    keys := FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     capture-key-pressed(event) => {
@@ -2313,9 +2316,12 @@ export component AppWindow inherits Window {
         }
 
         if root.screen == Screen.password: PasswordScreen {
-            // Fades in, as each screen does.
+            // Fades in, as each screen does; ready to type into.
             opacity: 0;
-            init => { self.opacity = 1; }
+            init => {
+                self.opacity = 1;
+                self.focus();
+            }
             animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
             new: root.password-new;
             error: root.password-error;
@@ -2774,13 +2780,26 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            load-older-timer := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    root.load-older();
+                                }
+                            }
                             message-list := ListView {
                                 // Follow new messages only while the newest one is in view, so reading
                                 // older messages isn't interrupted. Opening a chat starts at the bottom.
                                 property <bool> follow: true;
                                 // By id: the open chat's place in the list changes as chats move.
                                 property <string> conversation: root.selected-id;
-                                changed conversation => { self.follow = true; }
+                                // Back to the left too: a wide row once scrolled sideways would
+                                // leave the next chat's rows out of view.
+                                changed conversation => {
+                                    self.follow = true;
+                                    self.content-x = 0;
+                                }
                                 property <int> scroll-to-end-serial: root.scroll-to-end-serial;
                                 changed scroll-to-end-serial => {
                                     self.follow = true;
@@ -2822,9 +2841,11 @@ export component AppWindow inherits Window {
                                         self.content-y = min(0px, self.visible-height - self.content-height);
                                         end-timer.running = true;
                                     }
-                                    // Nothing to scroll yet: there may be more before.
+                                    // Nothing to scroll yet: there may be more before. Asked for once
+                                    // the change handlers ran: Rust changes the rows, which mustn't
+                                    // happen while Slint is still running them.
                                     if self.content-height < self.visible-height {
-                                        root.load-older();
+                                        load-older-timer.running = true;
                                     }
                                     if self.settling > 0 {
                                         self.settling -= 1;
@@ -3073,11 +3094,28 @@ export component AppWindow inherits Window {
                                         if !chat.request && !chat.blocked && !chat.left: SettingRow {
                                             label: "Disappearing messages";
                                             hint: chat.timer > 0 && TimerChoices.index-of(chat.timer) < 0 ? "Set to " + chat.timer-label : "";
-                                            ComboBox {
+                                            timer-box := ComboBox {
                                                 width: 200px;
                                                 model: TimerChoices.labels;
                                                 current-index: TimerChoices.index-of(chat.timer);
-                                                selected => { root.set-timer(chat.id, TimerChoices.seconds[self.current-index]); }
+                                                // Each change is a message to every member: only the one
+                                                // stopped at goes, not each passed with the arrows or wheel.
+                                                property <int> pending: -1;
+                                                property <duration> picked-at;
+                                                selected => {
+                                                    self.pending = self.current-index;
+                                                    self.picked-at = animation-tick();
+                                                }
+                                            }
+                                            Timer {
+                                                interval: 100ms;
+                                                running: timer-box.pending >= 0;
+                                                triggered => {
+                                                    if animation-tick() - timer-box.picked-at >= 500ms {
+                                                        root.set-timer(chat.id, TimerChoices.seconds[timer-box.pending]);
+                                                        timer-box.pending = -1;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -3437,7 +3475,8 @@ export component AppWindow inherits Window {
                                     mouse-cursor: pointer;
                                     clicked => {
                                         root.pick-mention(index);
-                                        composer.focus();
+                                        // Back to writing, after the name.
+                                        focus-composer-timer.running = true;
                                     }
                                 }
                                 Text {
@@ -3741,6 +3780,9 @@ export component AppWindow inherits Window {
                         changed forwarding => {
                             if !self.forwarding { self.focus-if-writable(); }
                         }
+                        // And once Esc closed what was in front (which may have had the focus).
+                        property <int> escaped: root.escaped;
+                        changed escaped => { self.focus-if-writable(); }
                     composer-row := HorizontalLayout {
                         property <length> line: one-line-measure.preferred-height;
                         // The field's height for one line: the send button's, unless the text is
@@ -4051,6 +4093,8 @@ export component AppWindow inherits Window {
                                         key-pressed(event) => {
                                             if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
                                                 root.pick-mention(0);
+                                                // The name ends the draft: on after it.
+                                                self.set-selection-offsets(2147483647, 2147483647);
                                                 return accept;
                                             }
                                             if event.text == Key.Return && !event.modifiers.shift {
@@ -4314,6 +4358,22 @@ export component AppWindow inherits Window {
                                 outgoing: false;
                                 fetch(id) => { root.fetch-attachment(id); }
                                 open(id) => { root.open-attachment(id); }
+                            }
+                            // The view stays from one picture story to the next: it fetches only
+                            // when made, so the next is asked for here. Not from the change
+                            // handler itself: fetching redraws, which mustn't happen while Slint
+                            // runs its change handlers.
+                            property <string> picture: root.story.text-story ? "" : root.story.picture.id;
+                            changed picture => { next-picture.running = true; }
+                            next-picture := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    if !root.story.text-story && root.story.picture.fetch {
+                                        root.fetch-attachment(root.story.picture.id);
+                                    }
+                                }
                             }
                         }
                         TouchArea {

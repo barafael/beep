@@ -36,6 +36,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
+    window.set_details_members(ModelRc::new(VecModel::<MemberItem>::default()));
 
     window.window().on_close_requested({
         let shared = shared.clone();
@@ -666,6 +667,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     window.on_attach({
         let window = window.as_weak();
         move || {
+            // The files go to the chat they were picked for: not to another one opened meanwhile.
+            let chat = window.upgrade().map(|window| window.get_selected_id());
             // The dialog blocks until the user is done, so it gets its own thread.
             let window = window.clone();
             std::thread::spawn(move || {
@@ -678,7 +681,9 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
                     .map(|f| f.to_string_lossy().as_ref().into())
                     .collect();
                 let _ = window.upgrade_in_event_loop(move |window| {
-                    window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                    if Some(window.get_selected_id()) == chat {
+                        window.invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                    }
                 });
             });
         }
@@ -961,6 +966,16 @@ fn shortcut(
 
 /// Esc closes what is open, the innermost first.
 fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
+    let closed = close_front(shared, window);
+    if closed {
+        // What had the focus may have closed with it.
+        window.set_escaped(window.get_escaped().wrapping_add(1));
+    }
+    closed
+}
+
+/// Closes the innermost of what is open; whether there was something.
+fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
     let mut chat = shared.chat.borrow_mut();
     if window.get_stories_open() {
         if chat.current_story().is_some() {
@@ -1051,14 +1066,6 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
     );
     window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
     window.set_error(chat.error().unwrap_or_default().into());
-    let draft = window.get_draft();
-    window.set_can_send(chat.can_compose(&draft));
-    let candidates: Vec<SharedString> = chat
-        .mention_candidates(&draft)
-        .iter()
-        .map(|p| p.name.as_str().into())
-        .collect();
-    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
     let staged: Vec<SharedString> = chat
         .staged()
         .iter()
@@ -1162,7 +1169,13 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             .unwrap_or_default()
             .into(),
     );
-    window.set_editing(chat.editing().is_some());
+    // An edit that ended without being sent (its message was deleted, here or elsewhere)
+    // leaves the composer to the draft again, so its text can't be sent as a new message.
+    let editing = chat.editing().is_some();
+    if window.get_editing() && !editing {
+        window.set_draft(chat.draft().into());
+    }
+    window.set_editing(editing);
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
     window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
@@ -1266,6 +1279,15 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             window.set_search_text(SharedString::new());
         }
     }
+    // Last, once switching chats or ending an edit has put the right draft in the composer.
+    let draft = window.get_draft();
+    window.set_can_send(chat.can_compose(&draft));
+    let candidates: Vec<SharedString> = chat
+        .mention_candidates(&draft)
+        .iter()
+        .map(|p| p.name.as_str().into())
+        .collect();
+    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
 }
 
 /// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
@@ -1452,7 +1474,9 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
             }
         })
         .collect();
-    window.set_details_members(ModelRc::new(VecModel::from(members)));
+    // Row by row: a new model would rebuild the rows, closing a member's menu under the
+    // pointer whenever anything happens.
+    update_list(&window.get_details_members(), members, |a, b| a == b);
 }
 
 /// The media overview.
