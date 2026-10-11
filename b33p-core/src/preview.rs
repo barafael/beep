@@ -2,7 +2,11 @@
 //! and picture, as its `og:` meta tags (or its `<title>`) give them. The page is fetched
 //! directly, so the site learns the user's address; that is why it is off by default.
 
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 /// What a page says about itself.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -28,9 +32,19 @@ fn client() -> Option<reqwest::Client> {
             if rustls::crypto::CryptoProvider::get_default().is_none() {
                 let _ = rustls::crypto::ring::default_provider().install_default();
             }
+            let redirect = reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if allowed(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            });
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(8))
-                .redirect(reqwest::redirect::Policy::limited(5))
+                .redirect(redirect)
+                .dns_resolver(Arc::new(PublicOnly))
                 .user_agent("Mozilla/5.0 (compatible; b33p link preview)")
                 .build()
                 .ok()
@@ -38,10 +52,78 @@ fn client() -> Option<reqwest::Client> {
         .clone()
 }
 
+/// Whether a preview may fetch `url`: over https, from the internet. A link someone typed (or
+/// a page it redirects to) mustn't make b33p reach into the local network, its router or
+/// printer, say. Names are checked once resolved; see [`PublicOnly`].
+fn allowed(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let ip = host.trim_start_matches('[').trim_end_matches(']');
+    url.scheme() == "https"
+        && match ip.parse::<IpAddr>() {
+            Ok(ip) => is_public(ip),
+            Err(_) => {
+                let name = host.trim_end_matches('.');
+                name.contains('.') && !name.ends_with(".localhost") && !name.ends_with(".local")
+            }
+        }
+}
+
+/// An address on the internet: not this computer's, the local network's, or reserved.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_multicast()
+                || a == 0
+                // Carrier-grade NAT, and the benchmarking range.
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (18..20).contains(&b))
+                || a >= 240)
+        }
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(v4) => is_public(IpAddr::V4(v4)),
+            None => {
+                !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local())
+            }
+        },
+    }
+}
+
+/// Resolves names to their internet addresses only, so that no name can lead into the local
+/// network either.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let found: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|address| is_public(address.ip()))
+                .collect();
+            if found.is_empty() {
+                return Err(format!("{} has no address on the internet", name.as_str()).into());
+            }
+            Ok(Box::new(found.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 /// Fetches what `url` (https only) says about itself; `None` if it can't be had or says
 /// nothing.
 pub(crate) async fn fetch_page(url: &str) -> Option<Page> {
-    if !url.starts_with("https://") {
+    if !allowed(&reqwest::Url::parse(url).ok()?) {
         return None;
     }
     let response = client()?
@@ -72,6 +154,9 @@ pub(crate) async fn fetch_page(url: &str) -> Option<Page> {
 
 /// Fetches a page's picture: its bytes and type, if it is a picture and not too large.
 pub(crate) async fn fetch_image(url: &str) -> Option<(Vec<u8>, String)> {
+    if !allowed(&reqwest::Url::parse(url).ok()?) {
+        return None;
+    }
     let response = client()?
         .get(url)
         .send()
@@ -238,6 +323,29 @@ fn decode_entities(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_stay_on_the_internet() {
+        let allowed = |url| allowed(&reqwest::Url::parse(url).unwrap());
+        assert!(allowed("https://example.org/a"));
+        assert!(allowed("https://93.184.215.14/"));
+        for url in [
+            "http://example.org/",
+            "https://localhost/",
+            "https://router/",
+            "https://printer.local/",
+            "https://127.0.0.1/",
+            "https://192.168.1.1/admin",
+            "https://10.0.0.8/",
+            "https://169.254.169.254/latest/meta-data",
+            "https://100.64.0.1/",
+            "https://[::1]/",
+            "https://[fd00::1]/",
+            "https://[::ffff:192.168.0.1]/",
+        ] {
+            assert!(!allowed(url), "{url}");
+        }
+    }
 
     #[test]
     fn reads_open_graph_tags_and_falls_back_to_the_title() {

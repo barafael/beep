@@ -760,6 +760,7 @@ dependencies = [
  "open",
  "presage",
  "presage-store-sqlite",
+ "proptest",
  "protobuf",
  "qrcode",
  "rand 0.9.5",

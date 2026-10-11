@@ -56,16 +56,18 @@ type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
 pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
+    // Kept across unlocking, linking and relinking, which take commands too.
+    let preferences = Rc::new(Cell::new(config.preferences));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
+    let (result, closed) = match unlock(&runtime, &local, &commands, &events, &preferences) {
         Ok(Some((store, tables, closed))) => (
             local.block_on(
                 &runtime,
-                session(config, store, tables, commands, events.clone()),
+                session(config, store, tables, commands, events.clone(), preferences),
             ),
             Some(closed),
         ),
@@ -159,6 +161,7 @@ fn unlock(
     local: &LocalSet,
     commands: &Inbox,
     events: &Events,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(SqliteStore, LocalStore, Closed)>, String> {
     let paths = Paths::new()?;
     let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
@@ -210,7 +213,7 @@ fn unlock(
             new,
             error: error.take(),
         });
-        let Some(password) = wait_for_password(commands) else {
+        let Some(password) = wait_for_password(commands, preferences) else {
             return Ok(None);
         };
         // The UI checks this too, but the key is the only way back into the messages, so the
@@ -248,10 +251,14 @@ fn check_new_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_password(commands: &Inbox) -> Option<Password> {
+fn wait_for_password(commands: &Inbox, preferences: &Cell<Preferences>) -> Option<Password> {
     // Nothing else can be done before the database is open, so other commands are dropped.
     commands.iter().find_map(|command| match command {
         Command::Unlock(password) => Some(password),
+        Command::Preferences(changed) => {
+            preferences.set(changed);
+            None
+        }
         _ => None,
     })
 }
@@ -318,6 +325,7 @@ async fn session(
     tables: LocalStore,
     commands: Inbox,
     events: Events,
+    preferences: Rc<Cell<Preferences>>,
 ) -> Result<(), String> {
     // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
     // shutdown, which closes `command_rx`.
@@ -344,10 +352,28 @@ async fn session(
                     .into(),
             ));
             reset(store.clone(), &paths).await?;
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &tables,
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(PresageError::NotYetRegisteredError) => {
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &tables,
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
@@ -357,7 +383,16 @@ async fn session(
         let Some((manager, pending)) = linked else {
             return Ok(());
         };
-        if !run_linked(manager, pending, &events, &tables, &mut command_rx).await {
+        if !run_linked(
+            manager,
+            pending,
+            &events,
+            &tables,
+            &mut command_rx,
+            &preferences,
+        )
+        .await
+        {
             return Ok(());
         }
         let _ = events.send(Event::Error(
@@ -366,8 +401,16 @@ async fn session(
                 .into(),
         ));
         // Linking clears the dead registration; the conversations stay.
-        linked =
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?;
+        linked = link_with_history(
+            store.clone(),
+            &tables,
+            &config,
+            &events,
+            &mut command_rx,
+            &paths,
+            &preferences,
+        )
+        .await?;
     }
 }
 
@@ -379,12 +422,13 @@ async fn run_linked(
     events: &Events,
     tables: &LocalStore,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    preferences: &Rc<Cell<Preferences>>,
 ) -> bool {
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
         tables: tables.clone(),
-        preferences: Rc::default(),
+        preferences: preferences.clone(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
         trust: Rc::default(),
@@ -469,14 +513,22 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
 /// Returns the commands that arrived during the transfer, or `None` if the UI went away.
 async fn link_with_history(
     store: SqliteStore,
+    tables: &LocalStore,
     config: &Config,
     events: &Events,
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
     paths: &Paths,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(Mgr, Vec<Command>)>, String> {
     loop {
         // Nothing can be done before linking, so commands are dropped until then.
-        let ui_closed = async { while commands.recv().await.is_some() {} };
+        let ui_closed = async {
+            while let Some(command) = commands.recv().await {
+                if let Command::Preferences(changed) = command {
+                    preferences.set(changed);
+                }
+            }
+        };
         let (manager, key) = tokio::select! {
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),
@@ -490,7 +542,7 @@ async fn link_with_history(
         write_marker(paths)?;
         let mut pending = Vec::new();
         let result = {
-            let transfer = transfer::receive_history(&manager, key, &paths.dir, events);
+            let transfer = transfer::receive_history(&manager, key, &paths.dir, tables, events);
             pin_mut!(transfer);
             loop {
                 tokio::select! {
@@ -601,7 +653,7 @@ async fn link(
     Ok((manager, history_key))
 }
 
-fn conversation_id(thread: &Thread) -> ConversationId {
+pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
     ConversationId(match thread {
         Thread::Contact(id) => format!("c:{}", id.service_id_string()),
         Thread::Group(key) => format!("g:{}", hex::encode(key)),
@@ -2175,6 +2227,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
+    // Nothing at all from someone we block, in groups too, as Signal's clients do. presage
+    // has stored it by now, so it goes from the store again.
+    let sender = content.metadata.sender;
+    if sender != own_id(manager)
+        && is_blocked(ctx, &ConversationId::contact(&sender.service_id_string())).await
+    {
+        forget_stored(manager, content).await;
+        return true;
+    }
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
         announce_identity_change(manager, ctx, names, content.metadata.sender).await;
@@ -2357,6 +2418,21 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         }
     }
     events.send(Event::Message(message))
+}
+
+/// Removes what presage stored of `content`, if it is still there as its sender's.
+async fn forget_stored(manager: &Mgr, content: &Content) {
+    let Ok(thread) = Thread::try_from(content) else {
+        return;
+    };
+    let at = stored_at(content);
+    let mut store = manager.store().clone();
+    if let Ok(Some(stored)) = store.message(&thread, at).await
+        && stored.metadata.sender == content.metadata.sender
+        && let Err(error) = store.delete_message(&thread, at).await
+    {
+        warn!(%error, "failed to forget a message from someone blocked");
+    }
 }
 
 async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
@@ -2672,7 +2748,7 @@ async fn resolve_text(
     names: &mut Names,
     text: &str,
     ranges: &[BodyRange],
-) -> (String, Vec<StyleRange>) {
+) -> (String, Vec<StyleRange>, Vec<crate::Mention>) {
     use body_range::{AssociatedValue, Style as WireStyle};
     let mut wire = Vec::new();
     let mut mentioned = Vec::new();
@@ -2904,7 +2980,7 @@ async fn to_chat_message(
     let outgoing = is_outgoing(manager, content);
     let author = author_of(manager, content);
     let sender = display_name(manager, names, author).await;
-    let (mut body, styles) = resolve_text(
+    let (mut body, styles, mentions) = resolve_text(
         manager,
         names,
         data.body.as_deref().unwrap_or_default(),
@@ -2942,16 +3018,16 @@ async fn to_chat_message(
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
+            let (text, styles, _) = resolve_text(
+                manager,
+                names,
+                quote.text.as_deref().unwrap_or_default(),
+                &quote.body_ranges,
+            )
+            .await;
             Some(Quote {
                 author,
-                text: resolve_text(
-                    manager,
-                    names,
-                    quote.text.as_deref().unwrap_or_default(),
-                    &quote.body_ranges,
-                )
-                .await
-                .0,
+                text: format::hide_spoilers(&text, &styles),
                 author_id: author_id
                     .map(|id| id.service_id_string())
                     .unwrap_or_default(),
@@ -2971,6 +3047,7 @@ async fn to_chat_message(
         quote,
         attachments,
         styles,
+        mentions,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
         notice,
@@ -3559,10 +3636,17 @@ async fn handle_command(
                 return Ok(());
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
-            // Not to unanswered message requests: they'd tell a stranger we read it.
+            // Not to unanswered message requests: they'd tell a stranger we read it. Nor to
+            // anyone we block.
             let receipts = ctx.preferences.get().read_receipts
                 && !is_unanswered_request(ctx, &conversation).await;
-            tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
+            let mut receipted = Vec::new();
+            for message in messages.iter().filter(|_| receipts) {
+                if !is_blocked(ctx, &ConversationId::contact(&message.author_id)).await {
+                    receipted.push(message.clone());
+                }
+            }
+            tokio::task::spawn_local(send_read(manager.clone(), messages, receipted));
         }
         Command::MarkUnread(conversation) => {
             ctx.tables
@@ -4560,35 +4644,33 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
     }
 }
 
-/// Tells the senders of `messages` we read them (with `receipts`), and our other devices.
-async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) {
+/// Tells our other devices we read `messages`, and the senders of those `receipted`.
+async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipted: Vec<MessageRef>) {
     let timestamp = now_millis();
     let own = own_id(&manager);
-    if receipts {
-        let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
-        for message in &messages {
-            by_author
-                .entry(&message.author_id)
-                .or_default()
-                .push(message.timestamp);
+    let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
+    for message in &receipted {
+        by_author
+            .entry(&message.author_id)
+            .or_default()
+            .push(message.timestamp);
+    }
+    for (author, timestamps) in by_author {
+        let Some(author) = ServiceId::parse_from_service_id_string(author) else {
+            continue;
+        };
+        if author == own {
+            continue;
         }
-        for (author, timestamps) in by_author {
-            let Some(author) = ServiceId::parse_from_service_id_string(author) else {
-                continue;
-            };
-            if author == own {
-                continue;
-            }
-            let receipt = ReceiptMessage {
-                r#type: Some(receipt_message::Type::Read as i32),
-                timestamp: timestamps,
-            };
-            if let Err(error) = manager
-                .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
-                .await
-            {
-                debug!(%error, "failed to send a read receipt");
-            }
+        let receipt = ReceiptMessage {
+            r#type: Some(receipt_message::Type::Read as i32),
+            timestamp: timestamps,
+        };
+        if let Err(error) = manager
+            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .await
+        {
+            debug!(%error, "failed to send a read receipt");
         }
     }
     let read = messages

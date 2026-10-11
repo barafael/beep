@@ -381,7 +381,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let shutdown = shutdown::watch();
     clipboard::clean();
 
-    let config = Config::default();
+    let config = Config {
+        preferences: settings.preferences,
+        ..Config::default()
+    };
     let device_name = config.device_name.clone();
     let backend = Backend::from_env(config);
     let (notifier, notifier_actions) = Notifier::new(&APP);
@@ -407,10 +410,6 @@ fn main() -> Result<(), slint::PlatformError> {
         playback_timer: slint::Timer::default(),
         me: me.clone(),
     });
-    shared
-        .commands
-        .send(Command::Preferences(settings.preferences));
-
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
     shared.apply_motion();

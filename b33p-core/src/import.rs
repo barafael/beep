@@ -11,7 +11,7 @@ use libsignal_message_backup::proto::backup as proto;
 use presage::{
     libsignal_service::{
         content::{Content, ContentBody, DataMessage, GroupContextV2, Metadata},
-        groups_v2::Role,
+        groups_v2::{Role, Timer},
         prelude::{ProfileKey, Uuid, phonenumber},
         protocol::{Aci, ServiceId},
         push_service::DEFAULT_DEVICE_ID,
@@ -44,6 +44,18 @@ pub(crate) enum Record {
     Message {
         thread: Thread,
         content: Content,
+    },
+    /// A contact's disappearing-messages timer, in seconds, at its version.
+    Timer {
+        contact: Aci,
+        seconds: u32,
+        version: u32,
+    },
+    /// When a disappearing message, whose timer the phone had started, goes.
+    Expiry {
+        thread: Thread,
+        message: crate::MessageRef,
+        at: u64,
     },
 }
 
@@ -109,6 +121,16 @@ impl Importer {
             }
             Some(proto::frame::Item::Chat(chat)) => {
                 records.extend(self.flush_groups());
+                // A group's timer comes with the group; a contact's with the chat.
+                if let Some(Party::Contact(contact)) = self.recipients.get(&chat.recipientId) {
+                    records.push(Record::Timer {
+                        contact: *contact,
+                        seconds: (chat.expirationTimerMs.unwrap_or_default() / 1000)
+                            .try_into()
+                            .unwrap_or(u32::MAX),
+                        version: chat.expireTimerVersion.max(1),
+                    });
+                }
                 self.chats.insert(chat.id, chat.recipientId);
             }
             Some(proto::frame::Item::ChatItem(item)) => {
@@ -130,7 +152,20 @@ impl Importer {
                         };
                         let reactions = self.reactions(&item, &thread, group_v2);
                         self.stats.reactions += reactions.len();
+                        // Its timer is running on the phone: it goes here at the same time.
+                        let expiry = match (item.expireStartDate, item.expiresInMs) {
+                            (Some(start), Some(lifetime)) if lifetime > 0 => Some(Record::Expiry {
+                                thread: thread.clone(),
+                                message: crate::MessageRef {
+                                    author_id: content.metadata.sender.service_id_string(),
+                                    timestamp: item.dateSent,
+                                },
+                                at: start.saturating_add(lifetime),
+                            }),
+                            _ => None,
+                        };
                         records.push(Record::Message { thread, content });
+                        records.extend(expiry);
                         records.extend(reactions);
                     }
                     None => self.stats.skipped += 1,
@@ -235,10 +270,16 @@ impl Importer {
             })
             .collect();
         let description = text(&snapshot.description);
+        let timer = match &snapshot.disappearingMessagesTimer.content {
+            Some(proto::group::group_attribute_blob::Content::DisappearingMessagesDuration(
+                seconds,
+            )) if *seconds > 0 => Some(Timer { duration: *seconds }),
+            _ => None,
+        };
         Group {
             title: text(&snapshot.title),
             avatar: snapshot.avatarUrl.clone(),
-            disappearing_messages_timer: None,
+            disappearing_messages_timer: timer,
             access_control: None,
             revision: snapshot.version,
             members,
@@ -335,14 +376,14 @@ impl Importer {
                 body_ranges: quote
                     .text
                     .as_ref()
-                    .map(|text| self.mentions(&text.bodyRanges))
+                    .map(|text| self.body_ranges(&text.bodyRanges))
                     .unwrap_or_default(),
                 ..Default::default()
             })
         });
         let data = DataMessage {
             body: (!body.is_empty()).then_some(body),
-            body_ranges: self.mentions(&message.text.bodyRanges),
+            body_ranges: self.body_ranges(&message.text.bodyRanges),
             timestamp: Some(item.dateSent),
             group_v2,
             quote,
@@ -421,23 +462,26 @@ impl Importer {
     }
 
     /// The mentions among a text's ranges, as live messages carry them (formatting is dropped).
-    fn mentions(&self, ranges: &[proto::BodyRange]) -> Vec<presage::proto::BodyRange> {
+    /// Mentions and formatting, spoilers among it.
+    fn body_ranges(&self, ranges: &[proto::BodyRange]) -> Vec<presage::proto::BodyRange> {
+        use presage::proto::body_range::AssociatedValue as Value;
         use proto::body_range::AssociatedValue;
         ranges
             .iter()
             .filter_map(|range| {
-                let Some(AssociatedValue::MentionAci(aci)) = &range.associatedValue else {
-                    return None;
+                let value = match range.associatedValue.as_ref()? {
+                    AssociatedValue::MentionAci(aci) => {
+                        let aci = Aci::from_uuid_bytes(aci.as_slice().try_into().ok()?);
+                        Value::MentionAci(ServiceId::Aci(aci).service_id_string())
+                    }
+                    // Signal's styles, numbered alike in both.
+                    AssociatedValue::Style(style) => Value::Style(style.value()),
+                    _ => return None,
                 };
-                let aci = Aci::from_uuid_bytes(aci.as_slice().try_into().ok()?);
                 Some(presage::proto::BodyRange {
                     start: Some(range.start),
                     length: Some(range.length),
-                    associated_value: Some(
-                        presage::proto::body_range::AssociatedValue::MentionAci(
-                            ServiceId::Aci(aci).service_id_string(),
-                        ),
-                    ),
+                    associated_value: Some(value),
                 })
             })
             .collect()
@@ -593,7 +637,11 @@ fn datetime(millis: u64) -> chrono::DateTime<chrono::Utc> {
 }
 
 /// Stores one record. Messages are keyed by timestamp and thread, so importing twice is harmless.
-pub(crate) async fn store<S: ContentsStore>(store: &mut S, record: Record) -> Result<(), String>
+pub(crate) async fn store<S: ContentsStore>(
+    store: &mut S,
+    tables: &crate::local::LocalStore,
+    record: Record,
+) -> Result<(), String>
 where
     S::ContentsStoreError: std::fmt::Display,
 {
@@ -613,6 +661,29 @@ where
         }
         Record::Group { master_key, group } => store.save_group(master_key, group).await,
         Record::Message { thread, content } => store.save_message(&thread, content).await,
+        Record::Timer {
+            contact,
+            seconds,
+            version,
+        } => match store.contact_by_id(&ServiceId::Aci(contact)).await {
+            Ok(Some(mut contact)) => {
+                contact.expire_timer = seconds;
+                contact.expire_timer_version = version;
+                store.save_contact(&contact).await
+            }
+            other => other.map(drop),
+        },
+        Record::Expiry {
+            thread,
+            message,
+            at,
+        } => {
+            let conversation = crate::signal::conversation_id(&thread);
+            return tables
+                .set_expiries(&conversation, &[(message, at)])
+                .await
+                .map_err(|e| format!("failed to store the message history: {e}"));
+        }
     };
     result.map_err(|e| format!("failed to store the message history: {e}"))
 }
@@ -921,6 +992,67 @@ mod tests {
         assert_eq!(lasting.expire_timer, Some((NOW / 1000) as u32));
     }
 
+    /// Disappearing messages stay so: each chat keeps its timer (at its version, so the next
+    /// message sent keeps it too), and a message whose timer runs on the phone goes here then.
+    #[test]
+    fn timers_carry_over() {
+        const WEEK_MS: u64 = 7 * 24 * 3600 * 1000;
+        let mut frames = archive();
+        frames[3] = frame(proto::frame::Item::Chat(proto::Chat {
+            id: 10,
+            recipientId: 2,
+            expirationTimerMs: Some(WEEK_MS),
+            expireTimerVersion: 3,
+            ..Default::default()
+        }));
+        let message = proto::StandardMessage {
+            text: MessageField::some(proto::Text {
+                body: "soon gone".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        frames.push(frame(proto::frame::Item::ChatItem(proto::ChatItem {
+            chatId: 10,
+            authorId: 2,
+            dateSent: 8000,
+            expireStartDate: Some(9000),
+            expiresInMs: Some(WEEK_MS),
+            directionalDetails: Some(DirectionalDetails::Incoming(Default::default())),
+            item: Some(proto::chat_item::Item::StandardMessage(message)),
+            ..Default::default()
+        })));
+        let (records, _) = import(&frames);
+        assert!(records.iter().any(|r| matches!(r,
+            Record::Timer { contact, seconds: 604_800, version: 3 }
+                if *contact == Aci::from_uuid_bytes(ALICE))));
+        assert!(records.iter().any(|r| matches!(r,
+            Record::Expiry { message, at, .. }
+                if message.timestamp == 8000 && *at == 9000 + WEEK_MS
+                    && message.author_id == alice_id())));
+    }
+
+    /// Formatting, spoilers among it, comes along: shown without, a spoiler would be revealed.
+    #[test]
+    fn formatting_carries_over() {
+        let ranges = vec![proto::BodyRange {
+            start: 4,
+            length: 6,
+            associatedValue: Some(proto::body_range::AssociatedValue::Style(
+                proto::body_range::Style::SPOILER.into(),
+            )),
+            ..Default::default()
+        }];
+        let kept = Importer::new(Aci::from_uuid_bytes(ME), NOW).body_ranges(&ranges);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].associated_value,
+            Some(presage::proto::body_range::AssociatedValue::Style(
+                presage::proto::body_range::Style::Spoiler as i32
+            ))
+        );
+    }
+
     #[test]
     fn reactions_become_their_authors_reaction_messages() {
         use proto::chat_item::Item;
@@ -1134,10 +1266,14 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let mut store = SqliteStore::open(&url, OnNewIdentity::Trust).await.unwrap();
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(dir.join("local.db3"))
+                .create_if_missing(true);
+            let tables = crate::local::LocalStore::open(options).await.unwrap();
             // Twice: importing again must not duplicate anything.
             for _ in 0..2 {
                 for record in import(&archive()).0 {
-                    super::store(&mut store, record).await.unwrap();
+                    super::store(&mut store, &tables, record).await.unwrap();
                 }
             }
 

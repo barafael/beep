@@ -32,6 +32,7 @@ use presage::{
 };
 use tracing::{info, warn};
 
+use crate::local::LocalStore;
 use crate::{
     Event, Events, HistoryTransfer,
     import::{self, Importer, Stats},
@@ -67,6 +68,7 @@ pub(crate) async fn receive_history(
     manager: &Mgr,
     key: [u8; 32],
     dir: &Path,
+    tables: &LocalStore,
     events: &Events,
 ) -> Result<Outcome, String> {
     let path = dir.join("history-transfer.bin");
@@ -82,7 +84,8 @@ pub(crate) async fn receive_history(
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Downloading));
         download(manager, cdn, &cdn_key, &path).await?;
         let aci = manager.registration_data().service_ids.aci();
-        let stats = import_archive(key, &aci, &path, &mut manager.store().clone(), events).await?;
+        let mut store = manager.store().clone();
+        let stats = import_archive(key, &aci, &path, &mut store, tables, events).await?;
         info!(?stats, "message history imported");
         Ok(Outcome::Imported)
     }
@@ -187,6 +190,7 @@ async fn import_archive<S: ContentsStore>(
     aci: &Aci,
     path: &Path,
     store: &mut S,
+    tables: &LocalStore,
     events: &Events,
 ) -> Result<Stats, String>
 where
@@ -210,7 +214,7 @@ where
             continue;
         }
         for record in importer.frame(&frame)? {
-            import::store(store, record).await?;
+            import::store(store, tables, record).await?;
         }
         let messages = importer.stats().messages;
         if messages >= reported + 500 {
@@ -221,7 +225,7 @@ where
         }
     }
     for record in importer.finish() {
-        import::store(store, record).await?;
+        import::store(store, tables, record).await?;
     }
     // Drain any trailing bytes so the HMAC covers everything, then check it once more.
     let mut rest = reader.into_inner();
@@ -284,6 +288,13 @@ mod tests {
             let url = format!("sqlite://{}?mode=rwc", self.dir.join("store.db3").display());
             SqliteStore::open(&url, OnNewIdentity::Trust).await.unwrap()
         }
+
+        async fn tables(&self) -> LocalStore {
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(self.dir.join("local.db3"))
+                .create_if_missing(true);
+            LocalStore::open(options).await.unwrap()
+        }
     }
 
     impl Drop for Scratch {
@@ -315,6 +326,7 @@ mod tests {
                 &fixture_aci(),
                 &scratch.archive(),
                 &mut store,
+                &scratch.tables().await,
                 &events(),
             )
             .await
@@ -339,6 +351,7 @@ mod tests {
                 &Aci::from_uuid_bytes([0x22; 16]),
                 &scratch.archive(),
                 &mut store,
+                &scratch.tables().await,
                 &events(),
             )
             .await

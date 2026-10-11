@@ -397,6 +397,8 @@ pub struct ChatMessage {
     pub preview: Option<LinkPreview>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
+    /// Whom it mentions, as "@Name" in [`ChatMessage::body`].
+    pub mentions: Vec<Mention>,
     /// Ours, shown before it went out: still sending, or it failed. `None` once it is sent,
     /// and for everything else.
     pub unsent: Option<Unsent>,
@@ -908,12 +910,16 @@ pub enum Command {
 pub struct Config {
     /// Name shown in the phone's "Linked devices" list.
     pub device_name: String,
+    /// What the backend does on our behalf from the start, before (and whether or not) a
+    /// [`Command::Preferences`] changes it: the password prompt and linking come first.
+    pub preferences: Preferences,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             device_name: "b33p".into(),
+            preferences: Preferences::default(),
         }
     }
 }

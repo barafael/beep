@@ -304,6 +304,12 @@ pub(crate) async fn upload(
             .first_or_octet_stream()
             .essence_str()
             .to_owned();
+        let data = {
+            let content_type = content_type.clone();
+            tokio::task::spawn_blocking(move || without_metadata(&content_type, data))
+                .await
+                .map_err(|e| e.to_string())?
+        };
         let spec = spec(name, content_type, &data);
         uploads.push((spec, data));
     }
@@ -526,6 +532,41 @@ pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
     })
 }
 
+/// A photo drawn again from its pixels, as Signal's apps send them: without what its file
+/// says besides (EXIF and XMP: where and when it was taken, with what), but turned the way
+/// that said. Anything else, or what doesn't decode, stays as it is.
+fn without_metadata(content_type: &str, data: Vec<u8>) -> Vec<u8> {
+    use image::ImageDecoder as _;
+    let format = match content_type {
+        "image/jpeg" => image::ImageFormat::Jpeg,
+        "image/png" => image::ImageFormat::Png,
+        _ => return data,
+    };
+    let redraw = || -> image::ImageResult<Vec<u8>> {
+        let mut decoder =
+            image::ImageReader::with_format(std::io::Cursor::new(&data), format).into_decoder()?;
+        let orientation = decoder.orientation()?;
+        let mut picture = image::DynamicImage::from_decoder(decoder)?;
+        picture.apply_orientation(orientation);
+        let mut out = std::io::Cursor::new(Vec::new());
+        match format {
+            image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(picture.to_rgb8())
+                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut out, 90,
+                ))?,
+            _ => picture.write_to(&mut out, format)?,
+        }
+        Ok(out.into_inner())
+    };
+    match redraw() {
+        Ok(redrawn) => redrawn,
+        Err(error) => {
+            tracing::warn!(%error, "couldn't take the metadata out of a picture; sending it as it is");
+            data
+        }
+    }
+}
+
 /// Decodes an image from the network with bounds, so a crafted file (tiny, but claiming huge
 /// dimensions) can't make us allocate gigabytes. 12000 px a side covers any phone photo.
 pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
@@ -599,6 +640,48 @@ fn extension(content_type: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A photo's EXIF (here, where it was taken) doesn't go out, but its orientation does.
+    #[test]
+    fn photos_go_without_their_metadata() {
+        let mut photo = Vec::new();
+        image::RgbImage::from_fn(2, 1, |x, _| image::Rgb([x as u8 * 200, 0, 0]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut photo),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        // An APP1 segment: orientation 6 (turned right), and a GPS tag.
+        #[rustfmt::skip]
+        let exif: &[u8] = &[
+            b'E', b'x', b'i', b'f', 0, 0,
+            b'M', b'M', 0, 42, 0, 0, 0, 8,
+            0, 2,
+            0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0,
+            0x88, 0x25, 0, 4, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ];
+        let length = u16::try_from(exif.len() + 2).unwrap();
+        let mut tagged = photo[..2].to_vec();
+        tagged.extend([0xff, 0xe1]);
+        tagged.extend(length.to_be_bytes());
+        tagged.extend(exif);
+        tagged.extend(&photo[2..]);
+        assert_eq!(image::load_from_memory(&tagged).unwrap().width(), 2);
+
+        let sent = without_metadata("image/jpeg", tagged);
+        assert!(!sent.windows(4).any(|w| w == b"Exif"));
+        let shown = image::load_from_memory(&sent).unwrap();
+        assert_eq!(
+            (shown.width(), shown.height()),
+            (1, 2),
+            "turned as the EXIF said"
+        );
+
+        let text = b"not a picture".to_vec();
+        assert_eq!(without_metadata("text/plain", text.clone()), text);
+        assert_eq!(without_metadata("image/jpeg", text.clone()), text);
+    }
 
     /// Anyone can send a long text, so only the start of a very long one is shown.
     #[test]
