@@ -2238,6 +2238,18 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         forget_membership(manager, key, context).await;
         refresh_group(manager, ctx, key).await;
     }
+    // Any holder of the master key (e.g. a former member) can address the group; non-members
+    // are dropped, as in Signal's clients.
+    if let Thread::Group(key) = thread
+        && !is_outgoing(manager, content)
+        && !is_member(manager, key, content).await
+    {
+        debug!(
+            sender = %content.metadata.sender.service_id_string(),
+            "dropped a group message from someone not in the group"
+        );
+        return true;
+    }
     // Nothing new from blocked chats (what we send from another device still counts).
     if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
         return true;
@@ -2772,6 +2784,25 @@ async fn show_identity_notes(
 async fn announce_identity_change(manager: &Mgr, ctx: &Ctx, names: &mut Names, contact: ServiceId) {
     let since = crate::now_millis().saturating_sub(5 * 60 * 1000);
     show_identity_notes(manager, ctx, names, contact, since).await;
+}
+
+/// The stored group is current enough: presage fetches it before handing over a message
+/// naming a newer revision (presage `manager/registered.rs`, `upsert_group`).
+async fn is_member(manager: &Mgr, key: [u8; 32], content: &Content) -> bool {
+    manager
+        .store()
+        .group(key)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|group| member_of(&group, content.metadata.sender))
+}
+
+fn member_of(group: &presage::model::groups::Group, who: ServiceId) -> bool {
+    group
+        .members
+        .iter()
+        .any(|member| ServiceId::Aci(member.aci) == who)
 }
 
 /// `false` for a sync message that didn't come from one of our own devices; see
@@ -4910,5 +4941,55 @@ mod tests {
         assert!(!bytes.starts_with(b"SQLite format 3"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_full_members_are_in_the_group() {
+        use presage::{
+            libsignal_service::{
+                groups_v2::Role,
+                prelude::{ProfileKey, Uuid},
+                protocol::{Aci, Pni},
+            },
+            model::groups::{Group, Member, PendingMember, RequestingMember},
+        };
+        let aci = |n: u8| Aci::from_uuid_bytes([n; 16]);
+        let group = Group {
+            title: "Test".into(),
+            avatar: String::new(),
+            disappearing_messages_timer: None,
+            access_control: None,
+            revision: 3,
+            members: vec![Member {
+                aci: aci(1),
+                role: Role::Default,
+                profile_key: ProfileKey::create([0; 32]),
+                joined_at_revision: 1,
+                label: None,
+                label_emoji: None,
+            }],
+            pending_members: vec![PendingMember {
+                uuid: Uuid::from_bytes([2; 16]),
+                service_id_type: Default::default(),
+                role: Role::Default,
+                added_by_aci: aci(1),
+                timestamp: 0,
+            }],
+            requesting_members: vec![RequestingMember {
+                aci: aci(3),
+                profile_key: ProfileKey::create([0; 32]),
+                timestamp: 0,
+            }],
+            invite_link_password: Vec::new(),
+            description: None,
+        };
+        assert!(member_of(&group, ServiceId::Aci(aci(1))));
+        assert!(!member_of(&group, ServiceId::Aci(aci(2))), "invited");
+        assert!(!member_of(&group, ServiceId::Aci(aci(3))), "asking to join");
+        assert!(!member_of(&group, ServiceId::Aci(aci(4))), "stranger");
+        assert!(
+            !member_of(&group, ServiceId::Pni(Pni::from_uuid_bytes([1; 16]))),
+            "by phone identity"
+        );
     }
 }
