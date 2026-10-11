@@ -1544,7 +1544,7 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
         .links
         .iter()
         .map(|(m, url)| SharedItem {
-            url: (*url).into(),
+            url: url.as_str().into(),
             sender: m.sender.as_str().into(),
             when: state::format_time(m.timestamp).into(),
             ..Default::default()

@@ -2949,7 +2949,7 @@ async fn to_chat_message(
                 .clone()
                 .filter(|url| url.starts_with("https://"))?;
             let text = data.body.as_deref().unwrap_or_default();
-            if !format::links(text).contains(&url.as_str()) {
+            if !format::links(text).contains(&url) {
                 debug!("dropped a link preview for a link not in the message");
                 return None;
             }
@@ -3409,12 +3409,8 @@ async fn handle_command(
             };
             // The preview follows the text: gone with its link, made anew for a new one.
             let links = format::links(&body);
-            data.preview.retain(|preview| {
-                preview
-                    .url
-                    .as_deref()
-                    .is_some_and(|url| links.contains(&url))
-            });
+            data.preview
+                .retain(|preview| preview.url.as_ref().is_some_and(|url| links.contains(url)));
             if data.preview.is_empty()
                 && ctx.preferences.get().link_previews
                 && let Some((sent, _)) = link_preview(manager, &body).await
@@ -4374,8 +4370,7 @@ async fn link_preview(
 ) -> Option<(presage::proto::Preview, crate::LinkPreview)> {
     let url = format::links(body)
         .into_iter()
-        .find(|link| link.starts_with("https://"))?
-        .to_owned();
+        .find(|link| link.starts_with("https://"))?;
     let page = crate::preview::fetch_page(&url).await?;
     let mut pointer = None;
     if let Some(image) = &page.image

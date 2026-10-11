@@ -12,7 +12,8 @@ use b33p_core::settings::{Settings, WidgetStyle};
 use b33p_core::state::{AttachmentState, ChatState, MessagesUpdate, Notice, Screen, Update};
 use b33p_core::{
     AttachmentContent, AttachmentId, Backend, Command, Commands, Config, ConversationId, Event,
-    Picture, QrMatrix, Style, StyleRange, format::find_url,
+    Picture, QrMatrix, Style, StyleRange,
+    format::{find_url, link_target},
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -689,7 +690,7 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             out.push('[');
             escape(url, out);
             out.push_str("](<");
-            out.push_str(url);
+            out.push_str(&link_target(url));
             out.push_str(">)");
             rest = &rest[end..];
         }
@@ -842,6 +843,8 @@ mod tests {
     fn links_keep_their_text() {
         let shown = raw(&rich_text("look: https://example.org/x_y*z ok", &[], false));
         assert_eq!(shown, "look: https://example.org/x_y*z ok");
+        let shown = raw(&rich_text("or example.org/x.", &[], false));
+        assert_eq!(shown, "or example.org/x.");
     }
 
     /// Formatting applies whatever surrounds it, and the text stays as it was.

@@ -347,7 +347,7 @@ pub struct MediaOverview<'a> {
     /// Other files, newest first, with the message they came with.
     pub files: Vec<(&'a ChatMessage, &'a Attachment)>,
     /// Web addresses, newest first, with the message they were in.
-    pub links: Vec<(&'a ChatMessage, &'a str)>,
+    pub links: Vec<(&'a ChatMessage, String)>,
 }
 
 /// See [`ChatState::open_group_draft`].
@@ -670,7 +670,7 @@ impl ChatState {
                     // The preview too, as long as its link is still in the text.
                     if message.preview.is_none()
                         && let Some(preview) = old.preview.take()
-                        && format::links(&message.body).contains(&preview.url.as_str())
+                        && format::links(&message.body).contains(&preview.url)
                     {
                         message.preview = Some(preview);
                     }
@@ -4809,7 +4809,7 @@ mod tests {
         let overview = state.media().unwrap().unwrap();
         assert_eq!(overview.media.len(), 1);
         assert_eq!(overview.files.len(), 1);
-        let links: Vec<_> = overview.links.iter().map(|(_, l)| *l).collect();
+        let links: Vec<_> = overview.links.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(links, ["https://example.org/x", "http://b.c/d"]);
         // Older than the loaded history, yet it can be fetched.
         assert!(state.fetch_attachment(&AttachmentId("p".into())).is_some());

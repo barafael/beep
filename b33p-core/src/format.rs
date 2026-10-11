@@ -195,28 +195,106 @@ pub fn encode(body: &str, styles: &[StyleRange], mentions: &[Mention]) -> (Strin
     (out, ranges)
 }
 
-/// The first http(s) address in `text`, as a byte range; trailing punctuation is left out.
+/// The first web address in `text`, as a byte range: one with its scheme (http, https), or a
+/// bare host name, `www.` or a domain under a well-known ending, as people type them;
+/// trailing punctuation is left out.
 pub fn find_url(text: &str) -> Option<(usize, usize)> {
-    let start = ["https://", "http://"]
-        .iter()
-        .filter_map(|scheme| text.find(scheme))
-        .min()?;
-    let tail = &text[start..];
-    let length = tail
-        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
-        .unwrap_or(tail.len());
-    let url =
-        tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"']);
-    // Just a scheme is no address.
-    (url.len() > "https://".len()).then_some((start, start + url.len()))
+    // Word by word: a bare host name is a word of its own (`a@b.org` is a mail address, and
+    // `foo.example.com` is one word, found whole), while a scheme can follow anything.
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        let Some(begin) = rest.find(|c: char| !c.is_whitespace()) else {
+            break;
+        };
+        let word = &rest[begin..];
+        let end = word
+            .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+            .unwrap_or(word.len());
+        let word = &word[..end];
+        let start = at + begin;
+        if let Some((from, to)) = url_in(word) {
+            return Some((start + from, start + to));
+        }
+        at = start + end.max(1);
+    }
+    None
 }
 
-/// The web addresses in `text`, in order.
-pub fn links(text: &str) -> Vec<&str> {
+/// The address in `word` (no whitespace), as a byte range in it.
+fn url_in(word: &str) -> Option<(usize, usize)> {
+    const TRAILING: [char; 11] = ['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"'];
+    if let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| word.find(scheme))
+        .min()
+    {
+        let url = word[start..].trim_end_matches(TRAILING);
+        // Just a scheme is no address.
+        return (url.len() > "https://".len()).then_some((start, start + url.len()));
+    }
+    // Bare: `(www.example.org)` or `example.org/path.`
+    let start = word
+        .find(|c: char| !matches!(c, '(' | '[' | '{' | '\'' | '"'))
+        .unwrap_or(word.len());
+    let url = word[start..].trim_end_matches(TRAILING);
+    let host_end = url
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .unwrap_or(url.len());
+    let host = &url[..host_end];
+    // Only a port or a path may follow the host.
+    let follows_well = url[host_end..]
+        .chars()
+        .next()
+        .is_none_or(|c| matches!(c, '/' | '?' | '#' | ':'));
+    (follows_well && is_host(host)).then_some((start, start + url.len()))
+}
+
+/// Whether `host` reads as a web host name without a scheme: labels of letters, digits and
+/// dashes, under a well-known top-level domain, or any starting with `www.`.
+fn is_host(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2
+        || labels
+            .iter()
+            .any(|l| l.is_empty() || l.starts_with('-') || l.ends_with('-'))
+    {
+        return false;
+    }
+    let top = labels[labels.len() - 1];
+    labels[0].eq_ignore_ascii_case("www")
+        || (top.chars().all(|c| c.is_ascii_alphabetic())
+            && KNOWN_TOPS.contains(&top.to_ascii_lowercase().as_str()))
+}
+
+/// Top-level domains under which a bare name is taken for a link. Not every one there is
+/// (`node.js` and `e.g.` must stay text), the ones a message is likely to mean.
+const KNOWN_TOPS: &[&str] = &[
+    "com", "org", "net", "edu", "gov", "mil", "int", "io", "co", "me", "dev", "app", "info", "biz",
+    "eu", "uk", "de", "at", "ch", "fr", "it", "es", "nl", "be", "lu", "se", "no", "dk", "fi", "is",
+    "ie", "pt", "pl", "cz", "sk", "hu", "ro", "bg", "gr", "tr", "ru", "ua", "jp", "cn", "kr", "tw",
+    "in", "sg", "us", "ca", "au", "nz", "br", "mx", "ar", "cl", "il", "za", "tv", "cc", "ly", "sh",
+    "xyz", "ai", "gg", "to", "fm", "im", "ws", "link", "page", "site", "tech", "blog", "news",
+    "store", "shop", "cloud", "social", "online", "email", "chat", "wiki", "zone", "art", "design",
+    "studio", "live", "video", "games", "tools", "space", "world", "today", "one", "run", "rs",
+    "fyi",
+];
+
+/// What `link`, as [`find_url`] found it, opens: with a scheme, if it was typed without.
+pub fn link_target(link: &str) -> String {
+    if link.starts_with("https://") || link.starts_with("http://") {
+        link.to_owned()
+    } else {
+        format!("https://{link}")
+    }
+}
+
+/// The web addresses in `text`, in order, each with its scheme (see [`link_target`]).
+pub fn links(text: &str) -> Vec<String> {
     let mut links = Vec::new();
     let mut rest = text;
     while let Some((start, end)) = find_url(rest) {
-        links.push(&rest[start..end]);
+        links.push(link_target(&rest[start..end]));
         rest = &rest[end..];
     }
     links
@@ -225,6 +303,44 @@ pub fn links(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn found(text: &str) -> Option<&str> {
+        find_url(text).map(|(start, end)| &text[start..end])
+    }
+
+    #[test]
+    fn finds_bare_host_names() {
+        assert_eq!(found("see signal.org."), Some("signal.org"));
+        assert_eq!(found("(www.example)"), Some("www.example"));
+        assert_eq!(found("at docs.rs/foo?x=1, ok"), Some("docs.rs/foo?x=1"));
+        assert_eq!(found("port host.dev:8080/a"), Some("host.dev:8080/a"));
+        assert_eq!(found("\"Example.COM\""), Some("Example.COM"));
+        assert_eq!(found("then https://x.y"), Some("https://x.y"));
+        assert_eq!(found("here signal.org"), Some("signal.org"));
+    }
+
+    #[test]
+    fn leaves_text_that_only_looks_like_an_address() {
+        for text in [
+            "mail me@example.com",
+            "node.js and e.g. this",
+            "version 1.2.3",
+            "file.txt index.html",
+            "a-.com -b.com .com com.",
+            "example.com's",
+            "foo.bar",
+        ] {
+            assert_eq!(found(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn links_get_a_scheme() {
+        assert_eq!(
+            links("signal.org and http://x.y/z"),
+            ["https://signal.org", "http://x.y/z"]
+        );
+    }
 
     #[test]
     fn mentions_and_styles_survive_the_round_trip() {
