@@ -3207,13 +3207,28 @@ async fn to_chat_message(
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
-            let (text, styles, _) = resolve_text(
-                manager,
-                names,
-                quote.text.as_deref().unwrap_or_default(),
-                &quote.body_ranges,
-            )
-            .await;
+            let stored = match (thread_of(&conversation), quote.id) {
+                (Some(thread), Some(id)) => {
+                    manager.store().message(&thread, id).await.ok().flatten()
+                }
+                _ => None,
+            };
+            // The quote's copy of the text is written by the quoting sender.
+            let (quoted, ranges) = match stored
+                .as_ref()
+                .filter(|stored| Some(stored.metadata.sender) == author_id)
+                .and_then(data_of)
+            {
+                Some((data, _)) => (
+                    data.body.as_deref().unwrap_or_default(),
+                    &data.body_ranges[..],
+                ),
+                None => (
+                    quote.text.as_deref().unwrap_or_default(),
+                    &quote.body_ranges[..],
+                ),
+            };
+            let (text, styles, _) = resolve_text(manager, names, quoted, ranges).await;
             Some(Quote {
                 author,
                 text: format::hide_spoilers(&text, &styles),
