@@ -3621,6 +3621,24 @@ async fn identity_of(
         .ok()?
 }
 
+/// The key `who` has now, as far as is known here: the one the store refused for sending while
+/// their verified one is pinned (it came with their pre-key bundle; see [`hold_changed`]), else
+/// the one their messages and sessions have. The safety number shown, and the key verified or
+/// accepted, is of this one.
+async fn key_shown(
+    manager: &Mgr,
+    who: ServiceId,
+) -> Option<presage::libsignal_service::protocol::IdentityKey> {
+    match manager.store().offered_identity(&who).await {
+        Ok(Some(offered)) => Some(offered),
+        Ok(None) => identity_of(manager, who).await,
+        Err(error) => {
+            warn!(%error, "failed to read the key the store refused for sending");
+            identity_of(manager, who).await
+        }
+    }
+}
+
 /// How far the safety number with `who` is trusted: verified for the key they have now, or
 /// verified before and changed since.
 async fn trust_of(manager: &Mgr, tables: &LocalStore, who: ServiceId) -> crate::Trust {
@@ -3713,9 +3731,13 @@ async fn set_verified(
         Some(Thread::Contact(who @ ServiceId::Aci(_))) if who != own_id(manager) => who,
         _ => return Err("only a contact has a safety number to verify".into()),
     };
-    let key = identity_of(manager, who)
+    let current = identity_of(manager, who).await;
+    let key = key_shown(manager, who)
         .await
         .ok_or("there is no safety number with them yet")?;
+    if current.as_ref() != Some(&key) {
+        take_over(manager, ctx, who, &key).await?;
+    }
     let state = if verified {
         State::Verified
     } else {
@@ -3742,6 +3764,36 @@ async fn set_verified(
         .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
         .map_err(|e| format!("done here, but your other devices couldn't be told: {e}"))?;
+    Ok(())
+}
+
+/// Takes `key`, which the store refused for sending to `who` and kept as offered, as theirs:
+/// saved as their identity (the store notes the change in their chat; shown at once) and their
+/// sessions on the old key dropped, as Signal's apps do when a key changes, so that the next
+/// message to them sets up a session with the new one.
+async fn take_over(
+    manager: &Mgr,
+    ctx: &Ctx,
+    who: ServiceId,
+    key: &presage::libsignal_service::protocol::IdentityKey,
+) -> Result<(), String> {
+    use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
+    use presage::libsignal_service::session_store::SessionStoreExt;
+    use presage::store::Store as _;
+    let address = ProtocolAddress::new(
+        who.service_id_string(),
+        DeviceId::new(1).expect("a device id"),
+    );
+    let since = now_millis().saturating_sub(1000);
+    let mut store = manager.store().aci_protocol_store();
+    store
+        .save_identity(&address, key)
+        .await
+        .map_err(|e| format!("failed to take their new key: {e}"))?;
+    if let Err(error) = store.delete_all_sessions(&who).await {
+        warn!(%error, "failed to drop the sessions on their old key");
+    }
+    show_identity_notes(manager, ctx, &mut Names::new(), who, since).await;
     Ok(())
 }
 
@@ -3892,8 +3944,9 @@ async fn pin_verified(manager: &Mgr, who: ServiceId, verification: &crate::local
 }
 
 /// Holds the chat with `who`, whose identity the store refused for sending: their verified key
-/// is pinned, so their new one wasn't taken and isn't known here; keeping the pinned one as
-/// "unverified" (changed, not confirmed) says so until they confirm or verify again.
+/// is pinned, so their new one wasn't taken (the store keeps it as offered, see [`key_shown`],
+/// until [`set_verified`] takes it over); keeping the pinned one as "unverified" (changed, not
+/// confirmed) says so until they confirm or verify again.
 async fn hold_changed(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
     use presage::proto::verified::State;
     let Some(key) = identity_of(manager, who).await else {
@@ -3974,7 +4027,7 @@ async fn safety_number(manager: &Mgr, who: ServiceId) -> Option<String> {
     use presage::store::Store as _;
     let store = manager.store().aci_protocol_store();
     let ours = store.get_identity_key_pair().await.ok()?;
-    let theirs = identity_of(manager, who).await?;
+    let theirs = key_shown(manager, who).await?;
     let own = own_id(manager);
     // Version 2 identifies both sides by their ACI.
     let fingerprint = Fingerprint::new(
