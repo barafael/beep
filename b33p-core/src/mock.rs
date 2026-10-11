@@ -18,10 +18,25 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("stranger", "+44 7700 900123", false),
 ];
 
+/// A mock conversation's id, made as the real backend makes them ("c:" and the person's id,
+/// "g:" and the group's key), so the chat state treats it alike.
+fn chat_id(name: &str) -> ConversationId {
+    let group = name.starts_with("group-")
+        || CONVERSATIONS
+            .iter()
+            .any(|&(id, _, is_group)| id == name && is_group);
+    ConversationId(format!("{}:{name}", if group { "g" } else { "c" }))
+}
+
+/// What a mock conversation's id names: the person or group.
+fn chat_name(id: &ConversationId) -> &str {
+    id.0.split_once(':').map_or(id.0.as_str(), |(_, name)| name)
+}
+
 /// A mock conversation as it starts out.
 fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
     Conversation {
-        id: ConversationId(id.into()),
+        id: chat_id(id),
         title: title.into(),
         is_group,
         subtitle: if id == "club" {
@@ -135,7 +150,7 @@ pub fn run(commands: Inbox, events: Events) {
         .collect();
     let _ = events.send(Event::Conversations(conversations));
     let _ = events.send(Event::Avatar {
-        conversation: ConversationId("alice".into()),
+        conversation: chat_id("alice"),
         avatar: Arc::new(gradient(96)),
     });
     let _ = events.send(Event::Synced);
@@ -145,7 +160,7 @@ pub fn run(commands: Inbox, events: Events) {
         crate::Story {
             author_id: "alice".into(),
             author: "Alice".into(),
-            conversation: ConversationId("alice".into()),
+            conversation: chat_id("alice"),
             timestamp: now_millis() - 3 * 3_600_000,
             content: crate::StoryContent::Picture(attachment(
                 "story-hut",
@@ -160,7 +175,7 @@ pub fn run(commands: Inbox, events: Events) {
         crate::Story {
             author_id: "alice".into(),
             author: "Alice".into(),
-            conversation: ConversationId("alice".into()),
+            conversation: chat_id("alice"),
             timestamp: now_millis() - 3_600_000,
             content: crate::StoryContent::Text {
                 text: "Summit tomorrow! ⛰".into(),
@@ -173,7 +188,7 @@ pub fn run(commands: Inbox, events: Events) {
         crate::Story {
             author_id: "ferris".into(),
             author: "Ferris".into(),
-            conversation: ConversationId("rust".into()),
+            conversation: chat_id("rust"),
             timestamp: now_millis() - 7_200_000,
             content: crate::StoryContent::Text {
                 text: "cargo build --release 🦀".into(),
@@ -188,7 +203,7 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::Folders(vec![
         crate::ChatFolder {
             name: "Friends".into(),
-            included: vec![ConversationId("alice".into()), ConversationId("bob".into())],
+            included: vec![chat_id("alice"), chat_id("bob")],
             ..Default::default()
         },
         crate::ChatFolder {
@@ -203,7 +218,7 @@ pub fn run(commands: Inbox, events: Events) {
     let started = now_millis();
     // Like the real backend: each conversation's newest message, for sorting and previews.
     for &(id, _, _) in CONVERSATIONS {
-        if let Some(latest) = history(&ConversationId(id.into()), started).pop() {
+        if let Some(latest) = history(&chat_id(id), started).pop() {
             let _ = events.send(Event::Latest(latest));
         }
     }
@@ -237,7 +252,13 @@ pub fn run(commands: Inbox, events: Events) {
                 let message = ChatMessage {
                     styles,
                     edited_at: Some(now_millis()),
-                    ..message(&conversation.0, "You", &body, target.timestamp, true)
+                    ..message(
+                        chat_name(&conversation),
+                        "You",
+                        &body,
+                        target.timestamp,
+                        true,
+                    )
                 };
                 let _ = events.send(Event::Edited {
                     conversation,
@@ -362,7 +383,7 @@ pub fn run(commands: Inbox, events: Events) {
                 let _ = events.send(Event::Stories(stories.clone()));
             }
             Ok(Command::CreateGroup { title, members }) => {
-                let id = ConversationId(format!("group-{}", now_millis()));
+                let id = chat_id(&format!("group-{}", now_millis()));
                 let conversation = Conversation {
                     id: id.clone(),
                     title,
@@ -386,7 +407,13 @@ pub fn run(commands: Inbox, events: Events) {
                 let _ = events.send(Event::GroupCreated(id.clone()));
                 let _ = events.send(Event::Message(ChatMessage {
                     notice: true,
-                    ..message(&id.0, "You", "You created the group.", now_millis(), true)
+                    ..message(
+                        chat_name(&id),
+                        "You",
+                        "You created the group.",
+                        now_millis(),
+                        true,
+                    )
                 }));
             }
             Ok(Command::EditGroup { conversation, edit }) => {
@@ -410,10 +437,10 @@ pub fn run(commands: Inbox, events: Events) {
                         let accept = edit == crate::GroupEdit::AcceptInvitation;
                         let (_, title, _) = CONVERSATIONS
                             .iter()
-                            .find(|(id, _, _)| *id == conversation.0)
+                            .find(|(id, _, _)| *id == chat_name(&conversation))
                             .copied()
                             .unwrap_or(("", "", true));
-                        let mut now = self::conversation(&conversation.0, title, true);
+                        let mut now = self::conversation(chat_name(&conversation), title, true);
                         now.invited = false;
                         now.left = !accept;
                         now.subtitle = if accept {
@@ -431,7 +458,7 @@ pub fn run(commands: Inbox, events: Events) {
                 };
                 let _ = events.send(Event::Message(ChatMessage {
                     notice: true,
-                    ..message(&conversation.0, "You", &notice, now_millis(), true)
+                    ..message(chat_name(&conversation), "You", &notice, now_millis(), true)
                 }));
             }
             Ok(Command::LoadStickers) => {
@@ -460,7 +487,7 @@ pub fn run(commands: Inbox, events: Events) {
                         None,
                         (512, 512),
                     )],
-                    ..message(&conversation.0, "You", "", now_millis(), true)
+                    ..message(chat_name(&conversation), "You", "", now_millis(), true)
                 }));
             }
             Ok(Command::Respond {
@@ -485,13 +512,13 @@ pub fn run(commands: Inbox, events: Events) {
                 });
                 let name = CONVERSATIONS
                     .iter()
-                    .find(|(id, _, _)| *id == conversation.0)
+                    .find(|(id, _, _)| *id == chat_name(&conversation))
                     .map_or("them", |(_, name, _)| *name);
                 let state = if verified { "verified" } else { "unverified" };
                 let _ = events.send(Event::Message(ChatMessage {
                     notice: true,
                     ..message(
-                        &conversation.0,
+                        chat_name(&conversation),
                         name,
                         &format!("You marked your safety number with {name} as {state}."),
                         now_millis(),
@@ -504,7 +531,7 @@ pub fn run(commands: Inbox, events: Events) {
                 let digits: String = number.chars().filter(char::is_ascii_digit).collect();
                 if digits.ends_with("7700900123") {
                     let _ = events.send(Event::Found {
-                        conversation: ConversationId("stranger".into()),
+                        conversation: chat_id("stranger"),
                         then,
                     });
                 } else {
@@ -514,7 +541,7 @@ pub fn run(commands: Inbox, events: Events) {
                 }
             }
             Ok(Command::LoadDetails(conversation)) => {
-                let details = match conversation.0.as_str() {
+                let details = match chat_name(&conversation) {
                     "rust" => crate::Details {
                         description: Some("All things Rust 🦀, mostly GUIs".into()),
                         members: ["Carol", "Dana", "Eve", "Ferris"]
@@ -586,7 +613,7 @@ pub fn run(commands: Inbox, events: Events) {
                 let _ = events.send(Event::Message(ChatMessage {
                     attachments,
                     styles,
-                    ..message(&conversation.0, "You", &body, now_millis(), true)
+                    ..message(chat_name(&conversation), "You", &body, now_millis(), true)
                 }));
             }
             Ok(Command::Send {
@@ -627,7 +654,7 @@ pub fn run(commands: Inbox, events: Events) {
                     quote,
                     attachments,
                     styles,
-                    ..message(&conversation.0, "You", &body, sent, true)
+                    ..message(chat_name(&conversation), "You", &body, sent, true)
                 }));
                 let typing = |typing| Event::Typing {
                     conversation: conversation.clone(),
@@ -646,7 +673,7 @@ pub fn run(commands: Inbox, events: Events) {
                 let _ = events.send(typing(true));
                 std::thread::sleep(Duration::from_millis(1500));
                 let _ = events.send(Event::Message(message(
-                    &conversation.0,
+                    chat_name(&conversation),
                     "Echo",
                     &echo,
                     now_millis(),
@@ -720,7 +747,7 @@ fn message(
     outgoing: bool,
 ) -> ChatMessage {
     ChatMessage {
-        conversation: ConversationId(conversation.into()),
+        conversation: chat_id(conversation),
         sender_id: sender.to_lowercase(),
         sender: sender.into(),
         body: body.into(),
@@ -733,7 +760,7 @@ fn message(
 /// The stored history of a mock conversation, relative to `started`.
 fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
     let ago = |minutes: u64| started - minutes * 60_000;
-    match id.0.as_str() {
+    match chat_name(id) {
         "alice" => vec![
             message(
                 "alice",

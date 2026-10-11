@@ -71,11 +71,13 @@ fn clamp_plaintext(rust_log: &str) -> String {
             // Anything else without a level is a target, enabled at `trace`.
             None => (directive, true),
         };
-        // `target[span{field}]=level` is valid too; compare the module path on its own.
+        // `target[span{field}]=level` is valid too; compare the module path on its own. A
+        // directive's target matches every target it begins, so `presag` or `presage:` reach
+        // into presage as much as `presage::manager` does.
         let module = target.split_once('[').map_or(target, |(module, _)| module);
         let plaintext = PLAINTEXT_TARGETS
             .iter()
-            .any(|name| module == *name || module.starts_with(&format!("{name}::")));
+            .any(|name| name.starts_with(module) || module.starts_with(name));
         kept.push(match (plaintext, below_info) {
             (true, true) => format!("{target}=info"),
             _ => directive.to_string(),
@@ -155,6 +157,10 @@ mod tests {
             "presage::manager::registered[receive{peer=x}]",
             "presage::manager::registered[receive{peer=x}]=trace",
             "info,presage::manager::registered",
+            // Targets match by their beginning.
+            "presage:=trace",
+            "presag=debug",
+            "pre=trace",
             // Regex directives match anything, so they are dropped outright.
             "/registered/=trace",
             "/^presage.*/=debug",

@@ -49,6 +49,22 @@ impl ConversationId {
     pub fn contact(service_id: &str) -> Self {
         Self(format!("c:{service_id}"))
     }
+
+    /// The group whose master key is `master_key`.
+    pub fn group(master_key: &[u8]) -> Self {
+        let key: String = master_key.iter().map(|b| format!("{b:02x}")).collect();
+        Self(format!("g:{key}"))
+    }
+
+    /// The service ID of the person a 1:1 conversation is with.
+    pub fn contact_id(&self) -> Option<&str> {
+        self.0.strip_prefix("c:")
+    }
+
+    /// A group conversation's master key, in hex.
+    pub fn group_key(&self) -> Option<&str> {
+        self.0.strip_prefix("g:")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

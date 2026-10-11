@@ -654,10 +654,10 @@ async fn link(
 }
 
 pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
-    ConversationId(match thread {
-        Thread::Contact(id) => format!("c:{}", id.service_id_string()),
-        Thread::Group(key) => format!("g:{}", hex::encode(key)),
-    })
+    match thread {
+        Thread::Contact(id) => ConversationId::contact(&id.service_id_string()),
+        Thread::Group(key) => ConversationId::group(key),
+    }
 }
 
 /// Remembers how to reach a conversation and describes it for the UI; settings are added by
@@ -762,10 +762,10 @@ struct Ctx {
 
 /// The thread a conversation id stands for; see [`conversation_id`].
 fn thread_of(id: &ConversationId) -> Option<Thread> {
-    if let Some(service_id) = id.0.strip_prefix("c:") {
+    if let Some(service_id) = id.contact_id() {
         return ServiceId::parse_from_service_id_string(service_id).map(Thread::Contact);
     }
-    let key = hex::decode(id.0.strip_prefix("g:")?).ok()?;
+    let key = hex::decode(id.group_key()?).ok()?;
     Some(Thread::Group(key.try_into().ok()?))
 }
 

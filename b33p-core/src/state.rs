@@ -1467,7 +1467,7 @@ impl ChatState {
                 let members = draft
                     .chosen
                     .iter()
-                    .filter_map(|id| id.0.strip_prefix("c:"))
+                    .filter_map(ConversationId::contact_id)
                     .map(str::to_owned)
                     .collect::<Vec<_>>();
                 if members.is_empty() {
@@ -1493,7 +1493,7 @@ impl ChatState {
                 group
                     .members
                     .iter()
-                    .map(|p| format!("c:{}", p.service_id))
+                    .map(|p| ConversationId::contact(&p.service_id).0)
                     .collect()
             })
             .unwrap_or_default();
@@ -1517,7 +1517,7 @@ impl ChatState {
         }
         let members = members
             .iter()
-            .filter_map(|id| id.0.strip_prefix("c:"))
+            .filter_map(ConversationId::contact_id)
             .map(str::to_owned)
             .collect();
         Some(Command::CreateGroup {
