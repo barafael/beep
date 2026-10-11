@@ -17,21 +17,11 @@ pub fn rich_text(body: &str, styles: &[StyleRange], revealed: bool) -> slint::St
 
 /// `body` with its spoilers hidden, unless `revealed`.
 fn masked(body: &str, styles: &[StyleRange], revealed: bool) -> String {
-    let hidden = |at: usize| {
-        !revealed
-            && styles
-                .iter()
-                .any(|s| s.style == Style::Spoiler && s.start <= at && at < s.end)
-    };
-    body.char_indices()
-        .map(|(at, c)| {
-            if hidden(at) && !c.is_whitespace() {
-                '▒'
-            } else {
-                c
-            }
-        })
-        .collect()
+    if revealed {
+        body.to_owned()
+    } else {
+        b33p_core::format::hide_spoilers(body, styles)
+    }
 }
 
 /// What stands for `c` in Markdown: a carriage return would end the line in the middle of what

@@ -151,7 +151,8 @@ impl ConversationView<'_> {
         if message.deleted {
             return DELETED.into();
         }
-        let body = match message.body.lines().next() {
+        let body = format::hide_spoilers(&message.body, &message.styles);
+        let body = match body.lines().next() {
             Some(line) => line.to_string(),
             None => message
                 .attachments
@@ -578,7 +579,7 @@ impl ChatState {
                     // A photo or sticker alone says what it is.
                     let body = match (message.body.is_empty(), message.attachments.first()) {
                         (true, Some(attachment)) => describe_kind(attachment.kind).to_string(),
-                        _ => message.body.clone(),
+                        _ => format::hide_spoilers(&message.body, &message.styles),
                     };
                     let sender = message.sender.clone();
                     self.notify_message(&id, sender, body);
@@ -1259,6 +1260,7 @@ impl ChatState {
             quote,
             files,
             styles,
+            mentions,
             ..
         } = send
         else {
@@ -1284,6 +1286,7 @@ impl ChatState {
             outgoing: true,
             quote: quote.clone(),
             styles: styles.clone(),
+            mentions: mentions.clone(),
             unsent: Some(Unsent::Sending),
             ..Default::default()
         }))
@@ -1939,8 +1942,23 @@ impl ChatState {
         if !self.can_edit(message) {
             return None;
         }
-        let text = view.body.to_owned();
-        self.editing = Some(message.reference());
+        // As typed, so that sending it again keeps the formatting, spoilers above all, and
+        // the mentions.
+        let text = format::typed(view.body, view.styles);
+        let reference = message.reference();
+        let mentions = message
+            .mentions
+            .iter()
+            .filter_map(|m| {
+                let name = message.body.get(m.start..m.end)?.strip_prefix('@')?;
+                Some(Person {
+                    service_id: m.service_id.clone(),
+                    name: name.to_owned(),
+                })
+            })
+            .collect();
+        self.draft_mentions = mentions;
+        self.editing = Some(reference);
         self.replying = None;
         Some(text)
     }
@@ -2246,7 +2264,11 @@ impl ChatState {
             .filter(|view| view.message.unsent.is_none() && !view.message.notice)
             .map(|view| Quote {
                 author: view.message.sender.clone(),
-                text: view.body.lines().next().unwrap_or_default().to_owned(),
+                text: format::hide_spoilers(view.body, view.styles)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
                 author_id: view.message.sender_id.clone(),
                 timestamp: view.message.timestamp,
             });
@@ -4314,6 +4336,58 @@ mod tests {
             state.compose("next").0,
             Some(Command::Send { .. })
         ));
+    }
+
+    /// Editing starts from the message as typed: sent again, it keeps its spoiler (which
+    /// would otherwise be revealed to everyone), its formatting and whom it mentions.
+    #[test]
+    fn an_edit_keeps_spoilers_formatting_and_mentions() {
+        let mut state = state();
+        state.select(&id("a"));
+        let body = "@Ann the butler did it";
+        state.apply(Event::Message(ChatMessage {
+            body: body.into(),
+            timestamp: now_millis(),
+            styles: vec![
+                StyleRange {
+                    start: 9,
+                    end: 15,
+                    style: crate::Style::Spoiler,
+                },
+                StyleRange {
+                    start: 16,
+                    end: 22,
+                    style: crate::Style::Bold,
+                },
+            ],
+            mentions: vec![Mention {
+                start: 0,
+                end: 4,
+                service_id: "ann".into(),
+            }],
+            ..message("a", "You", 0, true)
+        }));
+        let ours = state.messages().position(|m| m.message.outgoing).unwrap();
+        let typed = state.edit(ours).unwrap();
+        assert_eq!(typed, "@Ann the ||butler|| *did it*");
+        let Some(Command::Edit {
+            body: sent,
+            styles,
+            mentions,
+            ..
+        }) = state.compose(&typed.replace("did", "done")).0
+        else {
+            panic!("edits");
+        };
+        assert_eq!(sent, "@Ann the butler done it");
+        assert!(
+            styles
+                .iter()
+                .any(|s| s.style == crate::Style::Spoiler && &sent[s.start..s.end] == "butler")
+        );
+        assert_eq!(styles.len(), 2);
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].service_id, "ann");
     }
 
     #[test]

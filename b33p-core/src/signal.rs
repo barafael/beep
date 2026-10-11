@@ -2720,7 +2720,7 @@ async fn resolve_text(
     names: &mut Names,
     text: &str,
     ranges: &[BodyRange],
-) -> (String, Vec<StyleRange>) {
+) -> (String, Vec<StyleRange>, Vec<crate::Mention>) {
     use body_range::{AssociatedValue, Style as WireStyle};
     let mut wire = Vec::new();
     let mut mentioned = Vec::new();
@@ -2952,7 +2952,7 @@ async fn to_chat_message(
     let outgoing = is_outgoing(manager, content);
     let author = author_of(manager, content);
     let sender = display_name(manager, names, author).await;
-    let (mut body, styles) = resolve_text(
+    let (mut body, styles, mentions) = resolve_text(
         manager,
         names,
         data.body.as_deref().unwrap_or_default(),
@@ -2990,16 +2990,16 @@ async fn to_chat_message(
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
+            let (text, styles, _) = resolve_text(
+                manager,
+                names,
+                quote.text.as_deref().unwrap_or_default(),
+                &quote.body_ranges,
+            )
+            .await;
             Some(Quote {
                 author,
-                text: resolve_text(
-                    manager,
-                    names,
-                    quote.text.as_deref().unwrap_or_default(),
-                    &quote.body_ranges,
-                )
-                .await
-                .0,
+                text: format::hide_spoilers(&text, &styles),
                 author_id: author_id
                     .map(|id| id.service_id_string())
                     .unwrap_or_default(),
@@ -3019,6 +3019,7 @@ async fn to_chat_message(
         quote,
         attachments,
         styles,
+        mentions,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
         notice,

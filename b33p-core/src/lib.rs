@@ -397,6 +397,8 @@ pub struct ChatMessage {
     pub preview: Option<LinkPreview>,
     /// Formatting, in [`ChatMessage::body`]'s bytes.
     pub styles: Vec<StyleRange>,
+    /// Whom it mentions, as "@Name" in [`ChatMessage::body`].
+    pub mentions: Vec<Mention>,
     /// Ours, shown before it went out: still sending, or it failed. `None` once it is sent,
     /// and for everything else.
     pub unsent: Option<Unsent>,
