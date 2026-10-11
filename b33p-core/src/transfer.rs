@@ -80,7 +80,20 @@ pub(crate) async fn receive_history(
             TransferArchive::RelinkRequested => return Ok(Outcome::Relink),
         };
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Downloading));
-        download(manager, cdn, &cdn_key, &path).await?;
+        // A dropped connection shouldn't cost the link (which starts over without the
+        // history): a few more tries, from the start.
+        let mut attempt = 1;
+        loop {
+            match download(manager, cdn, &cdn_key, &path).await {
+                Ok(()) => break,
+                Err(Download::Failed(error)) if attempt < DOWNLOAD_ATTEMPTS => {
+                    warn!(%error, attempt, "failed to download the message history; retrying");
+                    tokio::time::sleep(Duration::from_secs(5) * attempt).await;
+                    attempt += 1;
+                }
+                Err(Download::Failed(error) | Download::Refused(error)) => return Err(error),
+            }
+        }
         let aci = manager.registration_data().service_ids.aci();
         let stats = import_archive(key, &aci, &path, &mut manager.store().clone(), events).await?;
         info!(?stats, "message history imported");
@@ -127,8 +140,17 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
     Err("The phone did not send the message history within an hour.".into())
 }
 
+/// How often the archive is downloaded before giving up.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// Why the archive didn't download: worth trying again, or not.
+enum Download {
+    Failed(String),
+    Refused(String),
+}
+
 /// Streams the archive to `path`; it can be hundreds of megabytes.
-async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), String> {
+async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Result<(), Download> {
     let too_big = || {
         format!(
             "The message history is larger than {} MB, which no phone sends.",
@@ -143,39 +165,39 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &PathBuf) -> Res
             Endpoint::cdn(cdn, format!("/attachments/{cdn_key}")),
             HttpAuthOverride::Unidentified,
         )
-        .map_err(|e| format!("invalid archive location: {e}"))?
+        .map_err(|e| Download::Refused(format!("invalid archive location: {e}")))?
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("failed to download the message history: {e}"))?;
+        .map_err(|e| Download::Failed(format!("failed to download the message history: {e}")))?;
     // Refused before writing anything when the server says, and while writing otherwise, so a
     // misbehaving server can't fill the disk.
     if response
         .content_length()
         .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
     {
-        return Err(too_big());
+        return Err(Download::Refused(too_big()));
     }
     // Private to the user and complete or absent: built under a temporary name.
     let mut file = crate::vault::write_private_file(path)
-        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+        .map_err(|e| Download::Refused(format!("failed to create {}: {e}", path.display())))?;
     let mut size = 0u64;
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|e| format!("failed to download the message history: {e}"))?
+        .map_err(|e| Download::Failed(format!("failed to download the message history: {e}")))?
     {
         size += chunk.len() as u64;
         if size > MAX_ARCHIVE_BYTES {
-            return Err(too_big());
+            return Err(Download::Refused(too_big()));
         }
         file.write_all(&chunk)
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            .map_err(|e| Download::Refused(format!("failed to write {}: {e}", path.display())))?;
     }
     file.sync_all()
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        .map_err(|e| Download::Refused(format!("failed to write {}: {e}", path.display())))?;
     file.persist()
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        .map_err(|e| Download::Refused(format!("failed to write {}: {e}", path.display())))?;
     info!(bytes = size, "history archive downloaded");
     Ok(())
 }

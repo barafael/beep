@@ -410,12 +410,8 @@ async fn run_linked(
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
     let removed = Rc::new(tokio::sync::Notify::new());
-    let receiving = tokio::task::spawn_local(receive(
-        manager.clone(),
-        ctx.clone(),
-        avatars,
-        removed.clone(),
-    ));
+    let mut receiving = start_receiving(&manager, &ctx, &removed, avatars, Duration::ZERO);
+    let mut failures = 0u32;
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
@@ -435,6 +431,20 @@ async fn run_linked(
                 None => break false,
             },
             () = removed.notified() => break true,
+            finished = &mut receiving => {
+                // `receive` ends on its own only once the device was removed.
+                let Err(error) = finished else { break true };
+                // Anything else it couldn't handle: start over, rather than look connected
+                // while nothing arrives; later and later should it keep failing.
+                warn!(%error, "receiving failed");
+                let _ = events.send(Event::Error(
+                    "Receiving messages failed; trying again.".into(),
+                ));
+                failures += 1;
+                let after = Duration::from_secs(5 << failures.min(6));
+                let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
+                receiving = start_receiving(&manager, &ctx, &removed, avatars, after);
+            }
         }
     };
     latest.abort();
@@ -443,6 +453,21 @@ async fn run_linked(
     stories.abort();
     receiving.abort();
     was_removed
+}
+
+/// Receives in the background (see [`receive`]), from `after` on.
+fn start_receiving(
+    manager: &Mgr,
+    ctx: &Ctx,
+    removed: &Rc<tokio::sync::Notify>,
+    avatars: AvatarFetcher,
+    after: Duration,
+) -> tokio::task::JoinHandle<()> {
+    let (manager, ctx, removed) = (manager.clone(), ctx.clone(), removed.clone());
+    tokio::task::spawn_local(async move {
+        tokio::time::sleep(after).await;
+        receive(manager, ctx, avatars, removed).await;
+    })
 }
 
 /// Whether Signal refuses this device's credentials: it was removed from the account (the
@@ -1505,12 +1530,15 @@ async fn expire_stories(manager: Mgr, ctx: Ctx) {
 
 /// Deletes disappearing messages when their time is up, for the rest of the session.
 async fn sweep_expired(manager: Mgr, ctx: Ctx) {
+    // After a failure to read or write which messages are due: they still are.
+    const RETRY: Duration = Duration::from_secs(60);
     loop {
         let (due, next) = match ctx.tables.due(now_millis()).await {
             Ok(found) => found,
             Err(error) => {
                 warn!(%error, "failed to look for disappearing messages");
-                return;
+                tokio::time::sleep(RETRY).await;
+                continue;
             }
         };
         let mut deleted = Vec::new();
@@ -1526,7 +1554,8 @@ async fn sweep_expired(manager: Mgr, ctx: Ctx) {
         }
         if let Err(error) = ctx.tables.forget_expired(&deleted).await {
             warn!(%error, "failed to forget disappearing messages");
-            return;
+            tokio::time::sleep(RETRY).await;
+            continue;
         }
         let mut gone: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
         for (conversation, message) in deleted {
@@ -2228,6 +2257,26 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
+    // From someone not in the group (any more), unless it is the change that took them out:
+    // Signal's clients drop those.
+    let group_change = data_of(content)
+        .and_then(|(data, _)| data.group_v2.as_ref())
+        .is_some_and(|context| context.group_change.is_some());
+    if let Thread::Group(key) = &thread
+        && !group_change
+        && !is_outgoing(manager, content)
+        && let Ok(Some(group)) = manager.store().group(*key).await
+        && !group
+            .members
+            .iter()
+            .any(|member| ServiceId::Aci(member.aci) == content.metadata.sender)
+    {
+        debug!(
+            sender = %content.metadata.sender.service_id_string(),
+            "dropped a message from someone not in the group"
+        );
+        return true;
+    }
     let id = ensure_conversation(manager, ctx, thread.clone()).await;
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
@@ -2259,6 +2308,12 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         target_sent_timestamp: Some(timestamp),
     }) = data.delete
     {
+        // As presage takes them: only for two days after sending.
+        const DELETE_WINDOW: u64 = 2 * 24 * 60 * 60 * 1000;
+        if stored_at(content).saturating_sub(timestamp) >= DELETE_WINDOW {
+            debug!("ignored a delete of a message sent too long ago");
+            return true;
+        }
         let target = MessageRef {
             author_id: author.service_id_string(),
             timestamp,
@@ -2869,8 +2924,10 @@ async fn to_chat_message(
     )
     .await;
     let attachments = attachments::of_message(data);
-    let mut timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0)
-        .then(|| data.expire_timer.unwrap_or(0));
+    // A group's timer changes with the group (below), signed; the flag is anyone's to set.
+    let mut timer_change = (data.flags() & Flags::ExpirationTimerUpdate as u32 != 0
+        && data.group_v2.is_none())
+    .then(|| data.expire_timer.unwrap_or(0));
     // Whether it says what changed in the conversation rather than what someone wrote.
     let mut notice = false;
     if let Some(seconds) = timer_change
@@ -3044,10 +3101,19 @@ async fn handle_command(
                     } else {
                         reactions.push((target, reaction, remove));
                     }
-                } else if let Some(message) =
+                } else if let Some(mut message) =
                     to_chat_message(manager, &mut names, id.clone(), content).await
                 {
-                    messages.push(message);
+                    // Stores from before edits took their message's place keep them apart,
+                    // after it: the newest version stands for the message.
+                    let reference = message.reference();
+                    match messages.iter_mut().find(|m| m.is(&reference)) {
+                        Some(earlier) => {
+                            message.reactions = std::mem::take(&mut earlier.reactions);
+                            *earlier = message;
+                        }
+                        None => messages.push(message),
+                    }
                 }
             }
             decorate(ctx, &id, &mut messages).await;
