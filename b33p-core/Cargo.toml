@@ -25,7 +25,7 @@ tracing = { version = "0.1", optional = true }
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.48", features = ["rt", "macros", "time"], optional = true }
+tokio = { version = "1.48", features = ["rt", "macros", "time", "net"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 hex = { version = "0.4", optional = true }
