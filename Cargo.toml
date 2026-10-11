@@ -23,12 +23,13 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
+#   (not yet proposed) the provisioning link logged at debug instead of info
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "779fb7def262492b01ab797d55da794ffe81c14d" }
+presage = { git = "https://github.com/barafael/presage", rev = "225c5967f614c989568ad4649f7bd5cba547010d" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "779fb7def262492b01ab797d55da794ffe81c14d", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "225c5967f614c989568ad4649f7bd5cba547010d", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -38,6 +39,19 @@ libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
+# Branch styled-text-selection-1.18 of our Slint fork: 1.18.1 plus selecting text in a
+# `StyledText` (`selectable`, `selected-text`), which the messages need. Drop this once it has
+# landed upstream and a release carries it.
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+# Its helper crates too, or the crates.io slint crates would link a second copy of them.
+vtable = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+vtable-macro = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+const-field-offset = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "1c8338deade4883691a1f256d53882c9b5cd8484" }
+
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
 # langis/integration of our fork: whisperfish's plus two pull requests:
 #   #2 (not ours) builds on Linux arm64, where `c_char` is unsigned, and stops SQLCipher tearing

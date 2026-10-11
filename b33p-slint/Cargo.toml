@@ -28,7 +28,7 @@ mundy = { version = "0.2.3", default-features = false, features = ["reduced-moti
 # Opens links in the browser.
 open = "5"
 # The file picker for attachments (the desktop's own, through its portal on Linux).
-rfd = "0.15"
+rfd = "0.17"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Pictures and files pasted into the composer (`clipboard.rs`).
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
@@ -62,7 +62,7 @@ directories = "6"
 
 # Quitting cleanly when the system ends b33p (`shutdown.rs`).
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 # The single-instance pipe (`instance.rs`) and the window that hears the session end
 # (`shutdown.rs`).
@@ -78,7 +78,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 # The autostart entry (`autostart.rs`).
-windows-registry = "0.6"
+windows-registry = "0.100"
 
 [dev-dependencies]
 # Slint's headless backend for the UI tests in `src/ui_tests.rs`; the version slint pins.

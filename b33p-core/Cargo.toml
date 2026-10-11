@@ -25,13 +25,13 @@ tracing = { version = "0.1", optional = true }
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.48", features = ["rt", "macros", "time"], optional = true }
+tokio = { version = "1.53", features = ["rt", "macros", "time"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 hex = { version = "0.4", optional = true }
 # Same version and features as presage-store-sqlite, so this only adds the options type.
 sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
-argon2 = { version = "0.5", optional = true }
+argon2 = { version = "0.6", optional = true }
 getrandom = { version = "0.4", optional = true }
 keyring-core = { version = "1", optional = true }
 # Decodes avatars, attached pictures and stickers (WebP, sometimes GIF).
