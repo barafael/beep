@@ -293,6 +293,21 @@ mod tests {
         assert_ne!(*password_key("hunter22", &salt, Kdf::V2), before);
     }
 
+    /// The keys of existing databases, as `argon2` 0.5 derived them: a new version of the crate
+    /// (or of its defaults) must not change them, or their owners are locked out.
+    #[test]
+    fn password_keys_stay_the_same_across_versions() {
+        let salt = [3; 16];
+        assert_eq!(
+            hex::encode(*password_key("correct horse", &salt, Kdf::V1)),
+            "2e298dc521fa674e081f66a90e3a218fe56cc8f4c400232e6abe6ddae79ffe28"
+        );
+        assert_eq!(
+            hex::encode(*password_key("correct horse", &salt, Kdf::V2)),
+            "c78a0653834a28970cef3be1c13c77279a7a9d8ef13d6a55ad7f42e14eb03ddb"
+        );
+    }
+
     #[test]
     fn password_key_depends_on_password_and_salt() {
         // V1: cheap in debug builds, and the parameters don't matter here.
