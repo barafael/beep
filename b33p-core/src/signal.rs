@@ -2227,6 +2227,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
+    // Nothing at all from someone we block, in groups too, as Signal's clients do. presage
+    // has stored it by now, so it goes from the store again.
+    let sender = content.metadata.sender;
+    if sender != own_id(manager)
+        && is_blocked(ctx, &ConversationId::contact(&sender.service_id_string())).await
+    {
+        forget_stored(manager, content).await;
+        return true;
+    }
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
         announce_identity_change(manager, ctx, names, content.metadata.sender).await;
@@ -2409,6 +2418,21 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         }
     }
     events.send(Event::Message(message))
+}
+
+/// Removes what presage stored of `content`, if it is still there as its sender's.
+async fn forget_stored(manager: &Mgr, content: &Content) {
+    let Ok(thread) = Thread::try_from(content) else {
+        return;
+    };
+    let at = stored_at(content);
+    let mut store = manager.store().clone();
+    if let Ok(Some(stored)) = store.message(&thread, at).await
+        && stored.metadata.sender == content.metadata.sender
+        && let Err(error) = store.delete_message(&thread, at).await
+    {
+        warn!(%error, "failed to forget a message from someone blocked");
+    }
 }
 
 async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
@@ -3612,10 +3636,17 @@ async fn handle_command(
                 return Ok(());
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
-            // Not to unanswered message requests: they'd tell a stranger we read it.
+            // Not to unanswered message requests: they'd tell a stranger we read it. Nor to
+            // anyone we block.
             let receipts = ctx.preferences.get().read_receipts
                 && !is_unanswered_request(ctx, &conversation).await;
-            tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
+            let mut receipted = Vec::new();
+            for message in messages.iter().filter(|_| receipts) {
+                if !is_blocked(ctx, &ConversationId::contact(&message.author_id)).await {
+                    receipted.push(message.clone());
+                }
+            }
+            tokio::task::spawn_local(send_read(manager.clone(), messages, receipted));
         }
         Command::MarkUnread(conversation) => {
             ctx.tables
@@ -4613,35 +4644,33 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
     }
 }
 
-/// Tells the senders of `messages` we read them (with `receipts`), and our other devices.
-async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) {
+/// Tells our other devices we read `messages`, and the senders of those `receipted`.
+async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipted: Vec<MessageRef>) {
     let timestamp = now_millis();
     let own = own_id(&manager);
-    if receipts {
-        let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
-        for message in &messages {
-            by_author
-                .entry(&message.author_id)
-                .or_default()
-                .push(message.timestamp);
+    let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
+    for message in &receipted {
+        by_author
+            .entry(&message.author_id)
+            .or_default()
+            .push(message.timestamp);
+    }
+    for (author, timestamps) in by_author {
+        let Some(author) = ServiceId::parse_from_service_id_string(author) else {
+            continue;
+        };
+        if author == own {
+            continue;
         }
-        for (author, timestamps) in by_author {
-            let Some(author) = ServiceId::parse_from_service_id_string(author) else {
-                continue;
-            };
-            if author == own {
-                continue;
-            }
-            let receipt = ReceiptMessage {
-                r#type: Some(receipt_message::Type::Read as i32),
-                timestamp: timestamps,
-            };
-            if let Err(error) = manager
-                .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
-                .await
-            {
-                debug!(%error, "failed to send a read receipt");
-            }
+        let receipt = ReceiptMessage {
+            r#type: Some(receipt_message::Type::Read as i32),
+            timestamp: timestamps,
+        };
+        if let Err(error) = manager
+            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .await
+        {
+            debug!(%error, "failed to send a read receipt");
         }
     }
     let read = messages
