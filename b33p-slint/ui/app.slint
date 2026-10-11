@@ -91,6 +91,12 @@ export struct ReactionItem {
     mine: bool,
 }
 
+// How far one of our messages got; `incoming` for others' messages.
+export enum DeliveryState { incoming, sending, failed, sent, delivered, read }
+
+// An answer to a message request.
+export enum RequestAnswer { accept, delete, block }
+
 export struct MessageItem {
     sender: string,
     // With links made clickable.
@@ -117,9 +123,7 @@ export struct MessageItem {
     reactions: [ReactionItem],
     // Plain text, for copying.
     text: string,
-    // Ours: 1 sent, 2 delivered, 3 read, -1 still sending, -2 not sent; 0 for others'
-    // messages.
-    delivery: int,
+    delivery: DeliveryState,
     edited: bool,
     deleted: bool,
     // A line about the conversation that nobody wrote (e.g. a new safety number): drawn as
@@ -558,15 +562,9 @@ component ConversationRow inherits Rectangle {
                 }
                 // Always there: it grows in with the first unread message and shrinks away once
                 // read (a row drawn with it is simply there).
+                // No `changed` handler here: rows come and go as the list changes, and Slint (1.18)
+                // can run one for a row already dropped, which aborts.
                 Rectangle {
-                    // The last count, so it doesn't read 0 while shrinking away.
-                    property <int> unread: item.unread;
-                    property <int> shown: item.unread;
-                    changed unread => {
-                        if self.unread > 0 {
-                            self.shown = self.unread;
-                        }
-                    }
                     width: item.unread > 0 ? max(18px, badge.preferred-width + 10px) : 0px;
                     animate width { duration: 150ms * Motion.scale; easing: ease-out; }
                     opacity: item.unread > 0 ? 1 : 0;
@@ -577,7 +575,8 @@ component ConversationRow inherits Rectangle {
                     // Muted chats count quietly.
                     background: item.muted ? Palette.foreground.with-alpha(0.35) : Palette.accent-background;
                     badge := Text {
-                        text: parent.shown;
+                        // Nothing while shrinking away, rather than 0.
+                        text: item.unread > 0 ? item.unread : "";
                         // White on the accent, whatever the style's accent text colour is.
                         color: white;
                         font-size: 0.75rem;
@@ -610,6 +609,7 @@ component AttachmentView inherits VerticalLayout {
     property <color> ink: outgoing ? white : Palette.alternate-foreground;
     spacing: 4px;
     // The list only creates rows that are on screen, so this downloads only what is seen.
+    // (A view kept for another attachment, like the next story, is told by its owner.)
     init => {
         if root.item.fetch { root.fetch(root.item.id); }
     }
@@ -992,7 +992,7 @@ component Bubble inherits Rectangle {
                         background: (item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background)
                             .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1);
                         // Paler until it went out.
-                        opacity: item.delivery == -1 ? 0.7 : 1;
+                        opacity: item.delivery == DeliveryState.sending ? 0.7 : 1;
                         animate opacity { duration: 250ms * Motion.scale; easing: ease-out; }
                         border-width: item.highlighted ? 2px : item.outgoing ? 0 : 1px;
                         border-color: item.highlighted ? Palette.accent-background.brighter(0.4) : Palette.border;
@@ -1097,8 +1097,9 @@ component Bubble inherits Rectangle {
                                     }
                                 }
                             }
-                            // Once per run, on its last message; always if it changed or goes away.
-                            if item.last || item.edited || item.expires != "": HorizontalLayout {
+                            // Once per run, on its last message; always if it changed, goes away or
+                            // failed to go out.
+                            if item.last || item.edited || item.expires != "" || item.delivery == DeliveryState.failed: HorizontalLayout {
                                 alignment: end;
                                 spacing: 4px;
                                 property <color> faint: root.ink.with-alpha(0.65);
@@ -1119,20 +1120,20 @@ component Bubble inherits Rectangle {
                                     color: parent.faint;
                                 }
                                 // ✓ sent, ✓✓ delivered, ✓✓ in full white once read.
-                                if item.last && item.delivery > 0: Text {
-                                    text: item.delivery == 1 ? "✓" : "✓✓";
+                                if item.last && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): Text {
+                                    text: item.delivery == DeliveryState.sent ? "✓" : "✓✓";
                                     font-size: 0.72rem;
-                                    font-weight: item.delivery == 3 ? 700 : 400;
-                                    color: item.delivery == 3 ? root.ink : parent.faint;
+                                    font-weight: item.delivery == DeliveryState.read ? 700 : 400;
+                                    color: item.delivery == DeliveryState.read ? root.ink : parent.faint;
                                 }
-                                if item.last && item.delivery == -1: Text {
+                                if item.last && item.delivery == DeliveryState.sending: Text {
                                     text: "Sending…";
                                     font-size: 0.72rem;
                                     font-italic: true;
                                     color: parent.faint;
                                 }
                                 // On every bubble that failed, not only a run's last.
-                                if item.delivery == -2: Rectangle {
+                                if item.delivery == DeliveryState.failed: Rectangle {
                                     background: #c4314b;
                                     border-radius: 4px;
                                     opacity: 0;
@@ -1703,6 +1704,10 @@ component SectionTitle inherits Text {
 }
 
 component SettingsPage inherits Rectangle {
+    // Qt draws the window (Linux): its style is chosen, its colours are the desktop's. Elsewhere
+    // there is no style to choose, but a theme.
+    in property <bool> qt;
+    in-out property <int> theme;
     in-out property <int> widget-style;
     in property <string> style-note;
     in-out property <int> text-size;
@@ -1772,8 +1777,17 @@ component SettingsPage inherits Rectangle {
                     alignment: start;
 
                     SectionTitle { text: "Appearance"; }
-                    // No theme to choose: both styles (Qt's) take their colours from the desktop.
-                    SettingRow {
+                    // Qt's styles take their colours from the desktop.
+                    if !root.qt: SettingRow {
+                        label: "Theme";
+                        ComboBox {
+                            width: 200px;
+                            model: ["System", "Light", "Dark"];
+                            current-index <=> root.theme;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+                    if root.qt: SettingRow {
                         label: "Style";
                         hint: root.style-note;
                         ComboBox {
@@ -1999,6 +2013,8 @@ export component AppWindow inherits Window {
     // Settings: indexes into the choices shown on the settings page.
     in-out property <int> theme;
     in-out property <int> widget-style;
+    // Whether Qt draws the window; see `SettingsPage`.
+    in property <bool> qt;
     // Explains a style change that waits for a restart; empty otherwise.
     in property <string> style-note;
     in-out property <int> text-size: 1;
@@ -2023,7 +2039,8 @@ export component AppWindow inherits Window {
     in property <[CalendarYear]> calendar;
     in property <string> calendar-summary;
     callback open-calendar;
-    changed selected => { root.calendar-open = false; }
+    // By id: the open chat's place in the list changes as chats move.
+    changed selected-id => { root.calendar-open = false; }
     in property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
@@ -2032,7 +2049,8 @@ export component AppWindow inherits Window {
     property <length> platform-font-size;
 
     function apply-settings() {
-        Palette.color-scheme = root.theme == 1 ? ColorScheme.light
+        Palette.color-scheme = root.qt ? ColorScheme.unknown
+            : root.theme == 1 ? ColorScheme.light
             : root.theme == 2 ? ColorScheme.dark : ColorScheme.unknown;
         root.default-font-size = root.platform-font-size * root.font-scale;
     }
@@ -2042,6 +2060,7 @@ export component AppWindow inherits Window {
         root.apply-settings();
     }
     changed theme => { root.apply-settings(); }
+    changed qt => { root.apply-settings(); }
     changed font-scale => { root.apply-settings(); }
 
     callback select(string);
@@ -2086,7 +2105,7 @@ export component AppWindow inherits Window {
     callback set-timer(string, int);
     callback block(string, bool);
     // Answers the open chat's message request: 0 accept, 1 delete, 2 block.
-    callback respond(int);
+    callback respond(RequestAnswer);
     callback show-archived(bool);
     // Scrolled near the top of the open chat: older messages, if there are any.
     callback load-older;
@@ -2245,8 +2264,13 @@ export component AppWindow inherits Window {
         clipboard.copy();
     }
 
+    // Bumped when Esc closed something: what had the focus may be gone with it, and keys would
+    // then go nowhere until a click.
+    in-out property <int> escaped;
+    changed escaped => { keys.focus(); }
+
     // Shortcuts that work wherever the focus is; see `shortcut`.
-    FocusScope {
+    keys := FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     capture-key-pressed(event) => {
@@ -2313,9 +2337,12 @@ export component AppWindow inherits Window {
         }
 
         if root.screen == Screen.password: PasswordScreen {
-            // Fades in, as each screen does.
+            // Fades in, as each screen does; ready to type into.
             opacity: 0;
-            init => { self.opacity = 1; }
+            init => {
+                self.opacity = 1;
+                self.focus();
+            }
             animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
             new: root.password-new;
             error: root.password-error;
@@ -2566,6 +2593,8 @@ export component AppWindow inherits Window {
 
                 if root.settings-open: SettingsPage {
                     horizontal-stretch: 1;
+                    qt: root.qt;
+                    theme <=> root.theme;
                     widget-style <=> root.widget-style;
                     style-note: root.style-note;
                     text-size <=> root.text-size;
@@ -2774,13 +2803,26 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            load-older-timer := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    root.load-older();
+                                }
+                            }
                             message-list := ListView {
                                 // Follow new messages only while the newest one is in view, so reading
                                 // older messages isn't interrupted. Opening a chat starts at the bottom.
                                 property <bool> follow: true;
                                 // By id: the open chat's place in the list changes as chats move.
                                 property <string> conversation: root.selected-id;
-                                changed conversation => { self.follow = true; }
+                                // Back to the left too: a wide row once scrolled sideways would
+                                // leave the next chat's rows out of view.
+                                changed conversation => {
+                                    self.follow = true;
+                                    self.content-x = 0;
+                                }
                                 property <int> scroll-to-end-serial: root.scroll-to-end-serial;
                                 changed scroll-to-end-serial => {
                                     self.follow = true;
@@ -2822,9 +2864,11 @@ export component AppWindow inherits Window {
                                         self.content-y = min(0px, self.visible-height - self.content-height);
                                         end-timer.running = true;
                                     }
-                                    // Nothing to scroll yet: there may be more before.
+                                    // Nothing to scroll yet: there may be more before. Asked for once
+                                    // the change handlers ran: Rust changes the rows, which mustn't
+                                    // happen while Slint is still running them.
                                     if self.content-height < self.visible-height {
-                                        root.load-older();
+                                        load-older-timer.running = true;
                                     }
                                     if self.settling > 0 {
                                         self.settling -= 1;
@@ -3073,11 +3117,28 @@ export component AppWindow inherits Window {
                                         if !chat.request && !chat.blocked && !chat.left: SettingRow {
                                             label: "Disappearing messages";
                                             hint: chat.timer > 0 && TimerChoices.index-of(chat.timer) < 0 ? "Set to " + chat.timer-label : "";
-                                            ComboBox {
+                                            timer-box := ComboBox {
                                                 width: 200px;
                                                 model: TimerChoices.labels;
                                                 current-index: TimerChoices.index-of(chat.timer);
-                                                selected => { root.set-timer(chat.id, TimerChoices.seconds[self.current-index]); }
+                                                // Each change is a message to every member: only the one
+                                                // stopped at goes, not each passed with the arrows or wheel.
+                                                property <int> pending: -1;
+                                                property <duration> picked-at;
+                                                selected => {
+                                                    self.pending = self.current-index;
+                                                    self.picked-at = animation-tick();
+                                                }
+                                            }
+                                            Timer {
+                                                interval: 100ms;
+                                                running: timer-box.pending >= 0;
+                                                triggered => {
+                                                    if animation-tick() - timer-box.picked-at >= 500ms {
+                                                        root.set-timer(chat.id, TimerChoices.seconds[timer-box.pending]);
+                                                        timer-box.pending = -1;
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -3437,7 +3498,8 @@ export component AppWindow inherits Window {
                                     mouse-cursor: pointer;
                                     clicked => {
                                         root.pick-mention(index);
-                                        composer.focus();
+                                        // Back to writing, after the name.
+                                        focus-composer-timer.running = true;
                                     }
                                 }
                                 Text {
@@ -3596,48 +3658,48 @@ export component AppWindow inherits Window {
                     if root.current.request: request-bar := Rectangle {
                         background: Palette.alternate-background;
                         // Blocking and deleting can't be undone, and these buttons are where the
-                        // composer is in other chats: they ask first. The answer: 1 delete, 2 block
-                        // (as `respond` takes it), 0 while not asking.
-                        property <int> confirming;
+                        // composer is in other chats: they ask first. What is asked about; accept
+                        // (which isn't) while not asking.
+                        property <RequestAnswer> confirming: RequestAnswer.accept;
                         property <string> chat: root.selected-id;
-                        changed chat => { self.confirming = 0; }
+                        changed chat => { self.confirming = RequestAnswer.accept; }
                         VerticalLayout {
                             padding: 14px;
                             spacing: 10px;
                             Text {
-                                text: request-bar.confirming == 1 ? "Delete this chat and its messages?"
-                                    : request-bar.confirming == 2 ? "Block " + root.current.title + "? They won't be able to message or call you."
+                                text: request-bar.confirming == RequestAnswer.delete ? "Delete this chat and its messages?"
+                                    : request-bar.confirming == RequestAnswer.block ? "Block " + root.current.title + "? They won't be able to message or call you."
                                     : root.current.title + " wants to message you. They won't know you've seen their messages until you accept.";
                                 wrap: word-wrap;
                                 horizontal-alignment: center;
                                 color: Palette.foreground;
                             }
-                            if request-bar.confirming == 0: HorizontalLayout {
+                            if request-bar.confirming == RequestAnswer.accept: HorizontalLayout {
                                 alignment: center;
                                 spacing: 8px;
                                 Button {
                                     text: "Block";
-                                    clicked => { request-bar.confirming = 2; }
+                                    clicked => { request-bar.confirming = RequestAnswer.block; }
                                 }
                                 Button {
                                     text: "Delete";
-                                    clicked => { request-bar.confirming = 1; }
+                                    clicked => { request-bar.confirming = RequestAnswer.delete; }
                                 }
                                 Button {
                                     text: "Accept";
                                     primary: true;
-                                    clicked => { root.respond(0); }
+                                    clicked => { root.respond(RequestAnswer.accept); }
                                 }
                             }
-                            if request-bar.confirming != 0: HorizontalLayout {
+                            if request-bar.confirming != RequestAnswer.accept: HorizontalLayout {
                                 alignment: center;
                                 spacing: 8px;
                                 Button {
                                     text: "Cancel";
-                                    clicked => { request-bar.confirming = 0; }
+                                    clicked => { request-bar.confirming = RequestAnswer.accept; }
                                 }
                                 Button {
-                                    text: request-bar.confirming == 1 ? "Delete" : "Block";
+                                    text: request-bar.confirming == RequestAnswer.delete ? "Delete" : "Block";
                                     primary: true;
                                     clicked => { root.respond(request-bar.confirming); }
                                 }
@@ -3741,6 +3803,9 @@ export component AppWindow inherits Window {
                         changed forwarding => {
                             if !self.forwarding { self.focus-if-writable(); }
                         }
+                        // And once Esc closed what was in front (which may have had the focus).
+                        property <int> escaped: root.escaped;
+                        changed escaped => { self.focus-if-writable(); }
                     composer-row := HorizontalLayout {
                         property <length> line: one-line-measure.preferred-height;
                         // The field's height for one line: the send button's, unless the text is
@@ -4051,6 +4116,8 @@ export component AppWindow inherits Window {
                                         key-pressed(event) => {
                                             if (event.text == Key.Tab || event.text == Key.Return) && root.mention-candidates.length > 0 {
                                                 root.pick-mention(0);
+                                                // The name ends the draft: on after it.
+                                                self.set-selection-offsets(2147483647, 2147483647);
                                                 return accept;
                                             }
                                             if event.text == Key.Return && !event.modifiers.shift {
@@ -4314,6 +4381,22 @@ export component AppWindow inherits Window {
                                 outgoing: false;
                                 fetch(id) => { root.fetch-attachment(id); }
                                 open(id) => { root.open-attachment(id); }
+                            }
+                            // The view stays from one picture story to the next: it fetches only
+                            // when made, so the next is asked for here. Not from the change
+                            // handler itself: fetching redraws, which mustn't happen while Slint
+                            // runs its change handlers.
+                            property <string> picture: root.story.text-story ? "" : root.story.picture.id;
+                            changed picture => { next-picture.running = true; }
+                            next-picture := Timer {
+                                interval: 1ms;
+                                running: false;
+                                triggered => {
+                                    self.running = false;
+                                    if !root.story.text-story && root.story.picture.fetch {
+                                        root.fetch-attachment(root.story.picture.id);
+                                    }
+                                }
                             }
                         }
                         TouchArea {

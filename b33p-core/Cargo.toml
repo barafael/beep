@@ -13,7 +13,7 @@ signal = [
     "dep:tracing", "dep:presage", "dep:presage-store-sqlite", "dep:tokio", "dep:futures",
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
-    "dep:windows-native-keyring-store", "dep:apple-native-keyring-store",
+    "dep:windows-native-keyring-store", "dep:apple-native-keyring-store", "dep:xattr",
     "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:reqwest-websocket", "dep:rustls", "dep:aes-gcm", "dep:hmac", "dep:hkdf", "dep:storage-sha2", "dep:base64", "dep:rand", "dep:serde",
 ]
 
@@ -25,7 +25,7 @@ tracing = { version = "0.1", optional = true }
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.48", features = ["rt", "macros", "time"], optional = true }
+tokio = { version = "1.48", features = ["rt", "macros", "time", "net"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 hex = { version = "0.4", optional = true }
@@ -64,6 +64,11 @@ serde = { version = "1", features = ["derive"], optional = true }
 jiff = "0.2"
 async-channel = "2"
 
+
+[dev-dependencies]
+# Property tests of the chat state (`state.rs`).
+proptest = "1"
+
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
@@ -76,4 +81,6 @@ windows-native-keyring-store = { version = "1", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"], optional = true }
+# Marks saved and opened attachments as downloaded, for Gatekeeper (`attachments.rs`).
+xattr = { version = "1", optional = true }
 

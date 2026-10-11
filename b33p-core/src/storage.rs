@@ -113,7 +113,7 @@ pub(crate) async fn sync(
                 }
                 Record::GroupV2(group) => {
                     remote.insert(
-                        ConversationId(format!("g:{}", hex::encode(&group.master_key))),
+                        ConversationId::group(&group.master_key),
                         settings(
                             group.archived,
                             group.marked_unread,
@@ -138,9 +138,7 @@ pub(crate) async fn sync(
                                         })?;
                                 Some(ConversationId::contact(&who.service_id_string()))
                             }
-                            Pinned::GroupMasterKey(key) => {
-                                Some(ConversationId(format!("g:{}", hex::encode(key))))
-                            }
+                            Pinned::GroupMasterKey(key) => Some(ConversationId::group(key)),
                             _ => None,
                         })
                         .collect();
@@ -284,9 +282,7 @@ fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
                         })?;
                     Some(ConversationId::contact(&who.service_id_string()))
                 }
-                Identifier::GroupMasterKey(key) => {
-                    Some(ConversationId(format!("g:{}", hex::encode(key))))
-                }
+                Identifier::GroupMasterKey(key) => Some(ConversationId::group(key)),
                 Identifier::LegacyGroupId(_) => None,
             })
             .collect()
@@ -319,7 +315,8 @@ fn merge(
         let old = before.get(id);
         let settings = merged.entry(id.clone()).or_default();
         if old.is_none_or(|old| old.archived != remote.archived) {
-            settings.archived = remote.archived;
+            // Archiving unpins, as it does here.
+            settings.set_archived(remote.archived);
         }
         if old.is_none_or(|old| old.marked_unread != remote.marked_unread) {
             settings.marked_unread = remote.marked_unread;
@@ -460,7 +457,7 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
                     })
                 }
                 Some(Record::GroupV2(group)) => {
-                    let id = ConversationId(format!("g:{}", hex::encode(&group.master_key)));
+                    let id = ConversationId::group(&group.master_key);
                     changed.get(&id).and_then(|wanted| {
                         let edited = crate::wire::edit_message(&plaintext, 3, |g| {
                             set_flags(g, wanted, [2, 3, 4, 5, 6])
@@ -611,13 +608,13 @@ fn pinned_order(map: &HashMap<ConversationId, ChatSettings>) -> Vec<Conversation
 fn pinned_entry(id: &ConversationId) -> Option<Vec<u8>> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     use presage::proto::account_record::{PinnedConversation, pinned_conversation};
-    let identifier = if let Some(service_id) = id.0.strip_prefix("c:") {
+    let identifier = if let Some(service_id) = id.contact_id() {
         Pinned::Contact(pinned_conversation::Contact {
             service_id: service_id.to_owned(),
             ..Default::default()
         })
     } else {
-        Pinned::GroupMasterKey(hex::decode(id.0.strip_prefix("g:")?).ok()?)
+        Pinned::GroupMasterKey(hex::decode(id.group_key()?).ok()?)
     };
     Some(
         PinnedConversation {

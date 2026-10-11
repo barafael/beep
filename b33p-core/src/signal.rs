@@ -56,16 +56,18 @@ type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
 pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
+    // Kept across unlocking, linking and relinking, which take commands too.
+    let preferences = Rc::new(Cell::new(config.preferences));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let (result, closed) = match unlock(&runtime, &local, &commands, &events) {
+    let (result, closed) = match unlock(&runtime, &local, &commands, &events, &preferences) {
         Ok(Some((store, tables, closed))) => (
             local.block_on(
                 &runtime,
-                session(config, store, tables, commands, events.clone()),
+                session(config, store, tables, commands, events.clone(), preferences),
             ),
             Some(closed),
         ),
@@ -159,6 +161,7 @@ fn unlock(
     local: &LocalSet,
     commands: &Inbox,
     events: &Events,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(SqliteStore, LocalStore, Closed)>, String> {
     let paths = Paths::new()?;
     let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
@@ -210,7 +213,7 @@ fn unlock(
             new,
             error: error.take(),
         });
-        let Some(password) = wait_for_password(commands) else {
+        let Some(password) = wait_for_password(commands, preferences) else {
             return Ok(None);
         };
         // The UI checks this too, but the key is the only way back into the messages, so the
@@ -248,10 +251,14 @@ fn check_new_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_password(commands: &Inbox) -> Option<Password> {
+fn wait_for_password(commands: &Inbox, preferences: &Cell<Preferences>) -> Option<Password> {
     // Nothing else can be done before the database is open, so other commands are dropped.
     commands.iter().find_map(|command| match command {
         Command::Unlock(password) => Some(password),
+        Command::Preferences(changed) => {
+            preferences.set(changed);
+            None
+        }
         _ => None,
     })
 }
@@ -318,6 +325,7 @@ async fn session(
     tables: LocalStore,
     commands: Inbox,
     events: Events,
+    preferences: Rc<Cell<Preferences>>,
 ) -> Result<(), String> {
     // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
     // shutdown, which closes `command_rx`.
@@ -344,10 +352,28 @@ async fn session(
                     .into(),
             ));
             reset(store.clone(), &paths).await?;
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &tables,
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(PresageError::NotYetRegisteredError) => {
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?
+            link_with_history(
+                store.clone(),
+                &tables,
+                &config,
+                &events,
+                &mut command_rx,
+                &paths,
+                &preferences,
+            )
+            .await?
         }
         Err(error) => return Err(format!("failed to load registration: {error}")),
     };
@@ -357,7 +383,16 @@ async fn session(
         let Some((manager, pending)) = linked else {
             return Ok(());
         };
-        if !run_linked(manager, pending, &events, &tables, &mut command_rx).await {
+        if !run_linked(
+            manager,
+            pending,
+            &events,
+            &tables,
+            &mut command_rx,
+            &preferences,
+        )
+        .await
+        {
             return Ok(());
         }
         let _ = events.send(Event::Error(
@@ -366,8 +401,16 @@ async fn session(
                 .into(),
         ));
         // Linking clears the dead registration; the conversations stay.
-        linked =
-            link_with_history(store.clone(), &config, &events, &mut command_rx, &paths).await?;
+        linked = link_with_history(
+            store.clone(),
+            &tables,
+            &config,
+            &events,
+            &mut command_rx,
+            &paths,
+            &preferences,
+        )
+        .await?;
     }
 }
 
@@ -379,14 +422,17 @@ async fn run_linked(
     events: &Events,
     tables: &LocalStore,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    preferences: &Rc<Cell<Preferences>>,
 ) -> bool {
+    let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
         tables: tables.clone(),
-        preferences: Rc::default(),
+        preferences: preferences.clone(),
         expiring: Rc::default(),
         storage_changed: Rc::default(),
+        storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
         trust: Rc::default(),
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
@@ -398,6 +444,18 @@ async fn run_linked(
             warn!(%error, "failed to request contacts");
         }
     }
+    if !storage_read {
+        // Just linked: who is blocked comes with the phone's settings, which take a while (and
+        // the storage key to read them with may have been missed). Signal's apps ask for both.
+        for kind in [
+            sync_message::request::Type::Blocked,
+            sync_message::request::Type::Keys,
+        ] {
+            request_sync(&manager, kind).await;
+        }
+    }
+    // Before receiving starts, or what arrives meanwhile would count twice (or not at all).
+    send_unread(&manager, &ctx).await;
 
     send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
@@ -494,14 +552,22 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
 /// Returns the commands that arrived during the transfer, or `None` if the UI went away.
 async fn link_with_history(
     store: SqliteStore,
+    tables: &LocalStore,
     config: &Config,
     events: &Events,
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
     paths: &Paths,
+    preferences: &Cell<Preferences>,
 ) -> Result<Option<(Mgr, Vec<Command>)>, String> {
     loop {
         // Nothing can be done before linking, so commands are dropped until then.
-        let ui_closed = async { while commands.recv().await.is_some() {} };
+        let ui_closed = async {
+            while let Some(command) = commands.recv().await {
+                if let Command::Preferences(changed) = command {
+                    preferences.set(changed);
+                }
+            }
+        };
         let (manager, key) = tokio::select! {
             linked = link(store.clone(), config, events) => linked?,
             () = ui_closed => return Ok(None),
@@ -515,7 +581,7 @@ async fn link_with_history(
         write_marker(paths)?;
         let mut pending = Vec::new();
         let result = {
-            let transfer = transfer::receive_history(&manager, key, &paths.dir, events);
+            let transfer = transfer::receive_history(&manager, key, &paths.dir, tables, events);
             pin_mut!(transfer);
             loop {
                 tokio::select! {
@@ -626,11 +692,11 @@ async fn link(
     Ok((manager, history_key))
 }
 
-fn conversation_id(thread: &Thread) -> ConversationId {
-    ConversationId(match thread {
-        Thread::Contact(id) => format!("c:{}", id.service_id_string()),
-        Thread::Group(key) => format!("g:{}", hex::encode(key)),
-    })
+pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
+    match thread {
+        Thread::Contact(id) => ConversationId::contact(&id.service_id_string()),
+        Thread::Group(key) => ConversationId::group(key),
+    }
 }
 
 /// Remembers how to reach a conversation and describes it for the UI; settings are added by
@@ -645,6 +711,7 @@ fn register(
     let id = conversation_id(&thread);
     let is_group = matches!(thread, Thread::Group(_));
     threads.borrow_mut().insert(id.clone(), thread);
+    let title = crate::format::name(&title);
     let title = if title.is_empty() {
         "Unknown".into()
     } else {
@@ -659,6 +726,27 @@ fn register(
         expire_timer,
         ..Conversation::default()
     }
+}
+
+/// Adds `thread` to the list of whom we block, the way current Signal apps read it. Those known
+/// only by their phone `number` are listed by it; left out, the phone would unblock them, as it
+/// takes the list as the whole one.
+fn list_blocked(blocked: &mut sync_message::Blocked, thread: &Thread, number: Option<String>) {
+    match thread {
+        Thread::Contact(who @ ServiceId::Aci(_)) => {
+            blocked.acis.push(who.service_id_string());
+            blocked.acis_binary.push(who.service_id_binary());
+        }
+        Thread::Contact(_) => blocked.numbers.extend(number),
+        Thread::Group(key) => blocked.group_ids.push(group_identifier(key).to_vec()),
+    }
+}
+
+/// A contact's phone number as Signal sends it: "+4915123456789".
+async fn e164_of(manager: &Mgr, who: ServiceId) -> Option<String> {
+    use presage::libsignal_service::prelude::phonenumber::Mode;
+    let contact = manager.store().contact_by_id(&who).await.ok()??;
+    Some(contact.phone_number?.format().mode(Mode::E164).to_string())
 }
 
 /// A phone number as people write it: "+49 151 23456789".
@@ -706,6 +794,9 @@ struct Ctx {
     expiring: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
     storage_changed: Rc<tokio::sync::Notify>,
+    /// Whether the phone's settings (who was accepted, who is blocked) have been read from the
+    /// storage service: not yet right after linking.
+    storage_read: Rc<tokio::sync::watch::Sender<bool>>,
     /// How far each contact's safety number is trusted, as the UI was last told; see
     /// [`publish_trust`].
     trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
@@ -713,10 +804,10 @@ struct Ctx {
 
 /// The thread a conversation id stands for; see [`conversation_id`].
 fn thread_of(id: &ConversationId) -> Option<Thread> {
-    if let Some(service_id) = id.0.strip_prefix("c:") {
+    if let Some(service_id) = id.contact_id() {
         return ServiceId::parse_from_service_id_string(service_id).map(Thread::Contact);
     }
-    let key = hex::decode(id.0.strip_prefix("g:")?).ok()?;
+    let key = hex::decode(id.group_key()?).ok()?;
     Some(Thread::Group(key.try_into().ok()?))
 }
 
@@ -727,13 +818,78 @@ fn group_identifier(master_key: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Adds what b33p remembers about each conversation.
-async fn with_settings(ctx: &Ctx, conversations: &mut [Conversation]) {
-    let mut remembered = ctx.tables.conversations().await.unwrap_or_else(|error| {
-        warn!(%error, "failed to read conversation settings");
-        HashMap::new()
-    });
+/// Conversations new to b33p (all of them, right after linking with the history) count as read
+/// up to their newest stored message, or every chat would start out unread. This happens before
+/// receiving starts: a message received in the meantime would count as read with them.
+async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversation]) {
+    let mut remembered = match ctx.tables.conversations().await {
+        Ok(remembered) => remembered,
+        Err(error) => {
+            warn!(%error, "failed to read conversation settings");
+            return;
+        }
+    };
     for conversation in conversations {
-        conversation.settings = remembered.remove(&conversation.id).unwrap_or_default();
+        conversation.settings = match remembered.remove(&conversation.id) {
+            Some(settings) => settings,
+            None => {
+                let thread = ctx.threads.borrow().get(&conversation.id).cloned();
+                let newest = match thread {
+                    Some(thread) => newest_stored(manager, &thread).await,
+                    None => 0,
+                };
+                first_settings(ctx, &conversation.id, newest).await
+            }
+        };
+    }
+}
+
+/// The settings of a conversation, made for one b33p has kept none for yet: read up to `read`,
+/// so that what comes after it counts as unread (and not, later, as read along with it).
+async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) -> ChatSettings {
+    match ctx.tables.settings(id).await {
+        Ok(Some(settings)) => settings,
+        Ok(None) => ctx
+            .tables
+            .mark_read(id, read)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(%error, "failed to remember a conversation");
+                ChatSettings::default()
+            }),
+        Err(error) => {
+            warn!(%error, "failed to read a conversation's settings");
+            ChatSettings::default()
+        }
+    }
+}
+
+/// When the newest content stored in a thread was sent, or 0 for none.
+async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
+    match manager.store().messages_before(thread, None, 1).await {
+        Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
+        Err(error) => {
+            warn!(%error, "failed to read a thread's newest message");
+            0
+        }
+    }
+}
+
+/// Asks our primary device to send something it keeps (the blocked list, the storage key).
+async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
+    let sync = SyncMessage {
+        content: Some(SyncContent::Request(sync_message::Request {
+            r#type: Some(kind.into()),
+        })),
+        ..SyncMessage::with_padding(&mut rand::rng())
+    };
+    let own = own_id(manager);
+    if let Err(error) = manager
+        .clone()
+        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .await
+    {
+        warn!(%error, ?kind, "failed to ask the primary device");
     }
 }
 
@@ -767,10 +923,11 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
                 .as_ref()
                 .map(display_number)
                 .unwrap_or_default();
-            let title = if contact.name.is_empty() {
+            let name = crate::format::name(&contact.name);
+            let title = if name.is_empty() {
                 number.clone()
             } else {
-                contact.name
+                name
             };
             let timer = contact.expire_timer;
             names.insert(
@@ -803,7 +960,7 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
             all.push(group_conversation(manager, threads, &mut names, key, group).await);
         }
     }
-    with_settings(ctx, &mut all).await;
+    with_settings(manager, ctx, &mut all).await;
     let _ = ctx.events.send(Event::Conversations(all));
     if let Ok(folders) = ctx.tables.folders().await {
         let _ = ctx.events.send(Event::Folders(folders));
@@ -862,13 +1019,8 @@ async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
     let mut conversation =
         group_conversation(manager, &ctx.threads, &mut Names::new(), key, group).await;
     let id = conversation.id.clone();
-    conversation.settings = ctx
-        .tables
-        .settings(&id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    // A group that is new here has nothing unread yet.
+    conversation.settings = first_settings(ctx, &id, 0).await;
     let _ = ctx.events.send(Event::Conversations(vec![conversation]));
 }
 
@@ -1060,9 +1212,9 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
     }
     let sync = SyncMessage {
         viewed: vec![sync_message::Viewed {
+            sender_aci_binary: aci_binary(&story.author_id),
             sender_aci: Some(story.author_id),
             timestamp: Some(story.timestamp),
-            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1079,6 +1231,20 @@ fn member_aci(id: &str) -> Option<presage::libsignal_service::protocol::Aci> {
         ServiceId::Aci(aci) => Some(aci),
         ServiceId::Pni(_) => None,
     }
+}
+
+/// The message a reaction is to. Current Signal apps name its author only in binary.
+fn reaction_target(reaction: &presage::proto::data_message::Reaction) -> Option<MessageRef> {
+    Some(MessageRef {
+        author_id: ServiceId::Aci(reaction.parse_target_author_aci()?).service_id_string(),
+        timestamp: reaction.target_sent_timestamp?,
+    })
+}
+
+/// An ACI in the binary form current Signal apps read: they ignore the string fields b33p also
+/// fills, for older clients. `None` for anything but an ACI.
+fn aci_binary(id: &str) -> Option<Vec<u8>> {
+    member_aci(id).map(|aci| ServiceId::Aci(aci).service_id_binary())
 }
 
 /// Refuses to leave a group we are the only admin of, while others are in it: it would be
@@ -1247,8 +1413,7 @@ async fn people(
 }
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
-/// activity and show previews before any history is opened; then how many messages in each
-/// are unread.
+/// activity and show previews before any history is opened.
 async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
     let threads: Vec<_> = ctx
         .threads
@@ -1257,38 +1422,42 @@ async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
         .map(|(id, thread)| (id.clone(), thread.clone()))
         .collect();
     let mut names = Names::new();
-    let mut unread = Vec::new();
-    let mut remembered = match ctx.tables.conversations().await {
-        Ok(remembered) => remembered,
-        Err(error) => {
-            warn!(%error, "failed to read conversation settings");
-            return;
-        }
-    };
     for (id, thread) in threads {
         // Only for the preview and the order: `LoadHistory` replaces it with the full message
         // (delivery, edits, …).
         let Some(latest) = latest_message(&manager, &mut names, &id, &thread).await else {
             continue;
         };
-        let timestamp = latest.timestamp;
         if !ctx.events.send(Event::Latest(latest)) {
             return;
         }
-        match remembered.remove(&id) {
-            Some(settings) => {
-                let count = count_unread(&manager, &thread, settings.last_read).await;
-                if count > 0 {
-                    unread.push((id, count));
-                }
-            }
-            // New to b33p (first start, or just linked with history): what is there counts
-            // as read, or every chat would start out unread.
-            None => {
-                if let Err(error) = ctx.tables.mark_read(&id, timestamp).await {
-                    warn!(%error, "failed to remember a conversation");
-                }
-            }
+    }
+}
+
+/// Sends how many messages in each conversation are unread. Before receiving starts: each
+/// message received after counts itself.
+async fn send_unread(manager: &Mgr, ctx: &Ctx) {
+    let threads: Vec<_> = ctx
+        .threads
+        .borrow()
+        .iter()
+        .map(|(id, thread)| (id.clone(), thread.clone()))
+        .collect();
+    let remembered = match ctx.tables.conversations().await {
+        Ok(remembered) => remembered,
+        Err(error) => {
+            warn!(%error, "failed to read conversation settings");
+            return;
+        }
+    };
+    let mut unread = Vec::new();
+    for (id, thread) in threads {
+        let Some(settings) = remembered.get(&id) else {
+            continue;
+        };
+        let count = count_unread(manager, &thread, settings.last_read).await;
+        if count > 0 {
+            unread.push((id, count));
         }
     }
     let _ = ctx.events.send(Event::Unread(unread));
@@ -1418,6 +1587,9 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
                 take_verifications(&manager, &ctx, verifications).await;
                 if known && !ctx.events.send(Event::StorageRead) {
                     return;
+                }
+                if known {
+                    ctx.storage_read.send_replace(true);
                 }
                 if known && ctx.preferences.get().sync_to_phone {
                     write_storage(&mut manager, &ctx).await;
@@ -1965,6 +2137,7 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
         .thread_title(&Thread::Contact(sender))
         .await
         .unwrap_or_default();
+    let name = crate::format::name(&name);
     names.insert(id, name.clone());
     name
 }
@@ -2131,7 +2304,8 @@ async fn handle_received(
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
-            let conversation = ensure_conversation(manager, ctx, Thread::Contact(sender)).await;
+            let conversation =
+                ensure_conversation(manager, ctx, Thread::Contact(sender), now_millis()).await;
             let name = sender_name(manager, names, sender).await;
             let body = if reset {
                 format!(
@@ -2164,6 +2338,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             sender = %content.metadata.sender.service_id_string(),
             "dropped a sync message from another account"
         );
+        return true;
+    }
+    // Nothing at all from someone we block, in groups too, as Signal's clients do. presage
+    // has stored it by now, so it goes from the store again.
+    let sender = content.metadata.sender;
+    if sender != own_id(manager)
+        && is_blocked(ctx, &ConversationId::contact(&sender.service_id_string())).await
+    {
+        forget_stored(manager, content).await;
         return true;
     }
     // From someone whose safety number changed: the store noted it while decrypting.
@@ -2209,7 +2392,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             content: Some(SyncContent::Blocked(blocked)),
             ..
         }) => {
-            on_blocked_elsewhere(ctx, blocked).await;
+            on_blocked_elsewhere(manager, ctx, blocked).await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
@@ -2277,7 +2460,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
-    let id = ensure_conversation(manager, ctx, thread.clone()).await;
+    let id = ensure_conversation(manager, ctx, thread.clone(), content.timestamp()).await;
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
         && let Some(context) = data_of(content)
@@ -2376,6 +2559,21 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     events.send(Event::Message(message))
 }
 
+/// Removes what presage stored of `content`, if it is still there as its sender's.
+async fn forget_stored(manager: &Mgr, content: &Content) {
+    let Ok(thread) = Thread::try_from(content) else {
+        return;
+    };
+    let at = stored_at(content);
+    let mut store = manager.store().clone();
+    if let Ok(Some(stored)) = store.message(&thread, at).await
+        && stored.metadata.sender == content.metadata.sender
+        && let Err(error) = store.delete_message(&thread, at).await
+    {
+        warn!(%error, "failed to forget a message from someone blocked");
+    }
+}
+
 async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
     ctx.tables
         .settings(id)
@@ -2420,7 +2618,7 @@ fn named_conversation(
 }
 
 /// The phone's whole list of whom we block: everything else is unblocked.
-async fn on_blocked_elsewhere(ctx: &Ctx, blocked: &sync_message::Blocked) {
+async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::Blocked) {
     let mut now_blocked = std::collections::HashSet::new();
     for aci in &blocked.acis {
         now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
@@ -2434,6 +2632,17 @@ async fn on_blocked_elsewhere(ctx: &Ctx, blocked: &sync_message::Blocked) {
     let Ok(all) = ctx.tables.conversations().await else {
         return;
     };
+    // Those known only by their phone number are listed by it.
+    if !blocked.numbers.is_empty() {
+        for id in all.keys() {
+            if let Some(Thread::Contact(who @ ServiceId::Pni(_))) = thread_of(id)
+                && let Some(number) = e164_of(manager, who).await
+                && blocked.numbers.contains(&number)
+            {
+                now_blocked.insert(id.clone());
+            }
+        }
+    }
     let mut changed = Vec::new();
     for (id, mut settings) in all {
         let blocked = now_blocked.remove(&id);
@@ -2584,10 +2793,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
     let mut read: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
     for entry in reads {
         let (Some(sender), Some(timestamp)) = (
-            entry
-                .sender_aci
-                .as_deref()
-                .and_then(ServiceId::parse_from_service_id_string),
+            entry.parse_sender_aci().map(ServiceId::Aci),
             entry.timestamp,
         ) else {
             continue;
@@ -2627,8 +2833,14 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
     }
 }
 
-/// Registers `thread` and announces it to the UI if it's the first we hear of it.
-async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> ConversationId {
+/// Registers `thread` and announces it to the UI if it's the first we hear of it, by something
+/// sent at `first`: that and what follows it are unread.
+async fn ensure_conversation(
+    manager: &Mgr,
+    ctx: &Ctx,
+    thread: Thread,
+    first: u64,
+) -> ConversationId {
     let id = conversation_id(&thread);
     if !ctx.threads.borrow().contains_key(&id) {
         let title = manager.thread_title(&thread).await.unwrap_or_default();
@@ -2661,13 +2873,7 @@ async fn ensure_conversation(manager: &Mgr, ctx: &Ctx, thread: Thread) -> Conver
                 conversation
             }
         };
-        conversation.settings = ctx
-            .tables
-            .settings(&id)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        conversation.settings = first_settings(ctx, &id, first.saturating_sub(1)).await;
         info!(title = conversation.title, "new conversation");
         ctx.events.send(Event::Conversations(vec![conversation]));
     }
@@ -2681,7 +2887,7 @@ async fn resolve_text(
     names: &mut Names,
     text: &str,
     ranges: &[BodyRange],
-) -> (String, Vec<StyleRange>) {
+) -> (String, Vec<StyleRange>, Vec<crate::Mention>) {
     use body_range::{AssociatedValue, Style as WireStyle};
     let mut wire = Vec::new();
     let mut mentioned = Vec::new();
@@ -2870,10 +3076,7 @@ async fn to_reaction(
     };
     let outgoing = is_outgoing(manager, content);
     let reaction = data.reaction.as_ref()?;
-    let target = MessageRef {
-        author_id: reaction.target_author_aci.clone()?,
-        timestamp: reaction.target_sent_timestamp?,
-    };
+    let target = reaction_target(reaction)?;
     let sender = display_name(manager, names, author_of(manager, content)).await;
     let reaction_view = Reaction {
         emoji: reaction.emoji.clone().unwrap_or_default(),
@@ -2916,7 +3119,7 @@ async fn to_chat_message(
     let outgoing = is_outgoing(manager, content);
     let author = author_of(manager, content);
     let sender = display_name(manager, names, author).await;
-    let (mut body, styles) = resolve_text(
+    let (mut body, styles, mentions) = resolve_text(
         manager,
         names,
         data.body.as_deref().unwrap_or_default(),
@@ -2951,25 +3154,24 @@ async fn to_chat_message(
     }
     let quote = match &data.quote {
         Some(quote) => {
-            let author = match quote
-                .author_aci
-                .as_deref()
-                .and_then(ServiceId::parse_from_service_id_string)
-            {
+            let author_id = quote.parse_author_aci().map(ServiceId::Aci);
+            let author = match author_id {
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
+            let (text, styles, _) = resolve_text(
+                manager,
+                names,
+                quote.text.as_deref().unwrap_or_default(),
+                &quote.body_ranges,
+            )
+            .await;
             Some(Quote {
                 author,
-                text: resolve_text(
-                    manager,
-                    names,
-                    quote.text.as_deref().unwrap_or_default(),
-                    &quote.body_ranges,
-                )
-                .await
-                .0,
-                author_id: quote.author_aci.clone().unwrap_or_default(),
+                text: format::hide_spoilers(&text, &styles),
+                author_id: author_id
+                    .map(|id| id.service_id_string())
+                    .unwrap_or_default(),
                 timestamp: quote.id.unwrap_or_default(),
             })
         }
@@ -2986,6 +3188,7 @@ async fn to_chat_message(
         quote,
         attachments,
         styles,
+        mentions,
         expire_timer: data.expire_timer.filter(|&t| t > 0),
         timer_change,
         notice,
@@ -3003,7 +3206,7 @@ async fn to_chat_message(
             }
             Some(crate::LinkPreview {
                 url,
-                title: preview.title.clone().unwrap_or_default(),
+                title: crate::format::name(preview.title.as_deref().unwrap_or_default()),
                 description: preview.description.clone().unwrap_or_default(),
                 image: preview
                     .image
@@ -3159,8 +3362,8 @@ async fn handle_command(
                     emoji: Some(emoji.clone()),
                     remove: Some(remove),
                     target_author_aci: Some(target.author_id.clone()),
+                    target_author_aci_binary: aci_binary(&target.author_id),
                     target_sent_timestamp: Some(target.timestamp),
-                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -3305,7 +3508,7 @@ async fn handle_command(
                 .await
                 .map_err(|e| format!("failed to create the group: {e}"))?;
             let thread = Thread::Group(key);
-            let id = ensure_conversation(manager, ctx, thread.clone()).await;
+            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             // Ours, so not a request.
             ctx.tables
                 .update(&id, |s| s.accepted = true)
@@ -3583,10 +3786,12 @@ async fn handle_command(
                 return Ok(());
             }
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
-            // Not to unanswered message requests: they'd tell a stranger we read it.
-            let receipts = ctx.preferences.get().read_receipts
-                && !is_unanswered_request(ctx, &conversation).await;
-            tokio::task::spawn_local(send_read(manager.clone(), messages, receipts));
+            tokio::task::spawn_local(send_read(
+                manager.clone(),
+                ctx.clone(),
+                conversation,
+                messages,
+            ));
         }
         Command::MarkUnread(conversation) => {
             ctx.tables
@@ -4291,6 +4496,7 @@ async fn send_new(
             .map(|quote| presage::proto::data_message::Quote {
                 id: Some(quote.timestamp),
                 author_aci: Some(quote.author_id.clone()),
+                author_aci_binary: aci_binary(&quote.author_id),
                 text: Some(quote.text.clone()),
                 ..Default::default()
             }),
@@ -4479,11 +4685,14 @@ async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
     };
     let mut blocked = sync_message::Blocked::default();
     for id in all.iter().filter(|(_, s)| s.blocked).map(|(id, _)| id) {
-        match thread_of(id) {
-            Some(Thread::Contact(who)) => blocked.acis.push(who.service_id_string()),
-            Some(Thread::Group(key)) => blocked.group_ids.push(group_identifier(&key).to_vec()),
-            None => {}
-        }
+        let Some(thread) = thread_of(id) else {
+            continue;
+        };
+        let number = match thread {
+            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(&manager, who).await,
+            _ => None,
+        };
+        list_blocked(&mut blocked, &thread, number);
     }
     let sync = SyncMessage {
         content: Some(SyncContent::Blocked(blocked)),
@@ -4541,7 +4750,10 @@ async fn respond(
         ..Default::default()
     };
     match thread {
-        Thread::Contact(who) => answer.thread_aci = Some(who.service_id_string()),
+        Thread::Contact(who) => {
+            answer.thread_aci = Some(who.service_id_string());
+            answer.thread_aci_binary = Some(who.service_id_binary());
+        }
         Thread::Group(key) => answer.group_id = Some(group_identifier(key).to_vec()),
     }
     let sync = SyncMessage {
@@ -4577,43 +4789,21 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
     }
 }
 
-/// Tells the senders of `messages` we read them (with `receipts`), and our other devices.
-async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) {
-    let timestamp = now_millis();
+/// Tells our other devices we read `messages` in `conversation`, and their senders, if read
+/// receipts are on and they may know.
+async fn send_read(
+    mut manager: Mgr,
+    ctx: Ctx,
+    conversation: ConversationId,
+    messages: Vec<MessageRef>,
+) {
     let own = own_id(&manager);
-    if receipts {
-        let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
-        for message in &messages {
-            by_author
-                .entry(&message.author_id)
-                .or_default()
-                .push(message.timestamp);
-        }
-        for (author, timestamps) in by_author {
-            let Some(author) = ServiceId::parse_from_service_id_string(author) else {
-                continue;
-            };
-            if author == own {
-                continue;
-            }
-            let receipt = ReceiptMessage {
-                r#type: Some(receipt_message::Type::Read as i32),
-                timestamp: timestamps,
-            };
-            if let Err(error) = manager
-                .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
-                .await
-            {
-                debug!(%error, "failed to send a read receipt");
-            }
-        }
-    }
     let read = messages
-        .into_iter()
+        .iter()
         .map(|message| sync_message::Read {
-            sender_aci: Some(message.author_id),
+            sender_aci_binary: aci_binary(&message.author_id),
+            sender_aci: Some(message.author_id.clone()),
             timestamp: Some(message.timestamp),
-            ..Default::default()
         })
         .collect();
     let sync = SyncMessage {
@@ -4621,10 +4811,46 @@ async fn send_read(mut manager: Mgr, messages: Vec<MessageRef>, receipts: bool) 
         ..Default::default()
     };
     if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
+        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         debug!(%error, "failed to tell our other devices what was read");
+    }
+    // Whether this is a message request, and who is blocked, comes with the phone's settings.
+    // Right after linking they haven't been read yet, so wait: a read receipt would tell a
+    // stranger we read their message.
+    let _ = ctx.storage_read.subscribe().wait_for(|read| *read).await;
+    // Not to unanswered message requests, nor to anyone we block.
+    if !ctx.preferences.get().read_receipts || is_unanswered_request(&ctx, &conversation).await {
+        return;
+    }
+    let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
+    for message in &messages {
+        if !is_blocked(&ctx, &ConversationId::contact(&message.author_id)).await {
+            by_author
+                .entry(&message.author_id)
+                .or_default()
+                .push(message.timestamp);
+        }
+    }
+    let timestamp = now_millis();
+    for (author, timestamps) in by_author {
+        let Some(author) = ServiceId::parse_from_service_id_string(author) else {
+            continue;
+        };
+        if author == own {
+            continue;
+        }
+        let receipt = ReceiptMessage {
+            r#type: Some(receipt_message::Type::Read as i32),
+            timestamp: timestamps,
+        };
+        if let Err(error) = manager
+            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .await
+        {
+            debug!(%error, "failed to send a read receipt");
+        }
     }
 }
 
@@ -4901,6 +5127,66 @@ mod tests {
 
     /// A number typed internationally, or the way our own country writes them, is the same
     /// number; text that isn't one, or an invalid number, is none.
+    /// Current Signal apps fill only the binary ACI fields, and read only those when given
+    /// both; b33p reads either and fills both.
+    #[test]
+    fn acis_are_read_and_written_in_binary_too() {
+        use presage::proto::data_message::Reaction;
+        let id = "00000000-0000-0000-0000-000000000007";
+        let aci = ServiceId::parse_from_service_id_string(id).unwrap();
+        let binary = aci_binary(id).unwrap();
+        assert_eq!(binary, aci.service_id_binary());
+        assert_eq!(binary.len(), 16);
+        assert_eq!(aci_binary(&format!("PNI:{id}")), None);
+        assert_eq!(aci_binary("not an id"), None);
+
+        let target = MessageRef {
+            author_id: id.into(),
+            timestamp: 5,
+        };
+        let from_phone = Reaction {
+            target_author_aci_binary: Some(binary.clone()),
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&from_phone), Some(target.clone()));
+        let from_older_client = Reaction {
+            target_author_aci: Some(id.into()),
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&from_older_client), Some(target));
+        let nameless = Reaction {
+            target_sent_timestamp: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(reaction_target(&nameless), None);
+    }
+
+    /// The phone takes the list as the whole one and unblocks everyone left out of it, so
+    /// everyone must be in it in a form it reads.
+    #[test]
+    fn the_blocked_list_names_everyone_as_the_phone_reads_them() {
+        let aci = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000007")
+            .unwrap();
+        let pni =
+            ServiceId::parse_from_service_id_string("PNI:00000000-0000-0000-0000-000000000008")
+                .unwrap();
+        let mut blocked = sync_message::Blocked::default();
+        list_blocked(&mut blocked, &Thread::Contact(aci), None);
+        list_blocked(
+            &mut blocked,
+            &Thread::Contact(pni),
+            Some("+4915123456789".into()),
+        );
+        // Without a known number there is nothing to name them by.
+        list_blocked(&mut blocked, &Thread::Contact(pni), None);
+        assert_eq!(blocked.acis, [aci.service_id_string()]);
+        assert_eq!(blocked.acis_binary, [aci.service_id_binary()]);
+        assert_eq!(blocked.numbers, ["+4915123456789"]);
+        assert!(blocked.group_ids.is_empty());
+    }
+
     #[test]
     fn numbers_are_read_the_way_our_country_writes_them() {
         use presage::libsignal_service::prelude::phonenumber;
@@ -4975,6 +5261,44 @@ mod tests {
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A conversation new to b33p is read up to what was there when it came, so what arrives
+    /// after stays unread; one it has settings for keeps them.
+    #[test]
+    fn a_new_conversation_is_read_up_to_its_start() {
+        let dir = std::env::temp_dir().join(format!("b33p-first-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.join("local.db3"))
+                .create_if_missing(true);
+            let (events, _ui) = async_channel::unbounded();
+            let ctx = Ctx {
+                threads: Rc::default(),
+                events: Events(events),
+                tables: LocalStore::open(options).await.unwrap(),
+                preferences: Rc::new(Cell::new(Preferences::default())),
+                expiring: Rc::default(),
+                storage_changed: Rc::default(),
+                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
+                trust: Rc::default(),
+            };
+            let ann = ConversationId::contact("ann");
+            assert_eq!(first_settings(&ctx, &ann, 10).await.last_read, 10);
+            ctx.tables
+                .update(&ann, |s| s.marked_unread = true)
+                .await
+                .unwrap();
+            let kept = first_settings(&ctx, &ann, 20).await;
+            assert_eq!(kept.last_read, 10);
+            assert!(kept.marked_unread);
+        });
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

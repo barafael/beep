@@ -9,7 +9,7 @@ use i_slint_backend_testing::ElementHandle;
 use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::styles::fluent::{AppWindow, ConversationItem, MessageItem, Screen};
+use crate::generated::{AppWindow, ConversationItem, MessageItem, Screen};
 
 fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
     i_slint_backend_testing::init_no_event_loop();
@@ -366,7 +366,7 @@ fn clicking_a_search_result_shows_it() {
     });
     window.set_chat_search_open(true);
     window.set_chat_search_text("moon".into());
-    let result = |text: &str| crate::styles::fluent::SearchResult {
+    let result = |text: &str| crate::generated::SearchResult {
         sender: "Ann".into(),
         when: "Oct 2".into(),
         text: text.into(),
@@ -475,4 +475,82 @@ fn chat_rows_speak_for_themselves() {
     let row = find(&window, "Bob, 2 unread, muted, See you").expect("one item says it all");
     row.invoke_accessible_default_action();
     assert_eq!(selected.borrow().as_deref(), Some("b"));
+}
+
+/// What ui.rs makes of the chat state: here, how far our messages got, and that every one
+/// that failed says so, not only a run's last.
+#[test]
+fn the_window_shows_the_chat_state() {
+    use b33p_core::state::{ChatState, Update};
+    use b33p_core::{ChatMessage, ChatSettings, Conversation, ConversationId, Event, Unsent};
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 500.));
+    crate::ui::set_up_models(&window);
+    let ann = ConversationId::contact("ann");
+    let mut chat = ChatState::default();
+    chat.apply(Event::Linked {
+        account: "me".into(),
+    });
+    chat.apply(Event::Synced);
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: ann.clone(),
+        title: "Ann".into(),
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    chat.select(&ann);
+    let ours = |body: &str, timestamp, unsent| ChatMessage {
+        conversation: ann.clone(),
+        sender_id: "me".into(),
+        sender: "You".into(),
+        body: body.into(),
+        timestamp,
+        outgoing: true,
+        unsent,
+        ..ChatMessage::default()
+    };
+    let now = b33p_core::now_millis();
+    chat.apply(Event::History {
+        conversation: ann.clone(),
+        messages: vec![
+            ours("first try", now - 3000, Some(Unsent::Failed)),
+            ours("second try", now - 2000, Some(Unsent::Failed)),
+            ours("went out", now - 1000, None),
+        ],
+        reactions: Vec::new(),
+        older: None,
+    });
+    crate::ui::render(
+        &window,
+        &chat,
+        &crate::Images::default(),
+        Update {
+            screen: true,
+            ..Update::reset()
+        },
+    );
+    window.show().unwrap();
+    settle(&window);
+
+    let delivery: Vec<_> = window.get_messages().iter().map(|m| m.delivery).collect();
+    use crate::generated::DeliveryState;
+    assert_eq!(
+        delivery,
+        [
+            DeliveryState::Failed,
+            DeliveryState::Failed,
+            DeliveryState::Sent
+        ]
+    );
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, "Not sent").count(),
+        2
+    );
 }
