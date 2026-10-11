@@ -202,6 +202,8 @@ pub struct MessageView<'a> {
     pub revealed: bool,
     /// The search result last shown.
     pub highlighted: bool,
+    /// Picked, with others, for an action on all of them; see [`ChatState::toggle_selected`].
+    pub selected: bool,
 }
 
 /// What a message deleted for everyone shows instead.
@@ -297,13 +299,18 @@ pub struct ChatState {
     queued: Vec<Command>,
     /// Messages whose spoilers were clicked open.
     revealed: HashSet<MessageRef>,
+    /// Messages picked to copy, forward or delete together; see [`ChatState::toggle_selected`].
+    selection: Vec<MessageRef>,
+    /// The message last picked or unpicked: Shift+click picks everything between it and
+    /// another.
+    selection_anchor: Option<MessageRef>,
     /// People picked to mention in the draft; their "@Name" becomes a mention when sent.
     draft_mentions: Vec<Person>,
     /// What was being written in each chat (not an edit), with whom it mentions: it waits
     /// there while other chats are open, and while editing.
     drafts: HashMap<ConversationId, (String, Vec<Person>)>,
-    /// The message being forwarded, while its target is chosen.
-    forwarding: Option<ChatMessage>,
+    /// The messages being forwarded, while their target is chosen; empty otherwise.
+    forwarding: Vec<ChatMessage>,
     /// Searching the selected conversation.
     chat_search: Option<ChatSearch>,
     /// A search result to show once its page of history has loaded.
@@ -931,6 +938,8 @@ impl ChatState {
             self.highlight = None;
             self.replying = None;
             self.editing = None;
+            self.selection.clear();
+            self.selection_anchor = None;
             self.keep_draft_mentions();
             self.draft_mentions = self
                 .drafts
@@ -1174,6 +1183,8 @@ impl ChatState {
         self.selected = None;
         self.replying = None;
         self.editing = None;
+        self.selection.clear();
+        self.selection_anchor = None;
         self.read_mark = None;
         self.draft_mentions.clear();
         self.staged.clear();
@@ -1792,28 +1803,41 @@ impl ChatState {
     /// next, from [`ChatState::forward_targets`].
     pub fn start_forward(&mut self, index: usize) -> bool {
         let message = self.messages().nth(index).map(|view| view.message.clone());
-        self.forwarding = message.filter(Self::can_forward);
-        self.forwarding.is_some()
+        self.forwarding = message.filter(Self::can_forward).into_iter().collect();
+        !self.forwarding.is_empty()
+    }
+
+    /// Starts forwarding the picked messages (see [`ChatState::toggle_selected`]), if every one
+    /// of them can go.
+    pub fn start_forward_selection(&mut self) -> bool {
+        if !self.can_forward_selection() {
+            return false;
+        }
+        self.forwarding = self.selection().into_iter().cloned().collect();
+        true
     }
 
     pub fn forwarding(&self) -> bool {
-        self.forwarding.is_some()
+        !self.forwarding.is_empty()
     }
 
-    /// What the message being forwarded says, to confirm where it goes: its text, or what is
-    /// attached when it has none.
+    /// What is being forwarded, to confirm where it goes: a message's text, or what is
+    /// attached when it has none; how many, for several.
     pub fn forwarded(&self) -> Option<String> {
-        let message = self.forwarding.as_ref()?;
-        Some(
-            match (message.body.is_empty(), message.attachments.first()) {
-                (true, Some(attachment)) => describe_kind(attachment.kind).to_string(),
-                _ => message.body.clone(),
-            },
-        )
+        match self.forwarding.as_slice() {
+            [] => None,
+            [message] => Some(
+                match (message.body.is_empty(), message.attachments.first()) {
+                    (true, Some(attachment)) => describe_kind(attachment.kind).to_string(),
+                    _ => message.body.clone(),
+                },
+            ),
+            messages => Some(format!("{} messages", messages.len())),
+        }
     }
 
     pub fn cancel_forward(&mut self) {
-        self.forwarding = None;
+        self.forwarding.clear();
     }
 
     /// Where a message can be forwarded to: chats whose title contains `filter`, in list order;
@@ -1834,32 +1858,53 @@ impl ChatState {
             .collect()
     }
 
-    /// Forwards the message being forwarded to `id`.
+    /// Forwards what is being forwarded to `id`: the command for the first message; those for
+    /// the others, in order, come from [`ChatState::take_commands`].
     pub fn forward_to(&mut self, id: &ConversationId) -> Option<Command> {
         if !self.conversation(id).is_some_and(|c| self.can_write_to(c)) {
             return None;
         }
-        let message = self.forwarding.take()?;
-        // A long message's full text, once fetched, goes as the body; until then, the
-        // attachment holding it goes along.
-        let (body, styles, attachments) = match self.full_text(&message) {
-            Some(text) => (
-                text.to_owned(),
-                Vec::new(),
-                message
-                    .attachments
-                    .into_iter()
-                    .filter(|a| a.kind != AttachmentKind::LongText)
-                    .collect(),
-            ),
-            None => (message.body, message.styles, message.attachments),
-        };
-        Some(Command::Forward {
-            conversation: id.clone(),
-            body,
-            styles,
-            attachments,
-        })
+        let messages = std::mem::take(&mut self.forwarding);
+        if messages.is_empty() {
+            return None;
+        }
+        // The picked messages are done with once they went.
+        let selection = self.selection();
+        if messages.len() == selection.len()
+            && messages
+                .iter()
+                .zip(selection)
+                .all(|(m, s)| m.is(&s.reference()))
+        {
+            self.selection.clear();
+            self.selection_anchor = None;
+        }
+        let mut commands = messages.into_iter().map(|message| {
+            // A long message's full text, once fetched, goes as the body; until then, the
+            // attachment holding it goes along.
+            let (body, styles, attachments) = match self.full_text(&message) {
+                Some(text) => (
+                    text.to_owned(),
+                    Vec::new(),
+                    message
+                        .attachments
+                        .into_iter()
+                        .filter(|a| a.kind != AttachmentKind::LongText)
+                        .collect(),
+                ),
+                None => (message.body, message.styles, message.attachments),
+            };
+            Command::Forward {
+                conversation: id.clone(),
+                body,
+                styles,
+                attachments,
+            }
+        });
+        let first = commands.next();
+        let rest: Vec<_> = commands.collect();
+        self.queued.extend(rest);
+        first
     }
 
     /// Members of the selected group matching the "@…" the draft ends with, to mention.
@@ -2005,6 +2050,136 @@ impl ChatState {
         };
         let update = Update::reset();
         (Some(command), update)
+    }
+
+    /// Picks the `index`th message of [`ChatState::messages`], or unpicks it. Picked messages
+    /// are copied, forwarded or deleted together; see [`ChatState::selection`]. Notices can't
+    /// be picked: there is nothing to do with them.
+    pub fn toggle_selected(&mut self, index: usize) -> Update {
+        let Some(message) = self.messages().nth(index).map(|v| v.message) else {
+            return Update::default();
+        };
+        if message.notice {
+            return Update::default();
+        }
+        let target = message.reference();
+        match self.selection.iter().position(|s| *s == target) {
+            Some(at) => {
+                self.selection.remove(at);
+            }
+            None => self.selection.push(target.clone()),
+        }
+        self.selection_anchor = Some(target);
+        Update {
+            rows: true,
+            ..Update::default()
+        }
+    }
+
+    /// Picks every message from the one last picked (or unpicked) through the `index`th; just
+    /// the `index`th if none was.
+    pub fn select_through(&mut self, index: usize) -> Update {
+        let history = self.selected_history();
+        let anchor = self
+            .selection_anchor
+            .as_ref()
+            .and_then(|anchor| history.iter().position(|m| m.is(anchor)));
+        let (Some(from), true) = (anchor, index < history.len()) else {
+            return self.toggle_selected(index);
+        };
+        let picked: Vec<MessageRef> = history[from.min(index)..=from.max(index)]
+            .iter()
+            .filter(|m| !m.notice)
+            .map(ChatMessage::reference)
+            .collect();
+        for target in picked {
+            if !self.selection.contains(&target) {
+                self.selection.push(target);
+            }
+        }
+        Update {
+            rows: true,
+            ..Update::default()
+        }
+    }
+
+    pub fn clear_selection(&mut self) -> Update {
+        if self.selection.is_empty() {
+            return Update::default();
+        }
+        self.selection.clear();
+        self.selection_anchor = None;
+        Update {
+            rows: true,
+            ..Update::default()
+        }
+    }
+
+    /// The picked messages still in the selected chat, in its order.
+    pub fn selection(&self) -> Vec<&ChatMessage> {
+        self.selected_history()
+            .iter()
+            .filter(|m| self.selection.iter().any(|s| m.is(s)))
+            .collect()
+    }
+
+    /// What the picked messages say, one after the other, for copying: each its text, or what
+    /// is attached when it has none.
+    pub fn selected_text(&self) -> String {
+        let text = |m: &ChatMessage| -> String {
+            if m.deleted {
+                return DELETED.to_string();
+            }
+            let body = self.full_text(m).unwrap_or(&m.body);
+            if body.is_empty() {
+                m.attachments
+                    .first()
+                    .map(|a| describe_kind(a.kind).to_string())
+                    .unwrap_or_default()
+            } else {
+                body.to_string()
+            }
+        };
+        self.selection()
+            .into_iter()
+            .map(text)
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Whether every picked message can be forwarded; see [`ChatState::can_forward`].
+    pub fn can_forward_selection(&self) -> bool {
+        let selection = self.selection();
+        !selection.is_empty() && selection.iter().all(|m| Self::can_forward(m))
+    }
+
+    /// Whether every picked message can still be deleted for everyone.
+    pub fn can_delete_selection_for_everyone(&self) -> bool {
+        let selection = self.selection();
+        !selection.is_empty() && selection.iter().all(|m| self.can_edit(m))
+    }
+
+    /// Deletes the picked messages, each as [`ChatState::delete`] would: the command for the
+    /// first one; those for the others come from [`ChatState::take_commands`].
+    pub fn delete_selection(&mut self, for_everyone: bool) -> (Option<Command>, Update) {
+        let targets: Vec<MessageRef> = self.selection().iter().map(|m| m.reference()).collect();
+        let mut commands = Vec::new();
+        let mut update = Update::default();
+        for target in targets {
+            let Some(index) = self.messages().position(|v| v.message.is(&target)) else {
+                continue;
+            };
+            let (command, done) = self.delete(index, for_everyone);
+            commands.extend(command);
+            update = update.merge(done);
+        }
+        self.selection.clear();
+        self.selection_anchor = None;
+        let mut commands = commands.into_iter();
+        let first = commands.next();
+        self.queued.extend(commands);
+        (first, update)
     }
 
     /// Changes a conversation's settings here at once; the command makes it last.
@@ -2549,6 +2724,7 @@ impl ChatState {
                 first_unread: first_unread == Some(i),
                 revealed: self.revealed.contains(&message.reference()),
                 highlighted: self.highlight.as_ref().is_some_and(|h| message.is(h)),
+                selected: self.selection.iter().any(|s| message.is(s)),
                 sender_avatar: if group && !message.outgoing {
                     self.avatars
                         .get(&ConversationId::contact(&message.sender_id))
@@ -4490,6 +4666,63 @@ mod tests {
         assert!(!state.forwarding());
         assert!(state.forward_to(&id("g")).is_none(), "once");
         assert!(state.forwarded().is_none());
+    }
+
+    #[test]
+    fn picked_messages_are_copied_forwarded_and_deleted_together() {
+        let mut state = state();
+        state.apply(Event::Message(message("a", "Ann", 10, false)));
+        state.apply(Event::Message(message("a", "Me", 20, true)));
+        state.apply(Event::Message(message("a", "Ann", 30, false)));
+        state.select(&id("a"));
+        assert!(state.toggle_selected(0).rows);
+        state.select_through(2);
+        assert!(
+            state.messages().all(|v| v.selected),
+            "the range from the anchor"
+        );
+        state.toggle_selected(1);
+        assert_eq!(
+            state.selected_text(),
+            "Ann at 10\nsecond line\n\nAnn at 30\nsecond line"
+        );
+
+        assert!(state.start_forward_selection());
+        assert_eq!(state.forwarded().as_deref(), Some("2 messages"));
+        assert!(matches!(
+            state.forward_to(&id("g")),
+            Some(Command::Forward { body, .. }) if body == "Ann at 10\nsecond line"
+        ));
+        // Among what else followed (read receipts).
+        let forwards: Vec<_> = state
+            .take_commands()
+            .into_iter()
+            .filter(|c| matches!(c, Command::Forward { .. }))
+            .collect();
+        assert!(matches!(
+            forwards.as_slice(),
+            [Command::Forward { body, .. }] if body == "Ann at 30\nsecond line"
+        ));
+        assert!(state.selection().is_empty(), "done with them");
+
+        state.toggle_selected(0);
+        state.toggle_selected(2);
+        let (command, update) = state.delete_selection(false);
+        assert!(matches!(command, Some(Command::Delete { .. })));
+        let deletes = state
+            .take_commands()
+            .into_iter()
+            .filter(|c| matches!(c, Command::Delete { .. }))
+            .count();
+        assert_eq!(deletes, 1, "the second goes along");
+        assert_eq!(update, Update::reset());
+        assert_eq!(state.messages().len(), 1);
+        assert!(state.selection().is_empty());
+
+        state.toggle_selected(0);
+        assert_eq!(state.selection().len(), 1);
+        state.select(&id("g"));
+        assert!(state.selection().is_empty(), "picks belong to the chat");
     }
 
     #[test]

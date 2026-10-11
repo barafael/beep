@@ -569,6 +569,39 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             shared.act(|chat| (None, chat.reveal(index as usize)));
         }
     });
+    window.on_toggle_select({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.toggle_selected(index as usize)));
+        }
+    });
+    window.on_select_through({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.select_through(index as usize)));
+        }
+    });
+    window.on_clear_selection({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (None, chat.clear_selection()));
+        }
+    });
+    window.on_forward_selection({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.start_forward_selection();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_delete_selection({
+        let shared = shared.clone();
+        move |everyone| {
+            shared.act(|chat| chat.delete_selection(everyone));
+        }
+    });
     window.on_settings_changed({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -972,6 +1005,11 @@ fn escape(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         chat.close_group_draft();
     } else if chat.forwarding() {
         chat.cancel_forward();
+    } else if !chat.selection().is_empty() {
+        let update = chat.clear_selection();
+        drop(chat);
+        shared.refresh(update);
+        return true;
     } else if chat.details().is_some() {
         chat.close_details();
     } else if chat.media().is_some() {
@@ -1163,6 +1201,10 @@ fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update)
             .into(),
     );
     window.set_editing(chat.editing().is_some());
+    window.set_selected_count(chat.selection().len() as i32);
+    window.set_selection_text(chat.selected_text().into());
+    window.set_can_forward_selection(chat.can_forward_selection());
+    window.set_can_delete_selection_for_everyone(chat.can_delete_selection_for_everyone());
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
     window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
@@ -1725,6 +1767,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
     MessageItem {
         sender: m.sender.as_str().into(),
         body: crate::rich_text(view.body, view.styles, view.revealed),
+        selected: view.selected,
         has_body: !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
         outgoing: m.outgoing,

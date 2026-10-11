@@ -137,6 +137,8 @@ export struct MessageItem {
     can-forward: bool,
     // The search result last shown.
     highlighted: bool,
+    // Picked, with others, for an action on all of them; see `toggle-select`.
+    selected: bool,
     // A preview of the link in it; `preview-url` is empty if there is none.
     preview-url: string,
     preview-title: string,
@@ -367,6 +369,17 @@ component Avatar inherits Rectangle {
         image-fit: cover;
         opacity: root.picture.width > 0 ? 1 : 0;
         animate opacity { duration: 200ms * Motion.scale; easing: ease-out; }
+    }
+}
+
+// The text selected in a message, for copying (Ctrl+C or the message's menu): one message's
+// at a time, the one at `owner`; the others drop theirs when it changes. -1 for none.
+global TextSelection {
+    in-out property <string> text;
+    in-out property <int> owner: -1;
+    public function clear() {
+        self.owner = -1;
+        self.text = "";
     }
 }
 
@@ -845,6 +858,8 @@ component HoverButtons inherits HorizontalLayout {
 component Bubble inherits Rectangle {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
+    // Its row in the list; see `TextSelection`.
+    in property <int> index;
     callback fetch-attachment(string);
     callback save-attachment(string);
     callback open-attachment(string);
@@ -856,9 +871,20 @@ component Bubble inherits Rectangle {
     callback copy-text(string);
     callback reveal;
     callback forward;
+    // Picks this message for an action on all picked ones, or unpicks it; `select-through`
+    // picks every message from the one last picked.
+    callback toggle-select;
+    callback select-through;
+    // Messages are picked: a click on the row picks this one too, or unpicks it.
+    in property <bool> selecting;
+    // Ctrl is held: a click on the row picks this message.
+    in property <bool> pick-held;
 
     // Outgoing bubbles use the accent colour: white text reads on any style's accent.
     property <color> ink: item.outgoing ? white : Palette.alternate-foreground;
+    // The row is tinted while the message is picked.
+    background: item.selected ? Palette.accent-background.with-alpha(0.12) : transparent;
+    animate background { duration: 120ms * Motion.scale; easing: ease-out; }
     // Within a run, the corners facing the neighbouring bubbles are tighter.
     property <length> round: 16px;
     property <length> tight: 5px;
@@ -940,6 +966,8 @@ component Bubble inherits Rectangle {
                     accessible-label: item.text;
                     max-width: root.max-bubble-width;
                     wrap: word-wrap;
+                    // As for the body below: never wider than the limit, even for one long word.
+                    min-width: 0px;
                     horizontal-alignment: center;
                     font-size: 0.8rem;
                     color: Palette.foreground.with-alpha(0.7);
@@ -990,7 +1018,10 @@ component Bubble inherits Rectangle {
                         border-bottom-right-radius: item.outgoing && !item.last ? root.tight : root.round;
                         // Darkened, so white text reads even on a light accent (Breeze's dark scheme).
                         background: (item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background)
-                            .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1);
+                            .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1)
+                            // A touch lighter under the pointer, so the row the buttons belong to is clear.
+                            .mix(Palette.foreground, hover.has-hover ? 0.94 : 1);
+                        animate background { duration: 100ms * Motion.scale; easing: ease-out; }
                         // Paler until it went out.
                         opacity: item.delivery == -1 ? 0.7 : 1;
                         animate opacity { duration: 250ms * Motion.scale; easing: ease-out; }
@@ -1083,6 +1114,10 @@ component Bubble inherits Rectangle {
                             }
                             if item.has-body: StyledText {
                                 text: item.body;
+                                // A long unbreakable word (a URL) must not widen the bubble past
+                                // its limit: the list would then measure the row at that width
+                                // and give it too little height, so the next rows draw over it.
+                                min-width: 0px;
                                 // For screen readers (and finding messages in the UI tests).
                                 accessible-role: text;
                                 accessible-label: item.deleted ? "This message was deleted." : item.text;
@@ -1094,6 +1129,25 @@ component Bubble inherits Rectangle {
                                         root.reveal();
                                     } else {
                                         root.open-link(link);
+                                    }
+                                }
+                                // Text can be selected and copied; one message's at a time.
+                                selectable: !item.deleted;
+                                selection-background-color: root.ink.with-alpha(0.3);
+                                selection-foreground-color: root.ink;
+                                property <int> owner: TextSelection.owner;
+                                changed owner => {
+                                    if self.owner != root.index {
+                                        self.anchor-position-byte-offset = 0;
+                                        self.cursor-position-byte-offset = 0;
+                                    }
+                                }
+                                changed selected-text => {
+                                    if self.selected-text != "" {
+                                        TextSelection.text = self.selected-text;
+                                        TextSelection.owner = root.index;
+                                    } else if TextSelection.owner == root.index {
+                                        TextSelection.clear();
                                     }
                                 }
                             }
@@ -1151,6 +1205,24 @@ component Bubble inherits Rectangle {
                                 }
                             }
                         }
+                        // Picked: a check at the corner facing the middle.
+                        if item.selected: Rectangle {
+                            x: item.outgoing ? -8px : parent.width - self.width + 8px;
+                            y: -6px;
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: Palette.accent-background;
+                            border-width: 2px;
+                            border-color: Palette.background;
+                            Icon {
+                                source: @image-url("@lucide/check.svg");
+                                tint: white;
+                                width: 12px;
+                                x: 4px;
+                                y: 4px;
+                            }
+                        }
                     }
                     if item.reactions.length > 0: HorizontalLayout {
                         alignment: item.outgoing ? end : start;
@@ -1195,9 +1267,27 @@ component Bubble inherits Rectangle {
         }
     }
 
+    // While messages are picked, or Ctrl is held, a click anywhere on the row picks this
+    // message or unpicks it; with Shift, everything from the one last picked.
+    if root.selecting || root.pick-held: TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if event.modifiers.shift {
+                    root.select-through();
+                } else {
+                    root.toggle-select();
+                }
+            }
+        }
+    }
+
     // On top: it takes only right clicks.
     ContextMenuArea {
         Menu {
+            if !item.notice: MenuItem {
+                title: item.selected ? "Unselect" : "Select";
+                activated => { root.toggle-select(); }
+            }
             if !item.deleted && !item.notice: MenuItem {
                 title: "Reply";
                 activated => { root.reply(); }
@@ -1205,6 +1295,10 @@ component Bubble inherits Rectangle {
             if !item.deleted && !item.notice: MenuItem {
                 title: "React…";
                 activated => { picker.show(); }
+            }
+            if TextSelection.owner == root.index && TextSelection.text != "": MenuItem {
+                title: "Copy selection";
+                activated => { root.copy-text(TextSelection.text); }
             }
             if item.text != "": MenuItem {
                 title: "Copy text";
@@ -1912,7 +2006,9 @@ component SettingsPage inherits Rectangle {
                         { keys: "↑", what: "Edit your last message (in an empty composer)" },
                         { keys: "Shift+Enter", what: "New line" },
                         { keys: "Ctrl+V", what: "Paste text, a picture or files" },
-                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search" },
+                        { keys: "Ctrl+click", what: "Select a message; Shift+click selects up to it, Esc clears" },
+                        { keys: "Ctrl+C", what: "Copy the text selected in a message" },
+                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search or selection" },
                     ]: HorizontalLayout {
                         spacing: 16px;
                         Text {
@@ -2093,6 +2189,20 @@ export component AppWindow inherits Window {
     callback edit(int);
     callback delete(int, bool);
     callback reveal(int);
+    // Messages picked for an action on all of them (Ctrl+click, or "Select" in a message's
+    // menu): how many, what they say (to copy), and what can be done with them. Esc unpicks
+    // them (see `shortcut`).
+    in property <int> selected-count;
+    in property <string> selection-text;
+    in property <bool> can-forward-selection;
+    in property <bool> can-delete-selection-for-everyone;
+    callback toggle-select(int);
+    callback select-through(int);
+    callback clear-selection;
+    callback forward-selection;
+    callback delete-selection(bool);
+    // Ctrl is held: a click on a message picks it.
+    property <bool> pick-held;
     callback cancel-edit;
     // How many chats are archived, and how many of those have unread messages.
     in property <int> archived-count;
@@ -2250,8 +2360,29 @@ export component AppWindow inherits Window {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     capture-key-pressed(event) => {
+        if event.text == Key.Control {
+            root.pick-held = true;
+        }
+        // Text selected in a message: Ctrl+C copies it, Esc drops it. (Writing in the composer
+        // drops it too, so Ctrl+C there copies the composer's own selection.)
+        if TextSelection.text != "" {
+            if event.modifiers.control && (event.text == "c" || event.text == "C") {
+                root.copy-text(TextSelection.text);
+                return accept;
+            }
+            if event.text == Key.Escape {
+                TextSelection.clear();
+                return accept;
+            }
+        }
         if root.shortcut(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift) {
             return accept;
+        }
+        return reject;
+    }
+    capture-key-released(event) => {
+        if event.text == Key.Control {
+            root.pick-held = false;
         }
         return reject;
     }
@@ -2839,6 +2970,7 @@ export component AppWindow inherits Window {
                                 }
                                 for item[index] in root.messages: Bubble {
                                     item: item;
+                                    index: index;
                                     reply => {
                                         root.reply(index);
                                         focus-composer-timer.running = true;
@@ -2860,6 +2992,10 @@ export component AppWindow inherits Window {
                                         root.forward-filter = "";
                                         root.forward(index);
                                     }
+                                    selecting: root.selected-count > 0;
+                                    pick-held: root.pick-held;
+                                    toggle-select => { root.toggle-select(index); }
+                                    select-through => { root.select-through(index); }
                                 }
                             }
                             if root.activity.length > 1: ActivityStrip {
@@ -4039,8 +4175,12 @@ export component AppWindow inherits Window {
                                         selection-foreground-color: Palette.selection-foreground;
                                         accessible-placeholder-text: root.editing ? "Edit message" : "Message";
                                         edited => { root.draft-edited(self.text); }
+                                        // Where the caret is, for which line it is on.
+                                        property <length> caret-y;
                                         // The caret stays in view.
                                         cursor-position-changed(at) => {
+                                            self.caret-y = at.y;
+                                            TextSelection.clear();
                                             if at.y + composer-scroll.content-y < 0px {
                                                 composer-scroll.content-y = -at.y;
                                             } else if at.y + composer-row.line + composer-scroll.content-y > composer-scroll.height {
@@ -4067,6 +4207,20 @@ export component AppWindow inherits Window {
                                                 self.set-selection-offsets(2147483647, 2147483647);
                                                 return accept;
                                             }
+                                            // ↓ on the last line goes to the end, ↑ on the first to the
+                                            // start, as in editors (the input alone stays put); with
+                                            // Shift, selecting up to there. `measure` is as tall as the
+                                            // draft's lines.
+                                            if event.text == Key.DownArrow && !event.modifiers.control && !event.modifiers.alt
+                                                && self.caret-y + 1.5 * composer-row.line > measure.preferred-height {
+                                                self.set-selection-offsets(event.modifiers.shift ? self.anchor-position-byte-offset : 2147483647, 2147483647);
+                                                return accept;
+                                            }
+                                            if event.text == Key.UpArrow && !event.modifiers.control && !event.modifiers.alt
+                                                && self.caret-y < 0.5 * composer-row.line {
+                                                self.set-selection-offsets(event.modifiers.shift ? self.anchor-position-byte-offset : 0, 0);
+                                                return accept;
+                                            }
                                             return reject;
                                         }
                                     }
@@ -4080,6 +4234,74 @@ export component AppWindow inherits Window {
                                 saving: root.editing;
                                 enabled: root.can-send;
                                 clicked => { root.send(root.draft); composer.focus(); }
+                            }
+                        }
+                    }
+                    // Over the composer while messages are picked: what to do with them.
+                    selection-bar := Rectangle {
+                        opacity: root.selected-count > 0 ? 1 : 0;
+                        visible: self.opacity > 0;
+                        animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
+                        background: Palette.alternate-background;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 8px;
+                            spacing: 4px;
+                            Text {
+                                text: root.selected-count == 1 ? "1 message selected" : root.selected-count + " messages selected";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Copy selected";
+                                    icon: @image-url("@lucide/copy.svg");
+                                    clicked => {
+                                        root.copy-text(root.selection-text);
+                                        root.clear-selection();
+                                    }
+                                }
+                            }
+                            if root.can-forward-selection: VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Forward selected";
+                                    icon: @image-url("@lucide/forward.svg");
+                                    clicked => { root.forward-selection(); }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                delete-menu := ContextMenuArea {
+                                    width: 32px;
+                                    height: 32px;
+                                    Menu {
+                                        MenuItem {
+                                            title: "Delete for me";
+                                            activated => { root.delete-selection(false); }
+                                        }
+                                        if root.can-delete-selection-for-everyone: MenuItem {
+                                            title: "Delete for everyone";
+                                            activated => { root.delete-selection(true); }
+                                        }
+                                    }
+                                    IconButton {
+                                        label: "Delete selected";
+                                        icon: @image-url("@lucide/trash.svg");
+                                        clicked => { delete-menu.show({ x: 0px, y: self.height }); }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Clear selection";
+                                    icon: @image-url("@lucide/x.svg");
+                                    clicked => { root.clear-selection(); }
+                                }
                             }
                         }
                     }
