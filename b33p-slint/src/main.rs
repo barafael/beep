@@ -3,7 +3,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +11,7 @@ use b33p_core::settings::{Settings, WidgetStyle};
 use b33p_core::state::{AttachmentState, ChatState, MessagesUpdate, Notice, Screen, Update};
 use b33p_core::{
     AttachmentContent, AttachmentId, Backend, Command, Commands, Config, ConversationId, Event,
-    Picture, QrMatrix, Style, StyleRange, format::find_url,
+    Picture, QrMatrix,
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -22,11 +21,14 @@ mod autostart;
 mod clipboard;
 mod instance;
 mod logging;
+mod markdown;
 mod motion;
 mod shutdown;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+
+use markdown::{highlighted, rich_text};
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`): in the native style for the app,
 /// in Fluent for the tests, which run without Qt. `ui.rs` builds on whichever it is.
@@ -631,161 +633,6 @@ fn picture_image(picture: &Picture) -> Image {
     ))
 }
 
-/// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
-/// formatting, except web addresses, which become links.
-fn rich_text(body: &str, styles: &[StyleRange], revealed: bool) -> slint::StyledText {
-    slint::StyledText::from_markdown(&markdown(body, styles, revealed))
-        .unwrap_or_else(|_| slint::StyledText::from_plain_text(body))
-}
-
-/// `text` with `found` (a byte range in it) bold and in `color`, e.g. a search result's match.
-fn highlighted(text: &str, found: Option<Range<usize>>, color: slint::Color) -> slint::StyledText {
-    found
-        .and_then(|found| highlight_markdown(text, found, color))
-        .and_then(|markdown| slint::StyledText::from_markdown(&markdown).ok())
-        .unwrap_or_else(|| slint::StyledText::from_plain_text(text))
-}
-
-/// See [`highlighted`]; `None` if `found` isn't a part of `text`.
-fn highlight_markdown(text: &str, found: Range<usize>, color: slint::Color) -> Option<String> {
-    if text.get(found.clone()).is_none_or(str::is_empty) {
-        return None;
-    }
-    let mut markdown = String::with_capacity(text.len() + 48);
-    escape(&text[..found.start], &mut markdown);
-    // The joiners keep the markers working next to spaces, as in `markdown`.
-    markdown.push_str(&format!(
-        "<font color=\"#{:02x}{:02x}{:02x}\">**\u{2060}",
-        color.red(),
-        color.green(),
-        color.blue()
-    ));
-    escape(&text[found.clone()], &mut markdown);
-    markdown.push_str("\u{2060}**</font>");
-    escape(&text[found.end..], &mut markdown);
-    Some(markdown)
-}
-
-/// Escapes `text` for Markdown, so that it all shows as typed.
-fn escape(text: &str, out: &mut String) {
-    for c in text.chars() {
-        if c.is_ascii_punctuation() {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-}
-
-/// See [`rich_text`].
-fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
-    /// Between markers and text, so emphasis opens and closes whatever the neighbouring
-    /// characters are (CommonMark's flanking rules); invisible.
-    const JOIN: char = '\u{2060}';
-    fn with_links(text: &str, out: &mut String) {
-        let mut rest = text;
-        while let Some((start, end)) = find_url(rest) {
-            escape(&rest[..start], out);
-            let url = &rest[start..end];
-            out.push('[');
-            escape(url, out);
-            out.push_str("](<");
-            out.push_str(url);
-            out.push_str(">)");
-            rest = &rest[end..];
-        }
-        escape(rest, out);
-    }
-    let valid = |s: &&StyleRange| {
-        s.start < s.end
-            && s.end <= body.len()
-            && body.is_char_boundary(s.start)
-            && body.is_char_boundary(s.end)
-    };
-    // Pieces with the same formatting throughout; lines apart, for the breaks between them.
-    let mut cuts: Vec<usize> = vec![0, body.len()];
-    cuts.extend(styles.iter().filter(valid).flat_map(|s| [s.start, s.end]));
-    cuts.extend(body.match_indices('\n').flat_map(|(i, _)| [i, i + 1]));
-    cuts.sort_unstable();
-    cuts.dedup();
-    let mut markdown = String::with_capacity(body.len() + 16);
-    for piece in cuts.windows(2) {
-        let (start, end) = (piece[0], piece[1]);
-        let text = &body[start..end];
-        if text == "\n" {
-            // A hard line break, as the sender typed it.
-            markdown.push_str("\\\n");
-            continue;
-        }
-        let has = |style| {
-            styles
-                .iter()
-                .filter(valid)
-                .any(|s| s.style == style && s.start <= start && end <= s.end)
-        };
-        // Leading spaces would start a code block; keep them as non-breaking spaces.
-        let line_start = start == 0 || body.as_bytes()[start - 1] == b'\n';
-        let text = if line_start {
-            let trimmed = text.trim_start_matches(' ');
-            markdown.extend(std::iter::repeat_n('\u{a0}', text.len() - trimmed.len()));
-            trimmed
-        } else {
-            text
-        };
-        if text.is_empty() {
-            continue;
-        }
-        if has(Style::Spoiler) && !revealed {
-            // Hidden behind a link that reveals it; see `Bubble` in app.slint.
-            let hidden: String = text
-                .chars()
-                .map(|c| if c.is_whitespace() { c } else { '▒' })
-                .collect();
-            markdown.push('[');
-            markdown.push_str(&hidden);
-            markdown.push_str("](spoiler:)");
-            continue;
-        }
-        let markers: Vec<&str> = [
-            (Style::Bold, "**"),
-            (Style::Italic, "*"),
-            (Style::Strikethrough, "~~"),
-        ]
-        .into_iter()
-        .filter(|(style, _)| has(*style))
-        .map(|(_, marker)| marker)
-        .collect();
-        // Apart from the previous piece's closing markers, which would otherwise run into these.
-        if !markers.is_empty() {
-            markdown.push(JOIN);
-        }
-        for marker in &markers {
-            markdown.push_str(marker);
-            markdown.push(JOIN);
-        }
-        if has(Style::Monospace) {
-            // Code spans take no escapes; a longer fence than any backtick run inside.
-            let longest = text
-                .split(|c| c != '`')
-                .map(str::len)
-                .max()
-                .unwrap_or_default();
-            let fence = "`".repeat(longest + 1);
-            markdown.push_str(&fence);
-            markdown.push(' ');
-            markdown.push_str(text);
-            markdown.push(' ');
-            markdown.push_str(&fence);
-        } else {
-            with_links(text, &mut markdown);
-        }
-        for marker in markers.iter().rev() {
-            markdown.push(JOIN);
-            markdown.push_str(marker);
-        }
-    }
-    markdown
-}
-
 /// Opens a link from a message in the browser. Only web addresses: links come from message
 /// text, so nothing else (files, other apps' schemes) is opened.
 fn open_link(link: &str) {
@@ -803,86 +650,4 @@ fn qr_image(qr: &QrMatrix) -> Image {
     let buffer =
         SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels, side as u32, side as u32);
     Image::from_rgba8(buffer)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn raw(text: &slint::StyledText) -> String {
-        i_slint_core::styled_text::get_raw_text(text).into_owned()
-    }
-
-    #[test]
-    fn finds_web_addresses_without_trailing_punctuation() {
-        let text = "see https://example.org/a?b=1. and (http://x.y/z)";
-        let (start, end) = find_url(text).unwrap();
-        assert_eq!(&text[start..end], "https://example.org/a?b=1");
-        let rest = &text[end..];
-        let (start, end) = find_url(rest).unwrap();
-        assert_eq!(&rest[start..end], "http://x.y/z");
-        assert_eq!(find_url("no links here, nor in https:// alone"), None);
-    }
-
-    /// What people type is shown as typed: no markdown, no HTML, line breaks kept.
-    #[test]
-    fn message_text_is_never_formatting() {
-        for text in [
-            "*not bold* _nor this_ `code` <b>tag</b> # heading",
-            "1. not a list",
-            "    indented",
-            "two\nlines",
-        ] {
-            let shown = raw(&rich_text(text, &[], false));
-            assert_eq!(shown.replace('\u{a0}', " "), text, "{text:?}");
-        }
-    }
-
-    #[test]
-    fn links_keep_their_text() {
-        let shown = raw(&rich_text("look: https://example.org/x_y*z ok", &[], false));
-        assert_eq!(shown, "look: https://example.org/x_y*z ok");
-    }
-
-    /// Formatting applies whatever surrounds it, and the text stays as it was.
-    #[test]
-    fn formatting_keeps_the_text() {
-        let range = |start, end, style| StyleRange { start, end, style };
-        let text = "a\"b\" (c) `d` e";
-        let styles = [
-            range(1, 4, Style::Bold),
-            range(5, 8, Style::Italic),
-            range(9, 12, Style::Monospace),
-            range(0, 14, Style::Strikethrough),
-        ];
-        // Parsed, not the plain-text fallback: the markers are gone.
-        let parse = |styles: &[StyleRange], revealed| {
-            let markdown = markdown(text, styles, revealed);
-            raw(&slint::StyledText::from_markdown(&markdown).expect("valid markdown"))
-                .replace('\u{2060}', "")
-        };
-        assert_eq!(parse(&styles, false), text);
-        let spoiler = [range(5, 8, Style::Spoiler)];
-        assert_eq!(parse(&spoiler, false), "a\"b\" ▒▒▒ `d` e");
-        assert_eq!(parse(&spoiler, true), text);
-    }
-
-    /// A search result's match stands out, whatever surrounds it, and the text stays as it was.
-    #[test]
-    fn highlighting_keeps_the_text() {
-        let accent = slint::Color::from_rgb_u8(0x33, 0x99, 0xff);
-        for (text, found) in [
-            ("Message 249", 0..10),
-            ("…say *hi* to (Ann)!", 13..18),
-            ("Grüße aus München", 12..20),
-            ("a b c", 1..4),
-            ("<b>", 0..3),
-        ] {
-            let markdown = highlight_markdown(text, found, accent).expect("a part of it");
-            let parsed = slint::StyledText::from_markdown(&markdown).expect("valid markdown");
-            assert_eq!(raw(&parsed).replace('\u{2060}', ""), text, "{markdown:?}");
-        }
-        assert_eq!(highlight_markdown("abc", 2..9, accent), None);
-        assert_eq!(raw(&highlighted("abc", None, accent)), "abc");
-    }
 }

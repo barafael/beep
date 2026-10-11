@@ -143,7 +143,7 @@ pub(crate) fn parse(html: &str) -> Page {
         Some(decode_entities(after[open..open + close].trim()))
     });
     Page {
-        title: title.unwrap_or_default(),
+        title: crate::format::name(&title.unwrap_or_default()),
         description: first(&["og:description", "twitter:description", "description"])
             .unwrap_or_default(),
         image: first(&["og:image", "og:image:url", "twitter:image"]),

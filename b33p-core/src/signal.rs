@@ -620,6 +620,7 @@ fn register(
     let id = conversation_id(&thread);
     let is_group = matches!(thread, Thread::Group(_));
     threads.borrow_mut().insert(id.clone(), thread);
+    let title = crate::format::name(&title);
     let title = if title.is_empty() {
         "Unknown".into()
     } else {
@@ -763,10 +764,11 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
                 .as_ref()
                 .map(display_number)
                 .unwrap_or_default();
-            let title = if contact.name.is_empty() {
+            let name = crate::format::name(&contact.name);
+            let title = if name.is_empty() {
                 number.clone()
             } else {
-                contact.name
+                name
             };
             let timer = contact.expire_timer;
             names.insert(
@@ -1971,6 +1973,7 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
         .thread_title(&Thread::Contact(sender))
         .await
         .unwrap_or_default();
+    let name = crate::format::name(&name);
     names.insert(id, name.clone());
     name
 }
@@ -2985,7 +2988,7 @@ async fn to_chat_message(
             }
             Some(crate::LinkPreview {
                 url,
-                title: preview.title.clone().unwrap_or_default(),
+                title: crate::format::name(preview.title.as_deref().unwrap_or_default()),
                 description: preview.description.clone().unwrap_or_default(),
                 image: preview
                     .image

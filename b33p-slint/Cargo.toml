@@ -83,6 +83,10 @@ windows-registry = "0.6"
 [dev-dependencies]
 # Slint's headless backend for the UI tests in `src/ui_tests.rs`; the version slint pins.
 i-slint-backend-testing = "=1.18.1"
+# Slint's Markdown parser, which `StyledText` keeps to itself: the property tests in
+# `src/markdown.rs` check the links and text it makes of message text.
+i-slint-common = { version = "=1.18.1", features = ["markdown"] }
+proptest = "1"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs
