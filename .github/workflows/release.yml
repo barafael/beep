@@ -91,7 +91,7 @@ jobs:
           cp b33p-slint/assets/b33p.svg "$NAME/io.github.barafael.B33p.svg"
           # xz, as the .deb uses: 12.1 MB instead of gzip's 17.2 MB for this binary.
           tar -I "xz -9 -T0" -cf "$NAME.tar.xz" "$NAME"
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-deb
       - name: Package .deb
