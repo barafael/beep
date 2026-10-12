@@ -777,15 +777,22 @@ impl LocalStore {
         message: &MessageRef,
     ) -> Result<(), sqlx::Error> {
         let (conversation, author, ts) = key(conversation, message);
+        let mut tx = self.db.begin().await?;
         sqlx::query(
             "INSERT OR IGNORE INTO b33p_deleted (conversation, author, ts) VALUES (?, ?, ?)",
         )
-        .bind(conversation)
-        .bind(author)
+        .bind(&conversation)
+        .bind(&author)
         .bind(ts)
-        .execute(&self.db)
-        .await
-        .map(drop)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?")
+            .bind(&conversation)
+            .bind(&author)
+            .bind(ts)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     pub(crate) async fn deleted(
@@ -857,8 +864,8 @@ impl LocalStore {
         Ok((due, next.map(|n| n as u64)))
     }
 
-    /// Forgets expired messages, in one transaction; they are gone from the store too.
-    pub(crate) async fn forget_expired(
+    /// Forgets messages gone from the store, in one transaction.
+    pub(crate) async fn forget(
         &self,
         messages: &[(ConversationId, MessageRef)],
     ) -> Result<(), sqlx::Error> {
@@ -1024,7 +1031,9 @@ mod tests {
             );
             local.record_deleted(&a, &m).await.unwrap();
             assert_eq!(local.deleted(&a).await.unwrap(), std::slice::from_ref(&m));
+            assert!(local.edits(&a).await.unwrap().is_empty());
 
+            local.record_edit(&a, &m, 40, "third").await.unwrap();
             local.set_expiries(&a, &[(m.clone(), 100)]).await.unwrap();
             // The first start counts.
             let bob = reference("bob", 11);
@@ -1035,8 +1044,9 @@ mod tests {
             let (due, next) = local.due(150).await.unwrap();
             assert_eq!(due, [(a.clone(), m.clone())]);
             assert_eq!(next, Some(200));
-            local.forget_expired(&due).await.unwrap();
+            local.forget(&due).await.unwrap();
             assert!(local.edits(&a).await.unwrap().is_empty());
+            assert!(local.deleted(&a).await.unwrap().is_empty());
             assert_eq!(local.due(150).await.unwrap().0, []);
         });
     }
