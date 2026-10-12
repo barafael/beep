@@ -16,6 +16,8 @@ use b33p_core::{
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+#[cfg(all(feature = "harness", target_family = "unix"))]
+mod agent;
 mod audio;
 mod autostart;
 mod clipboard;
@@ -74,6 +76,9 @@ pub struct Shared {
     playback_timer: slint::Timer,
     /// For callbacks that outlive a call, like `typing_timer`'s.
     me: std::rc::Weak<Shared>,
+    /// Answers the agent harness's socket (`--features harness`).
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    agent: agent::Handle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,6 +117,9 @@ impl Shared {
         let Some(ui) = self.ui() else { return };
         let mut chat = self.chat.borrow_mut();
         ui.render(&chat, &self.images, update);
+        #[cfg(all(feature = "harness", target_family = "unix"))]
+        self.agent
+            .publish(&chat, &self.settings.borrow(), self.ui().as_deref());
         if self.start_hidden.get() {
             let screen = chat.screen();
             if matches!(screen, Screen::Password { .. } | Screen::Link(_)) || chat.error().is_some()
@@ -409,6 +417,8 @@ fn main() -> Result<(), slint::PlatformError> {
         pending_play: RefCell::default(),
         playback_timer: slint::Timer::default(),
         me: me.clone(),
+        #[cfg(all(feature = "harness", target_family = "unix"))]
+        agent: agent::Handle::default(),
     });
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
@@ -431,6 +441,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;
     shared.start_hidden.set(hidden);
     shared.refresh(everything());
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    agent::start(&shared);
     if !hidden {
         ui.show()?;
     } else if !tray::host_present() {
