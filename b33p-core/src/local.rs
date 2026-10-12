@@ -777,7 +777,7 @@ impl LocalStore {
         message: &MessageRef,
     ) -> Result<(), sqlx::Error> {
         let (conversation, author, ts) = key(conversation, message);
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT OR IGNORE INTO b33p_deleted (conversation, author, ts) VALUES (?, ?, ?)",
         )
