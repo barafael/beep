@@ -294,12 +294,12 @@ pub(crate) async fn upload(
             .unwrap_or("attachment")
             .to_owned();
         let size = std::fs::metadata(path)
-            .map_err(|e| format!("can't read {name}: {e}"))?
+            .map_err(|e| format!("can't read “{name}”: {e}"))?
             .len();
         if size > MAX_UPLOAD_BYTES {
-            return Err(format!("{name} is larger than Signal's limit of 100 MB."));
+            return Err(format!("“{name}” is larger than Signal's limit of 100 MB."));
         }
-        let data = std::fs::read(path).map_err(|e| format!("can't read {name}: {e}"))?;
+        let data = std::fs::read(path).map_err(|e| format!("can't read “{name}”: {e}"))?;
         let content_type = mime_guess::from_path(path)
             .first_or_octet_stream()
             .essence_str()
@@ -620,7 +620,7 @@ fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
             }
         })
         .find(|candidate| !candidate.exists())
-        .ok_or_else(|| format!("too many files named {name} in {}", dir.display()))
+        .ok_or_else(|| format!("too many files named “{name}” in {}", dir.display()))
 }
 
 fn extension(content_type: &str) -> &str {

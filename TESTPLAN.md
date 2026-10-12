@@ -42,8 +42,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.2 Delivery ticks
 
 1. Send a message to someone whose phone is on.
-   - Under it: ✓ when sent, ✓✓ when delivered, bold ✓✓ when they read it (if they send read
-     receipts).
+   - Under it: ✓ when sent, ✓✓ when delivered, ✓✓ on a filled pill when they read it (if they
+     send read receipts).
 2. Restart b33p; the ticks of older messages stay.
 
 ### 1.3 Typing indicators
@@ -65,6 +65,9 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    - It reads "This message was deleted." here and on their phone.
 5. **Delete for me** on any message: it goes away here only.
 6. Have them delete a message for everyone: it shows as deleted here, also after a restart.
+7. Ctrl+click two of your recent messages, then the bin in the bar over the composer →
+   **Delete for everyone**: both read as deleted here and on their phone. (**Delete for
+   everyone** is only offered while every selected message is yours and recent.)
 
 ### 1.5 Disappearing messages
 
@@ -128,6 +131,9 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. Right-click a message with a photo → **Forward…**, search for a chat, pick it.
    - The copy arrives there with the photo, here and on the recipient's phone.
 2. Forward a long message after opening it (its full text shows): the full text arrives.
+3. Ctrl+click one message, Shift+click another a few below, then the arrow in the bar over
+   the composer: the dialog says "N messages"; after picking a chat, all of them arrive
+   there, in order, and the selection is gone.
 
 ### 2.2 Search in a chat
 
@@ -154,8 +160,12 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 2.5 Keyboard shortcuts
 
 Check each from the list in Settings: Ctrl+K, Ctrl+F, Alt+↑/↓, Alt+Shift+↓ (next unread),
-Alt+1…9, ↑ to edit, Esc closing things innermost first (forward dialog, details, media, search,
-edit, reply, settings).
+Alt+1…9, ↑ to edit, Esc closing things innermost first (forward dialog, selection, details,
+media, search, edit, reply, settings). In the composer with two lines: ↓ on the last line goes
+to the end, ↑ on the first to the start; Ctrl+Shift+←/→ selects by word. In a message, drag
+to select text (a double click a word) and Ctrl+C: it pastes elsewhere; selecting in another
+message drops the first; a click on a link still opens it; Esc or writing in the composer
+drops the selection.
 
 ### 2.6 Details and safety numbers
 

@@ -347,6 +347,31 @@ fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
 }
 
 #[test]
+fn picked_messages_get_a_bar_to_act_on_them() {
+    let (window, _messages) = window_with_messages(3);
+    let cleared = Rc::new(Cell::new(false));
+    window.on_clear_selection({
+        let cleared = cleared.clone();
+        move || cleared.set(true)
+    });
+    assert!(find(&window, "Clear selection").is_none());
+    window.set_selected_count(2);
+    settle(&window);
+    assert!(find(&window, "2 messages selected").is_some());
+    assert!(
+        find(&window, "Forward selected").is_none(),
+        "not until all can go"
+    );
+    window.set_can_forward_selection(true);
+    settle(&window);
+    assert!(find(&window, "Forward selected").is_some());
+    find(&window, "Clear selection")
+        .expect("a way out")
+        .mock_single_click(PointerEventButton::Left);
+    assert!(cleared.get());
+}
+
+#[test]
 fn jumping_brings_the_row_into_view() {
     let (window, _messages) = window_with_messages(60);
     assert!(find(&window, "Message 10").is_none());

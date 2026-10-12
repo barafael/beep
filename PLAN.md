@@ -98,6 +98,14 @@ By how much they matter, most first:
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart
   (presage overwrites the stored message first); a group counts as read once any member read a
   message; pinned chats move by menu, not by dragging.
+- **Selecting text in messages:** done through our Slint fork (barafael/slint, branch
+  `styled-text-selection-1.18`: 1.18.1 plus a `selectable` `StyledText` with selection
+  colours, `anchor-/cursor-position-byte-offset` and `selected-text`; a click that doesn't
+  drag still follows a link), pinned by the `[patch.crates-io]` in the workspace. An input
+  laid over the styled text to fake it was tried first and dropped: a second copy of the
+  text, drifting along bold and code, in the way of links. Sent upstream as draft
+  slint-ui/slint#13985. Left: see the review through and drop the fork once a release
+  carries it.
 - **Tests:** a sticker picker test that sees the stickers (the testing backend doesn't lay
   out popups).
 

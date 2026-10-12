@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use b33p_core::format::find_url;
+use b33p_core::format::{find_url, link_target};
 use b33p_core::{Style, StyleRange};
 
 /// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
@@ -246,7 +246,7 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             markdown.push('[');
             escape(text, &mut markdown);
             markdown.push_str("](<");
-            for c in url.chars() {
+            for c in link_target(url).chars() {
                 push_escaped(c, &mut markdown);
             }
             markdown.push_str(">)");
@@ -303,6 +303,8 @@ mod tests {
     fn links_keep_their_text() {
         let shown = raw(&rich_text("look: https://example.org/x_y*z ok", &[], false));
         assert_eq!(shown, "look: https://example.org/x_y*z ok");
+        let shown = raw(&rich_text("or example.org/x.", &[], false));
+        assert_eq!(shown, "or example.org/x.");
     }
 
     /// Formatting applies whatever surrounds it, and the text stays as it was.
@@ -454,7 +456,7 @@ mod tests {
             let urls = b33p_core::format::links(&shown);
             for paragraph in parse(&markdown).unwrap() {
                 for (range, target) in &paragraph.links {
-                    prop_assert!(urls.contains(&target.as_str()), "{target:?} in {markdown:?}");
+                    prop_assert!(urls.iter().any(|url| url == target), "{target:?} in {markdown:?}");
                     let label = tidy(&paragraph.text[range.clone()]);
                     prop_assert!(target.contains(&label), "{label:?} leads to {target:?}");
                 }
@@ -528,7 +530,10 @@ mod tests {
             assert!(!urls.is_empty(), "{body:?}");
             for paragraph in parse(&markdown).unwrap() {
                 for (_, target) in &paragraph.links {
-                    assert!(urls.contains(&target.as_str()), "{target:?} from {body:?}");
+                    assert!(
+                        urls.iter().any(|url| url == target),
+                        "{target:?} from {body:?}"
+                    );
                 }
             }
         }

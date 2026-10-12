@@ -45,7 +45,9 @@ use crate::{
     Reaction, Style, StyleRange, apply_reaction, attachments,
     format::{self, RangeValue, WireRange},
     local::LocalStore,
-    now_millis, transfer,
+    now_millis,
+    scrub::scrub,
+    transfer,
     vault::{self, KeySource, KeyringKey},
 };
 
@@ -473,7 +475,7 @@ async fn run_linked(
 
     for command in pending {
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
-            warn!(%error, "command failed");
+            warn!(error = %scrub(&error), "command failed");
             let _ = events.send(Event::Error(error));
         }
     }
@@ -482,7 +484,7 @@ async fn run_linked(
             command = command_rx.recv() => match command {
                 Some(command) => {
                     if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
-                        warn!(%error, "command failed");
+                        warn!(error = %scrub(&error), "command failed");
                         let _ = events.send(Event::Error(error));
                     }
                 }
@@ -611,7 +613,7 @@ async fn link_with_history(
             }
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
-                warn!(%error, "message history transfer failed");
+                warn!(error = %scrub(&error), "message history transfer failed");
                 let _ = events.send(Event::Error(format!(
                     "{error} Link this device again to retry."
                 )));
@@ -697,6 +699,13 @@ pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
         Thread::Contact(id) => ConversationId::contact(&id.service_id_string()),
         Thread::Group(key) => ConversationId::group(key),
     }
+}
+
+/// A short, stable name for `id` in the log. The ID itself names the contact, or holds the
+/// group's master key, so it must not be written out.
+fn tag(id: &ConversationId) -> String {
+    use sha2::Digest as _;
+    hex::encode(&sha2::Sha256::digest(id.0.as_bytes())[..4])
 }
 
 /// Remembers how to reach a conversation and describes it for the UI; settings are added by
@@ -1922,7 +1931,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
                 }
                 None => {
                     failed += 1;
-                    debug!(conversation = id.0, "could not decode avatar");
+                    debug!(conversation = %tag(&id), "could not decode avatar");
                 }
             },
             Ok(None) => none += 1,
@@ -1932,7 +1941,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             }
             Err(error) => {
                 failed += 1;
-                debug!(conversation = id.0, %error, "failed to fetch avatar");
+                debug!(conversation = %tag(&id), %error, "failed to fetch avatar");
             }
         }
     }
@@ -2039,7 +2048,7 @@ async fn deliver(
         let held = held_members(manager, ctx, key).await;
         if !held.is_empty() {
             return Err(format!(
-                "Not sent: your safety number with {} changed since you verified it. Confirm it \
+                "Not sent: your safety number with “{}” changed since you verified it. Confirm it \
                  in their chat first.",
                 held.join(", ")
             ));
@@ -2874,7 +2883,7 @@ async fn ensure_conversation(
             }
         };
         conversation.settings = first_settings(ctx, &id, first.saturating_sub(1)).await;
-        info!(title = conversation.title, "new conversation");
+        info!(conversation = %tag(&id), "new conversation");
         ctx.events.send(Event::Conversations(vec![conversation]));
     }
     id
@@ -3200,7 +3209,7 @@ async fn to_chat_message(
                 .clone()
                 .filter(|url| url.starts_with("https://"))?;
             let text = data.body.as_deref().unwrap_or_default();
-            if !format::links(text).contains(&url.as_str()) {
+            if !format::links(text).contains(&url) {
                 debug!("dropped a link preview for a link not in the message");
                 return None;
             }
@@ -3669,12 +3678,8 @@ async fn handle_command(
             };
             // The preview follows the text: gone with its link, made anew for a new one.
             let links = format::links(&body);
-            data.preview.retain(|preview| {
-                preview
-                    .url
-                    .as_deref()
-                    .is_some_and(|url| links.contains(&url))
-            });
+            data.preview
+                .retain(|preview| preview.url.as_ref().is_some_and(|url| links.contains(url)));
             if data.preview.is_empty()
                 && ctx.preferences.get().link_previews
                 && let Some((sent, _)) = link_preview(manager, &body).await
@@ -4637,8 +4642,7 @@ async fn link_preview(
 ) -> Option<(presage::proto::Preview, crate::LinkPreview)> {
     let url = format::links(body)
         .into_iter()
-        .find(|link| link.starts_with("https://"))?
-        .to_owned();
+        .find(|link| link.starts_with("https://"))?;
     let page = crate::preview::fetch_page(&url).await?;
     let mut pointer = None;
     if let Some(image) = &page.image

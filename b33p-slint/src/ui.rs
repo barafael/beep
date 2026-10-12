@@ -562,6 +562,39 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             shared.act(|chat| (None, chat.reveal(index as usize)));
         }
     });
+    window.on_toggle_select({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.toggle_selected(index as usize)));
+        }
+    });
+    window.on_select_through({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| (None, chat.select_through(index as usize)));
+        }
+    });
+    window.on_clear_selection({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (None, chat.clear_selection()));
+        }
+    });
+    window.on_forward_selection({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.start_forward_selection();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_delete_selection({
+        let shared = shared.clone();
+        move |everyone| {
+            shared.act(|chat| chat.delete_selection(everyone));
+        }
+    });
     window.on_settings_changed({
         let shared = shared.clone();
         let window = window.as_weak();
@@ -981,6 +1014,11 @@ fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         chat.close_group_draft();
     } else if chat.forwarding() {
         chat.cancel_forward();
+    } else if !chat.selection().is_empty() {
+        let update = chat.clear_selection();
+        drop(chat);
+        shared.refresh(update);
+        return true;
     } else if chat.details().is_some() {
         chat.close_details();
     } else if chat.media().is_some() {
@@ -1170,6 +1208,10 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
         window.set_draft(chat.draft().into());
     }
     window.set_editing(editing);
+    window.set_selected_count(chat.selection().len() as i32);
+    window.set_selection_text(chat.selected_text().into());
+    window.set_can_forward_selection(chat.can_forward_selection());
+    window.set_can_delete_selection_for_everyone(chat.can_delete_selection_for_everyone());
     let replying = chat.replying();
     window.set_reply_author(replying.map_or("", |q| q.author.as_str()).into());
     window.set_reply_text(replying.map_or("", |q| q.text.as_str()).into());
@@ -1475,36 +1517,23 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
 
 /// The media overview.
 fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
-    const PER_ROW: usize = 4;
-    const TILE: f32 = 110.;
     let media = chat.media();
     window.set_media_open(media.is_some());
     window.set_media_busy(matches!(media, Some(None)));
     let Some(Some(overview)) = media else {
         // Nothing left over for the next chat's.
-        vec_model(&window.get_media_rows()).set_vec(Vec::new());
+        vec_model(&window.get_media_tiles()).set_vec(Vec::new());
         vec_model(&window.get_media_files()).set_vec(Vec::new());
         vec_model(&window.get_media_links()).set_vec(Vec::new());
         return;
     };
-    let tile = |a: &Attachment| AttachmentItem {
-        width: TILE,
-        height: TILE,
-        ..attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images)
-    };
-    let rows: Vec<MediaRow> = overview
+    // The UI lays the tiles out by its width; their size here is beside the point.
+    let tiles: Vec<AttachmentItem> = overview
         .media
-        .chunks(PER_ROW)
-        .map(|row| MediaRow {
-            tiles: ModelRc::new(VecModel::from(
-                row.iter().map(|a| tile(a)).collect::<Vec<_>>(),
-            )),
-        })
+        .iter()
+        .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
         .collect();
-    update_list(&window.get_media_rows(), rows, |a, b| {
-        a.tiles.row_count() == b.tiles.row_count()
-            && a.tiles.iter().zip(b.tiles.iter()).all(|(x, y)| x == y)
-    });
+    update_list(&window.get_media_tiles(), tiles, |a, b| a == b);
     let files: Vec<SharedItem> = overview
         .files
         .iter()
@@ -1520,7 +1549,7 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
         .links
         .iter()
         .map(|(m, url)| SharedItem {
-            url: (*url).into(),
+            url: url.as_str().into(),
             sender: m.sender.as_str().into(),
             when: state::format_time(m.timestamp).into(),
             ..Default::default()
@@ -1674,7 +1703,7 @@ fn render_calendar(window: &AppWindow, chat: &ChatState) {
 pub(crate) fn set_up_models(window: &AppWindow) {
     window.set_conversations(ModelRc::new(VecModel::<ConversationItem>::default()));
     window.set_messages(ModelRc::new(VecModel::<MessageItem>::default()));
-    window.set_media_rows(ModelRc::new(VecModel::<MediaRow>::default()));
+    window.set_media_tiles(ModelRc::new(VecModel::<AttachmentItem>::default()));
     window.set_group_candidates(ModelRc::new(VecModel::<CandidateItem>::default()));
     window.set_story_rings(ModelRc::new(VecModel::<RingItem>::default()));
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
@@ -1756,6 +1785,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
     MessageItem {
         sender: m.sender.as_str().into(),
         body: crate::rich_text(view.body, view.styles, view.revealed),
+        selected: view.selected,
         has_body: !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
         outgoing: m.outgoing,

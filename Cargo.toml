@@ -23,6 +23,7 @@ qrcode = { version = "0.14", default-features = false }
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
+#   (not yet proposed) the provisioning link logged at debug instead of info
 #   #452 no panic on a group master key of the wrong length
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
@@ -41,6 +42,19 @@ libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
+# Branch styled-text-selection-1.18 of our Slint fork: 1.18.1 plus selecting text in a
+# `StyledText` (`selectable`, `selected-text`), which the messages need. Drop this once it has
+# landed upstream and a release carries it.
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+# Its helper crates too, or the crates.io slint crates would link a second copy of them.
+vtable = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+vtable-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+const-field-offset = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
+
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
 # langis/integration of our fork: whisperfish's plus two pull requests:
 #   #2 (not ours) builds on Linux arm64, where `c_char` is unsigned, and stops SQLCipher tearing

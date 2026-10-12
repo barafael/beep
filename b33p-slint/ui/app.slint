@@ -141,6 +141,8 @@ export struct MessageItem {
     can-forward: bool,
     // The search result last shown.
     highlighted: bool,
+    // Picked, with others, for an action on all of them; see `toggle-select`.
+    selected: bool,
     // A preview of the link in it; `preview-url` is empty if there is none.
     preview-url: string,
     preview-title: string,
@@ -208,11 +210,6 @@ export struct StickerTile {
 // A row of the sticker picker's grid.
 export struct StickerRow {
     tiles: [StickerTile],
-}
-
-// A row of the media overview's grid.
-export struct MediaRow {
-    tiles: [AttachmentItem],
 }
 
 // A file or link in the media overview, with who sent it when.
@@ -371,6 +368,17 @@ component Avatar inherits Rectangle {
         image-fit: cover;
         opacity: root.picture.width > 0 ? 1 : 0;
         animate opacity { duration: 200ms * Motion.scale; easing: ease-out; }
+    }
+}
+
+// The text selected in a message, for copying (Ctrl+C or the message's menu): one message's
+// at a time, the one at `owner`; the others drop theirs when it changes. -1 for none.
+global TextSelection {
+    in-out property <string> text;
+    in-out property <int> owner: -1;
+    public function clear() {
+        self.owner = -1;
+        self.text = "";
     }
 }
 
@@ -788,63 +796,70 @@ component AttachmentView inherits VerticalLayout {
     }
 }
 
-// Quick reactions, as in Signal's own apps.
-component ReactionPicker inherits PopupWindow {
+// Quick reactions, as in Signal's own apps: a bar over the bubble, there while the pointer
+// rests on the message or on the bar itself.
+component ReactionPicker inherits Rectangle {
+    in property <bool> shown;
+    // The pointer came onto it, or left it. Told at once as it comes (the message underneath
+    // loses the pointer in the same event, and must not take the bar away meanwhile), so a
+    // callback rather than a property watched for changes.
+    callback hovered(bool);
     callback picked(string);
-    Rectangle {
-        // Fades in as it appears.
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
-        border-radius: 18px;
-        background: Palette.alternate-background;
-        border-width: 1px;
-        border-color: Palette.border;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #0003;
-        HorizontalLayout {
-            padding: 4px;
-            spacing: 2px;
-            for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
-                width: 32px;
-                height: 32px;
-                border-radius: 16px;
-                background: touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
-                animate background { duration: 120ms * Motion.scale; easing: ease-out; }
-                touch := TouchArea {
-                    accessible-role: button;
-                    accessible-label: "React with " + emoji;
-                    accessible-action-default => { self.clicked(); }
-                    mouse-cursor: pointer;
-                    clicked => { root.picked(emoji); }
-                }
-                Text { text: emoji; font-size: 1.2rem; }
+    width: 210px;
+    height: 40px;
+    visible: root.shown;
+    // Fades in as it appears.
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
+    border-radius: self.height / 2;
+    background: Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: #0003;
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move {
+                root.hovered(true);
+            }
+        }
+        changed has-hover => {
+            if !self.has-hover {
+                root.hovered(false);
             }
         }
     }
-}
-
-component HoverButtons inherits HorizontalLayout {
-    in property <bool> shown;
-    callback react;
-    callback reply;
-    IconButton {
-        label: "React";
-        icon: @image-url("@lucide/face-slightly-smiling-plus.svg");
-        shown: root.shown;
-        clicked => { root.react(); }
-    }
-    IconButton {
-        label: "Reply";
-        icon: @image-url("@lucide/reply.svg");
-        shown: root.shown;
-        clicked => { root.reply(); }
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 2px;
+        for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: 16px;
+            background: emoji-touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
+            emoji-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: "React with " + emoji;
+                accessible-action-default => { self.clicked(); }
+                mouse-cursor: pointer;
+                clicked => { root.picked(emoji); }
+                // The buttons take the pointer from the bar's own area.
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.move {
+                        root.hovered(true);
+                    }
+                }
+            }
+            Text { text: emoji; font-size: 1.2rem; }
+        }
     }
 }
 
 component Bubble inherits Rectangle {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
+    // Its row in the list; see `TextSelection`.
+    in property <int> index;
     callback fetch-attachment(string);
     callback save-attachment(string);
     callback open-attachment(string);
@@ -856,9 +871,20 @@ component Bubble inherits Rectangle {
     callback copy-text(string);
     callback reveal;
     callback forward;
+    // Picks this message for an action on all picked ones, or unpicks it; `select-through`
+    // picks every message from the one last picked.
+    callback toggle-select;
+    callback select-through;
+    // Messages are picked: a click on the row picks this one too, or unpicks it.
+    in property <bool> selecting;
+    // Ctrl is held: a click on the row picks this message.
+    in property <bool> pick-held;
 
     // Outgoing bubbles use the accent colour: white text reads on any style's accent.
     property <color> ink: item.outgoing ? white : Palette.alternate-foreground;
+    // The row is tinted while the message is picked.
+    background: item.selected ? Palette.accent-background.with-alpha(0.12) : transparent;
+    animate background { duration: 120ms * Motion.scale; easing: ease-out; }
     // Within a run, the corners facing the neighbouring bubbles are tighter.
     property <length> round: 16px;
     property <length> tight: 5px;
@@ -882,15 +908,27 @@ component Bubble inherits Rectangle {
     }
     animate flash { duration: 900ms * Motion.scale; easing: ease-out; }
 
-
-    picker := ReactionPicker {
-        x: item.outgoing ? root.width - 230px : 16px;
-        y: -36px;
-        picked(emoji) => { root.react(emoji); }
+    // The pointer is on the message, or on the reaction bar over it (which reaches past the
+    // row, and takes the pointer off `hover`; the bar is in a conditional, so it reports).
+    property <bool> picker-hovered;
+    property <bool> hovered: hover.has-hover || root.picker-hovered;
+    property <bool> can-react: !item.deleted && !item.notice && !root.selecting;
+    // The reaction bar comes once the pointer has rested on the message a moment (not while
+    // it merely crosses the list), and goes when the pointer leaves it and the bar.
+    property <bool> picker-shown;
+    changed hovered => {
+        if !self.hovered {
+            self.picker-shown = false;
+        }
+    }
+    Timer {
+        interval: 350ms;
+        running: root.hovered && root.can-react && !root.picker-shown;
+        triggered => { root.picker-shown = true; }
     }
 
     // Around the content, not under it: it stays hovered over the text and pictures, which
-    // take the pointer themselves (links), so the message's buttons show there too.
+    // take the pointer themselves (links), so the message's button shows there too.
     hover := TouchArea {
         VerticalLayout {
             if item.first-unread: HorizontalLayout {
@@ -940,6 +978,8 @@ component Bubble inherits Rectangle {
                     accessible-label: item.text;
                     max-width: root.max-bubble-width;
                     wrap: word-wrap;
+                    // As for the body below: never wider than the limit, even for one long word.
+                    min-width: 0px;
                     horizontal-alignment: center;
                     font-size: 0.8rem;
                     color: Palette.foreground.with-alpha(0.7);
@@ -967,11 +1007,12 @@ component Bubble inherits Rectangle {
                 // Beside the bubble on the side facing the middle, shown on hover.
                 if item.outgoing: VerticalLayout {
                     alignment: center;
-                    HoverButtons {
+                    IconButton {
+                        label: "Reply";
+                        icon: @image-url("@lucide/reply.svg");
                         visible: !item.deleted;
-                        shown: hover.has-hover;
-                        react => { picker.show(); }
-                        reply => { root.reply(); }
+                        shown: root.hovered;
+                        clicked => { root.reply(); }
                     }
                 }
                 VerticalLayout {
@@ -990,7 +1031,11 @@ component Bubble inherits Rectangle {
                         border-bottom-right-radius: item.outgoing && !item.last ? root.tight : root.round;
                         // Darkened, so white text reads even on a light accent (Breeze's dark scheme).
                         background: (item.outgoing ? Palette.accent-background.darker(0.35) : Palette.alternate-background)
-                            .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1);
+                            .mix(Palette.accent-background.brighter(0.6), item.highlighted ? 1 - 0.5 * root.flash : 1)
+                            // A whisper lighter under the pointer: just enough to say which row
+                            // the button belongs to, not enough to catch the eye as it passes.
+                            .mix(Palette.foreground, root.hovered ? 0.98 : 1);
+                        animate background { duration: 160ms * Motion.scale; easing: ease-out; }
                         // Paler until it went out.
                         opacity: item.delivery == DeliveryState.sending ? 0.7 : 1;
                         animate opacity { duration: 250ms * Motion.scale; easing: ease-out; }
@@ -1083,6 +1128,10 @@ component Bubble inherits Rectangle {
                             }
                             if item.has-body: StyledText {
                                 text: item.body;
+                                // A long unbreakable word (a URL) must not widen the bubble past
+                                // its limit: the list would then measure the row at that width
+                                // and give it too little height, so the next rows draw over it.
+                                min-width: 0px;
                                 // For screen readers (and finding messages in the UI tests).
                                 accessible-role: text;
                                 accessible-label: item.deleted ? "This message was deleted." : item.text;
@@ -1096,10 +1145,29 @@ component Bubble inherits Rectangle {
                                         root.open-link(link);
                                     }
                                 }
+                                // Text can be selected and copied; one message's at a time.
+                                selectable: !item.deleted;
+                                selection-background-color: root.ink.with-alpha(0.3);
+                                selection-foreground-color: root.ink;
+                                property <int> owner: TextSelection.owner;
+                                changed owner => {
+                                    if self.owner != root.index {
+                                        self.anchor-position-byte-offset = 0;
+                                        self.cursor-position-byte-offset = 0;
+                                    }
+                                }
+                                changed selected-text => {
+                                    if self.selected-text != "" {
+                                        TextSelection.text = self.selected-text;
+                                        TextSelection.owner = root.index;
+                                    } else if TextSelection.owner == root.index {
+                                        TextSelection.clear();
+                                    }
+                                }
                             }
                             // Once per run, on its last message; always if it changed, goes away or
                             // failed to go out.
-                            if item.last || item.edited || item.expires != "" || item.delivery == DeliveryState.failed: HorizontalLayout {
+                            if item.last || item.edited || item.expires != "" || item.delivery == DeliveryState.failed: meta := HorizontalLayout {
                                 alignment: end;
                                 spacing: 4px;
                                 property <color> faint: root.ink.with-alpha(0.65);
@@ -1119,12 +1187,21 @@ component Bubble inherits Rectangle {
                                     font-size: 0.72rem;
                                     color: parent.faint;
                                 }
-                                // ✓ sent, ✓✓ delivered, ✓✓ in full white once read.
-                                if item.last && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): Text {
-                                    text: item.delivery == DeliveryState.sent ? "✓" : "✓✓";
-                                    font-size: 0.72rem;
-                                    font-weight: item.delivery == DeliveryState.read ? 700 : 400;
-                                    color: item.delivery == DeliveryState.read ? root.ink : parent.faint;
+                                // ✓ sent, ✓✓ delivered; read: ✓✓ cut out of a filled pill, so it
+                                // tells from delivered at a glance.
+                                if item.last && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): Rectangle {
+                                    width: 22px;
+                                    border-radius: self.height / 2;
+                                    background: item.delivery == DeliveryState.read ? root.ink : transparent;
+                                    accessible-role: text;
+                                    accessible-label: item.delivery == DeliveryState.sent ? "Sent" : item.delivery == DeliveryState.delivered ? "Delivered" : "Read";
+                                    Icon {
+                                        source: item.delivery == DeliveryState.sent ? @image-url("@lucide/check.svg") : @image-url("@lucide/check-check.svg");
+                                        width: 14px;
+                                        tint: item.delivery == DeliveryState.read ? Palette.accent-background.darker(0.35) : meta.faint;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                                 if item.last && item.delivery == DeliveryState.sending: Text {
                                     text: "Sending…";
@@ -1150,6 +1227,38 @@ component Bubble inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+                        }
+                        picker := ReactionPicker {
+                            x: item.outgoing ? parent.width - self.width : 0;
+                            // Over the bubble's edge by a little, so the pointer can move up onto it
+                            // without ever leaving both.
+                            y: 6px - self.height;
+                            shown: root.picker-shown && root.can-react;
+                            hovered(on) => { root.picker-hovered = on; }
+                            picked(emoji) => {
+                                // Gone with the pointer still on it: it won't say it left.
+                                root.picker-hovered = false;
+                                root.picker-shown = false;
+                                root.react(emoji);
+                            }
+                        }
+                        // Picked: a check at the corner facing the middle.
+                        if item.selected: Rectangle {
+                            x: item.outgoing ? -8px : parent.width - self.width + 8px;
+                            y: -6px;
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: Palette.accent-background;
+                            border-width: 2px;
+                            border-color: Palette.background;
+                            Icon {
+                                source: @image-url("@lucide/check.svg");
+                                tint: white;
+                                width: 12px;
+                                x: 4px;
+                                y: 4px;
                             }
                         }
                     }
@@ -1185,12 +1294,27 @@ component Bubble inherits Rectangle {
                 }
                 if !item.outgoing: VerticalLayout {
                     alignment: center;
-                    HoverButtons {
+                    IconButton {
+                        label: "Reply";
+                        icon: @image-url("@lucide/reply.svg");
                         visible: !item.deleted;
-                        shown: hover.has-hover;
-                        react => { picker.show(); }
-                        reply => { root.reply(); }
+                        shown: root.hovered;
+                        clicked => { root.reply(); }
                     }
+                }
+            }
+        }
+    }
+
+    // While messages are picked, or Ctrl is held, a click anywhere on the row picks this
+    // message or unpicks it; with Shift, everything from the one last picked.
+    if root.selecting || root.pick-held: TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                if event.modifiers.shift {
+                    root.select-through();
+                } else {
+                    root.toggle-select();
                 }
             }
         }
@@ -1199,13 +1323,21 @@ component Bubble inherits Rectangle {
     // On top: it takes only right clicks.
     ContextMenuArea {
         Menu {
+            if !item.notice: MenuItem {
+                title: item.selected ? "Unselect" : "Select";
+                activated => { root.toggle-select(); }
+            }
             if !item.deleted && !item.notice: MenuItem {
                 title: "Reply";
                 activated => { root.reply(); }
             }
             if !item.deleted && !item.notice: MenuItem {
                 title: "React…";
-                activated => { picker.show(); }
+                activated => { root.picker-shown = true; }
+            }
+            if TextSelection.owner == root.index && TextSelection.text != "": MenuItem {
+                title: "Copy selection";
+                activated => { root.copy-text(TextSelection.text); }
             }
             if item.text != "": MenuItem {
                 title: "Copy text";
@@ -1926,7 +2058,9 @@ component SettingsPage inherits Rectangle {
                         { keys: "↑", what: "Edit your last message (in an empty composer)" },
                         { keys: "Shift+Enter", what: "New line" },
                         { keys: "Ctrl+V", what: "Paste text, a picture or files" },
-                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search" },
+                        { keys: "Ctrl+click", what: "Select a message; Shift+click selects up to it, Esc clears" },
+                        { keys: "Ctrl+C", what: "Copy the text selected in a message" },
+                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search or selection" },
                     ]: HorizontalLayout {
                         spacing: 16px;
                         Text {
@@ -2112,6 +2246,20 @@ export component AppWindow inherits Window {
     callback edit(int);
     callback delete(int, bool);
     callback reveal(int);
+    // Messages picked for an action on all of them (Ctrl+click, or "Select" in a message's
+    // menu): how many, what they say (to copy), and what can be done with them. Esc unpicks
+    // them (see `shortcut`).
+    in property <int> selected-count;
+    in property <string> selection-text;
+    in property <bool> can-forward-selection;
+    in property <bool> can-delete-selection-for-everyone;
+    callback toggle-select(int);
+    callback select-through(int);
+    callback clear-selection;
+    callback forward-selection;
+    callback delete-selection(bool);
+    // Ctrl is held: a click on a message picks it.
+    property <bool> pick-held;
     callback cancel-edit;
     // How many chats are archived, and how many of those have unread messages.
     in property <int> archived-count;
@@ -2179,7 +2327,7 @@ export component AppWindow inherits Window {
     in property <bool> media-open;
     // Gathering them.
     in property <bool> media-busy;
-    in property <[MediaRow]> media-rows;
+    in property <[AttachmentItem]> media-tiles;
     in property <[SharedItem]> media-files;
     in property <[SharedItem]> media-links;
     in-out property <int> media-tab;
@@ -2274,8 +2422,29 @@ export component AppWindow inherits Window {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     capture-key-pressed(event) => {
+        if event.text == Key.Control {
+            root.pick-held = true;
+        }
+        // Text selected in a message: Ctrl+C copies it, Esc drops it. (Writing in the composer
+        // drops it too, so Ctrl+C there copies the composer's own selection.)
+        if TextSelection.text != "" {
+            if event.modifiers.control && (event.text == "c" || event.text == "C") {
+                root.copy-text(TextSelection.text);
+                return accept;
+            }
+            if event.text == Key.Escape {
+                TextSelection.clear();
+                return accept;
+            }
+        }
         if root.shortcut(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift) {
             return accept;
+        }
+        return reject;
+    }
+    capture-key-released(event) => {
+        if event.text == Key.Control {
+            root.pick-held = false;
         }
         return reject;
     }
@@ -2883,6 +3052,7 @@ export component AppWindow inherits Window {
                                 }
                                 for item[index] in root.messages: Bubble {
                                     item: item;
+                                    index: index;
                                     reply => {
                                         root.reply(index);
                                         focus-composer-timer.running = true;
@@ -2904,6 +3074,10 @@ export component AppWindow inherits Window {
                                         root.forward-filter = "";
                                         root.forward(index);
                                     }
+                                    selecting: root.selected-count > 0;
+                                    pick-held: root.pick-held;
+                                    toggle-select => { root.toggle-select(index); }
+                                    select-through => { root.select-through(index); }
                                 }
                             }
                             if root.activity.length > 1: ActivityStrip {
@@ -3355,22 +3529,30 @@ export component AppWindow inherits Window {
                                     height: 20px;
                                 }
                             }
-                            property <bool> empty: root.media-tab == 0 ? root.media-rows.length == 0
+                            property <bool> empty: root.media-tab == 0 ? root.media-tiles.length == 0
                                 : root.media-tab == 1 ? root.media-files.length == 0 : root.media-links.length == 0;
                             if !root.media-busy && self.empty: Text {
                                 text: root.media-tab == 0 ? "No photos or videos yet." : root.media-tab == 1 ? "No files yet." : "No links yet.";
                                 horizontal-alignment: center;
                                 color: Palette.foreground.with-alpha(0.6);
                             }
-                            if root.media-tab == 0: ListView {
+                            if root.media-tab == 0: media-list := ListView {
                                 vertical-stretch: 1;
-                                for row in root.media-rows: HorizontalLayout {
-                                    spacing: 4px;
-                                    padding-bottom: 4px;
+                                // As many tiles across as fit at 110px, stretched to fill the width.
+                                property <length> gap: 4px;
+                                property <int> columns: max(1, floor((self.visible-width + self.gap) / (110px + self.gap)));
+                                property <length> tile: (self.visible-width - (self.columns - 1) * self.gap) / self.columns;
+                                for row in floor((root.media-tiles.length + media-list.columns - 1) / media-list.columns): HorizontalLayout {
+                                    spacing: media-list.gap;
+                                    padding-bottom: media-list.gap;
                                     alignment: start;
-                                    for tile in row.tiles: Rectangle {
-                                        width: 110px;
-                                        height: 110px;
+                                    for column in media-list.columns: Rectangle {
+                                        property <int> at: row * media-list.columns + column;
+                                        property <AttachmentItem> tile: root.media-tiles[self.at];
+                                        // The grid's last row may not be full.
+                                        visible: self.at < root.media-tiles.length;
+                                        width: media-list.tile;
+                                        height: media-list.tile;
                                         border-radius: 6px;
                                         clip: true;
                                         background: Palette.alternate-background;
@@ -4104,8 +4286,12 @@ export component AppWindow inherits Window {
                                         selection-foreground-color: Palette.selection-foreground;
                                         accessible-placeholder-text: root.editing ? "Edit message" : "Message";
                                         edited => { root.draft-edited(self.text); }
+                                        // Where the caret is, for which line it is on.
+                                        property <length> caret-y;
                                         // The caret stays in view.
                                         cursor-position-changed(at) => {
+                                            self.caret-y = at.y;
+                                            TextSelection.clear();
                                             if at.y + composer-scroll.content-y < 0px {
                                                 composer-scroll.content-y = -at.y;
                                             } else if at.y + composer-row.line + composer-scroll.content-y > composer-scroll.height {
@@ -4134,6 +4320,20 @@ export component AppWindow inherits Window {
                                                 self.set-selection-offsets(2147483647, 2147483647);
                                                 return accept;
                                             }
+                                            // ↓ on the last line goes to the end, ↑ on the first to the
+                                            // start, as in editors (the input alone stays put); with
+                                            // Shift, selecting up to there. `measure` is as tall as the
+                                            // draft's lines.
+                                            if event.text == Key.DownArrow && !event.modifiers.control && !event.modifiers.alt
+                                                && self.caret-y + 1.5 * composer-row.line > measure.preferred-height {
+                                                self.set-selection-offsets(event.modifiers.shift ? self.anchor-position-byte-offset : 2147483647, 2147483647);
+                                                return accept;
+                                            }
+                                            if event.text == Key.UpArrow && !event.modifiers.control && !event.modifiers.alt
+                                                && self.caret-y < 0.5 * composer-row.line {
+                                                self.set-selection-offsets(event.modifiers.shift ? self.anchor-position-byte-offset : 0, 0);
+                                                return accept;
+                                            }
                                             return reject;
                                         }
                                     }
@@ -4147,6 +4347,74 @@ export component AppWindow inherits Window {
                                 saving: root.editing;
                                 enabled: root.can-send;
                                 clicked => { root.send(root.draft); composer.focus(); }
+                            }
+                        }
+                    }
+                    // Over the composer while messages are picked: what to do with them.
+                    selection-bar := Rectangle {
+                        opacity: root.selected-count > 0 ? 1 : 0;
+                        visible: self.opacity > 0;
+                        animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
+                        background: Palette.alternate-background;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 8px;
+                            spacing: 4px;
+                            Text {
+                                text: root.selected-count == 1 ? "1 message selected" : root.selected-count + " messages selected";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Copy selected";
+                                    icon: @image-url("@lucide/copy.svg");
+                                    clicked => {
+                                        root.copy-text(root.selection-text);
+                                        root.clear-selection();
+                                    }
+                                }
+                            }
+                            if root.can-forward-selection: VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Forward selected";
+                                    icon: @image-url("@lucide/forward.svg");
+                                    clicked => { root.forward-selection(); }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                delete-menu := ContextMenuArea {
+                                    width: 32px;
+                                    height: 32px;
+                                    Menu {
+                                        MenuItem {
+                                            title: "Delete for me";
+                                            activated => { root.delete-selection(false); }
+                                        }
+                                        if root.can-delete-selection-for-everyone: MenuItem {
+                                            title: "Delete for everyone";
+                                            activated => { root.delete-selection(true); }
+                                        }
+                                    }
+                                    IconButton {
+                                        label: "Delete selected";
+                                        icon: @image-url("@lucide/trash.svg");
+                                        clicked => { delete-menu.show({ x: 0px, y: self.height }); }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    label: "Clear selection";
+                                    icon: @image-url("@lucide/x.svg");
+                                    clicked => { root.clear-selection(); }
+                                }
                             }
                         }
                     }
