@@ -68,11 +68,21 @@ impl ConversationId {
     }
 }
 
+/// What a conversation is: a 1:1 chat with a contact (or with ourselves, "Note to Self"),
+/// or a group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConversationKind {
+    /// A 1:1 chat with a contact, or with ourselves ("Note to Self").
+    #[default]
+    Contact,
+    Group,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Conversation {
     pub id: ConversationId,
     pub title: String,
-    pub is_group: bool,
+    pub kind: ConversationKind,
     /// A line under the title: a phone number, a group's size, "Messages to yourself".
     pub subtitle: String,
     pub settings: ChatSettings,
@@ -92,6 +102,13 @@ pub struct Conversation {
     /// How far a contact's safety number is trusted; nothing can be written to them while it
     /// [`Trust::Changed`]. Groups and Note to Self: [`Trust::Unverified`].
     pub trust: Trust,
+}
+
+impl Conversation {
+    /// A group.
+    pub fn is_group(&self) -> bool {
+        self.kind == ConversationKind::Group
+    }
 }
 
 /// What to do with someone found by phone number; see [`Command::FindNumber`].
