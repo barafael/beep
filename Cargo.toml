@@ -26,24 +26,26 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "85
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
-#   #442 history-transfer key on RegistrationData   #447 wait for the history archive
 #   #443 paged thread reads                         #444 storage service from a linked device
-#   #445 drop sync messages from other accounts     #446 a linked device unlinks itself
+#   #447 wait for the history archive
 #   #448 create and change groups, accept or decline invitations, retry a clashing change
 #        (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
 #   (not yet proposed) the provisioning link logged at debug instead of info
-#   #452 no panic on a group master key of the wrong length
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
+# Landed upstream and dropped from the branch: #442 (history-transfer key on
+# RegistrationData), #446 (a linked device unlinks itself) and #452 (no panic on a group
+# master key of the wrong length); #445 (drop sync messages from other accounts) is now
+# libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "af7ddf9e5e21c8aca35ec78e0019b8e7ae7da9ab" }
+presage = { git = "https://github.com/barafael/presage", rev = "6a573651548b0409a691887bf9726f46c7711517" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "af7ddf9e5e21c8aca35ec78e0019b8e7ae7da9ab", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "6a573651548b0409a691887bf9726f46c7711517", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -62,12 +64,13 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
-# #473 (group calls), #474 (drop sync messages from other accounts on the PNI path too) and
-# #476 (send a sync message to ourselves once, not twice) and #478 (a read timeout instead of
-# one for the whole request, so the history download isn't cut off).
+# #473 (group calls, which presage #448 needs) and #476 (send a sync message to ourselves
+# once, not twice). Landed upstream and dropped from the branch: #474 (drop sync messages
+# from other accounts on the PNI path too), #478 (a read timeout instead of one for the whole
+# request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "b56ff531c368ed24dbac9706d050316cb0d5397a" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "4bc20cf89b204cc580c0dfb29575f537287c88b3" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
