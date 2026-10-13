@@ -17,12 +17,12 @@ qrcode = { version = "0.14", default-features = false }
 # `StyledText` (`text-selectable`, `has-selection`, `copy()`), which the messages need. A git
 # dependency rather than a patch, because the change is in the `slint` facade too (its
 # `compat-1-18` feature). Drop it once the change has landed upstream and a release carries it.
-slint = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+slint = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
