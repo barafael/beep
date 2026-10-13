@@ -13,6 +13,17 @@ b33p-core = { path = "b33p-core", default-features = false }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
+# Our Slint fork, branch `styled-text-selection`: master (1.19) plus selecting text in a
+# `StyledText` (`text-selectable`, `has-selection`, `copy()`), which the messages need. A git
+# dependency rather than a patch, because the change is in the `slint` facade too (its
+# `compat-1-18` feature). Drop it once the change has landed upstream and a release carries it.
+slint = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+# The internals b33p names directly. Its helper crates come with the fork.
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "85dea95b21727c210c22e82e31d65b34d54c639a" }
+
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
 #   #442 history-transfer key on RegistrationData   #447 wait for the history archive
@@ -42,19 +53,6 @@ libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
-# Branch styled-text-selection-1.18 of our Slint fork: 1.18.1 plus selecting text in a
-# `StyledText` (`selectable`, `selected-text`), which the messages need. Drop this once it has
-# landed upstream and a release carries it.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-# Its helper crates too, or the crates.io slint crates would link a second copy of them.
-vtable = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-vtable-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-const-field-offset = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
 # langis/integration of our fork: whisperfish's plus two pull requests:
 #   #2 (not ours) builds on Linux arm64, where `c_char` is unsigned, and stops SQLCipher tearing
