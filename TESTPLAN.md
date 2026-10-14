@@ -326,4 +326,15 @@ phone or a second person.
    message): nothing shows in their chat, and the log has no "reset the session" for them.
 6. In a group, have a member change the timer or remove someone: the notice shows (their
    change is signed by the server). No notice ever appears for a change that didn't happen.
+7. Have someone invite you to a group (12 in 3.1), then **decline on your phone** (or have
+   them withdraw it): "You're invited to this group." goes away here, and stays away after a
+   restart. The same when you decline here.
+8. Have someone reinstall Signal (or switch phones) after you wrote to them, so their first
+   message back can't be read: at most one "couldn't be decrypted" notice, then their next
+   messages arrive. No notice appears for them when the connection drops and comes back.
+9. Write to someone whose *other* device just reinstalled Signal (they'll see your message on
+   the phone but not there): no notice here, and the message turns up on that device too
+   within a minute (the log says "sent a message again").
+10. Accept a group you were invited to (the ⋯ menu): no second "You created the group." or
+    "added you to the group." line appears.
 
