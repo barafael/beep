@@ -21,11 +21,10 @@ harness = ["dep:serde", "dep:serde_json"]
 b33p-core.workspace = true
 b33p-notify = { path = "../b33p-notify" }
 # Slint's defaults bring both the winit and the Qt backend; each platform picks one below.
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
+slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
 # Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
-# Internal, so within slint's minor version: slint pins its exact patch, which this follows,
-# rather than holding slint back on `cargo update`.
-i-slint-core = "~1.18.1"
+# Internal, so taken at the same revision as slint (see the workspace's fork pin).
+i-slint-core.workspace = true
 tracing = "0.1"
 async-channel = "2"
 # The harness's JSON protocol (`agent.rs`).
@@ -48,18 +47,18 @@ blurhash = "0.2"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp4", "mp3", "vorbis", "flac", "wav", "symphonia-pcm"] }
 
 [build-dependencies]
-slint-build = "1.18"
+slint-build.workspace = true
 # The icons (Lucide), written out for the UI to use as `@image-url("@lucide/<name>.svg")`.
 lucide-static-svg = "1.55"
 
 # On Linux, render through Qt only, so the native style draws real Breeze/Qt widgets and follows
 # the desktop's colors and fonts. Qt 6 is required at runtime; there is no winit fallback.
 [target.'cfg(target_os = "linux")'.dependencies]
-slint = { version = "1.18", default-features = false, features = ["backend-qt"] }
+slint = { workspace = true, features = ["backend-qt"] }
 
 # Elsewhere, Slint's own window and renderer.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-slint = { version = "1.18", default-features = false, features = ["backend-winit", "renderer-femtovg"] }
+slint = { workspace = true, features = ["backend-winit", "renderer-femtovg"] }
 
 # Asks whether the desktop shows tray icons (`tray::host_present`), and keeps b33p to one
 # copy (`instance.rs`).
@@ -89,11 +88,11 @@ windows = { version = "0.62", features = [
 windows-registry = "0.100"
 
 [dev-dependencies]
-# Slint's headless backend for the UI tests in `src/ui_tests.rs`; the version slint pins.
-i-slint-backend-testing = "~1.18.1"
+# Slint's headless backend for the UI tests in `src/ui_tests.rs`; the same revision as slint.
+i-slint-backend-testing.workspace = true
 # Slint's Markdown parser, which `StyledText` keeps to itself: the property tests in
 # `src/markdown.rs` check the links and text it makes of message text.
-i-slint-common = { version = "~1.18.1", features = ["markdown"] }
+i-slint-common = { workspace = true, features = ["markdown"] }
 proptest = "1"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's

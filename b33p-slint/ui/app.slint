@@ -372,13 +372,18 @@ component Avatar inherits Rectangle {
 }
 
 // The text selected in a message, for copying (Ctrl+C or the message's menu): one message's
-// at a time, the one at `owner`; the others drop theirs when it changes. -1 for none.
+// at a time, the one at `owner`; the others drop theirs when it changes. -1 for none. The text
+// stays in the `StyledText`, which reaches the clipboard itself; `copy-request` asks the one at
+// `owner` to copy it.
 global TextSelection {
-    in-out property <string> text;
     in-out property <int> owner: -1;
+    // Bumped to ask the message at `owner` to copy its selection.
+    in-out property <int> copy-request;
     public function clear() {
         self.owner = -1;
-        self.text = "";
+    }
+    public function copy() {
+        self.copy-request += 1;
     }
 }
 
@@ -1146,22 +1151,28 @@ component Bubble inherits Rectangle {
                                     }
                                 }
                                 // Text can be selected and copied; one message's at a time.
-                                selectable: !item.deleted;
+                                text-selectable: !item.deleted;
                                 selection-background-color: root.ink.with-alpha(0.3);
                                 selection-foreground-color: root.ink;
                                 property <int> owner: TextSelection.owner;
                                 changed owner => {
                                     if self.owner != root.index {
-                                        self.anchor-position-byte-offset = 0;
-                                        self.cursor-position-byte-offset = 0;
+                                        self.clear-selection();
                                     }
                                 }
-                                changed selected-text => {
-                                    if self.selected-text != "" {
-                                        TextSelection.text = self.selected-text;
+                                changed has-selection => {
+                                    if self.has-selection {
                                         TextSelection.owner = root.index;
                                     } else if TextSelection.owner == root.index {
                                         TextSelection.clear();
+                                    }
+                                }
+                                // Ctrl+C or the menu asks the message holding the selection to
+                                // copy it; the element itself reaches the clipboard.
+                                property <int> copy-request: TextSelection.copy-request;
+                                changed copy-request => {
+                                    if TextSelection.owner == root.index && self.has-selection {
+                                        self.copy();
                                     }
                                 }
                             }
@@ -1336,9 +1347,9 @@ component Bubble inherits Rectangle {
                 title: "React…";
                 activated => { root.picker-shown = true; }
             }
-            if TextSelection.owner == root.index && TextSelection.text != "": MenuItem {
+            if TextSelection.owner == root.index: MenuItem {
                 title: "Copy selection";
-                activated => { root.copy-text(TextSelection.text); }
+                activated => { TextSelection.copy(); }
             }
             if item.text != "": MenuItem {
                 title: "Copy text";
@@ -2428,9 +2439,9 @@ export component AppWindow inherits Window {
         }
         // Text selected in a message: Ctrl+C copies it, Esc drops it. (Writing in the composer
         // drops it too, so Ctrl+C there copies the composer's own selection.)
-        if TextSelection.text != "" {
+        if TextSelection.owner != -1 {
             if event.modifiers.control && (event.text == "c" || event.text == "C") {
-                root.copy-text(TextSelection.text);
+                TextSelection.copy();
                 return accept;
             }
             if event.text == Key.Escape {

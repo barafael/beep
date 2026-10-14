@@ -13,11 +13,21 @@ b33p-core = { path = "b33p-core", default-features = false }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
+# Our Slint fork, branch `styled-text-selection`: master (1.19) plus selecting text in a
+# `StyledText` (`text-selectable`, `has-selection`, `copy()`), which the messages need. A git
+# dependency rather than a patch, because the change is in the `slint` facade too (its
+# `compat-1-18` feature). Drop it once the change has landed upstream and a release carries it.
+slint = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+# The internals b33p names directly. Its helper crates come with the fork.
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "fe84b2a3c299fbf564beaa2addd8a5cd56bcd84e" }
+
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
-#   #442 history-transfer key on RegistrationData   #447 wait for the history archive
 #   #443 paged thread reads                         #444 storage service from a linked device
-#   #445 drop sync messages from other accounts     #446 a linked device unlinks itself
+#   #447 wait for the history archive
 #   #448 create and change groups, accept or decline invitations, retry a clashing change
 #        (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
@@ -26,14 +36,16 @@ qrcode = { version = "0.14", default-features = false }
 #   (not yet proposed) the provisioning link logged at debug instead of info
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
-# Landed upstream and dropped from the branch: #452 (no panic on a group master key of the
-# wrong length).
+# Landed upstream and dropped from the branch: #442 (history-transfer key on
+# RegistrationData), #446 (a linked device unlinks itself) and #452 (no panic on a group
+# master key of the wrong length); #445 (drop sync messages from other accounts) is now
+# libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "74ca967d13e990f8bdbc9f40ab1d356fa559854a" }
+presage = { git = "https://github.com/barafael/presage", rev = "6a573651548b0409a691887bf9726f46c7711517" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "74ca967d13e990f8bdbc9f40ab1d356fa559854a", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "6a573651548b0409a691887bf9726f46c7711517", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -43,19 +55,6 @@ libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag
 libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
 
 [patch.crates-io]
-# Branch styled-text-selection-1.18 of our Slint fork: 1.18.1 plus selecting text in a
-# `StyledText` (`selectable`, `selected-text`), which the messages need. Drop this once it has
-# landed upstream and a release carries it.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-core-macros = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-i-slint-compiler = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-# Its helper crates too, or the crates.io slint crates would link a second copy of them.
-vtable = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-vtable-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-const-field-offset = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-const-field-offset-macro = { git = "https://github.com/barafael/slint", rev = "50d29632b3be4a5f57ca3e9365bf716a3428e8d2" }
-
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
 # langis/integration of our fork: whisperfish's plus two pull requests:
 #   #2 (not ours) builds on Linux arm64, where `c_char` is unsigned, and stops SQLCipher tearing
