@@ -280,6 +280,9 @@ part of a test. Every change below reaches all members' phones.
       lets you write once the next group message arrives.
 13. With one member's phone off or unreachable, rename a group: the change still goes through
     here and for the others (no error), and that member sees it later.
+14. Group details → **Change picture…** → pick a photo: the group's picture changes here, on
+    every phone, and the chat shows "You changed the group's picture." **Remove picture**
+    takes it away everywhere. Have someone else change it from their phone: it changes here.
 
 ### 3.2 Voice messages and audio
 

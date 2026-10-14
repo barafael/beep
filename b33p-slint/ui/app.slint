@@ -2311,6 +2311,10 @@ export component AppWindow inherits Window {
     // Answers the invitation to the group with this id: join (true) or turn it down.
     callback answer-invitation(string, bool);
     callback describe-group(string);
+    // Picks a file for the group's picture (the UI asks), then sets it from that path.
+    callback change-group-picture;
+    callback group-picture-chosen(string);
+    callback remove-group-picture;
     callback set-member-admin(string, bool);
     callback remove-member(string);
     callback leave-group;
@@ -3413,6 +3417,18 @@ export component AppWindow inherits Window {
                                             Button {
                                                 text: "Save";
                                                 clicked => { root.describe-group(description-field.text); }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 8px;
+                                            Button {
+                                                text: "Change picture…";
+                                                clicked => { root.change-group-picture(); }
+                                            }
+                                            if root.current.avatar.width > 0: Button {
+                                                text: "Remove picture";
+                                                clicked => { root.remove-group-picture(); }
                                             }
                                         }
                                         HorizontalLayout {

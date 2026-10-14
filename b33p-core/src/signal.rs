@@ -1377,20 +1377,24 @@ async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(), String> {
     Ok(())
 }
 
-/// A group change for presage; `None` if a member isn't an ACI.
-fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
+/// A group change for presage, or why it can't be made (a member isn't an ACI, a picture
+/// can't be read).
+fn group_edit(edit: crate::GroupEdit) -> Result<presage::manager::GroupEdit, String> {
     use crate::GroupEdit as Edit;
     use presage::manager::GroupEdit as To;
-    let aci = member_aci;
-    Some(match edit {
+    let aci = |member: &str| member_aci(member).ok_or_else(|| PHONE_NUMBER_ONLY.to_string());
+    Ok(match edit {
         Edit::Title(title) => To::Title(title.trim().to_owned()),
         Edit::Description(description) => To::Description(description.trim().to_owned()),
+        Edit::SetPicture(path) => To::Avatar(group_picture(&path)?),
+        Edit::RemovePicture => To::Avatar(Vec::new()),
         // Someone known only by phone number is invited by it.
         Edit::AddMembers(members) => To::AddMembers(
             members
                 .iter()
                 .map(|m| ServiceId::parse_from_service_id_string(m))
-                .collect::<Option<_>>()?,
+                .collect::<Option<_>>()
+                .ok_or(PHONE_NUMBER_ONLY)?,
         ),
         Edit::RemoveMember(member) => To::RemoveMember(aci(&member)?),
         Edit::SetAdmin(member, admin) => To::SetAdmin(aci(&member)?, admin),
@@ -1398,6 +1402,56 @@ fn group_edit(edit: crate::GroupEdit) -> Option<presage::manager::GroupEdit> {
         Edit::AcceptInvitation => To::AcceptInvitation,
         Edit::DeclineInvitation => To::DeclineInvitation,
     })
+}
+
+/// The side of a group picture as sent, as Signal's clients have it.
+const GROUP_PICTURE_SIDE: u32 = 1024;
+
+/// The picture at `path` as a group's: cropped to a square, no larger than
+/// [`GROUP_PICTURE_SIDE`], as JPEG.
+fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("couldn't read the picture: {error}"))?;
+    let image = attachments::decode_limited(&bytes).ok_or("that file isn't a picture")?;
+    let side = image.width().min(image.height()).min(GROUP_PICTURE_SIDE);
+    if side == 0 {
+        return Err("that picture is empty".into());
+    }
+    let square = image.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3);
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(square.to_rgb8())
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+            &mut jpeg, 85,
+        ))
+        .map_err(|error| format!("couldn't encode the picture: {error}"))?;
+    Ok(jpeg.into_inner())
+}
+
+/// Sends a group's picture as presage has it now (see [`fetch_avatars`]), or that it has none.
+async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]) {
+    let revision = manager
+        .store()
+        .group(key)
+        .await
+        .ok()
+        .flatten()
+        .map_or(0, |group| group.revision);
+    let context = GroupContextV2 {
+        master_key: Some(key.to_vec()),
+        revision: Some(revision),
+        ..Default::default()
+    };
+    let avatar = match manager.retrieve_group_avatar(context).await {
+        Ok(bytes) => bytes.and_then(|bytes| decode_avatar(&bytes)).map(Arc::new),
+        Err(error) => {
+            warn!(%error, "failed to fetch the group's picture");
+            return;
+        }
+    };
+    let _ = ctx.events.send(Event::Avatar {
+        conversation: conversation_id(&Thread::Group(key)),
+        avatar,
+    });
 }
 
 /// Shows a message we stored ourselves (e.g. a group change), as it will read after a restart.
@@ -2028,7 +2082,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
                     found += 1;
                     if !events.send(Event::Avatar {
                         conversation: id,
-                        avatar: Arc::new(avatar),
+                        avatar: Some(Arc::new(avatar)),
                     }) {
                         return;
                     }
@@ -2745,6 +2799,17 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     {
         forget_membership(manager, key, context).await;
         refresh_group(manager, ctx, key).await;
+        // A new picture (presage has fetched it with the group), or none any more.
+        if let Some(changes) = signed_group_change(manager, key, context).await
+            && changes.changes.iter().any(|change| {
+                matches!(
+                    change,
+                    presage::libsignal_service::groups_v2::GroupChange::Avatar(_)
+                )
+            })
+        {
+            send_group_avatar(manager.clone(), ctx, key).await;
+        }
     }
     // Nothing new from blocked chats (what we send from another device still counts).
     if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
@@ -3932,15 +3997,19 @@ async fn handle_command(
             let Thread::Group(key) = thread(&conversation)? else {
                 return Err("not a group".into());
             };
-            let edit = group_edit(edit).ok_or(PHONE_NUMBER_ONLY)?;
+            let edit = group_edit(edit)?;
             if matches!(edit, presage::manager::GroupEdit::Leave) {
                 only_admin_check(manager, key).await?;
             }
+            let picture = matches!(edit, presage::manager::GroupEdit::Avatar(_));
             let timestamp = manager
                 .change_group(&key, edit)
                 .await
                 .map_err(|e| format!("failed to change the group: {e}"))?;
             refresh_group(manager, ctx, key).await;
+            if picture {
+                send_group_avatar(manager.clone(), ctx, key).await;
+            }
             show_stored(manager, ctx, &conversation, &Thread::Group(key), timestamp).await;
         }
         Command::LoadStickers => {
@@ -5563,6 +5632,37 @@ mod tests {
             own_pni,
         );
         assert_eq!(both, [Removal::Member, Removal::Invitee]);
+    }
+
+    /// A group picture goes out as a square JPEG no larger than Signal's clients send,
+    /// whatever the file was; something that isn't a picture is refused with a reason.
+    #[test]
+    fn a_group_picture_is_a_square_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let wide = dir.path().join("wide.png");
+        image::RgbaImage::from_pixel(3000, 1200, image::Rgba([10, 200, 30, 255]))
+            .save(&wide)
+            .unwrap();
+        let jpeg = group_picture(&wide).unwrap();
+        let sent = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!(
+            image::guess_format(&jpeg).unwrap(),
+            image::ImageFormat::Jpeg
+        );
+        assert_eq!((sent.width(), sent.height()), (1024, 1024));
+        let small = dir.path().join("small.png");
+        image::RgbaImage::from_pixel(30, 50, image::Rgba([0, 0, 0, 255]))
+            .save(&small)
+            .unwrap();
+        let sent = image::load_from_memory(&group_picture(&small).unwrap()).unwrap();
+        assert_eq!((sent.width(), sent.height()), (30, 30));
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        assert_eq!(
+            group_picture(&text).unwrap_err(),
+            "that file isn't a picture"
+        );
+        assert!(group_picture(&dir.path().join("missing.png")).is_err());
     }
 
     /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise

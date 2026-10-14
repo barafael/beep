@@ -470,7 +470,10 @@ impl ChatState {
                 conversation,
                 avatar,
             } => {
-                self.avatars.insert(conversation, avatar);
+                match avatar {
+                    Some(avatar) => self.avatars.insert(conversation, avatar),
+                    None => self.avatars.remove(&conversation),
+                };
                 update.conversations = true;
             }
             Event::History {

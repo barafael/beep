@@ -203,6 +203,34 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let edit = edit_selected(shared, |text, _| b33p_core::GroupEdit::Description(text));
         move |text| edit(text, false)
     });
+    window.on_change_group_picture({
+        let window = window.as_weak();
+        move || {
+            let window = window.clone();
+            std::thread::spawn(move || {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Choose the group's picture")
+                    .add_filter("Pictures", &["jpg", "jpeg", "png", "webp", "gif"])
+                    .pick_file();
+                if let Some(path) = picked {
+                    let path: SharedString = path.to_string_lossy().as_ref().into();
+                    let _ = window.upgrade_in_event_loop(move |window| {
+                        window.invoke_group_picture_chosen(path)
+                    });
+                }
+            });
+        }
+    });
+    window.on_group_picture_chosen({
+        let edit = edit_selected(shared, |path, _| {
+            b33p_core::GroupEdit::SetPicture(path.into())
+        });
+        move |path| edit(path, false)
+    });
+    window.on_remove_group_picture({
+        let edit = edit_selected(shared, |_, _| b33p_core::GroupEdit::RemovePicture);
+        move || edit(SharedString::new(), false)
+    });
     window.on_set_member_admin(edit_selected(shared, b33p_core::GroupEdit::SetAdmin));
     window.on_remove_member({
         let edit = edit_selected(shared, |id, _| b33p_core::GroupEdit::RemoveMember(id));

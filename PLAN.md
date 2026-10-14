@@ -86,8 +86,9 @@ By how much they matter, most first:
 - **Groups:** accepting or declining an invitation is done here (presage#448;
   invitations to our PNI too), and a change that clashed with someone else's is built again on
   the latest revision. People known only by phone number
-  can be found (Signal's contact discovery), then messaged or added. Left: the group picture;
-  invite links and join requests.
+  can be found (Signal's contact discovery), then messaged or added. The group's picture can
+  be set and removed here (libsignal-service#473 and presage#448 carry the upload), and
+  another member's change of it shows. Left: invite links and join requests.
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.

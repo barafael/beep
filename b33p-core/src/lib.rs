@@ -139,6 +139,9 @@ pub enum GroupEdit {
     Title(String),
     /// Empty clears it.
     Description(String),
+    /// The group's picture, from an image file.
+    SetPicture(std::path::PathBuf),
+    RemovePicture,
     AddMembers(Vec<String>),
     RemoveMember(String),
     /// Makes a member an administrator, or takes that back.
@@ -660,10 +663,11 @@ pub enum Event {
     Synced,
     /// New or changed conversations, merged by id.
     Conversations(Vec<Conversation>),
-    /// Profile or group picture of a conversation, replacing any earlier one.
+    /// Profile or group picture of a conversation, replacing any earlier one; `None` once it
+    /// has none.
     Avatar {
         conversation: ConversationId,
-        avatar: Arc<Picture>,
+        avatar: Option<Arc<Picture>>,
     },
     /// Someone reacted to a message, or took their reaction back.
     Reaction {

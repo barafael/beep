@@ -156,7 +156,7 @@ pub fn run(commands: Inbox, events: Events) {
     let _ = events.send(Event::Conversations(conversations));
     let _ = events.send(Event::Avatar {
         conversation: chat_id("alice"),
-        avatar: Arc::new(gradient(96)),
+        avatar: Some(Arc::new(gradient(96))),
     });
     let _ = events.send(Event::Synced);
     let _ = events.send(Event::StorageRead);
@@ -427,6 +427,8 @@ pub fn run(commands: Inbox, events: Events) {
                     crate::GroupEdit::Description(_) => {
                         "You changed the group's description.".into()
                     }
+                    crate::GroupEdit::SetPicture(_) => "You changed the group's picture.".into(),
+                    crate::GroupEdit::RemovePicture => "You removed the group's picture.".into(),
                     crate::GroupEdit::AddMembers(members) => {
                         format!("You added {}.", members.join(", "))
                     }
