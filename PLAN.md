@@ -48,7 +48,9 @@ so what b33p runs is exactly what is proposed. Nothing waits on a merge.
   #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
   and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile),
   #449 report only real identity changes, and note them, #450 pin an identity required for
-  sending.
+  sending, #453 only a message's sender deletes or edits it, #454 write transactions take the
+  lock up front, #460 the provisioning link logged at debug, #461 why a message failed to
+  decrypt, and retry receipts as their own event.
 - rusqlite (whisperfish's SQLCipher fork), through branch `langis/integration` of our fork:
   whisperfish/rusqlite#2 (not ours) builds on Linux arm64 and ends a crash at exit; ours, #3, lets the
   Rust crypto provider build on Windows without OpenSSL.

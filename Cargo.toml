@@ -33,8 +33,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "84
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
-#   (not yet proposed) the provisioning link logged at debug instead of info
-#   (not yet proposed) why a message failed to decrypt, and retry receipts as their own event
+#   #460 the provisioning link logged at debug instead of info
+#   #461 why a message failed to decrypt, and retry receipts as their own event
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
