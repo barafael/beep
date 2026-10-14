@@ -2,7 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     sync::{Arc, mpsc},
@@ -17,19 +17,20 @@ use presage::{
     libsignal_service::{
         configuration::SignalServers,
         content::{Content, ContentBody, DataMessage, GroupContextV2},
-        protocol::ServiceId,
+        protocol::{DeviceId, ProtocolAddress, PublicKey, ServiceId, SignalProtocolError},
         push_service::ServiceError,
     },
     manager::Registered,
     model::{identity::OnNewIdentity, messages::Received},
     proto::{
-        BodyRange, EditMessage, ReceiptMessage, SyncMessage, TypingMessage, body_range,
+        BodyRange, DecryptionErrorMessage, EditMessage, ReceiptMessage, SyncMessage, TypingMessage,
+        body_range,
         data_message::{Delete, Flags},
         receipt_message,
         sync_message::{self, Content as SyncContent, Sent},
         typing_message,
     },
-    store::{ContentExt, ContentsStore, StateStore, Thread},
+    store::{ContentExt, ContentsStore, StateStore, Store as _, Thread},
 };
 use presage_store_sqlite::SqliteStore;
 use sqlx::{
@@ -470,7 +471,17 @@ async fn run_linked(
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
     let removed = Rc::new(tokio::sync::Notify::new());
-    let mut receiving = start_receiving(&manager, &ctx, &removed, avatars, Duration::ZERO);
+    // Shared by every start of receiving: the limits it keeps must outlive a restart, and a
+    // second avatar fetcher would send the first one's requests again, alongside.
+    let repairs = Rc::new(RefCell::new(Repairs::default()));
+    let mut receiving = start_receiving(
+        &manager,
+        &ctx,
+        &removed,
+        avatars.clone(),
+        repairs.clone(),
+        Duration::ZERO,
+    );
     let mut failures = 0u32;
 
     for command in pending {
@@ -502,8 +513,14 @@ async fn run_linked(
                 ));
                 failures += 1;
                 let after = Duration::from_secs(5 << failures.min(6));
-                let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
-                receiving = start_receiving(&manager, &ctx, &removed, avatars, after);
+                receiving = start_receiving(
+                    &manager,
+                    &ctx,
+                    &removed,
+                    avatars.clone(),
+                    repairs.clone(),
+                    after,
+                );
             }
         }
     };
@@ -521,12 +538,13 @@ fn start_receiving(
     ctx: &Ctx,
     removed: &Rc<tokio::sync::Notify>,
     avatars: AvatarFetcher,
+    repairs: Rc<RefCell<Repairs>>,
     after: Duration,
 ) -> tokio::task::JoinHandle<()> {
     let (manager, ctx, removed) = (manager.clone(), ctx.clone(), removed.clone());
     tokio::task::spawn_local(async move {
         tokio::time::sleep(after).await;
-        receive(manager, ctx, avatars, removed).await;
+        receive(manager, ctx, avatars, repairs, removed).await;
     })
 }
 
@@ -1068,33 +1086,100 @@ async fn signed_group_change(
     operations.decrypt_group_change(change).ok()
 }
 
-/// If `context`'s change removed us, drops us from the stored group: presage can't read the
-/// group from the server any more, so its copy would still count us in.
+/// If `context`'s change removed us, as a member, an invitee or a requester, drops us from the
+/// stored group: presage can't read the group from the server any more (it answers 403 to a
+/// non-member), so its copy would still count us in, or keep inviting us.
 async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV2) {
-    use presage::libsignal_service::groups_v2::GroupChange;
-    let own = manager.registration_data().service_ids.aci();
+    let ids = &manager.registration_data().service_ids;
     let Some(changes) = signed_group_change(manager, key, context).await else {
         return;
     };
-    let removed = changes
-        .changes
-        .iter()
-        .any(|change| matches!(change, GroupChange::DeleteMember(aci) if *aci == own));
+    let removed = own_removal(&changes, ids.aci(), ids.pni());
     let store = manager.store().clone();
     let Ok(Some(mut group)) = store.group(key).await else {
         return;
     };
-    if removed && group.revision < changes.version {
-        group.members.retain(|member| member.aci != own);
-        group.revision = changes.version;
-        if let Err(error) = store.save_group(key, group).await {
-            warn!(%error, "failed to note that we were removed from a group");
+    if removed.is_empty() || group.revision >= changes.version {
+        return;
+    }
+    if removed.contains(&Removal::Member) {
+        group.members.retain(|member| member.aci != ids.aci());
+    }
+    if removed.contains(&Removal::Invitee) {
+        group
+            .pending_members
+            .retain(|member| member.uuid != ids.aci && member.uuid != ids.pni);
+    }
+    if removed.contains(&Removal::Requester) {
+        group
+            .requesting_members
+            .retain(|member| member.aci != ids.aci());
+    }
+    group.revision = changes.version;
+    if let Err(error) = store.save_group(key, group).await {
+        warn!(%error, "failed to note that we were removed from a group");
+    }
+}
+
+/// How a group change can drop us; see [`own_removal`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Removal {
+    Member,
+    Invitee,
+    Requester,
+}
+
+/// The ways `changes` drops us from a group: as a member, as an invitee (by our ACI, or by our
+/// PNI if someone had only our number) or as someone asking to join.
+fn own_removal(
+    changes: &presage::libsignal_service::groups_v2::GroupChanges,
+    aci: presage::libsignal_service::protocol::Aci,
+    pni: presage::libsignal_service::protocol::Pni,
+) -> Vec<Removal> {
+    use presage::libsignal_service::groups_v2::GroupChange;
+    let mut removed = Vec::new();
+    for change in &changes.changes {
+        let removal = match change {
+            GroupChange::DeleteMember(who) if *who == aci => Removal::Member,
+            GroupChange::DeletePendingMember(who)
+                if *who == ServiceId::Aci(aci) || *who == ServiceId::Pni(pni) =>
+            {
+                Removal::Invitee
+            }
+            GroupChange::DeleteRequestingMember(who) if *who == aci => Removal::Requester,
+            _ => continue,
+        };
+        if !removed.contains(&removal) {
+            removed.push(removal);
         }
     }
+    removed
+}
+
+/// Whether `changes` is `sender` taking themselves out of the group, as a member or an
+/// invitee: the one message a non-member may still send to the group.
+fn leaves_group(
+    changes: &presage::libsignal_service::groups_v2::GroupChanges,
+    sender: ServiceId,
+) -> bool {
+    use presage::libsignal_service::groups_v2::GroupChange;
+    ServiceId::Aci(changes.editor) == sender
+        && changes.changes.iter().any(|change| match change {
+            GroupChange::DeleteMember(who) => ServiceId::Aci(*who) == sender,
+            GroupChange::DeletePendingMember(who) => *who == sender,
+            _ => false,
+        })
 }
 
 /// Stories last a day.
 const STORY_LIFETIME: u64 = 24 * 60 * 60 * 1000;
+
+/// Whether a story of `timestamp` is one to show at `now`: not expired, and not dated so far
+/// ahead (beyond clocks differing) that it would never expire.
+fn story_is_current(now: u64, timestamp: u64) -> bool {
+    const CLOCK_SKEW: u64 = 60 * 60 * 1000;
+    now.saturating_sub(timestamp) <= STORY_LIFETIME && timestamp.saturating_sub(now) <= CLOCK_SKEW
+}
 /// The colours of text stories posted here: white on Signal's blue.
 const STORY_FOREGROUND: u32 = 0xffff_ffff;
 const STORY_BACKGROUND: u32 = 0xff3a_76f0;
@@ -1109,19 +1194,33 @@ async fn on_story(
     outgoing: bool,
 ) {
     use presage::proto::{story_message::Attachment, text_attachment::Background};
-    if now_millis().saturating_sub(timestamp) > STORY_LIFETIME {
+    if !story_is_current(now_millis(), timestamp) {
         return;
     }
     // A group story, or one to the author's contacts.
-    let conversation = match story
+    let group = story
         .group
         .as_ref()
         .and_then(|g| g.master_key.clone())
-        .and_then(|key| <[u8; 32]>::try_from(key).ok())
-    {
+        .and_then(|key| <[u8; 32]>::try_from(key).ok());
+    let conversation = match group {
         Some(key) => conversation_id(&Thread::Group(key)),
         None => ConversationId::contact(&author.service_id_string()),
     };
+    // Only from people we know, as Signal's clients show them: a stranger's isn't shown, nor
+    // one for a group we aren't in, or from someone who isn't (any more). Ours from any
+    // device pass.
+    if !outgoing {
+        let known = ctx.threads.borrow().contains_key(&conversation);
+        let allowed = match group {
+            Some(key) => known && is_member(manager, key, author).await,
+            None => known && !is_unanswered_request(ctx, &conversation).await,
+        };
+        if !allowed {
+            debug!(author = %author.service_id_string(), "dropped a story from a stranger");
+            return;
+        }
+    }
     let mut stored = crate::local::StoredStory {
         author: author.service_id_string(),
         timestamp,
@@ -2134,8 +2233,15 @@ fn own_id(manager: &Mgr) -> ServiceId {
     ServiceId::Aci(manager.registration_data().service_ids.aci())
 }
 
-/// When we last reset the session with each sender; see `SESSION_RESET_INTERVAL`.
-type Resets = HashMap<ServiceId, Instant>;
+/// What was done to mend sessions, kept for as long as we are linked (across restarts of
+/// receiving), so that a peer can't have it done over and over: when we last reset the
+/// session with each sender (see `SESSION_RESET_INTERVAL`), and which messages were sent
+/// again on a retry receipt, by recipient and timestamp.
+#[derive(Default)]
+struct Repairs {
+    resets: HashMap<ServiceId, Instant>,
+    resent: HashSet<(ServiceId, u64)>,
+}
 
 const SESSION_RESET_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -2165,11 +2271,11 @@ async fn receive(
     mut manager: Mgr,
     ctx: Ctx,
     avatars: AvatarFetcher,
+    repairs: Rc<RefCell<Repairs>>,
     removed: Rc<tokio::sync::Notify>,
 ) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
-    let mut resets = Resets::new();
     let mut backoff = Duration::from_secs(1);
     let woke = Rc::new(tokio::sync::Notify::new());
     let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
@@ -2196,7 +2302,7 @@ async fn receive(
                     };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &ctx, &avatars, &mut names, &mut resets, received)
+                    if !handle_received(&manager, &ctx, &avatars, &mut names, &repairs, received)
                         .await
                     {
                         return;
@@ -2278,7 +2384,7 @@ async fn handle_received(
     ctx: &Ctx,
     avatars: &AvatarFetcher,
     names: &mut Names,
-    resets: &mut Resets,
+    repairs: &Rc<RefCell<Repairs>>,
     received: Received,
 ) -> bool {
     let events = &ctx.events;
@@ -2291,8 +2397,19 @@ async fn handle_received(
             avatars.request();
             true
         }
-        Received::DecryptionError(sender) => {
-            warn!(sender = %sender.service_id_string(), "decryption error");
+        Received::DecryptionError { sender, error } => {
+            // The server delivers a message again now and then (after a reconnect, say); one
+            // already read is turned away by the session. Nothing to mend, nothing to say.
+            if matches!(error, SignalProtocolError::DuplicatedMessage(..)) {
+                debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
+                return true;
+            }
+            warn!(sender = %sender.service_id_string(), %error, "failed to decrypt a message");
+            // Our own devices' messages: nothing to reset (a session with ourselves), and
+            // nothing to tell in a chat with ourselves.
+            if sender == own_id(manager) {
+                return true;
+            }
             // Nothing from blocked people, as for messages that do decrypt: no notice, and no
             // session reset (which is a message to them, and says we are here).
             if is_blocked(ctx, &conversation_id(&Thread::Contact(sender))).await {
@@ -2301,13 +2418,22 @@ async fn handle_received(
             }
             // A broken session stays broken until someone resets it; the sender's app then
             // starts a new one (and can resend). Not more than hourly, so a peer that keeps
-            // failing can't keep us resetting.
-            let reset = matches!(sender, ServiceId::Aci(_))
-                && resets
+            // failing can't keep us resetting. Not with someone we have no chat with: the
+            // reset is a message from our account, which someone who has only our number
+            // (and wrote to its identity) isn't given until we answer them.
+            let known = ctx
+                .threads
+                .borrow()
+                .contains_key(&conversation_id(&Thread::Contact(sender)));
+            let reset = known
+                && matches!(sender, ServiceId::Aci(_))
+                && repairs
+                    .borrow()
+                    .resets
                     .get(&sender)
                     .is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
             if reset {
-                resets.insert(sender, Instant::now());
+                repairs.borrow_mut().resets.insert(sender, Instant::now());
                 match manager
                     .clone()
                     .send_session_reset(&sender, now_millis())
@@ -2337,7 +2463,136 @@ async fn handle_received(
                 ..Default::default()
             }))
         }
+        Received::RetryReceipt {
+            sender,
+            sender_device,
+            message,
+        } => {
+            on_retry_receipt(manager, ctx, repairs, sender, sender_device, &message).await;
+            true
+        }
         Received::Content(content) => handle_content(manager, ctx, names, &content).await,
+    }
+}
+
+/// One of `sender`'s devices couldn't decrypt a message of ours, the one `message` names by
+/// its timestamp. As Signal's clients do: the session it failed in is dropped, if it is still
+/// the current one (so the next message starts a new one), and the message goes to them again,
+/// a 1:1 message that is. Each message is sent again once, so that nobody can have us resend
+/// without end; a group message isn't (presage would file a copy in the 1:1 chat), the session
+/// is mended for the messages to come.
+async fn on_retry_receipt(
+    manager: &Mgr,
+    ctx: &Ctx,
+    repairs: &Rc<RefCell<Repairs>>,
+    sender: ServiceId,
+    sender_device: DeviceId,
+    message: &DecryptionErrorMessage,
+) {
+    let Some(timestamp) = message.timestamp else {
+        debug!(sender = %sender.service_id_string(), "a retry receipt names no message");
+        return;
+    };
+    // Our other devices get what we send as sync messages; a failure there is theirs to mend.
+    if sender == own_id(manager) {
+        debug!(
+            timestamp,
+            "one of our own devices failed to decrypt a message; ignored"
+        );
+        return;
+    }
+    // A blocked contact is told nothing, as for a failure of ours.
+    if is_blocked(ctx, &conversation_id(&Thread::Contact(sender))).await {
+        return;
+    }
+    // A message one of our other devices sent is that device's to send again (as Signal's
+    // clients have it); ours would double it.
+    if let Some(device) = message.device_id
+        && device != u32::from(manager.device_id())
+    {
+        debug!(
+            timestamp,
+            device, "a retry receipt for another device of ours; ignored"
+        );
+        return;
+    }
+    if repairs.borrow().resent.contains(&(sender, timestamp)) {
+        debug!(sender = %sender.service_id_string(), timestamp, "sent again already");
+        return;
+    }
+    info!(
+        sender = %sender.service_id_string(),
+        device = %sender_device,
+        timestamp,
+        "they failed to decrypt a message of ours"
+    );
+    // The session the message was sent in: only if it is still the current one, or a stale
+    // receipt would drop a session that works.
+    if let Some(key) = message
+        .ratchet_key
+        .as_deref()
+        .and_then(|bytes| PublicKey::deserialize(bytes).ok())
+    {
+        archive_session_with(manager, sender, sender_device, &key).await;
+    }
+    let ours = ctx
+        .tables
+        .conversations_of(&[timestamp])
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|(conversation, _)| *conversation == conversation_id(&Thread::Contact(sender)));
+    let Some((_, timestamp)) = ours else {
+        debug!(timestamp, "no 1:1 message of ours to send again");
+        return;
+    };
+    let thread = Thread::Contact(sender);
+    let stored = match manager.store().message(&thread, timestamp).await {
+        Ok(Some(content)) if content.metadata.sender == own_id(manager) => content,
+        _ => return,
+    };
+    let ContentBody::DataMessage(mut data) = stored.body else {
+        return;
+    };
+    // presage fills in the chat's timer as it is now (sent as is, the old one would count as
+    // a change, one version up).
+    data.expire_timer = None;
+    data.expire_timer_version = None;
+    match manager.clone().send_message(sender, data, timestamp).await {
+        Ok(()) => {
+            info!(sender = %sender.service_id_string(), timestamp, "sent a message again");
+            let mut repairs = repairs.borrow_mut();
+            // Bounded: a peer can name any number of timestamps.
+            if repairs.resent.len() >= RESENT_REMEMBERED {
+                repairs.resent.clear();
+            }
+            repairs.resent.insert((sender, timestamp));
+        }
+        Err(error) => warn!(%error, "failed to send a message again"),
+    }
+}
+
+/// How many messages sent again on a retry receipt are remembered; see [`Repairs`].
+const RESENT_REMEMBERED: usize = 1024;
+
+/// Archives the session with `sender`'s device `device` if `key` is its current ratchet key.
+async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId, key: &PublicKey) {
+    use presage::libsignal_service::protocol::SessionStore;
+    let address = ProtocolAddress::new(sender.service_id_string(), device);
+    let mut sessions = manager.store().aci_protocol_store();
+    let Ok(Some(mut session)) = sessions.load_session(&address).await else {
+        return;
+    };
+    if !session.current_ratchet_key_matches(key).unwrap_or(false) {
+        debug!(%address, "the session they failed in is gone already");
+        return;
+    }
+    if session.archive_current_state().is_err() {
+        return;
+    }
+    match sessions.store_session(&address, &session).await {
+        Ok(()) => info!(%address, "dropped the session they couldn't decrypt"),
+        Err(error) => warn!(%error, "failed to drop a session"),
     }
 }
 
@@ -2366,10 +2621,12 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
         announce_identity_change(manager, ctx, names, content.metadata.sender).await;
-        refresh_trust(manager, ctx).await;
+        refresh_trust_of(manager, ctx, content.metadata.sender).await;
     }
     match &content.body {
-        ContentBody::ReceiptMessage(receipt) => return on_receipt(ctx, receipt).await,
+        ContentBody::ReceiptMessage(receipt) => {
+            return on_receipt(manager, ctx, sender, receipt).await;
+        }
         // Typing in a group names the group differently from other messages.
         ContentBody::TypingMessage(typing) => {
             return on_typing(manager, ctx, names, content, typing).await;
@@ -2455,12 +2712,9 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         return true;
     }
     // From someone not in the group (any more), unless it is the change that took them out:
-    // Signal's clients drop those.
-    let group_change = data_of(content)
-        .and_then(|(data, _)| data.group_v2.as_ref())
-        .is_some_and(|context| context.group_change.is_some());
+    // Signal's clients drop those. Only a change the server signed, made by the sender, says
+    // so; anything else that claims to be a change is as good as none.
     if let Thread::Group(key) = &thread
-        && !group_change
         && !is_outgoing(manager, content)
         && let Ok(Some(group)) = manager.store().group(*key).await
         && !group
@@ -2468,11 +2722,19 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             .iter()
             .any(|member| ServiceId::Aci(member.aci) == content.metadata.sender)
     {
-        debug!(
-            sender = %content.metadata.sender.service_id_string(),
-            "dropped a message from someone not in the group"
-        );
-        return true;
+        let leaving = match data_of(content).and_then(|(data, _)| data.group_v2.as_ref()) {
+            Some(context) => signed_group_change(manager, *key, context)
+                .await
+                .is_some_and(|changes| leaves_group(&changes, content.metadata.sender)),
+            None => false,
+        };
+        if !leaving {
+            debug!(
+                sender = %content.metadata.sender.service_id_string(),
+                "dropped a message from someone not in the group"
+            );
+            return true;
+        }
     }
     let id = ensure_conversation(manager, ctx, thread.clone(), content.timestamp()).await;
     // presage has taken over a group change by now; show the group as it is.
@@ -2515,8 +2777,15 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             author_id: author.service_id_string(),
             timestamp,
         };
-        if let Err(error) = erase_deleted(manager, ctx, &id, &thread, &target).await {
-            warn!(%error, "failed to erase a deleted message");
+        // Only a message that was there, and by that author (presage checks too): a delete
+        // of anything else would leave a "deleted" marker where nothing was.
+        match erase_deleted(manager, ctx, &id, &thread, &target).await {
+            Ok(true) => {}
+            Ok(false) => {
+                debug!("ignored a delete of a message that isn't there");
+                return true;
+            }
+            Err(error) => warn!(%error, "failed to erase a deleted message"),
         }
         return events.send(Event::Deleted {
             conversation: id,
@@ -2731,19 +3000,29 @@ async fn on_answered_elsewhere(
 }
 
 /// Our messages got further: delivered to or read on someone's phone.
-async fn on_receipt(ctx: &Ctx, receipt: &ReceiptMessage) -> bool {
+/// `sender` says our messages of the receipt's timestamps reached them, or were read. Only in
+/// conversations they are part of: a timestamp names a message in every chat that has one
+/// (and anyone could send one), so the receipt goes no further than their own chat and groups.
+async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &ReceiptMessage) -> bool {
     use receipt_message::Type;
     let delivery = match receipt.r#type() {
         Type::Delivery => Delivery::Delivered,
         Type::Read | Type::Viewed => Delivery::Read,
     };
-    let found = match ctx.tables.conversations_of(&receipt.timestamp).await {
+    let mut found = match ctx.tables.conversations_of(&receipt.timestamp).await {
         Ok(found) => found,
         Err(error) => {
             warn!(%error, "failed to look up receipted messages");
             return true;
         }
     };
+    let mut theirs = Vec::new();
+    for (conversation, timestamp) in found {
+        if is_party(manager, &conversation, sender).await {
+            theirs.push((conversation, timestamp));
+        }
+    }
+    found = theirs;
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
         warn!(%error, "failed to remember a receipt");
     }
@@ -2793,6 +3072,12 @@ async fn on_typing(
     if !ctx.threads.borrow().contains_key(&conversation) || is_blocked(ctx, &conversation).await {
         return true;
     }
+    // Nobody who isn't in the group, as for its messages.
+    if let Thread::Group(key) = &thread
+        && !is_member(manager, *key, sender).await
+    {
+        return true;
+    }
     let name = sender_name(manager, names, sender).await;
     ctx.events.send(Event::Typing {
         conversation,
@@ -2800,6 +3085,26 @@ async fn on_typing(
         sender: name,
         typing: typing.action() == typing_message::Action::Started,
     })
+}
+
+/// Whether `who` is in the group `key`, as its stored copy has it.
+async fn is_member(manager: &Mgr, key: [u8; 32], who: ServiceId) -> bool {
+    matches!(
+        manager.store().group(key).await,
+        Ok(Some(group)) if group.members.iter().any(|member| ServiceId::Aci(member.aci) == who)
+    )
+}
+
+/// Whether `who` takes part in `conversation`: it is the chat with them, or a group they are
+/// in. A chat started by phone number is keyed by the number's identity (PNI), while the
+/// person answers from their account (ACI), which the store doesn't tie to it; such a chat
+/// counts as theirs.
+async fn is_party(manager: &Mgr, conversation: &ConversationId, who: ServiceId) -> bool {
+    match thread_of(conversation) {
+        Some(Thread::Contact(contact)) => contact == who || matches!(contact, ServiceId::Pni(_)),
+        Some(Thread::Group(key)) => is_member(manager, key, who).await,
+        None => false,
+    }
 }
 
 /// Messages were read on another of our devices.
@@ -3070,24 +3375,29 @@ fn author_of(manager: &Mgr, content: &Content) -> ServiceId {
     }
 }
 
-/// Why: deleted content must not stay on disk (cf. CVE-2018-14023).
+/// Why: deleted content must not stay on disk (cf. CVE-2018-14023). `Ok(false)` if there was
+/// no such message, in which case nothing is noted either.
 async fn erase_deleted(
     manager: &Mgr,
     ctx: &Ctx,
     conversation: &ConversationId,
     thread: &Thread,
     target: &MessageRef,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut store = manager.store().clone();
-    erase_from_store(&mut store, thread, target).await?;
+    if !erase_from_store(&mut store, thread, target).await? {
+        return Ok(false);
+    }
     ctx.tables
         .record_deleted(conversation, target)
         .await
+        .map(|()| true)
         .map_err(|error| format!("failed to save: {error}"))
 }
 
 /// The store keys messages by (thread, timestamp); the sender check keeps another author's
-/// message at the same time.
+/// message at the same time. presage erases a received delete's target itself (leaving an
+/// empty message with no sender), which counts as erased.
 async fn erase_from_store(
     store: &mut SqliteStore,
     thread: &Thread,
@@ -3100,6 +3410,9 @@ async fn erase_from_store(
     let Some(content) = stored else {
         return Ok(false);
     };
+    if is_erased(&content) {
+        return Ok(true);
+    }
     if content.metadata.sender.service_id_string() != target.author_id {
         return Ok(false);
     }
@@ -3107,6 +3420,15 @@ async fn erase_from_store(
         .delete_message(thread, target.timestamp)
         .await
         .map_err(|e| format!("failed to erase a deleted message: {e}"))
+}
+
+/// What presage leaves of a message deleted for everyone: a null message from nobody.
+fn is_erased(content: &Content) -> bool {
+    matches!(content.body, ContentBody::NullMessage(_))
+        && content.metadata.sender
+            == ServiceId::Aci(presage::libsignal_service::protocol::Aci::from(
+                presage::libsignal_service::prelude::Uuid::nil(),
+            ))
 }
 
 /// How the UI names someone: "You" for us.
@@ -3192,9 +3514,11 @@ async fn to_chat_message(
         body = crate::timer_notice(&sender, seconds);
         notice = true;
     }
-    // A change to the group: what it says.
+    // A change to the group: what it says. An empty message with a flag (a profile key
+    // update, say, which accepting a group sends) is no change, and not the group's creation.
     if body.is_empty()
         && attachments::of_message(data).is_empty()
+        && data.flags.unwrap_or(0) == 0
         && let Some(context) = &data.group_v2
         && let Some((notice_text, timer)) =
             group_notice(manager, names, context, &sender, outgoing).await
@@ -3305,12 +3629,29 @@ async fn handle(
             | Command::Respond { .. }
             | Command::Preferences(_)
     );
+    // Sending may meet a new key of a verified contact (and verifying is about keys).
+    let touches_keys = matches!(
+        command,
+        Command::Send { .. }
+            | Command::SendStory { .. }
+            | Command::SendSticker { .. }
+            | Command::Forward { .. }
+            | Command::Edit { .. }
+            | Command::Delete { .. }
+            | Command::React { .. }
+            | Command::Respond { .. }
+            | Command::CreateGroup { .. }
+            | Command::EditGroup { .. }
+            | Command::SetTimer { .. }
+            | Command::SetVerified { .. }
+    );
     let result = handle_command(manager, ctx, downloads, command).await;
     if to_storage && ctx.preferences.get().sync_to_phone {
         ctx.storage_changed.notify_one();
     }
-    // Sending may have met a new key of a verified contact.
-    refresh_trust(manager, ctx).await;
+    if touches_keys {
+        refresh_trust(manager, ctx).await;
+    }
     result
 }
 
@@ -4074,6 +4415,20 @@ async fn refresh_trust(manager: &Mgr, ctx: &Ctx) {
             let trust = trust_given(manager, who, Some(verification)).await;
             publish_trust(ctx, who, trust);
         }
+    }
+}
+
+/// [`refresh_trust`] for one contact: what came from them may have brought a new key.
+async fn refresh_trust_of(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
+    use presage::proto::verified::State;
+    let Ok(all) = ctx.tables.verifications().await else {
+        return;
+    };
+    if let Some(verification) = all.get(&who.service_id_string())
+        && verification.state != State::Default
+    {
+        let trust = trust_given(manager, who, Some(verification)).await;
+        publish_trust(ctx, who, trust);
     }
 }
 
@@ -4856,6 +5211,9 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
 
 /// Tells our other devices we read `messages` in `conversation`, and their senders, if read
 /// receipts are on and they may know.
+/// How long a read receipt waits for the phone's settings; see [`send_read`].
+const STORAGE_WAIT: Duration = Duration::from_secs(2 * 60);
+
 async fn send_read(
     mut manager: Mgr,
     ctx: Ctx,
@@ -4883,10 +5241,29 @@ async fn send_read(
     }
     // Whether this is a message request, and who is blocked, comes with the phone's settings.
     // Right after linking they haven't been read yet, so wait: a read receipt would tell a
-    // stranger we read their message.
-    let _ = ctx.storage_read.subscribe().wait_for(|read| *read).await;
+    // stranger we read their message. Not for ever, though (the phone may never answer): then
+    // only to a chat accepted here, which is known without the phone.
+    let settings_read = tokio::time::timeout(
+        STORAGE_WAIT,
+        ctx.storage_read.subscribe().wait_for(|read| *read),
+    )
+    .await
+    .is_ok();
+    if !ctx.preferences.get().read_receipts {
+        return;
+    }
     // Not to unanswered message requests, nor to anyone we block.
-    if !ctx.preferences.get().read_receipts || is_unanswered_request(&ctx, &conversation).await {
+    let accepted = if settings_read {
+        !is_unanswered_request(&ctx, &conversation).await
+    } else {
+        ctx.tables
+            .settings(&conversation)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.accepted)
+    };
+    if !accepted {
         return;
     }
     let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
@@ -5035,6 +5412,170 @@ mod tests {
                     .unwrap()
             );
         });
+    }
+
+    /// presage erases a received delete's target itself, leaving an empty message from
+    /// nobody; that counts as erased, so that the deletion is noted, while a delete of a
+    /// message that was never there is not.
+    #[test]
+    fn a_message_presage_erased_counts_as_erased() {
+        use presage::libsignal_service::{content::Metadata, push_service::DEFAULT_DEVICE_ID};
+        use presage::proto::NullMessage;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut store = SqliteStore::open(":memory:", OnNewIdentity::Trust)
+                .await
+                .unwrap();
+            let alice =
+                ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000001")
+                    .unwrap();
+            let nobody = ServiceId::Aci(presage::libsignal_service::protocol::Aci::from(
+                presage::libsignal_service::prelude::Uuid::nil(),
+            ));
+            let thread = Thread::Contact(alice);
+            let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis).unwrap();
+            let content = |sender, body| Content {
+                metadata: Metadata {
+                    sender,
+                    destination: alice,
+                    sender_device: *DEFAULT_DEVICE_ID,
+                    pni_verified: None,
+                    client_timestamp: at(10),
+                    server_timestamp: at(11),
+                    needs_receipt: false,
+                    unidentified_sender: false,
+                    was_plaintext: false,
+                    server_guid: None,
+                },
+                body,
+            };
+            let erased = content(nobody, ContentBody::NullMessage(NullMessage::default()));
+            assert!(is_erased(&erased));
+            assert!(!is_erased(&content(
+                alice,
+                ContentBody::NullMessage(NullMessage::default())
+            )));
+            store.save_message(&thread, erased).await.unwrap();
+            let named = |timestamp| MessageRef {
+                author_id: alice.service_id_string(),
+                timestamp,
+            };
+            assert!(
+                erase_from_store(&mut store, &thread, &named(10))
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !erase_from_store(&mut store, &thread, &named(30))
+                    .await
+                    .unwrap()
+            );
+        });
+    }
+
+    fn aci(n: u8) -> presage::libsignal_service::protocol::Aci {
+        presage::libsignal_service::protocol::Aci::from(
+            presage::libsignal_service::prelude::Uuid::from_u128(n.into()),
+        )
+    }
+
+    fn changes(
+        editor: presage::libsignal_service::protocol::Aci,
+        changes: Vec<presage::libsignal_service::groups_v2::GroupChange>,
+    ) -> presage::libsignal_service::groups_v2::GroupChanges {
+        presage::libsignal_service::groups_v2::GroupChanges {
+            group_id: [0; 32],
+            editor,
+            version: 7,
+            changes,
+            change_epoch: 0,
+        }
+    }
+
+    /// Someone who isn't in a group may still send it one thing: their own leaving (as a
+    /// member or an invitee). Being removed by someone else, or any other change, is not it.
+    #[test]
+    fn a_non_member_may_only_leave() {
+        use presage::libsignal_service::groups_v2::GroupChange;
+        let (bob, admin) = (aci(2), aci(3));
+        let sender = ServiceId::Aci(bob);
+        assert!(leaves_group(
+            &changes(bob, vec![GroupChange::DeleteMember(bob)]),
+            sender
+        ));
+        assert!(leaves_group(
+            &changes(bob, vec![GroupChange::DeletePendingMember(sender)]),
+            sender
+        ));
+        assert!(!leaves_group(
+            &changes(admin, vec![GroupChange::DeleteMember(bob)]),
+            sender
+        ));
+        assert!(!leaves_group(
+            &changes(bob, vec![GroupChange::DeleteMember(admin)]),
+            sender
+        ));
+        assert!(!leaves_group(
+            &changes(bob, vec![GroupChange::Title("hi".into())]),
+            sender
+        ));
+        assert!(!leaves_group(&changes(bob, vec![]), sender));
+    }
+
+    /// A change that takes us out of a group, in whichever role, is recognised, so that the
+    /// stored group (which can't be fetched any more) stops counting or inviting us.
+    #[test]
+    fn a_change_that_drops_us_is_recognised() {
+        use presage::libsignal_service::groups_v2::GroupChange;
+        use presage::libsignal_service::protocol::Pni;
+        let (own, other, admin) = (aci(1), aci(2), aci(3));
+        let own_pni = Pni::from(presage::libsignal_service::prelude::Uuid::from_u128(11));
+        let removal = |change| own_removal(&changes(admin, vec![change]), own, own_pni);
+        assert_eq!(removal(GroupChange::DeleteMember(own)), [Removal::Member]);
+        assert_eq!(
+            removal(GroupChange::DeletePendingMember(ServiceId::Aci(own))),
+            [Removal::Invitee]
+        );
+        assert_eq!(
+            removal(GroupChange::DeletePendingMember(ServiceId::Pni(own_pni))),
+            [Removal::Invitee]
+        );
+        assert_eq!(
+            removal(GroupChange::DeleteRequestingMember(own)),
+            [Removal::Requester]
+        );
+        assert!(removal(GroupChange::DeleteMember(other)).is_empty());
+        assert!(removal(GroupChange::DeletePendingMember(ServiceId::Aci(other))).is_empty());
+        assert!(removal(GroupChange::Title("hi".into())).is_empty());
+        let both = own_removal(
+            &changes(
+                admin,
+                vec![
+                    GroupChange::DeleteMember(own),
+                    GroupChange::DeletePendingMember(ServiceId::Aci(own)),
+                    GroupChange::DeleteMember(own),
+                ],
+            ),
+            own,
+            own_pni,
+        );
+        assert_eq!(both, [Removal::Member, Removal::Invitee]);
+    }
+
+    /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise
+    /// stay for as long) is not shown, while a clock a little ahead is fine.
+    #[test]
+    fn stories_from_the_future_are_not_current() {
+        const HOUR: u64 = 60 * 60 * 1000;
+        let now = 100 * 24 * HOUR;
+        assert!(story_is_current(now, now));
+        assert!(story_is_current(now, now - 23 * HOUR));
+        assert!(!story_is_current(now, now - 25 * HOUR));
+        assert!(story_is_current(now, now + HOUR / 2));
+        assert!(!story_is_current(now, now + 2 * HOUR));
     }
 
     /// What the store saves when a contact's safety number changes is recognised as that note
