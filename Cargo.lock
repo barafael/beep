@@ -782,6 +782,8 @@ dependencies = [
  "proptest",
  "rfd",
  "rodio",
+ "serde",
+ "serde_json",
  "signal-hook",
  "slint",
  "slint-build",

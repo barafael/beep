@@ -12,6 +12,10 @@ path = "src/main.rs"
 [features]
 default = ["signal"]
 signal = ["b33p-core/signal"]
+# The agent harness (`agent.rs`, `B33P_AGENT_SOCKET`): a socket a script can use to read what
+# the window shows and to act as if it were the input, for tests and demonstrations. Unix
+# only; never part of a release build.
+harness = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 b33p-core.workspace = true
@@ -23,6 +27,9 @@ slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "s
 i-slint-core.workspace = true
 tracing = "0.1"
 async-channel = "2"
+# The harness's JSON protocol (`agent.rs`).
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 # Whether the desktop asks for reduced motion (`motion.rs`).
 mundy = { version = "0.2.3", default-features = false, features = ["reduced-motion", "callback", "async-io"] }
 # Opens links in the browser.

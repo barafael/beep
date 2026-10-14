@@ -1131,7 +1131,7 @@ impl ChatState {
             .conversations
             .iter()
             .find(|c| &c.id == id)
-            .filter(|c| c.is_group);
+            .filter(|c| c.is_group());
         let name = match group {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
@@ -1511,7 +1511,7 @@ impl ChatState {
         let mut candidates: Vec<&Conversation> = self
             .conversations
             .iter()
-            .filter(|c| !c.is_group && !c.note_to_self && !c.settings.blocked)
+            .filter(|c| !c.is_group() && !c.note_to_self && !c.settings.blocked)
             .filter(|c| !self.is_request(c))
             .filter(|c| !already.contains(&c.id.0))
             .filter(|c| c.title.to_lowercase().contains(&filter))
@@ -1544,7 +1544,7 @@ impl ChatState {
         // An invitation is answered by someone not in the group yet; anything else needs being in.
         let group = self
             .conversation(id)
-            .filter(|c| c.is_group && if invitation { c.invited } else { !c.left })?;
+            .filter(|c| c.is_group() && if invitation { c.invited } else { !c.left })?;
         if let crate::GroupEdit::Title(title) = &edit
             && (title.trim().is_empty() || title.trim() == group.title)
         {
@@ -1753,7 +1753,7 @@ impl ChatState {
         let mut groups: Vec<&Conversation> = self
             .conversations
             .iter()
-            .filter(|c| c.is_group && !c.left)
+            .filter(|c| c.is_group() && !c.left)
             .collect();
         groups.sort_by_cached_key(|c| c.title.to_lowercase());
         groups
@@ -1761,7 +1761,7 @@ impl ChatState {
 
     /// Posts a story to a group.
     pub fn send_story(&mut self, id: &ConversationId, story: crate::NewStory) -> Option<Command> {
-        self.conversation(id).filter(|c| c.is_group && !c.left)?;
+        self.conversation(id).filter(|c| c.is_group() && !c.left)?;
         if let crate::NewStory::Text(text) = &story
             && text.trim().is_empty()
         {
@@ -1923,7 +1923,7 @@ impl ChatState {
             .filter(|c| {
                 if filter.is_empty() {
                     // As in the chat list, without the archive split.
-                    c.is_group || c.note_to_self || self.last_of(&c.id).is_some()
+                    c.is_group() || c.note_to_self || self.last_of(&c.id).is_some()
                 } else {
                     c.title.to_lowercase().contains(&filter)
                 }
@@ -1987,7 +1987,7 @@ impl ChatState {
             return Vec::new();
         };
         let query = query.to_lowercase();
-        let Some(group) = self.selected().filter(|c| c.is_group) else {
+        let Some(group) = self.selected().filter(|c| c.is_group()) else {
             return Vec::new();
         };
         group
@@ -2705,7 +2705,7 @@ impl ChatState {
         self.conversations.iter().filter(move |c| {
             if filter.is_empty() {
                 c.settings.archived == self.show_archived
-                    && (c.is_group
+                    && (c.is_group()
                         || c.note_to_self
                         || c.settings.pinned.is_some()
                         || self.last_of(&c.id).is_some()
@@ -2726,8 +2726,8 @@ impl ChatState {
             return true;
         }
         let member = folder.included.contains(&c.id)
-            || (folder.all_individual && !c.is_group)
-            || (folder.all_groups && c.is_group);
+            || (folder.all_individual && !c.is_group())
+            || (folder.all_groups && c.is_group());
         member
             && !folder.excluded.contains(&c.id)
             && (folder.show_muted || !c.settings.muted(now_millis()))
@@ -2781,7 +2781,7 @@ impl ChatState {
 
     /// Messages of the selected conversation, oldest first.
     pub fn messages(&self) -> impl ExactSizeIterator<Item = MessageView<'_>> {
-        let group = self.selected().is_some_and(|c| c.is_group);
+        let group = self.selected().is_some_and(|c| c.is_group());
         let history = self.selected_history();
         let now = jiff::Zoned::now();
         // Not in chats never read here: everything would be "new".
@@ -3148,13 +3148,17 @@ pub fn format_time(timestamp: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Delivery;
+    use crate::{ConversationKind, Delivery};
 
     fn conversation(id: &str, is_group: bool) -> Conversation {
         Conversation {
             id: ConversationId(id.into()),
             title: id.into(),
-            is_group,
+            kind: if is_group {
+                ConversationKind::Group
+            } else {
+                ConversationKind::Contact
+            },
             ..Conversation::default()
         }
     }
@@ -5393,7 +5397,7 @@ mod tests {
 #[cfg(test)]
 mod edit_props {
     use super::*;
-    use crate::{Person, Style};
+    use crate::{ConversationKind, Person, Style};
     use proptest::prelude::*;
 
     fn group_state() -> ChatState {
@@ -5405,7 +5409,7 @@ mod edit_props {
         chat.apply(Event::Conversations(vec![Conversation {
             id: ConversationId("g".into()),
             title: "Group".into(),
-            is_group: true,
+            kind: ConversationKind::Group,
             members: vec![Person {
                 service_id: "ann-id".into(),
                 name: "Ann".into(),
@@ -5604,7 +5608,7 @@ mod model_tests {
     //! actions return (b33p-slint/src/ui.rs `render`), merged per batch of events (main.rs). This
     //! replays that bookkeeping on a plain Vec and checks it against `messages()`.
     use super::*;
-    use crate::{AfterFinding, Delivery, Reaction};
+    use crate::{AfterFinding, ConversationKind, Delivery, Reaction};
     use proptest::prelude::*;
     use std::sync::OnceLock;
 
@@ -5807,7 +5811,7 @@ mod model_tests {
                 Conversation {
                     id: cid(1),
                     title: "Group".into(),
-                    is_group: true,
+                    kind: ConversationKind::Group,
                     settings: ChatSettings {
                         accepted: true,
                         ..Default::default()

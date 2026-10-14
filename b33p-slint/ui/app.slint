@@ -1195,20 +1195,21 @@ component Bubble inherits Rectangle {
                                 }
                                 if item.last: Text {
                                     text: item.time;
-                                    font-size: 0.72rem;
+                                    font-size: 0.864rem;
                                     color: parent.faint;
                                 }
                                 // ✓ sent, ✓✓ delivered; read: ✓✓ cut out of a filled pill, so it
                                 // tells from delivered at a glance.
                                 if item.last && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): Rectangle {
-                                    width: 22px;
+                                    width: 18px;
+                                    height: 13px;
                                     border-radius: self.height / 2;
                                     background: item.delivery == DeliveryState.read ? root.ink : transparent;
                                     accessible-role: text;
                                     accessible-label: item.delivery == DeliveryState.sent ? "Sent" : item.delivery == DeliveryState.delivered ? "Delivered" : "Read";
                                     Icon {
                                         source: item.delivery == DeliveryState.sent ? @image-url("@lucide/check.svg") : @image-url("@lucide/check-check.svg");
-                                        width: 14px;
+                                        width: 11px;
                                         tint: item.delivery == DeliveryState.read ? Palette.accent-background.darker(0.35) : meta.faint;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;

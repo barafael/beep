@@ -2,8 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Delivery, Event, Events, HistoryTransfer, Inbox, Person,
-    Picture, QrMatrix, Quote, Reaction, Style, StyleRange, now_millis,
+    Command, Conversation, ConversationId, ConversationKind, Delivery, Event, Events,
+    HistoryTransfer, Inbox, Person, Picture, QrMatrix, Quote, Reaction, Style, StyleRange,
+    now_millis,
 };
 
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
@@ -38,7 +39,11 @@ fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
     Conversation {
         id: chat_id(id),
         title: title.into(),
-        is_group,
+        kind: if is_group {
+            ConversationKind::Group
+        } else {
+            ConversationKind::Contact
+        },
         subtitle: if id == "club" {
             "You're invited to this group.".into()
         } else if is_group {
@@ -387,7 +392,7 @@ pub fn run(commands: Inbox, events: Events) {
                 let conversation = Conversation {
                     id: id.clone(),
                     title,
-                    is_group: true,
+                    kind: ConversationKind::Group,
                     subtitle: format!("{} members", members.len() + 1),
                     members: members
                         .iter()

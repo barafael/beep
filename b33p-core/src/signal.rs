@@ -40,9 +40,9 @@ use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, ChatSettings, Command, Config, Conversation, ConversationId, Delivery, Event,
-    Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, Preferences, QrMatrix, Quote,
-    Reaction, Style, StyleRange, apply_reaction, attachments,
+    ChatMessage, ChatSettings, Command, Config, Conversation, ConversationId, ConversationKind,
+    Delivery, Event, Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, Preferences,
+    QrMatrix, Quote, Reaction, Style, StyleRange, apply_reaction, attachments,
     format::{self, RangeValue, WireRange},
     local::LocalStore,
     now_millis,
@@ -718,7 +718,11 @@ fn register(
     expire_timer: u32,
 ) -> Conversation {
     let id = conversation_id(&thread);
-    let is_group = matches!(thread, Thread::Group(_));
+    let kind = if matches!(thread, Thread::Group(_)) {
+        ConversationKind::Group
+    } else {
+        ConversationKind::Contact
+    };
     threads.borrow_mut().insert(id.clone(), thread);
     let title = crate::format::name(&title);
     let title = if title.is_empty() {
@@ -729,7 +733,7 @@ fn register(
     Conversation {
         id,
         title,
-        is_group,
+        kind,
         subtitle,
         settings: ChatSettings::default(),
         expire_timer,
@@ -1315,19 +1319,20 @@ async fn show_stored(
 
 /// What a group change says, from the change itself (decrypted with the group's key, and only
 /// if the server signed it; see [`signed_group_change`]), and the timer it sets, if it does.
-/// `editor` is who made it.
+/// `editor` is who made it; `editor_is_us` whether that is us.
 async fn group_notice(
     manager: &Mgr,
     names: &mut Names,
     context: &GroupContextV2,
     editor: &str,
+    editor_is_us: bool,
 ) -> Option<(String, Option<u32>)> {
     use presage::libsignal_service::groups_v2::{GroupChange, Role};
     let key: [u8; 32] = context.master_key.clone()?.try_into().ok()?;
     if context.group_change.is_none() {
         // A group's first message, from whoever made it.
         return (context.revision == Some(0)).then(|| {
-            let text = if editor == "You" {
+            let text = if editor_is_us {
                 "You created the group.".to_string()
             } else {
                 format!("{editor} added you to the group.")
@@ -3191,7 +3196,8 @@ async fn to_chat_message(
     if body.is_empty()
         && attachments::of_message(data).is_empty()
         && let Some(context) = &data.group_v2
-        && let Some((notice_text, timer)) = group_notice(manager, names, context, &sender).await
+        && let Some((notice_text, timer)) =
+            group_notice(manager, names, context, &sender, outgoing).await
     {
         body = notice_text;
         timer_change = timer_change.or(timer);

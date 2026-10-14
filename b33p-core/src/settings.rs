@@ -32,6 +32,10 @@ impl WidgetStyle {
             Self::Fusion => "fusion",
         }
     }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|style| style.key() == key)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,6 +47,20 @@ pub enum TextSize {
 }
 
 impl TextSize {
+    const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Default => "default",
+            Self::Large => "large",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|size| size.key() == key)
+    }
+
     /// Factor applied to the platform's default font size.
     pub fn scale(self) -> f32 {
         match self {
@@ -82,6 +100,12 @@ impl Animations {
             Self::Off => "off",
         }
     }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|animations| animations.key() == key)
+    }
 }
 
 /// How much of a message a desktop notification reveals.
@@ -92,6 +116,38 @@ pub enum NotificationContent {
     NameOnly,
     /// Only that there is a new message.
     Nothing,
+}
+
+impl NotificationContent {
+    const ALL: [Self; 3] = [Self::NameAndMessage, Self::NameOnly, Self::Nothing];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::NameAndMessage => "name_and_message",
+            Self::NameOnly => "name_only",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|content| content.key() == key)
+    }
+}
+
+impl Theme {
+    const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.key() == key)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,20 +220,23 @@ impl Settings {
                 continue;
             };
             match (key.trim(), value.trim()) {
-                ("theme", "system") => settings.theme = Theme::System,
-                ("theme", "light") => settings.theme = Theme::Light,
-                ("theme", "dark") => settings.theme = Theme::Dark,
+                ("theme", value) => {
+                    if let Some(theme) = Theme::from_key(value) {
+                        settings.theme = theme;
+                    }
+                }
                 ("style", value) => {
-                    if let Some(style) = WidgetStyle::ALL.into_iter().find(|s| s.key() == value) {
+                    if let Some(style) = WidgetStyle::from_key(value) {
                         settings.style = style;
                     }
                 }
-                ("text_size", "small") => settings.text_size = TextSize::Small,
-                ("text_size", "default") => settings.text_size = TextSize::Default,
-                ("text_size", "large") => settings.text_size = TextSize::Large,
+                ("text_size", value) => {
+                    if let Some(text_size) = TextSize::from_key(value) {
+                        settings.text_size = text_size;
+                    }
+                }
                 ("animations", value) => {
-                    if let Some(animations) = Animations::ALL.into_iter().find(|a| a.key() == value)
-                    {
+                    if let Some(animations) = Animations::from_key(value) {
                         settings.animations = animations;
                     }
                 }
@@ -185,14 +244,10 @@ impl Settings {
                 ("show_avatars", "false") => settings.show_avatars = false,
                 ("notifications", "true") => settings.notifications = true,
                 ("notifications", "false") => settings.notifications = false,
-                ("notification_content", "name_and_message") => {
-                    settings.notification_content = NotificationContent::NameAndMessage
-                }
-                ("notification_content", "name_only") => {
-                    settings.notification_content = NotificationContent::NameOnly
-                }
-                ("notification_content", "nothing") => {
-                    settings.notification_content = NotificationContent::Nothing
+                ("notification_content", value) => {
+                    if let Some(content) = NotificationContent::from_key(value) {
+                        settings.notification_content = content;
+                    }
                 }
                 ("show_activity", "true") => settings.show_activity = true,
                 ("show_activity", "false") => settings.show_activity = false,
@@ -215,30 +270,18 @@ impl Settings {
     }
 
     fn to_text(&self) -> String {
-        let theme = match self.theme {
-            Theme::System => "system",
-            Theme::Light => "light",
-            Theme::Dark => "dark",
-        };
-        let text_size = match self.text_size {
-            TextSize::Small => "small",
-            TextSize::Default => "default",
-            TextSize::Large => "large",
-        };
-        let notification_content = match self.notification_content {
-            NotificationContent::NameAndMessage => "name_and_message",
-            NotificationContent::NameOnly => "name_only",
-            NotificationContent::Nothing => "nothing",
-        };
         format!(
-            "theme = {theme}\nstyle = {}\ntext_size = {text_size}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
-             notification_content = {notification_content}\nshow_activity = {}\nshow_calendar = {}\n\
+            "theme = {}\nstyle = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
+             notification_content = {}\nshow_activity = {}\nshow_calendar = {}\n\
              close_to_tray = {}\n\
              read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
+            self.theme.key(),
             self.style.key(),
+            self.text_size.key(),
             self.animations.key(),
             self.show_avatars,
             self.notifications,
+            self.notification_content.key(),
             self.show_activity,
             self.show_calendar,
             self.close_to_tray,
@@ -297,6 +340,26 @@ mod tests {
         assert!(!Animations::System.enabled(true));
         assert!(Animations::On.enabled(true));
         assert!(!Animations::Off.enabled(false));
+    }
+
+    /// Every enum reads back what each of its values writes.
+    #[test]
+    fn enum_keys_round_trip() {
+        for theme in Theme::ALL {
+            assert_eq!(Theme::from_key(theme.key()), Some(theme));
+        }
+        for style in WidgetStyle::ALL {
+            assert_eq!(WidgetStyle::from_key(style.key()), Some(style));
+        }
+        for text_size in TextSize::ALL {
+            assert_eq!(TextSize::from_key(text_size.key()), Some(text_size));
+        }
+        for animations in Animations::ALL {
+            assert_eq!(Animations::from_key(animations.key()), Some(animations));
+        }
+        for content in NotificationContent::ALL {
+            assert_eq!(NotificationContent::from_key(content.key()), Some(content));
+        }
     }
 
     #[test]

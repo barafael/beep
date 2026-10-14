@@ -855,6 +855,20 @@ impl Window {
             .global::<Motion>()
             .set_scale(if enabled { 1.0 } else { 0.0 });
     }
+
+    /// Puts `settings` on the window, as at start-up; the harness calls this after changing
+    /// settings from outside the window.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn show_settings(&self, settings: &Settings, style_note: &str) {
+        show_settings(&self.0, settings, style_note);
+    }
+
+    /// Puts `text` in the composer, as if typed; the harness calls this, since its keystrokes
+    /// don't go through the text edit that would otherwise hold them.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn set_draft(&self, text: &str) {
+        self.0.set_draft(text.into());
+    }
 }
 
 /// The settings page shows choices by index, in the order of these enums.
@@ -1749,7 +1763,7 @@ fn conversation_item(
         left: c.left,
         invited: c.invited,
         safety_changed: c.trust == b33p_core::Trust::Changed,
-        group: c.is_group,
+        group: c.is_group(),
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
         can_move_down: c
             .settings
@@ -1780,7 +1794,7 @@ fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> Messag
         .iter()
         .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
         .collect();
-    let in_group = chat.selected().is_some_and(|c| c.is_group) && !m.outgoing;
+    let in_group = chat.selected().is_some_and(|c| c.is_group()) && !m.outgoing;
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
         sender: m.sender.as_str().into(),
