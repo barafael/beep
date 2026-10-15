@@ -268,6 +268,13 @@ pub struct ChatState {
     error: Option<String>,
     /// What was sent for each message shown as sending or failed, to send it again.
     pending_sends: HashMap<(ConversationId, u64), Command>,
+    /// Chats with a message of ours in their history: not requests, whatever the phone says.
+    written_to: HashSet<ConversationId>,
+    /// The chat list's order is stale; sorted once at the end of [`ChatState::apply`], or of
+    /// a batch of them.
+    sort_pending: bool,
+    /// In [`ChatState::apply_all`]: sorting waits for the batch's end.
+    batching: bool,
     /// Most recently active first; see [`ChatState::sort_conversations`].
     conversations: Vec<Conversation>,
     unread: HashMap<ConversationId, u32>,
@@ -410,7 +417,33 @@ struct Notifications {
 }
 
 impl ChatState {
+    /// Applies a batch of events, sorting the chat list once at the end rather than per
+    /// event (a sync brings one event per chat).
+    pub fn apply_all(&mut self, events: impl IntoIterator<Item = Event>) -> Update {
+        self.batching = true;
+        let update = events.into_iter().fold(Update::default(), |update, event| {
+            update.merge(self.apply(event))
+        });
+        self.batching = false;
+        self.sort_if_pending();
+        update
+    }
+
     pub fn apply(&mut self, event: Event) -> Update {
+        let update = self.apply_one(event);
+        if !self.batching {
+            self.sort_if_pending();
+        }
+        update
+    }
+
+    fn sort_if_pending(&mut self) {
+        if std::mem::take(&mut self.sort_pending) {
+            self.sort_conversations();
+        }
+    }
+
+    fn apply_one(&mut self, event: Event) -> Update {
         let mut update = Update::default();
         if let (Event::Message(_), Screen::Syncing(SyncStage::CatchingUp { messages })) =
             (&event, &mut self.screen)
@@ -475,24 +508,25 @@ impl ChatState {
                         None => self.conversations.push(conversation),
                     }
                 }
-                self.sort_conversations();
+                self.sort_pending = true;
                 update.conversations = true;
             }
             Event::Attachment { id, content } => {
+                let shown = self.shows_attachment(&id);
                 let state = match content {
                     Ok(content) => AttachmentState::Ready(content),
                     Err(error) => AttachmentState::Failed(error),
                 };
                 self.attachments.insert(id, state);
-                update.rows = true;
+                update.rows = shown;
             }
             Event::AttachmentSaved { id, path } => {
                 let state = match path {
                     Ok(path) => SaveState::Saved(path),
                     Err(error) => SaveState::Failed(error),
                 };
+                update.rows = self.shows_attachment(&id);
                 self.saves.insert(id, state);
-                update.rows = true;
             }
             Event::Reaction {
                 conversation,
@@ -537,6 +571,9 @@ impl ChatState {
                 let history = self.history.entry(conversation.clone()).or_default();
                 let first = history.first().map(|m| (m.timestamp, m.sender_id.clone()));
                 let (mut added, mut replaced) = (0, 0);
+                if messages.iter().any(|m| m.outgoing) {
+                    self.written_to.insert(conversation.clone());
+                }
                 // The stored history is complete (delivery, edits, …); it replaces what came
                 // before it, e.g. the bare newest message from `Event::Latest`.
                 for message in messages {
@@ -568,7 +605,7 @@ impl ChatState {
                     }
                 }
                 if newest_page || added > 0 {
-                    self.sort_conversations();
+                    self.sort_pending = true;
                     update.conversations = true;
                 }
                 if newest_page
@@ -592,9 +629,12 @@ impl ChatState {
             }
             Event::Latest(message) => {
                 let id = message.conversation.clone();
+                if message.outgoing {
+                    self.written_to.insert(id.clone());
+                }
                 let history = self.history.entry(id.clone()).or_default();
                 if insert(history, message).is_some() {
-                    self.sort_conversations();
+                    self.sort_pending = true;
                     update.conversations = true;
                     if self.selected.as_ref() == Some(&id) {
                         update.messages = MessagesUpdate::Reset;
@@ -614,6 +654,7 @@ impl ChatState {
                 // Sent: it takes the place of the message shown while sending.
                 let id = message.conversation.clone();
                 self.pending_sends.remove(&(id.clone(), message.timestamp));
+                self.written_to.insert(id.clone());
                 let history = self.history.get_mut(&id).expect("checked above");
                 let shown = history
                     .iter()
@@ -646,6 +687,9 @@ impl ChatState {
             Event::Message(message) => {
                 let id = message.conversation.clone();
                 let outgoing = message.outgoing;
+                if outgoing {
+                    self.written_to.insert(id.clone());
+                }
                 let history = self.history.entry(id.clone()).or_default();
                 let Some(pos) = insert(history, message) else {
                     return update;
@@ -701,7 +745,7 @@ impl ChatState {
                 } else if !outgoing && !notice {
                     *self.unread.entry(id).or_default() += 1;
                 }
-                self.sort_conversations();
+                self.sort_pending = true;
                 update.conversations = true;
             }
             Event::Delivered {
@@ -844,7 +888,7 @@ impl ChatState {
                         }
                     }
                 }
-                self.sort_conversations();
+                self.sort_pending = true;
                 update.conversations = true;
             }
             Event::Stories(stories) => {
@@ -897,6 +941,7 @@ impl ChatState {
             }
             Event::Cleared(conversation) => {
                 self.history.remove(&conversation);
+                self.written_to.remove(&conversation);
                 self.loaded.remove(&conversation);
                 self.older.remove(&conversation);
                 self.unread.remove(&conversation);
@@ -1457,10 +1502,7 @@ impl ChatState {
             && !conversation.settings.accepted
             && !conversation.settings.blocked
             // Written to from another device, before b33p knew.
-            && !self
-                .history
-                .get(&conversation.id)
-                .is_some_and(|history| history.iter().any(|m| m.outgoing))
+            && !self.written_to.contains(&conversation.id)
     }
 
     /// Answers the message request in `id`.
@@ -2708,6 +2750,25 @@ impl ChatState {
     /// Asks for an inline attachment of a message being shown, unless it is already there or
     /// on its way. After a failure, asking again retries. Not in a message request, as in
     /// Signal's apps.
+    /// Whether the open chat has a message with this attachment: the rows to redraw for it.
+    fn shows_attachment(&self, id: &AttachmentId) -> bool {
+        self.selected
+            .as_ref()
+            .and_then(|selected| self.history.get(selected))
+            .is_some_and(|history| {
+                history
+                    .iter()
+                    .any(|m| m.attachments.iter().any(|a| &a.id == id))
+            })
+    }
+
+    /// Whether the open chat has older messages that aren't being fetched already.
+    pub fn can_load_older(&self) -> bool {
+        self.selected.as_ref().is_some_and(|id| {
+            matches!(self.older.get(id), Some(Some(_))) && !self.loading_older.contains(id)
+        })
+    }
+
     pub fn fetch_attachment(&mut self, id: &AttachmentId) -> Option<Command> {
         if matches!(
             self.attachments.get(id),

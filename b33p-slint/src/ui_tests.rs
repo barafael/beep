@@ -181,6 +181,45 @@ fn a_failed_message_offers_a_retry() {
     assert_eq!(retried.get(), Some(1));
 }
 
+/// Not a test: a fixed workload for callgrind (`cargo test ... bench_message_list -- --ignored`
+/// under `valgrind --tool=callgrind --toggle-collect='*phase_*'`), so that changes to the
+/// message list can be compared by instruction count.
+#[test]
+#[ignore]
+fn bench_message_list() {
+    let (window, messages) = window_with_messages(300);
+    for row in (0..300).step_by(7) {
+        let mut item = messages.row_data(row).unwrap();
+        item.outgoing = true;
+        messages.set_row_data(row, item);
+    }
+    phase_scroll(&window);
+    phase_switch(&window, &messages);
+}
+
+/// Scrolls up through the history and back down, which makes and drops rows.
+#[inline(never)]
+fn phase_scroll(window: &AppWindow) {
+    for _ in 0..12 {
+        scroll(window, 400.);
+    }
+    for _ in 0..12 {
+        scroll(window, -400.);
+    }
+}
+
+/// Switches chats twice: every row goes and comes again.
+#[inline(never)]
+fn phase_switch(window: &AppWindow, messages: &Rc<VecModel<MessageItem>>) {
+    for round in 0..2 {
+        let items: Vec<_> = (0..200)
+            .map(|n| message(&format!("Round {round} message {n}")))
+            .collect();
+        messages.set_vec(items);
+        settle(window);
+    }
+}
+
 #[test]
 fn the_safety_number_can_be_marked_verified() {
     let (window, _messages) = window_with_messages(1);
@@ -316,6 +355,7 @@ fn a_typed_number_can_be_messaged() {
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);
+    window.set_can_load_older(true);
     let asked = Rc::new(Cell::new(0));
     window.on_load_older({
         let asked = asked.clone();

@@ -66,6 +66,9 @@ pub struct Shared {
     start_hidden: Cell<bool>,
     /// The desktop asks for reduced motion; see `motion.rs`.
     system_reduces_motion: Cell<bool>,
+    /// What changed since the window was last brought in line with the state; drawn once
+    /// per turn of the event loop, however many actions and events a turn brings.
+    pending: RefCell<Option<Update>>,
     /// Redraws when someone typing next counts as stopped, since no event says so.
     typing_timer: slint::Timer,
     /// Audio and voice messages playing here.
@@ -113,7 +116,31 @@ impl Shared {
         sent
     }
 
+    /// Brings the window in line with the state, at the next turn of the event loop: a row
+    /// being made asks for a picture, a key is typed, a batch of events comes, and each
+    /// alone redrew before.
     fn refresh(&self, update: Update) {
+        let mut pending = self.pending.borrow_mut();
+        match pending.take() {
+            Some(earlier) => {
+                *pending = Some(earlier.merge(update));
+            }
+            None => {
+                *pending = Some(update);
+                let me = self.me.clone();
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(shared) = me.upgrade() {
+                        shared.flush();
+                    }
+                });
+            }
+        }
+    }
+
+    fn flush(&self) {
+        let Some(update) = self.pending.borrow_mut().take() else {
+            return;
+        };
         let Some(ui) = self.ui() else { return };
         let mut chat = self.chat.borrow_mut();
         ui.render(&chat, &self.images, update);
@@ -412,6 +439,7 @@ fn main() -> Result<(), slint::PlatformError> {
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
         system_reduces_motion: Cell::new(false),
+        pending: RefCell::default(),
         typing_timer: slint::Timer::default(),
         player: RefCell::default(),
         pending_play: RefCell::default(),
@@ -515,12 +543,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 let update = {
                     let mut chat = shared.chat.borrow_mut();
                     chat.set_window_focused(focused);
-                    batch.fold(Update::default(), |update, event| {
-                        if let Event::Error(error) = &event {
+                    chat.apply_all(batch.inspect(|event| {
+                        if let Event::Error(error) = event {
                             tracing::error!("{}", b33p_core::scrub::scrub(error));
                         }
-                        update.merge(chat.apply(event))
-                    })
+                    }))
                 };
                 shared.refresh(update);
             }
@@ -604,12 +631,12 @@ impl Images {
         image
     }
 
-    /// Empty when pictures are turned off.
+    /// Empty when pictures are turned off. Round: cheaper than clipping it at every draw.
     fn avatar(&self, id: &ConversationId, avatar: &Arc<Picture>) -> Image {
         if !self.avatars_enabled.get() {
             return Image::default();
         }
-        self.avatars.get(id, avatar)
+        self.avatars.get(id, avatar, round_image)
     }
 }
 
@@ -622,26 +649,51 @@ impl<K> Default for ImageCache<K> {
 }
 
 impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
-    fn get(&self, key: &K, picture: &Arc<Picture>) -> Image {
+    fn get(&self, key: &K, picture: &Arc<Picture>, convert: fn(&Picture) -> Image) -> Image {
         let mut images = self.0.borrow_mut();
         if let Some((cached, image)) = images.get(key)
             && Arc::ptr_eq(cached, picture)
         {
             return image.clone();
         }
-        let image = picture_image(picture);
+        let image = convert(picture);
         images.insert(key.clone(), (picture.clone(), image.clone()));
         image
     }
 }
 
 /// A picture from the backend, for Slint.
-fn picture_image(picture: &Picture) -> Image {
+pub(crate) fn picture_image(picture: &Picture) -> Image {
     Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
         &picture.rgba,
         picture.width,
         picture.height,
     ))
+}
+
+/// The picture inside the largest circle that fits it, the rest see-through.
+fn round_image(picture: &Picture) -> Image {
+    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        &picture.rgba,
+        picture.width,
+        picture.height,
+    );
+    let (width, height) = (picture.width as f32, picture.height as f32);
+    let (cx, cy) = (width / 2.0, height / 2.0);
+    let radius = width.min(height) / 2.0;
+    for (i, pixel) in pixels.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = (
+            (i as u32 % picture.width) as f32 + 0.5,
+            (i as u32 / picture.width) as f32 + 0.5,
+        );
+        let outside = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - radius;
+        // A pixel-wide soft edge, as a clip would draw it.
+        let cover = (0.5 - outside).clamp(0.0, 1.0);
+        if cover < 1.0 {
+            pixel.a = (pixel.a as f32 * cover) as u8;
+        }
+    }
+    Image::from_rgba8(pixels)
 }
 
 /// Opens a link from a message in the browser. Only web addresses: links come from message

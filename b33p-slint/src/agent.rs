@@ -805,10 +805,12 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             )
         }),
         Action::FetchAttachment { id } => shared.act(|chat| {
+            let command = chat.fetch_attachment(&b33p_core::AttachmentId(id));
+            let rows = command.is_some();
             (
-                chat.fetch_attachment(&b33p_core::AttachmentId(id)),
+                command,
                 Update {
-                    rows: true,
+                    rows,
                     ..Update::default()
                 },
             )

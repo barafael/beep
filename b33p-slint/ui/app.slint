@@ -276,8 +276,10 @@ component IconButton inherits Rectangle {
     width: 32px;
     height: 32px;
     border-radius: self.height / 2;
-    opacity: root.shown || root.active || touch.has-hover ? 1 : 0;
-    animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
+    // On the icon and the badge, not on the button: a see-through container is drawn
+    // through a layer of its own, one per button, hidden or not.
+    property <float> presence: root.shown || root.active || touch.has-hover ? 1 : 0;
+    animate presence { duration: 120ms * Motion.scale; easing: ease-out; }
     background: root.active ? Palette.accent-background.with-alpha(0.18)
         : touch.has-hover ? Palette.foreground.with-alpha(0.1) : transparent;
     animate background { duration: 120ms * Motion.scale; easing: ease-out; }
@@ -288,11 +290,13 @@ component IconButton inherits Rectangle {
     Icon {
         source: root.icon;
         tint: root.tint;
+        opacity: root.presence;
         width: root.icon-size;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
     if root.badge: Rectangle {
+        opacity: root.presence;
         x: parent.width - self.width - 4px;
         y: 4px;
         width: 8px;
@@ -355,9 +359,9 @@ component Avatar inherits Rectangle {
     width: 40px;
     height: self.width;
     border-radius: self.width / 2;
-    clip: true;
     background: tint;
-    // The initials give way to the picture as it fades in (see `AttachmentView`).
+    // The initials give way to the picture (round already) as it fades in (see `AttachmentView`).
+
     Text {
         text: initials;
         color: white;
@@ -586,7 +590,6 @@ component ConversationRow inherits Rectangle {
                     animate width { duration: 150ms * Motion.scale; easing: ease-out; }
                     opacity: item.unread > 0 ? 1 : 0;
                     animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
-                    clip: true;
                     height: 18px;
                     border-radius: 9px;
                     // Muted chats count quietly.
@@ -807,8 +810,8 @@ component AttachmentView inherits VerticalLayout {
 
 // Quick reactions, as in Signal's own apps: a bar over the bubble, there while the pointer
 // rests on the message or on the bar itself.
+// Made only while it shows: it is two dozen items, more than the message under it.
 component ReactionPicker inherits Rectangle {
-    in property <bool> shown;
     // The pointer came onto it, or left it. Told at once as it comes (the message underneath
     // loses the pointer in the same event, and must not take the bar away meanwhile), so a
     // callback rather than a property watched for changes.
@@ -816,9 +819,9 @@ component ReactionPicker inherits Rectangle {
     callback picked(string);
     width: 210px;
     height: 40px;
-    visible: root.shown;
     // Fades in as it appears.
-    opacity: root.shown ? 1 : 0;
+    opacity: 0;
+    init => { self.opacity = 1; }
     animate opacity { duration: 120ms * Motion.scale; easing: ease-out; }
     border-radius: self.height / 2;
     background: Palette.alternate-background;
@@ -913,7 +916,9 @@ component Bubble inherits Rectangle {
     // so none of those it is drawn with does, whichever is set up first.)
     property <int> reactions-at-start: 1000000;
     init => {
-        self.arrived = 1;
+        if item.fresh {
+            self.arrived = 1;
+        }
         self.flash = 0;
         self.reactions-at-start = item.reactions.length;
     }
@@ -930,6 +935,12 @@ component Bubble inherits Rectangle {
     changed hovered => {
         if !self.hovered {
             self.picker-shown = false;
+        }
+    }
+    // Gone, it can't say the pointer left it.
+    changed picker-shown => {
+        if !self.picker-shown {
+            self.picker-hovered = false;
         }
     }
     Timer {
@@ -1254,12 +1265,11 @@ component Bubble inherits Rectangle {
                                 }
                             }
                         }
-                        picker := ReactionPicker {
+                        if root.picker-shown && root.can-react: ReactionPicker {
                             x: item.outgoing ? parent.width - self.width : 0;
                             // Over the bubble's edge by a little, so the pointer can move up onto it
                             // without ever leaving both.
                             y: 6px - self.height;
-                            shown: root.picker-shown && root.can-react;
                             hovered(on) => { root.picker-hovered = on; }
                             picked(emoji) => {
                                 // Gone with the pointer still on it: it won't say it left.
@@ -1427,7 +1437,8 @@ component ActivityStrip inherits Rectangle {
         height: item.height * root.height;
         // Thin rows touch; thicker ones keep a hairline apart.
         property <length> bar-height: max(1px, self.height - (self.height >= 3px ? 1px : 0px));
-        if item.first <= root.bottom && item.end > root.top: Rectangle {
+        Rectangle {
+            visible: item.first <= root.bottom && item.end > root.top;
             x: root.centre - root.reach - 3px;
             width: 2 * root.reach + 6px;
             background: Palette.accent-background.with-alpha(0.2);
@@ -2273,6 +2284,8 @@ export component AppWindow inherits Window {
     callback show-archived(bool);
     // Scrolled near the top of the open chat: older messages, if there are any.
     callback load-older;
+    // The open chat has older messages that aren't being fetched already.
+    in property <bool> can-load-older;
     callback edit(int);
     callback delete(int, bool);
     callback reveal(int);
@@ -3069,7 +3082,7 @@ export component AppWindow inherits Window {
                                 scrolled => {
                                     self.follow = self.at-end();
                                     settle-timer.running = true;
-                                    if self.content-y > -self.visible-height / 2 {
+                                    if root.can-load-older && self.content-y > -self.visible-height / 2 {
                                         root.load-older();
                                     }
                                 }

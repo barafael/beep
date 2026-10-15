@@ -702,10 +702,13 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         move |id| {
             shared.act(|chat| {
+                // Nothing to redraw unless a download starts (a row coming into view asks).
+                let command = chat.fetch_attachment(&AttachmentId(id.into()));
+                let rows = command.is_some();
                 (
-                    chat.fetch_attachment(&AttachmentId(id.into())),
+                    command,
                     Update {
-                        rows: true,
+                        rows,
                         ..Update::default()
                     },
                 )
@@ -1237,6 +1240,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
         window.set_sync_status(sync_status(stage).into());
         window.set_history_skippable(stage == SyncStage::Transfer(HistoryTransfer::Waiting));
     }
+    window.set_can_load_older(chat.can_load_older());
     window.set_error(chat.error().unwrap_or_default().into());
     let staged: Vec<SharedString> = chat
         .staged()
@@ -1248,7 +1252,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 .into()
         })
         .collect();
-    window.set_staged(ModelRc::new(VecModel::from(staged)));
+    update_list(&window.get_staged(), staged, |a, b| a == b);
     render_media(window, chat, images);
     render_stickers(window, chat);
     render_details(window, chat);
@@ -1275,7 +1279,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 .collect()
         })
         .unwrap_or_default();
-    window.set_search_results(ModelRc::new(VecModel::from(results)));
+    update_list(&window.get_search_results(), results, |a, b| a == b);
     window.set_search_is_number(state::looks_like_number(&window.get_search_text()));
     window.set_group_filter_is_number(state::looks_like_number(&window.get_group_draft_filter()));
     let draft = chat.group_draft();
@@ -1333,7 +1337,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 ..Default::default()
             })
             .collect();
-        window.set_forward_targets(ModelRc::new(VecModel::from(targets)));
+        update_list(&window.get_forward_targets(), targets, |a, b| a == b);
     }
     let (archived, archived_unread) = chat.archived();
     window.set_archived_count(archived as i32);
@@ -1347,8 +1351,8 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
     let unread: Vec<i32> = (0..folders.len())
         .map(|at| chat.folder_unread(at) as i32)
         .collect();
-    window.set_folders(ModelRc::new(VecModel::from(folders)));
-    window.set_folder_unread(ModelRc::new(VecModel::from(unread)));
+    update_list(&window.get_folders(), folders, |a, b| a == b);
+    update_list(&window.get_folder_unread(), unread, |a, b| a == b);
     window.set_folder(chat.folder().map_or(-1, |at| at as i32));
     window.set_typing(
         chat.selected()
@@ -1373,13 +1377,14 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
 
     let messages = window.get_messages();
     let messages = vec_model(&messages);
+    let in_group = chat.selected().is_some_and(|c| c.is_group());
     match update.messages {
         MessagesUpdate::Unchanged => {}
         MessagesUpdate::Appended(n) => {
             for message in chat.last_messages(n) {
                 messages.push(MessageItem {
                     fresh: true,
-                    ..message_item(&message, chat, images)
+                    ..message_item(&message, in_group, chat, images)
                 });
             }
             settle_fresh(window);
@@ -1389,7 +1394,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
             let items: Vec<_> = chat
                 .messages()
                 .take(n + 1)
-                .map(|m| message_item(&m, chat, images))
+                .map(|m| message_item(&m, in_group, chat, images))
                 .collect();
             for (row, item) in items.into_iter().enumerate() {
                 if row < n {
@@ -1402,7 +1407,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
         }
         MessagesUpdate::Reset => messages.set_vec(
             chat.messages()
-                .map(|m| message_item(&m, chat, images))
+                .map(|m| message_item(&m, in_group, chat, images))
                 .collect::<Vec<_>>(),
         ),
     }
@@ -1415,7 +1420,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
     // Messages changed in place (downloads, reactions): redraw only rows that differ.
     if update.rows && update.messages != MessagesUpdate::Reset {
         for (row, message) in chat.messages().enumerate() {
-            let item = message_item(&message, chat, images);
+            let item = message_item(&message, in_group, chat, images);
             if !messages
                 .row_data(row)
                 .is_some_and(|old| same_message(&old, &item))
@@ -1478,7 +1483,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
         .iter()
         .map(|p| p.name.as_str().into())
         .collect();
-    window.set_mention_candidates(ModelRc::new(VecModel::from(candidates)));
+    update_list(&window.get_mention_candidates(), candidates, |a, b| a == b);
 }
 
 /// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
@@ -1512,7 +1517,7 @@ fn render_stickers(window: &AppWindow, chat: &ChatState) {
     }
     let chosen = (window.get_sticker_pack().max(0) as usize).min(packs.len().saturating_sub(1));
     let Some(pack) = packs.get(chosen) else {
-        window.set_sticker_rows(ModelRc::new(VecModel::<StickerRow>::default()));
+        clear(&window.get_sticker_rows());
         return;
     };
     // Only when the pack changes, so the grid keeps its place otherwise.
@@ -1698,9 +1703,9 @@ fn render_media(window: &AppWindow, chat: &ChatState, images: &Images) {
     window.set_media_busy(matches!(media, Some(None)));
     let Some(Some(overview)) = media else {
         // Nothing left over for the next chat's.
-        vec_model(&window.get_media_tiles()).set_vec(Vec::new());
-        vec_model(&window.get_media_files()).set_vec(Vec::new());
-        vec_model(&window.get_media_links()).set_vec(Vec::new());
+        clear(&window.get_media_tiles());
+        clear(&window.get_media_files());
+        clear(&window.get_media_links());
         return;
     };
     // The UI lays the tiles out by its width; their size here is beside the point.
@@ -1741,7 +1746,7 @@ fn render_activity(window: &AppWindow, chat: &ChatState) {
     } else {
         Vec::new()
     };
-    window.set_activity(ModelRc::new(VecModel::from(items)));
+    update_list(&window.get_activity(), items, |a, b| a == b);
 }
 
 /// Weeks or months (whichever fit) from top to bottom, long silences folded into a short gap.
@@ -1886,6 +1891,22 @@ pub(crate) fn set_up_models(window: &AppWindow) {
     window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_details_members(ModelRc::new(VecModel::<MemberItem>::default()));
     window.set_details_requests(ModelRc::new(VecModel::<MemberItem>::default()));
+    window.set_staged(ModelRc::new(VecModel::<SharedString>::default()));
+    window.set_search_results(ModelRc::new(VecModel::<SearchResult>::default()));
+    window.set_forward_targets(ModelRc::new(VecModel::<ConversationItem>::default()));
+    window.set_folders(ModelRc::new(VecModel::<SharedString>::default()));
+    window.set_folder_unread(ModelRc::new(VecModel::<i32>::default()));
+    window.set_mention_candidates(ModelRc::new(VecModel::<SharedString>::default()));
+    window.set_activity(ModelRc::new(VecModel::<ActivityItem>::default()));
+    window.set_sticker_rows(ModelRc::new(VecModel::<StickerRow>::default()));
+}
+
+/// Empties a model, unless it is: emptying an empty one still resets its rows.
+fn clear<T: Clone + 'static>(model: &ModelRc<T>) {
+    let model = vec_model(model);
+    if model.row_count() > 0 {
+        model.set_vec(Vec::new());
+    }
 }
 
 /// The `VecModel` behind a model set up in [`set_up_models`].
@@ -1952,14 +1973,20 @@ fn avatar_color(id: &ConversationId) -> Color {
     Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
 }
 
-fn message_item(view: &MessageView, chat: &ChatState, images: &Images) -> MessageItem {
+/// `in_group`: the open chat is a group, so the sender is named.
+fn message_item(
+    view: &MessageView,
+    in_group: bool,
+    chat: &ChatState,
+    images: &Images,
+) -> MessageItem {
     let m = view.message;
     let attachments: Vec<_> = m
         .attachments
         .iter()
         .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
         .collect();
-    let in_group = chat.selected().is_some_and(|c| c.is_group()) && !m.outgoing;
+    let in_group = in_group && !m.outgoing;
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
         sender: m.sender.as_str().into(),
@@ -2161,7 +2188,11 @@ fn attachment_item(
         hidden: kind == AttachmentKind::LongText,
         fetch: download.is_none() && state::shown_inline(kind),
         picture: picture
-            .map(|p| images.attachments.get(&attachment.id, p))
+            .map(|p| {
+                images
+                    .attachments
+                    .get(&attachment.id, p, crate::picture_image)
+            })
             .unwrap_or_default(),
         width: w * scale,
         height: h * scale,

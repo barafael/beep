@@ -36,6 +36,9 @@ struct Agent {
     stream: UnixStream,
     lines: BufReader<UnixStream>,
     next_id: u64,
+    /// Answers read past while waiting for an update: the window is redrawn once per turn
+    /// of its event loop, so an action's answer may come before the update it causes.
+    skipped: Vec<Value>,
 }
 
 /// Starts b33p with the mock backend and connects to its harness.
@@ -87,6 +90,7 @@ fn app(name: &str) -> (App, Agent) {
             stream: writer,
             lines: BufReader::new(stream),
             next_id: 1,
+            skipped: Vec::new(),
         },
     )
 }
@@ -104,12 +108,16 @@ impl Agent {
         self.answer(id)
     }
 
-    /// Reads lines until the answer to `id` comes.
+    /// Reads lines until the answer to `id` comes, unless it was read past already.
     fn answer(&mut self, id: u64) -> Value {
+        let is_answer = |value: &Value| value.get("id").and_then(Value::as_u64) == Some(id);
+        if let Some(at) = self.skipped.iter().position(is_answer) {
+            return self.skipped.remove(at);
+        }
         let deadline = Instant::now() + PATIENCE;
         loop {
             let value = self.line(deadline);
-            if value.get("id").and_then(Value::as_u64) == Some(id) {
+            if is_answer(&value) {
                 return value;
             }
         }
@@ -122,8 +130,12 @@ impl Agent {
         let deadline = Instant::now() + PATIENCE;
         loop {
             let value = self.line(deadline);
-            if value.get("event").is_some() && until(&value) {
-                return value;
+            if value.get("event").is_some() {
+                if until(&value) {
+                    return value;
+                }
+            } else {
+                self.skipped.push(value);
             }
             assert!(Instant::now() < deadline, "no update {what}");
         }
@@ -186,8 +198,17 @@ fn message<'a>(snapshot: &'a Value, text: &str) -> Option<&'a Value> {
 }
 
 /// The mock links, then shows its canned chats.
+/// The chats screen with the mock's chats listed: a contact is listed once its latest
+/// message is known, which comes after the screen.
 fn wait_for_chats(agent: &mut Agent) -> Value {
-    agent.wait_for("the mock's chats", |s| screen(s) == "chats")
+    agent.wait_for("the mock's chats", |s| {
+        screen(s) == "chats"
+            && s["conversations"].as_array().is_some_and(|all| {
+                ["Alice", "Bob"]
+                    .iter()
+                    .all(|name| all.iter().any(|c| c["title"] == *name))
+            })
+    })
 }
 
 fn id_of(chats: &Value, title: &str) -> String {
@@ -196,7 +217,7 @@ fn id_of(chats: &Value, title: &str) -> String {
         .unwrap()
         .iter()
         .find(|c| c["title"].as_str() == Some(title))
-        .unwrap_or_else(|| panic!("a chat called {title}"))["id"]
+        .unwrap_or_else(|| panic!("a chat called {title} in {}", chats["conversations"]))["id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -332,8 +353,8 @@ fn a_subscriber_hears_updates() {
     let seq = agent.result("\"method\":\"subscribe\"")["seq"]
         .as_u64()
         .unwrap();
-    // Sent without waiting for its answer: the update for it comes first, and reading it
-    // here would eat the very event we are after.
+    // Sent without waiting for its answer: reading for the answer could eat the very update
+    // we are after.
     agent.send(&format!(
         "{{\"id\":900,\"method\":\"act\",\"action\":{{\"type\":\"select\",\"conversation\":\"{bob}\"}}}}"
     ));
