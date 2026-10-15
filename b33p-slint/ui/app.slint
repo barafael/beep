@@ -236,7 +236,7 @@ export struct SearchResult {
     snippet: styled-text,
 }
 
-export enum Screen { connecting, password, link, chats }
+export enum Screen { syncing, password, link, chats }
 
 // How much the UI moves: 1 normally, 0 for reduced motion (the user's setting, or their
 // desktop's). Every animation's duration is multiplied by it, so 0 makes changes instant.
@@ -2152,15 +2152,15 @@ export component AppWindow inherits Window {
     preferred-height: 680px;
     background: Palette.background;
 
-    in property <Screen> screen: Screen.connecting;
+    in property <Screen> screen: Screen.syncing;
     in property <image> link-qr;
     in property <bool> password-new;
     in property <string> password-error;
     in property <string> account;
     in property <string> error;
-    in property <bool> synced;
-    // Progress of the message history transfer after linking; empty when there is none.
-    in property <string> history-status;
+    // What the start screen waits for (connecting, the history transfer, catching up).
+    in property <string> sync-status;
+    // The history transfer is waiting for the phone, which can be skipped.
     in property <bool> history-skippable;
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
@@ -2548,7 +2548,9 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.screen == Screen.connecting: Rectangle {
+        // Until the messages are caught up with: what is being waited for, and the one
+        // wait that can be skipped.
+        if root.screen == Screen.syncing: Rectangle {
             // Fades in, as each screen does.
             opacity: 0;
             init => { self.opacity = 1; }
@@ -2558,9 +2560,18 @@ export component AppWindow inherits Window {
                 spacing: 12px;
                 HorizontalLayout { alignment: center; Spinner { indeterminate: true; } }
                 Text {
-                    text: "Connecting to Signal…";
+                    text: root.sync-status;
                     horizontal-alignment: center;
                     color: Palette.foreground.with-alpha(0.7);
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+                if root.history-skippable: HorizontalLayout {
+                    alignment: center;
+                    Button {
+                        text: "Skip";
+                        clicked => { root.skip-history(); }
+                    }
                 }
             }
         }
@@ -2651,32 +2662,6 @@ export component AppWindow inherits Window {
                                 label: "Settings";
                                 active: root.settings-open;
                                 clicked => { root.settings-open = !root.settings-open; }
-                            }
-                        }
-                        if root.history-status != "": HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            padding-bottom: 8px;
-                            spacing: 8px;
-                            Spinner {
-                                indeterminate: true;
-                                width: 16px;
-                                height: 16px;
-                            }
-                            Text {
-                                text: root.history-status;
-                                wrap: word-wrap;
-                                font-size: 0.85rem;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
-                                color: Palette.foreground.with-alpha(0.7);
-                            }
-                            if root.history-skippable: VerticalLayout {
-                                alignment: center;
-                                Button {
-                                    text: "Skip";
-                                    clicked => { root.skip-history(); }
-                                }
                             }
                         }
                         HorizontalLayout {
@@ -3001,12 +2986,6 @@ export component AppWindow inherits Window {
                         }
                         Rectangle { y: parent.height - 1px; height: 1px; background: Palette.border; }
                     }
-                    // While catching up with what arrived meanwhile; sending waits for it.
-                    if !root.synced: ProgressIndicator {
-                        indeterminate: true;
-                        height: 3px;
-                    }
-
                     chat-area := Rectangle {
                         vertical-stretch: 1;
                         // By position in the list: rows differ in height, so it lands near, not on.

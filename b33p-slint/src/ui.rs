@@ -13,7 +13,7 @@ use b33p_core::state::{
 use b33p_core::timeline::{self, Stretch};
 use b33p_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
-    HistoryTransfer, Unsent, now_millis,
+    HistoryTransfer, SyncStage, Unsent, now_millis,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -1192,12 +1192,34 @@ fn chat_action<A>(
     }
 }
 
+/// The start screen's line about what it waits for.
+pub(crate) fn sync_status(stage: SyncStage) -> String {
+    match stage {
+        SyncStage::Starting => "Opening your messages…".into(),
+        SyncStage::Connecting => "Connecting to Signal…".into(),
+        SyncStage::Transfer(HistoryTransfer::Waiting) => {
+            "Waiting for your phone to send your message history…".into()
+        }
+        SyncStage::Transfer(HistoryTransfer::Downloading) => {
+            "Downloading your message history…".into()
+        }
+        SyncStage::Transfer(HistoryTransfer::Importing { messages }) => {
+            format!("Importing your message history… {messages} messages")
+        }
+        SyncStage::Transfer(HistoryTransfer::Finished) => "Connecting to Signal…".into(),
+        SyncStage::CatchingUp { messages: 0 } => "Catching up on your messages…".into(),
+        SyncStage::CatchingUp { messages } => {
+            format!("Catching up on your messages… {messages} new")
+        }
+    }
+}
+
 /// Brings the window in line with `chat`, touching only what `update` says changed (plus the
 /// cheap status properties).
 pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, update: Update) {
     if update.screen {
         match chat.screen() {
-            state::Screen::Connecting => window.set_screen(Screen::Connecting),
+            state::Screen::Syncing(_) => window.set_screen(Screen::Syncing),
             state::Screen::Password { new, error } => {
                 window.set_password_new(*new);
                 window.set_password_error(error.as_deref().unwrap_or_default().into());
@@ -1211,21 +1233,10 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
         }
         window.set_account(chat.account().into());
     }
-    window.set_synced(chat.synced());
-    window.set_history_status(
-        match chat.transfer() {
-            None | Some(HistoryTransfer::Finished) => String::new(),
-            Some(HistoryTransfer::Waiting) => {
-                "Waiting for your phone to send your message history…".into()
-            }
-            Some(HistoryTransfer::Downloading) => "Downloading your message history…".into(),
-            Some(HistoryTransfer::Importing { messages }) => {
-                format!("Importing your message history… {messages} messages")
-            }
-        }
-        .into(),
-    );
-    window.set_history_skippable(chat.transfer() == Some(HistoryTransfer::Waiting));
+    if let Some(stage) = chat.sync_stage() {
+        window.set_sync_status(sync_status(stage).into());
+        window.set_history_skippable(stage == SyncStage::Transfer(HistoryTransfer::Waiting));
+    }
     window.set_error(chat.error().unwrap_or_default().into());
     let staged: Vec<SharedString> = chat
         .staged()

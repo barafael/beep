@@ -19,6 +19,16 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 
 ## 1. M1
 
+### 1.0 Starting up
+
+1. Start b33p: one screen with a spinner says "Opening your messages…", "Connecting to
+   Signal…", then "Catching up on your messages…" (with a count if any came while it was
+   closed), and the chats appear once that is done. Nothing about syncing shows afterwards.
+2. Start it with the network off: the chats appear anyway (nothing can be sent until it is
+   back); turn the network on: messages arrive, with no banner or bar.
+3. Link a fresh install with the history transfer: the same screen walks through waiting for
+   the phone (with **Skip**), downloading and importing, then the catch-up, then the chats.
+
 ### 1.1 Read state and receipts
 
 1. Have someone send you a message while b33p is open but another chat is selected.

@@ -1053,8 +1053,14 @@ struct JoinSnapshot {
 #[derive(Serialize)]
 #[serde(tag = "name", rename_all = "snake_case")]
 enum ScreenSnapshot {
-    Connecting,
-    Password { new: bool, error: Option<String> },
+    /// Starting up, with what the screen says it waits for.
+    Syncing {
+        status: String,
+    },
+    Password {
+        new: bool,
+        error: Option<String>,
+    },
     Link,
     Chats,
 }
@@ -1225,7 +1231,9 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
     Snapshot {
         mock: Backend::mock_requested(),
         screen: match chat.screen() {
-            state::Screen::Connecting => ScreenSnapshot::Connecting,
+            state::Screen::Syncing(stage) => ScreenSnapshot::Syncing {
+                status: ui::sync_status(*stage),
+            },
             state::Screen::Password { new, error } => ScreenSnapshot::Password {
                 new: *new,
                 error: error.clone(),

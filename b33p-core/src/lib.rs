@@ -661,6 +661,19 @@ pub enum HistoryTransfer {
     Finished,
 }
 
+/// What the start-up screen is waiting for, until the first [`Event::Synced`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncStage {
+    /// Opening the local store.
+    Starting,
+    Connecting,
+    Transfer(HistoryTransfer),
+    /// Connected; the messages that arrived meanwhile are coming in, this many so far.
+    CatchingUp {
+        messages: usize,
+    },
+}
+
 /// A user-entered password. Wiped from memory on drop and never printed.
 #[derive(Clone)]
 pub struct Password(zeroize::Zeroizing<String>);
@@ -697,6 +710,8 @@ pub enum Event {
     },
     /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
     Reconnecting,
+    /// Connected to Signal; what arrived meanwhile comes next, then [`Event::Synced`].
+    Connected,
     /// Progress of the message history transfer right after linking.
     HistoryTransfer(HistoryTransfer),
     /// Initial message queue drained; it is now safe to send.

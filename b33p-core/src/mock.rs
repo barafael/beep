@@ -159,6 +159,7 @@ pub fn run(commands: Inbox, events: Events) {
         conversation: chat_id("alice"),
         avatar: Some(Arc::new(gradient(96))),
     });
+    let _ = events.send(Event::Connected);
     let _ = events.send(Event::Synced);
     let _ = events.send(Event::StorageRead);
     // Two stories from Alice (a picture, then text) and one in the group.

@@ -13,8 +13,8 @@ use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Details, Event, HistoryTransfer, Mention, MessageRef,
-    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange, Unsent,
-    apply_reaction, format, now_millis,
+    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange, SyncStage,
+    Unsent, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -27,10 +27,10 @@ const TYPING_REPEAT_MS: u64 = 10_000;
 /// Messages can be deleted for everyone this long after they were sent.
 pub const DELETE_FOR_EVERYONE_MS: u64 = 24 * 60 * 60 * 1000;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Screen {
-    #[default]
-    Connecting,
+    /// Starting up: until the first [`Event::Synced`], or the first failure to connect.
+    Syncing(SyncStage),
     /// See [`Event::PasswordRequired`].
     Password {
         new: bool,
@@ -38,6 +38,12 @@ pub enum Screen {
     },
     Link(QrMatrix),
     Chats,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self::Syncing(SyncStage::Starting)
+    }
 }
 
 /// What a call to [`ChatState::apply`] changed, so UIs can update incrementally.
@@ -406,6 +412,12 @@ struct Notifications {
 impl ChatState {
     pub fn apply(&mut self, event: Event) -> Update {
         let mut update = Update::default();
+        if let (Event::Message(_), Screen::Syncing(SyncStage::CatchingUp { messages })) =
+            (&event, &mut self.screen)
+        {
+            *messages += 1;
+            update.screen = true;
+        }
         match event {
             Event::PasswordRequired { new, error } => {
                 self.screen = Screen::Password { new, error };
@@ -417,16 +429,41 @@ impl ChatState {
             }
             Event::Linked { account } => {
                 self.account = account;
-                self.screen = Screen::Chats;
+                self.screen = Screen::Syncing(SyncStage::Connecting);
                 update.screen = true;
+            }
+            Event::Connected => {
+                if let Screen::Syncing(stage) = &mut self.screen {
+                    *stage = SyncStage::CatchingUp { messages: 0 };
+                    update.screen = true;
+                }
             }
             Event::Synced => {
                 self.synced = true;
                 self.announce_caught_up();
+                if matches!(self.screen, Screen::Syncing(_)) {
+                    self.screen = Screen::Chats;
+                    update.screen = true;
+                }
             }
-            Event::Reconnecting => self.synced = false,
-            Event::HistoryTransfer(HistoryTransfer::Finished) => self.transfer = None,
-            Event::HistoryTransfer(stage) => self.transfer = Some(stage),
+            Event::Reconnecting => {
+                self.synced = false;
+                // Signal out of reach at the start: the chats are still there to read.
+                if matches!(self.screen, Screen::Syncing(_)) {
+                    self.screen = Screen::Chats;
+                    update.screen = true;
+                }
+            }
+            Event::HistoryTransfer(stage) => {
+                self.transfer = (stage != HistoryTransfer::Finished).then_some(stage);
+                if let Screen::Syncing(now) = &mut self.screen {
+                    *now = match stage {
+                        HistoryTransfer::Finished => SyncStage::Connecting,
+                        stage => SyncStage::Transfer(stage),
+                    };
+                    update.screen = true;
+                }
+            }
             Event::Conversations(list) => {
                 for conversation in list {
                     match self
@@ -1222,7 +1259,7 @@ impl ChatState {
             *error = problem;
             return None;
         }
-        self.screen = Screen::Connecting;
+        self.screen = Screen::Syncing(SyncStage::Starting);
         Some(Command::Unlock(Password::new(password)))
     }
 
@@ -2764,6 +2801,14 @@ impl ChatState {
         self.synced
     }
 
+    /// What the start-up screen waits for, while it shows.
+    pub fn sync_stage(&self) -> Option<SyncStage> {
+        match self.screen {
+            Screen::Syncing(stage) => Some(stage),
+            _ => None,
+        }
+    }
+
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
@@ -4052,6 +4097,49 @@ mod tests {
     }
 
     #[test]
+    fn the_start_screen_shows_until_caught_up() {
+        let mut state = ChatState::default();
+        let stage = |state: &ChatState| state.sync_stage().expect("the start screen");
+        assert_eq!(stage(&state), SyncStage::Starting);
+        state.apply(Event::Linked {
+            account: "me".into(),
+        });
+        assert_eq!(stage(&state), SyncStage::Connecting);
+        // Freshly linked: the phone's history comes first.
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Waiting));
+        assert_eq!(stage(&state), SyncStage::Transfer(HistoryTransfer::Waiting));
+        assert!(state.skip_history().is_some());
+        state.apply(Event::HistoryTransfer(HistoryTransfer::Finished));
+        assert_eq!(stage(&state), SyncStage::Connecting);
+        assert!(state.skip_history().is_none());
+        state.apply(Event::Connected);
+        assert_eq!(stage(&state), SyncStage::CatchingUp { messages: 0 });
+        let update = state.apply(Event::Message(message("a", "Ann", 5, false)));
+        assert!(update.screen, "the count on the screen changed");
+        assert_eq!(stage(&state), SyncStage::CatchingUp { messages: 1 });
+        let update = state.apply(Event::Synced);
+        assert!(update.screen);
+        assert_eq!(state.screen(), &Screen::Chats);
+        // Later drops don't bring the start screen back.
+        state.apply(Event::Reconnecting);
+        state.apply(Event::Connected);
+        assert_eq!(state.screen(), &Screen::Chats);
+        assert!(state.sync_stage().is_none());
+    }
+
+    #[test]
+    fn an_unreachable_signal_still_shows_the_chats() {
+        let mut state = ChatState::default();
+        state.apply(Event::Linked {
+            account: "me".into(),
+        });
+        let update = state.apply(Event::Reconnecting);
+        assert!(update.screen);
+        assert_eq!(state.screen(), &Screen::Chats);
+        assert!(!state.synced());
+    }
+
+    #[test]
     fn reconnecting_disables_sending_until_synced() {
         let mut state = state();
         state.select(&ConversationId("a".into()));
@@ -4241,7 +4329,7 @@ mod tests {
         assert!(state.unlock("long enough", "long enougj").is_none());
         let command = state.unlock("long enough", "long enough");
         assert!(matches!(command, Some(Command::Unlock(p)) if p.expose() == "long enough"));
-        assert_eq!(state.screen(), &Screen::Connecting);
+        assert_eq!(state.screen(), &Screen::Syncing(SyncStage::Starting));
     }
 
     #[test]

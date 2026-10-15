@@ -2472,6 +2472,9 @@ async fn receive(
         match manager.receive_messages().await {
             Ok(messages) => {
                 info!("connected to Signal; syncing");
+                if !ctx.events.send(Event::Connected) {
+                    return;
+                }
                 pin_mut!(messages);
                 loop {
                     // Only between messages, so one is never handled halfway.
