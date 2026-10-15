@@ -44,6 +44,9 @@ checklist.
 You need Rust and, on Linux, Qt 6 (the native style draws real Qt widgets); elsewhere Slint's
 own windowing backend is used. [packaging/](packaging) has per-platform notes.
 
+On Windows (x86_64) you also need CMake and NASM, which BoringSSL (contact discovery) builds with:
+`scoop install cmake nasm` or `winget install Kitware.CMake NASM.NASM`, with both on `PATH`.
+
 ```sh
 cargo run --release            # the real client
 cargo run                      # the same, unoptimized
