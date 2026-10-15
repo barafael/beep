@@ -997,7 +997,19 @@ struct Snapshot {
     typing: Vec<String>,
     /// The join-a-group dialog, while open.
     join: Option<JoinSnapshot>,
+    /// The story shown, while one is.
+    story: Option<StorySnapshot>,
     settings: SettingsSnapshot,
+}
+
+#[derive(Serialize)]
+struct StorySnapshot {
+    author: String,
+    /// Which of the author's stories it is, counted from 1, and how many there are.
+    position: usize,
+    count: usize,
+    /// A text story's text; a picture story has none.
+    text: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1221,6 +1233,17 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             .selected()
             .map(|c| chat.typing(&c.id).into_iter().map(str::to_string).collect())
             .unwrap_or_default(),
+        story: chat
+            .current_story()
+            .map(|(story, at, count)| StorySnapshot {
+                author: story.author.clone(),
+                position: at + 1,
+                count,
+                text: match &story.content {
+                    b33p_core::StoryContent::Text { text, .. } => Some(text.clone()),
+                    b33p_core::StoryContent::Picture(_) => None,
+                },
+            }),
         join: chat.join().map(|(link, preview, busy)| JoinSnapshot {
             link: link.to_string(),
             busy,

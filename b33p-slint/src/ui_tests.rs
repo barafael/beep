@@ -9,7 +9,7 @@ use i_slint_backend_testing::ElementHandle;
 use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::generated::{AppWindow, ConversationItem, MessageItem, Screen};
+use crate::generated::{AppWindow, ConversationItem, MessageItem, Screen, StoryItem};
 
 fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
     i_slint_backend_testing::init_no_event_loop();
@@ -120,6 +120,36 @@ fn a_notice_is_drawn_as_a_line_not_a_message() {
 
 /// The details page offers to mark the safety number verified, or to clear that, and says
 /// when it is.
+/// A text story's box takes its size from the viewer. The viewer must not take its size from the
+/// box in turn (the text's height follows its width), or any click in the viewer, which lays it
+/// out, dies of the binding loop.
+#[test]
+fn a_text_story_can_be_clicked_through() {
+    let (window, _messages) = window_with_messages(0);
+    let stepped = Rc::new(Cell::new(0));
+    window.on_step_story({
+        let stepped = stepped.clone();
+        move |by| stepped.set(stepped.get() + by)
+    });
+    window.set_stories_open(true);
+    window.set_story(StoryItem {
+        shown: true,
+        author: "Ferris".into(),
+        time: "11:42".into(),
+        position: "1 / 1".into(),
+        text_story: true,
+        text: "cargo build --release 🦀".into(),
+        foreground: slint::Color::from_rgb_u8(255, 255, 255),
+        background: slint::Color::from_rgb_u8(43, 138, 96),
+        ..Default::default()
+    });
+    settle(&window);
+    find(&window, "Next story")
+        .expect("the viewer shows")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(stepped.get(), 1);
+}
+
 #[test]
 fn the_safety_number_can_be_marked_verified() {
     let (window, _messages) = window_with_messages(1);

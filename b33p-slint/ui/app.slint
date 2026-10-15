@@ -1549,7 +1549,11 @@ component ActivityCalendar inherits Rectangle {
     property <length> tip-x;
     property <length> tip-y;
 
+    // Placed by hand, so the grid's size (from `cell`, from the width) doesn't feed back into
+    // the calendar's own size.
     VerticalLayout {
+        x: 0;
+        y: 0;
         HorizontalLayout {
             padding: 16px;
             padding-bottom: 8px;
@@ -4626,6 +4630,10 @@ export component AppWindow inherits Window {
         animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
         TouchArea {}
         HorizontalLayout {
+            // Placed by hand, so the page's size doesn't feed back into the window's, whose width
+            // the column below reads.
+            x: 0;
+            y: 0;
             // Who has stories, and posting one.
             Rectangle {
                 width: root.narrow && root.story.shown ? 0px : min(280px, root.width);
@@ -4795,12 +4803,19 @@ export component AppWindow inherits Window {
                         }
                         Rectangle {
                             horizontal-stretch: 1;
+                            // Placed by hand (x, y), so that the box and its text stay out of the
+                            // layout's size: the text's height depends on its width, which depends
+                            // on the box's height, which the layout would take from the text.
                             if root.story.text-story: Rectangle {
                                 width: min(parent.width, parent.height * 9 / 16);
                                 height: min(parent.height, parent.width * 16 / 9);
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                                 border-radius: 12px;
                                 background: root.story.background;
                                 Text {
+                                    x: 16px;
+                                    y: (parent.height - self.height) / 2;
                                     width: parent.width - 32px;
                                     text: root.story.text;
                                     wrap: word-wrap;

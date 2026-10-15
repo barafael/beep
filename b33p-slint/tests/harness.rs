@@ -292,6 +292,32 @@ fn a_group_is_joined_through_its_link() {
     assert_eq!(listed["left"], true);
 }
 
+/// Stories are shown one after another: a picture, then a text one, whose box is sized from the
+/// window and once sized the window from itself (a binding loop that crashed the app).
+#[test]
+fn stories_are_shown_in_turn() {
+    let (_app, mut agent) = app("stories");
+    let chats = wait_for_chats(&mut agent);
+    let alice = id_of(&chats, "Alice");
+    let rust = id_of(&chats, "Rustaceans 🦀");
+    agent.act(&format!(
+        "{{\"type\":\"open_story\",\"conversation\":\"{alice}\"}}"
+    ));
+    let picture = agent.wait_for("Alice's story", |s| s["story"]["author"] == "Alice");
+    assert_eq!(picture["story"]["position"], 1);
+    assert_eq!(picture["story"]["count"], 2);
+    assert!(picture["story"]["text"].is_null(), "the first is a picture");
+    agent.act(&format!(
+        "{{\"type\":\"open_story\",\"conversation\":\"{rust}\"}}"
+    ));
+    let text = agent.wait_for("Ferris's story", |s| s["story"]["author"] == "Ferris");
+    assert_eq!(text["story"]["text"], "cargo build --release 🦀");
+    // The window drew the text story (and did not die doing it).
+    let drawn = agent.snapshot();
+    assert_eq!(drawn["story"]["author"], "Ferris");
+    assert!(drawn["window"].is_object(), "the window answers");
+}
+
 /// Whatever an agent does, a subscribed agent hears of it, numbered on.
 #[test]
 fn a_subscriber_hears_updates() {
