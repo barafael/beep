@@ -328,6 +328,10 @@ enum Action {
     RenameGroup {
         title: String,
     },
+    /// The group's picture from an image file; none takes it away.
+    SetGroupPicture {
+        path: Option<String>,
+    },
     DescribeGroup {
         description: String,
     },
@@ -618,6 +622,15 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
         }
         Action::RenameGroup { title } => selected(shared, |id, chat| {
             chat.edit_group(id, GroupEdit::Title(title))
+        }),
+        Action::SetGroupPicture { path } => selected(shared, |id, chat| {
+            chat.edit_group(
+                id,
+                match path {
+                    Some(path) => GroupEdit::SetPicture(path.into()),
+                    None => GroupEdit::RemovePicture,
+                },
+            )
         }),
         Action::DescribeGroup { description } => selected(shared, |id, chat| {
             chat.edit_group(id, GroupEdit::Description(description))
