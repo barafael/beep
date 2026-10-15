@@ -57,7 +57,7 @@ pub fn start(shared: &Rc<Shared>) {
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "can't open the agent socket");
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't open the agent socket");
             return;
         }
     };
@@ -75,10 +75,10 @@ pub fn start(shared: &Rc<Shared>) {
             let _ = std::fs::remove_file(&path);
         });
     if let Err(error) = spawned {
-        tracing::warn!(%error, "can't start the agent listener");
+        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't start the agent listener");
         return;
     }
-    tracing::info!(path = %path_for_log, "the agent harness is listening");
+    tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "the agent harness is listening");
 }
 
 /// What a connection asks, on its way to the UI thread. `request` is `None` once the

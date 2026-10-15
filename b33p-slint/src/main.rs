@@ -207,7 +207,7 @@ impl Shared {
 
     fn start_playing(&self, id: AttachmentId, audio: Arc<[u8]>) {
         if let Err(error) = self.player.borrow_mut().play(id, audio) {
-            tracing::warn!(%error, "can't play audio");
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't play audio");
             let update = self.chat.borrow_mut().apply(Event::Error(error));
             self.refresh(update);
             return;
@@ -294,7 +294,7 @@ impl Shared {
         if let Some(ui) = self.ui()
             && let Err(error) = ui.show()
         {
-            tracing::warn!(%error, "failed to show the window");
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to show the window");
         }
     }
 
@@ -325,7 +325,7 @@ impl Shared {
 
     fn apply_settings(self: &Rc<Self>, settings: Settings) {
         if let Err(error) = settings.save() {
-            tracing::warn!(%error, "failed to save settings");
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
         }
         self.settings.replace(settings.clone());
         self.apply_motion();
@@ -651,7 +651,7 @@ fn open_link(link: &str) {
         return;
     }
     if let Err(error) = open::that_detached(link) {
-        tracing::warn!(%error, "couldn't open a link");
+        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "couldn't open a link");
     }
 }
 
