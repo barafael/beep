@@ -17,12 +17,12 @@ qrcode = { version = "0.14", default-features = false }
 # `StyledText` (`text-selectable`, `has-selection`, `copy()`), which the messages need. A git
 # dependency rather than a patch, because the change is in the `slint` facade too (its
 # `compat-1-18` feature). Drop it once the change has landed upstream and a release carries it.
-slint = { git = "https://github.com/barafael/slint", rev = "84bb27e1e730425e12624015e748bd889e1a2715", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "84bb27e1e730425e12624015e748bd889e1a2715" }
+slint = { git = "https://github.com/barafael/slint", rev = "ba3d92b71a7c03c9d420635a0f98d3c6a420bf9d", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "ba3d92b71a7c03c9d420635a0f98d3c6a420bf9d" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "84bb27e1e730425e12624015e748bd889e1a2715" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "84bb27e1e730425e12624015e748bd889e1a2715" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "84bb27e1e730425e12624015e748bd889e1a2715" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "ba3d92b71a7c03c9d420635a0f98d3c6a420bf9d" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "ba3d92b71a7c03c9d420635a0f98d3c6a420bf9d" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "ba3d92b71a7c03c9d420635a0f98d3c6a420bf9d" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
@@ -42,11 +42,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "84
 # master key of the wrong length); #445 (drop sync messages from other accounts) is now
 # libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "9b3479555338c3dddd3017744b61144e396f660e" }
+presage = { git = "https://github.com/barafael/presage", rev = "318f590418f149e36dd83262c12a9a6e5f171ac5" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "9b3479555338c3dddd3017744b61144e396f660e", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "318f590418f149e36dd83262c12a9a6e5f171ac5", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -71,7 +71,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f0b3d6e2e0d95cfea8cfc609b77f4281a2f3c38" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "6c837fff1931ed22210ed4f93ea0438ced211450" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
