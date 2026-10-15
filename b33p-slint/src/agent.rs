@@ -437,6 +437,10 @@ enum Action {
     OpenAttachment {
         id: String,
     },
+    /// Sends the message at `index` in the open chat again, after it failed.
+    RetrySend {
+        index: usize,
+    },
     /// Pretends the window lost or regained focus, for tests of read receipts.
     SetWindowFocused {
         focused: bool,
@@ -790,6 +794,15 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
         Action::Unstage { index } => shared.act(|chat| {
             chat.unstage(index as usize);
             (None, Update::default())
+        }),
+        Action::RetrySend { index } => shared.act(|chat| {
+            (
+                chat.retry_send(index),
+                Update {
+                    rows: true,
+                    ..Update::default()
+                },
+            )
         }),
         Action::FetchAttachment { id } => shared.act(|chat| {
             (

@@ -2471,6 +2471,7 @@ async fn receive(
         let mut reconnect_now = false;
         match manager.receive_messages().await {
             Ok(messages) => {
+                info!("connected to Signal; syncing");
                 pin_mut!(messages);
                 loop {
                     // Only between messages, so one is never handled halfway.
@@ -2509,6 +2510,7 @@ async fn receive(
             backoff = Duration::from_secs(1);
             continue;
         }
+        debug!(?backoff, "reconnecting to Signal");
         tokio::select! {
             () = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
             () = woke.notified() => {
@@ -2575,7 +2577,10 @@ async fn handle_received(
 ) -> bool {
     let events = &ctx.events;
     match received {
-        Received::QueueEmpty => events.send(Event::Synced),
+        Received::QueueEmpty => {
+            info!("synced with Signal");
+            events.send(Event::Synced)
+        }
         Received::Contacts => {
             names.clear();
             send_conversations(manager, ctx).await;

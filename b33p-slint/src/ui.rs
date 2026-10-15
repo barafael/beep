@@ -732,6 +732,20 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             shared.act(|chat| (chat.react(index as usize, &emoji), Update::default()));
         }
     });
+    window.on_retry_send({
+        let shared = shared.clone();
+        move |index| {
+            shared.act(|chat| {
+                (
+                    chat.retry_send(index as usize),
+                    Update {
+                        rows: true,
+                        ..Update::default()
+                    },
+                )
+            });
+        }
+    });
     window.on_reply({
         let shared = shared.clone();
         move |index| {

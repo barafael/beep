@@ -9,7 +9,9 @@ use i_slint_backend_testing::ElementHandle;
 use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use crate::generated::{AppWindow, ConversationItem, MessageItem, Screen, StoryItem};
+use crate::generated::{
+    AppWindow, ConversationItem, DeliveryState, MessageItem, Screen, StoryItem,
+};
 
 fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
     i_slint_backend_testing::init_no_event_loop();
@@ -148,6 +150,35 @@ fn a_text_story_can_be_clicked_through() {
         .expect("the viewer shows")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(stepped.get(), 1);
+}
+
+/// A message that failed to go out offers to be sent again, from its bubble.
+#[test]
+fn a_failed_message_offers_a_retry() {
+    let (window, messages) = window_with_messages(2);
+    messages.set_row_data(
+        1,
+        MessageItem {
+            outgoing: true,
+            delivery: DeliveryState::Failed,
+            ..message("never went out")
+        },
+    );
+    let retried = Rc::new(Cell::new(None));
+    window.on_retry_send({
+        let retried = retried.clone();
+        move |index| retried.set(Some(index))
+    });
+    settle(&window);
+    assert_eq!(
+        find(&window, "Send again").into_iter().count(),
+        1,
+        "only the failed message offers it"
+    );
+    find(&window, "Send again")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(retried.get(), Some(1));
 }
 
 #[test]
@@ -595,7 +626,6 @@ fn the_window_shows_the_chat_state() {
     settle(&window);
 
     let delivery: Vec<_> = window.get_messages().iter().map(|m| m.delivery).collect();
-    use crate::generated::DeliveryState;
     assert_eq!(
         delivery,
         [
@@ -605,7 +635,8 @@ fn the_window_shows_the_chat_state() {
         ]
     );
     assert_eq!(
-        ElementHandle::find_by_accessible_label(&window, "Not sent").count(),
-        2
+        ElementHandle::find_by_accessible_label(&window, "Send again").count(),
+        2,
+        "each failed message offers a retry"
     );
 }

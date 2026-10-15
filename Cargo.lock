@@ -4525,7 +4525,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=6c837fff1931ed22210ed4f93ea0438ced211450#6c837fff1931ed22210ed4f93ea0438ced211450"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=0e5076bb619a1e746afc68fd626552d4b85b38df#0e5076bb619a1e746afc68fd626552d4b85b38df"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",
@@ -5669,7 +5669,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -6130,7 +6130,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=318f590418f149e36dd83262c12a9a6e5f171ac5#318f590418f149e36dd83262c12a9a6e5f171ac5"
+source = "git+https://github.com/barafael/presage?rev=b388352bee0dcbb4a05c07a49c3b69530712f6f7#b388352bee0dcbb4a05c07a49c3b69530712f6f7"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6153,7 +6153,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=318f590418f149e36dd83262c12a9a6e5f171ac5#318f590418f149e36dd83262c12a9a6e5f171ac5"
+source = "git+https://github.com/barafael/presage?rev=b388352bee0dcbb4a05c07a49c3b69530712f6f7#b388352bee0dcbb4a05c07a49c3b69530712f6f7"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9464,7 +9464,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

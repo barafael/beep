@@ -875,6 +875,8 @@ component Bubble inherits Rectangle {
     callback open-link(string);
     callback reply;
     callback react(string);
+    // Sends a message that failed to go out again.
+    callback retry;
     callback edit;
     callback delete(bool);
     callback copy-text(string);
@@ -1236,11 +1238,18 @@ component Bubble inherits Rectangle {
                                         padding-left: 5px;
                                         padding-right: 5px;
                                         Text {
-                                            text: "Not sent";
+                                            text: "Not sent · Retry";
                                             font-size: 0.72rem;
                                             font-weight: 700;
                                             color: white;
                                         }
+                                    }
+                                    TouchArea {
+                                        accessible-role: button;
+                                        accessible-label: "Send again";
+                                        accessible-action-default => { self.clicked(); }
+                                        mouse-cursor: pointer;
+                                        clicked => { root.retry(); }
                                     }
                                 }
                             }
@@ -2243,6 +2252,7 @@ export component AppWindow inherits Window {
     changed width => { root.narrow = root.width < 640px; }
     callback reply(int);
     callback react(int, string);
+    callback retry-send(int);
     callback cancel-reply;
     // The message the composer answers; both empty when not replying.
     in property <string> reply-author;
@@ -3121,6 +3131,7 @@ export component AppWindow inherits Window {
                                     open-attachment(id) => { root.open-attachment(id); }
                                     open-link(link) => { root.open-link(link); }
                                     react(emoji) => { root.react(index, emoji); }
+                                    retry => { root.retry-send(index); }
                                     edit => {
                                         root.edit(index);
                                         focus-composer-timer.running = true;

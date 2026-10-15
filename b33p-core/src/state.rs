@@ -260,6 +260,8 @@ pub struct ChatState {
     synced: bool,
     transfer: Option<HistoryTransfer>,
     error: Option<String>,
+    /// What was sent for each message shown as sending or failed, to send it again.
+    pending_sends: HashMap<(ConversationId, u64), Command>,
     /// Most recently active first; see [`ChatState::sort_conversations`].
     conversations: Vec<Conversation>,
     unread: HashMap<ConversationId, u32>,
@@ -574,6 +576,7 @@ impl ChatState {
             {
                 // Sent: it takes the place of the message shown while sending.
                 let id = message.conversation.clone();
+                self.pending_sends.remove(&(id.clone(), message.timestamp));
                 let history = self.history.get_mut(&id).expect("checked above");
                 let shown = history
                     .iter()
@@ -1380,6 +1383,8 @@ impl ChatState {
         else {
             return Update::default();
         };
+        self.pending_sends
+            .insert((conversation.clone(), *timestamp), send.clone());
         // The files go up first, which takes a while: until then, their names stand in.
         let mut shown = body.clone();
         for file in files {
@@ -2202,6 +2207,8 @@ impl ChatState {
             // Never went out (or is still going): nothing to tell anyone. A send still under
             // way finishes regardless, and the sent message shows up.
             let timestamp = message.timestamp;
+            self.pending_sends
+                .remove(&(conversation.clone(), timestamp));
             let history = self.history.get_mut(&conversation).expect("shown");
             history.retain(|m| !is_unsent_at(m, timestamp));
             return (None, Update::reset());
@@ -2568,6 +2575,29 @@ impl ChatState {
 
     /// Reacts to the `index`th message of [`ChatState::messages`] with `emoji`; reacting with
     /// the emoji we already put there takes it back.
+    /// Sends the `index`th message of [`ChatState::messages`] again, if it failed to go out.
+    pub fn retry_send(&mut self, index: usize) -> Option<Command> {
+        let conversation = self.selected()?;
+        if !self.can_write_to(conversation) {
+            return None;
+        }
+        let conversation = conversation.id.clone();
+        let message = self.messages().nth(index)?.message;
+        if !(message.outgoing && message.unsent == Some(Unsent::Failed)) {
+            return None;
+        }
+        let timestamp = message.timestamp;
+        let command = self
+            .pending_sends
+            .get(&(conversation.clone(), timestamp))?
+            .clone();
+        let history = self.history.get_mut(&conversation)?;
+        for shown in history.iter_mut().filter(|m| is_unsent_at(m, timestamp)) {
+            shown.unsent = Some(Unsent::Sending);
+        }
+        Some(command)
+    }
+
     pub fn react(&self, index: usize, emoji: &str) -> Option<Command> {
         let conversation = self.selected()?;
         if !self.can_write_to(conversation) {
@@ -4138,6 +4168,37 @@ mod tests {
         let (command, _) = state.delete(0, false);
         assert!(command.is_none());
         assert_eq!(state.messages().count(), 0);
+    }
+
+    #[test]
+    fn a_failed_send_can_be_sent_again() {
+        let mut state = state();
+        let a = ConversationId("a".into());
+        state.select(&a);
+        let (first, _) = state.compose("hi");
+        let timestamp = sent_at(first.clone());
+        assert!(state.retry_send(0).is_none(), "still sending");
+        state.apply(Event::SendFailed {
+            conversation: a.clone(),
+            timestamp,
+        });
+        let again = state.retry_send(0).expect("sent again");
+        assert_eq!(sent_at(Some(again.clone())), timestamp, "the same message");
+        assert!(matches!(
+            (first.unwrap(), again),
+            (Command::Send { body: b1, .. }, Command::Send { body: b2, .. }) if b1 == b2
+        ));
+        let shown = state.last_messages(1).next().unwrap().message.clone();
+        assert_eq!(shown.unsent, Some(Unsent::Sending));
+        // Once sent, there is nothing to send again.
+        state.apply(Event::Message(ChatMessage {
+            body: "hi".into(),
+            ..message("a", "Me", timestamp, true)
+        }));
+        assert!(state.retry_send(0).is_none());
+        // Nor is someone else's message.
+        state.apply(Event::Message(message("a", "Bob", timestamp + 1, false)));
+        assert!(state.retry_send(1).is_none());
     }
 
     #[test]

@@ -45,6 +45,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    - Under it: ✓ when sent, ✓✓ when delivered, ✓✓ on a filled pill when they read it (if they
      send read receipts).
 2. Restart b33p; the ticks of older messages stay.
+3. Send while offline (network off, or right as b33p reconnects): the bubble shows
+   **Not sent · Retry**. Once online, click it: "Sending…", then the ticks as in 1.
 
 ### 1.3 Typing indicators
 
