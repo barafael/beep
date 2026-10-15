@@ -190,7 +190,7 @@ pub(crate) async fn fetch(
             tracing::debug!(kind = ?attachment.kind, size = attachment.size, "fetched attachment")
         }
         Err(error) => {
-            tracing::debug!(kind = ?attachment.kind, %error, "failed to fetch attachment")
+            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::scrubbed(&error), "failed to fetch attachment")
         }
     }
     let _ = events.send(Event::Attachment {
@@ -458,7 +458,7 @@ fn mark_downloaded(path: &std::path::Path) {
         Ok(())
     };
     if let Err(error) = marked {
-        tracing::debug!(%error, "couldn't mark a file as downloaded");
+        tracing::debug!(error = %crate::scrub::scrubbed(&error), "couldn't mark a file as downloaded");
     }
 }
 
@@ -561,7 +561,7 @@ fn without_metadata(content_type: &str, data: Vec<u8>) -> Vec<u8> {
     match redraw() {
         Ok(redrawn) => redrawn,
         Err(error) => {
-            tracing::warn!(%error, "couldn't take the metadata out of a picture; sending it as it is");
+            tracing::warn!(error = %crate::scrub::scrubbed(&error), "couldn't take the metadata out of a picture; sending it as it is");
             data
         }
     }

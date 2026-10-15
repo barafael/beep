@@ -89,7 +89,7 @@ pub(crate) async fn receive_history(
             match download(manager, cdn, &cdn_key, &path).await {
                 Ok(()) => break,
                 Err(Download::Failed(error)) if attempt < DOWNLOAD_ATTEMPTS => {
-                    warn!(%error, attempt, "failed to download the message history; retrying");
+                    warn!(error = %crate::scrub::scrubbed(&error), attempt, "failed to download the message history; retrying");
                     tokio::time::sleep(Duration::from_secs(5) * attempt).await;
                     attempt += 1;
                 }
@@ -134,7 +134,7 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, String> {
             }
             // A network hiccup shouldn't throw away the link: the archive may still come.
             Err(error) => {
-                warn!(%error, "failed to ask for the message history; retrying");
+                warn!(error = %crate::scrub::scrubbed(&error), "failed to ask for the message history; retrying");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }

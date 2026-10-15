@@ -47,7 +47,7 @@ use crate::{
     format::{self, RangeValue, WireRange},
     local::LocalStore,
     now_millis,
-    scrub::scrub,
+    scrub::{scrub, scrubbed},
     transfer,
     vault::{self, KeySource, KeyringKey},
 };
@@ -137,7 +137,7 @@ impl Paths {
         // Earlier versions wrote it world-readable.
         match vault::restrict_file(&dir.join("b33p.key")) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                warn!(%error, "could not make the key source private");
+                warn!(error = %scrubbed(&error), "could not make the key source private");
             }
             _ => {}
         }
@@ -199,7 +199,7 @@ fn unlock(
                 return open_store(runtime, local, &paths, &key).map(Some);
             }
             Err(reason) => {
-                info!(%reason, "no usable system keyring; protecting the database with a password");
+                info!(reason = %scrubbed(&reason), "no usable system keyring; protecting the database with a password");
                 let salt = vault::random_salt();
                 let kdf = vault::Kdf::CURRENT;
                 write_source(&paths, &KeySource::Password { salt, kdf })?;
@@ -229,7 +229,7 @@ fn unlock(
         match open_store(runtime, local, &paths, &key) {
             Ok(store) => return Ok(Some(store)),
             Err(reason) if !new => {
-                warn!(%reason, "failed to unlock the database");
+                warn!(reason = %scrubbed(&reason), "failed to unlock the database");
                 error = Some("Wrong password.".into());
             }
             Err(reason) => return Err(reason),
@@ -316,7 +316,7 @@ fn open_store(
         if let Err(error) = vault::restrict_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %path.display(), %error, "could not make a database file private");
+            warn!(path = %scrubbed(&path.display()), error = %scrubbed(&error), "could not make a database file private");
         }
     }
     Ok((store, tables, closed))
@@ -444,7 +444,7 @@ async fn run_linked(
         // The answer arrives through `receive` as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
         if let Err(error) = manager.request_contacts().await {
-            warn!(%error, "failed to request contacts");
+            warn!(error = %scrubbed(&error), "failed to request contacts");
         }
     }
     if !storage_read {
@@ -507,7 +507,7 @@ async fn run_linked(
                 let Err(error) = finished else { break true };
                 // Anything else it couldn't handle: start over, rather than look connected
                 // while nothing arrives; later and later should it keep failing.
-                warn!(%error, "receiving failed");
+                warn!(error = %scrubbed(&error), "receiving failed");
                 let _ = events.send(Event::Error(
                     "Receiving messages failed; trying again.".into(),
                 ));
@@ -646,7 +646,7 @@ async fn link_with_history(
 /// devices doesn't fill up with dead entries. Best effort: linking again works regardless.
 async fn unlink(manager: Mgr) {
     if let Err(error) = manager.unlink_self().await {
-        warn!(%error, "failed to remove this device from the account");
+        warn!(error = %scrubbed(&error), "failed to remove this device from the account");
     }
 }
 
@@ -856,7 +856,7 @@ async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversati
     let mut remembered = match ctx.tables.conversations().await {
         Ok(remembered) => remembered,
         Err(error) => {
-            warn!(%error, "failed to read conversation settings");
+            warn!(error = %scrubbed(&error), "failed to read conversation settings");
             return;
         }
     };
@@ -885,11 +885,11 @@ async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) -> ChatSettin
             .mark_read(id, read)
             .await
             .unwrap_or_else(|error| {
-                warn!(%error, "failed to remember a conversation");
+                warn!(error = %scrubbed(&error), "failed to remember a conversation");
                 ChatSettings::default()
             }),
         Err(error) => {
-            warn!(%error, "failed to read a conversation's settings");
+            warn!(error = %scrubbed(&error), "failed to read a conversation's settings");
             ChatSettings::default()
         }
     }
@@ -900,7 +900,7 @@ async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
     match manager.store().messages_before(thread, None, 1).await {
         Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
         Err(error) => {
-            warn!(%error, "failed to read a thread's newest message");
+            warn!(error = %scrubbed(&error), "failed to read a thread's newest message");
             0
         }
     }
@@ -920,7 +920,7 @@ async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
         .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
-        warn!(%error, ?kind, "failed to ask the primary device");
+        warn!(error = %scrubbed(&error), ?kind, "failed to ask the primary device");
     }
 }
 
@@ -1121,7 +1121,7 @@ async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &GroupContextV
     }
     group.revision = changes.version;
     if let Err(error) = store.save_group(key, group).await {
-        warn!(%error, "failed to note that we were removed from a group");
+        warn!(error = %scrubbed(&error), "failed to note that we were removed from a group");
     }
 }
 
@@ -1221,7 +1221,7 @@ async fn on_story(
             None => known && !is_unanswered_request(ctx, &conversation).await,
         };
         if !allowed {
-            debug!(author = %author.service_id_string(), "dropped a story from a stranger");
+            debug!(conversation = %tag(&conversation), "dropped a story from a stranger");
             return;
         }
     }
@@ -1255,7 +1255,7 @@ async fn on_story(
         None => return,
     }
     if let Err(error) = ctx.tables.add_story(&stored).await {
-        warn!(%error, "failed to keep a story");
+        warn!(error = %scrubbed(&error), "failed to keep a story");
         return;
     }
     send_stories(manager, ctx).await;
@@ -1323,7 +1323,7 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
             .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
             .await
         {
-            debug!(%error, "failed to send a viewed receipt");
+            debug!(error = %scrubbed(&error), "failed to send a viewed receipt");
         }
     }
     let sync = SyncMessage {
@@ -1536,7 +1536,7 @@ async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]) {
     let avatar = match manager.retrieve_group_avatar(context).await {
         Ok(bytes) => bytes.and_then(|bytes| decode_avatar(&bytes)).map(Arc::new),
         Err(error) => {
-            warn!(%error, "failed to fetch the group's picture");
+            warn!(error = %scrubbed(&error), "failed to fetch the group's picture");
             return;
         }
     };
@@ -1745,7 +1745,7 @@ async fn send_unread(manager: &Mgr, ctx: &Ctx) {
     let remembered = match ctx.tables.conversations().await {
         Ok(remembered) => remembered,
         Err(error) => {
-            warn!(%error, "failed to read conversation settings");
+            warn!(error = %scrubbed(&error), "failed to read conversation settings");
             return;
         }
     };
@@ -1908,7 +1908,7 @@ async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
             }
             // E.g. offline at the start; try again later.
             Err(error) => {
-                warn!(%error, "failed to read the storage service");
+                warn!(error = %scrubbed(&error), "failed to read the storage service");
                 tokio::select! {
                     () = tokio::time::sleep(RETRY) => {}
                     () = ctx.storage_changed.notified() => {}
@@ -1942,7 +1942,7 @@ async fn take_verifications(
         if let Err(error) =
             remember_verification(manager, ctx, *who, &key, verification.state, verifier).await
         {
-            warn!(%error, "failed to keep a verification from the phone");
+            warn!(error = %scrubbed(&error), "failed to keep a verification from the phone");
         }
     }
     if let Err(error) = ctx
@@ -1950,7 +1950,7 @@ async fn take_verifications(
         .set_remote_verifications(&verifications.now)
         .await
     {
-        warn!(%error, "failed to keep what the phone says about verifications");
+        warn!(error = %scrubbed(&error), "failed to keep what the phone says about verifications");
     }
 }
 
@@ -1964,7 +1964,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
                 match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
                     Ok((_, verifications)) => take_verifications(manager, ctx, verifications).await,
                     Err(error) => {
-                        warn!(%error, "failed to read the storage service");
+                        warn!(error = %scrubbed(&error), "failed to read the storage service");
                         return;
                     }
                 }
@@ -1983,7 +1983,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
             }
             Ok(Written::Nothing | Written::NoKey) => return,
             Err(error) => {
-                warn!(%error, "failed to write to the storage service");
+                warn!(error = %scrubbed(&error), "failed to write to the storage service");
                 return;
             }
         }
@@ -2007,7 +2007,7 @@ async fn sweep_expired(manager: Mgr, ctx: Ctx) {
         let (due, next) = match ctx.tables.due(now_millis()).await {
             Ok(found) => found,
             Err(error) => {
-                warn!(%error, "failed to look for disappearing messages");
+                warn!(error = %scrubbed(&error), "failed to look for disappearing messages");
                 tokio::time::sleep(RETRY).await;
                 continue;
             }
@@ -2018,13 +2018,13 @@ async fn sweep_expired(manager: Mgr, ctx: Ctx) {
             if let Some(thread) = thread_of(&conversation)
                 && let Err(error) = store.delete_message(&thread, message.timestamp).await
             {
-                warn!(%error, "failed to delete a disappearing message");
+                warn!(error = %scrubbed(&error), "failed to delete a disappearing message");
                 continue;
             }
             deleted.push((conversation, message));
         }
         if let Err(error) = ctx.tables.forget(&deleted).await {
-            warn!(%error, "failed to forget disappearing messages");
+            warn!(error = %scrubbed(&error), "failed to forget disappearing messages");
             tokio::time::sleep(RETRY).await;
             continue;
         }
@@ -2067,7 +2067,7 @@ async fn start_timers(
         return;
     }
     if let Err(error) = ctx.tables.set_expiries(conversation, &expiries).await {
-        warn!(%error, "failed to start disappearing timers");
+        warn!(error = %scrubbed(&error), "failed to start disappearing timers");
         return;
     }
     ctx.expiring.notify_one();
@@ -2231,7 +2231,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             }
             Err(error) => {
                 failed += 1;
-                debug!(conversation = %tag(&id), %error, "failed to fetch avatar");
+                debug!(conversation = %tag(&id), error = %scrubbed(&error), "failed to fetch avatar");
             }
         }
     }
@@ -2496,11 +2496,11 @@ async fn receive(
                 }
             }
             Err(error) if removed_from_account(&error) => {
-                warn!(%error, "Signal no longer accepts this device");
+                warn!(error = %scrubbed(&error), "Signal no longer accepts this device");
                 removed.notify_one();
                 return;
             }
-            Err(error) => warn!(%error, "failed to connect to Signal"),
+            Err(error) => warn!(error = %scrubbed(&error), "failed to connect to Signal"),
         }
         if !ctx.events.send(Event::Reconnecting) {
             return;
@@ -2556,7 +2556,7 @@ async fn watch_wakeups(woke: Rc<tokio::sync::Notify>) {
         zbus::Result::Ok(())
     };
     if let Err(error) = watch.await {
-        debug!(%error, "can't tell when the computer wakes from sleep");
+        debug!(error = %scrubbed(&error), "can't tell when the computer wakes from sleep");
     }
 }
 
@@ -2590,7 +2590,7 @@ async fn handle_received(
                 debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
                 return true;
             }
-            warn!(sender = %sender.service_id_string(), %error, "failed to decrypt a message");
+            warn!(sender = %sender.service_id_string(), error = %scrubbed(&error), "failed to decrypt a message");
             // Our own devices' messages: nothing to reset (a session with ourselves), and
             // nothing to tell in a chat with ourselves.
             if sender == own_id(manager) {
@@ -2626,7 +2626,7 @@ async fn handle_received(
                     .await
                 {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
-                    Err(error) => warn!(%error, "failed to reset the session"),
+                    Err(error) => warn!(error = %scrubbed(&error), "failed to reset the session"),
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
@@ -2754,7 +2754,7 @@ async fn on_retry_receipt(
             }
             repairs.resent.insert((sender, timestamp));
         }
-        Err(error) => warn!(%error, "failed to send a message again"),
+        Err(error) => warn!(error = %scrubbed(&error), "failed to send a message again"),
     }
 }
 
@@ -2778,7 +2778,7 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
     }
     match sessions.store_session(&address, &session).await {
         Ok(()) => info!(%address, "dropped the session they couldn't decrypt"),
-        Err(error) => warn!(%error, "failed to drop a session"),
+        Err(error) => warn!(error = %scrubbed(&error), "failed to drop a session"),
     }
 }
 
@@ -2982,7 +2982,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
                 debug!("ignored a delete of a message that isn't there");
                 return true;
             }
-            Err(error) => warn!(%error, "failed to erase a deleted message"),
+            Err(error) => warn!(error = %scrubbed(&error), "failed to erase a deleted message"),
         }
         return events.send(Event::Deleted {
             conversation: id,
@@ -2999,7 +2999,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             .set_delivery(&id, message.timestamp, Delivery::Sent)
             .await
         {
-            warn!(%error, "failed to remember a sent message");
+            warn!(error = %scrubbed(&error), "failed to remember a sent message");
         }
         if let ContentBody::SynchronizeMessage(SyncMessage {
             content:
@@ -3033,7 +3033,7 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
                 });
             }
             Ok(None) => {}
-            Err(error) => warn!(%error, "failed to unarchive a conversation"),
+            Err(error) => warn!(error = %scrubbed(&error), "failed to unarchive a conversation"),
         }
     }
     events.send(Event::Message(message))
@@ -3050,7 +3050,7 @@ async fn forget_stored(manager: &Mgr, content: &Content) {
         && stored.metadata.sender == content.metadata.sender
         && let Err(error) = store.delete_message(&thread, at).await
     {
-        warn!(%error, "failed to forget a message from someone blocked");
+        warn!(error = %scrubbed(&error), "failed to forget a message from someone blocked");
     }
 }
 
@@ -3140,7 +3140,7 @@ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::
         (id, settings)
     }));
     if let Err(error) = ctx.tables.save_settings(&changed).await {
-        warn!(%error, "failed to remember whom the phone blocks");
+        warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
         return;
     }
     for (conversation, settings) in changed {
@@ -3191,7 +3191,9 @@ async fn on_answered_elsewhere(
             Ok(()) => {
                 let _ = ctx.events.send(Event::Cleared(id));
             }
-            Err(error) => warn!(%error, "failed to delete a chat deleted elsewhere"),
+            Err(error) => {
+                warn!(error = %scrubbed(&error), "failed to delete a chat deleted elsewhere")
+            }
         }
     }
 }
@@ -3209,7 +3211,7 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     let mut found = match ctx.tables.conversations_of(&receipt.timestamp).await {
         Ok(found) => found,
         Err(error) => {
-            warn!(%error, "failed to look up receipted messages");
+            warn!(error = %scrubbed(&error), "failed to look up receipted messages");
             return true;
         }
     };
@@ -3221,7 +3223,7 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     }
     found = theirs;
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
-        warn!(%error, "failed to remember a receipt");
+        warn!(error = %scrubbed(&error), "failed to remember a receipt");
     }
     let mut by_conversation: HashMap<ConversationId, Vec<u64>> = HashMap::new();
     for (conversation, timestamp) in found {
@@ -3342,7 +3344,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                     settings,
                 });
             }
-            Err(error) => warn!(%error, "failed to remember what was read"),
+            Err(error) => warn!(error = %scrubbed(&error), "failed to remember what was read"),
         }
         let timers = stored_timers(manager, &conversation, &messages).await;
         start_timers(ctx, &conversation, &timers, now).await;
@@ -4552,7 +4554,7 @@ async fn details(manager: &mut Mgr, tables: &LocalStore, thread: &Thread) -> cra
                             .join(" ");
                         details.about = (!about.is_empty()).then_some(about);
                     }
-                    Err(error) => debug!(%error, "couldn't fetch a profile"),
+                    Err(error) => debug!(error = %scrubbed(&error), "couldn't fetch a profile"),
                 }
             }
         }
@@ -4626,7 +4628,7 @@ async fn key_shown(
         Ok(Some(offered)) => Some(offered),
         Ok(None) => identity_of(manager, who).await,
         Err(error) => {
-            warn!(%error, "failed to read the key the store refused for sending");
+            warn!(error = %scrubbed(&error), "failed to read the key the store refused for sending");
             identity_of(manager, who).await
         }
     }
@@ -4763,7 +4765,7 @@ async fn set_verified(
         )
         .await
     {
-        warn!(%error, "failed to send the null message that goes with a verification");
+        warn!(error = %scrubbed(&error), "failed to send the null message that goes with a verification");
     }
     let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
@@ -4798,7 +4800,7 @@ async fn take_over(
         .await
         .map_err(|e| format!("failed to take their new key: {e}"))?;
     if let Err(error) = store.delete_all_sessions(&who).await {
-        warn!(%error, "failed to drop the sessions on their old key");
+        warn!(error = %scrubbed(&error), "failed to drop the sessions on their old key");
     }
     show_identity_notes(manager, ctx, &mut Names::new(), who, since).await;
     Ok(())
@@ -4872,7 +4874,9 @@ async fn remember_verification(
         let mut store = manager.store().aci_protocol_store();
         match store.save_identity(&address, key).await {
             Ok(_) => current = identity_of(manager, who).await,
-            Err(error) => warn!(%error, "failed to take over a key verified on another device"),
+            Err(error) => {
+                warn!(error = %scrubbed(&error), "failed to take over a key verified on another device")
+            }
         }
     }
     let verification = crate::local::Verification {
@@ -4902,7 +4906,9 @@ async fn remember_verification(
         {
             Ok(()) => show_identity_notes(manager, ctx, &mut Names::new(), who, since).await,
             // The verification itself is kept; only its note is missing.
-            Err(error) => warn!(%error, "failed to save the note of a verification"),
+            Err(error) => {
+                warn!(error = %scrubbed(&error), "failed to save the note of a verification")
+            }
         }
     }
     Ok(())
@@ -4946,7 +4952,7 @@ async fn pin_verified(manager: &Mgr, who: ServiceId, verification: &crate::local
         State::Unverified => return,
     };
     if let Err(error) = pinned {
-        warn!(%error, "failed to pin or unpin a verified safety number");
+        warn!(error = %scrubbed(&error), "failed to pin or unpin a verified safety number");
     }
 }
 
@@ -4962,7 +4968,7 @@ async fn hold_changed(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
     if let Err(error) =
         remember_verification(manager, ctx, who, &key, State::Unverified, Verifier::Here).await
     {
-        warn!(%error, "failed to hold a chat whose safety number changed");
+        warn!(error = %scrubbed(&error), "failed to hold a chat whose safety number changed");
     }
 }
 
@@ -4977,7 +4983,7 @@ async fn on_verified_elsewhere(manager: &Mgr, ctx: &Ctx, verified: &presage::pro
     if let Err(error) =
         remember_verification(manager, ctx, who, &key, verified.state(), verifier).await
     {
-        warn!(%error, "failed to keep a verification from another device");
+        warn!(error = %scrubbed(&error), "failed to keep a verification from another device");
     }
 }
 
@@ -5237,7 +5243,7 @@ async fn send_new(
         .set_delivery(&conversation, timestamp, Delivery::Sent)
         .await
     {
-        warn!(%error, "failed to save that a message was sent");
+        warn!(error = %scrubbed(&error), "failed to save that a message was sent");
     }
     // Writing to someone accepts the chat.
     let accepted = ctx
@@ -5346,7 +5352,9 @@ async fn link_preview(
     {
         match attachments::upload_bytes(manager, "preview", &content_type, bytes).await {
             Ok(uploaded) => pointer = Some(uploaded),
-            Err(error) => debug!(%error, "couldn't upload a link preview's picture"),
+            Err(error) => {
+                debug!(error = %scrubbed(&error), "couldn't upload a link preview's picture")
+            }
         }
     }
     let shown = crate::LinkPreview {
@@ -5374,7 +5382,7 @@ async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
         .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
-        warn!(%error, "failed to tell our other devices");
+        warn!(error = %scrubbed(&error), "failed to tell our other devices");
     }
 }
 
@@ -5517,7 +5525,7 @@ async fn send_read(
         .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
-        debug!(%error, "failed to tell our other devices what was read");
+        debug!(error = %scrubbed(&error), "failed to tell our other devices what was read");
     }
     // Whether this is a message request, and who is blocked, comes with the phone's settings.
     // Right after linking they haven't been read yet, so wait: a read receipt would tell a
@@ -5571,7 +5579,7 @@ async fn send_read(
             .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
             .await
         {
-            debug!(%error, "failed to send a read receipt");
+            debug!(error = %scrubbed(&error), "failed to send a read receipt");
         }
     }
 }

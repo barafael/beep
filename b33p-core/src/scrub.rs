@@ -45,6 +45,12 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
+/// `value` as text with user data blanked, for a log field: `warn!(error = %scrubbed(&error), …)`.
+/// Library errors carry URLs, service IDs, numbers and paths of their own.
+pub fn scrubbed(value: &impl std::fmt::Display) -> String {
+    scrub(&value.to_string())
+}
+
 /// The length of a token at the start of `s` that runs to whitespace, without the trailing
 /// punctuation a sentence puts after it.
 fn token(s: &str) -> usize {
@@ -120,7 +126,14 @@ fn phone(s: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::scrub;
+    use super::{scrub, scrubbed};
+
+    #[test]
+    fn scrubbed_takes_anything_displayable() {
+        let error = std::io::Error::other(r"can't open C:\Users\me\file.txt.");
+        assert_eq!(scrubbed(&error), "can't open <path>.");
+        assert_eq!(scrubbed(&"0d4c8a3e-7b1f-4e2a-9c5d-1a2b3c4d5e6f"), "<id>");
+    }
 
     #[test]
     fn quoted_user_data_is_blanked() {
