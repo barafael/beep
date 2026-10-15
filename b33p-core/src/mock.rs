@@ -65,6 +65,7 @@ fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
         admin: is_group && id != "club",
         left: id == "club",
         invited: id == "club",
+        requested: false,
         // Verified once; her key changed since, so writing to her waits for a confirmation.
         trust: if id == "dana" {
             crate::Trust::Changed
@@ -440,6 +441,30 @@ pub fn run(commands: Inbox, events: Events) {
                         format!("You took {member}'s admin rights.")
                     }
                     crate::GroupEdit::Leave => "You left the group.".into(),
+                    crate::GroupEdit::InviteLink(crate::InviteLinkAccess::Off) => {
+                        "You turned the invite link off.".into()
+                    }
+                    crate::GroupEdit::InviteLink(crate::InviteLinkAccess::Anyone) => {
+                        "You turned the invite link on.".into()
+                    }
+                    crate::GroupEdit::InviteLink(crate::InviteLinkAccess::Approval) => {
+                        "You turned the invite link on, with admin approval.".into()
+                    }
+                    crate::GroupEdit::ResetInviteLink => "You reset the invite link.".into(),
+                    crate::GroupEdit::ApproveRequest(who) => {
+                        format!("You accepted {who}'s request to join.")
+                    }
+                    crate::GroupEdit::DenyRequest(who) => {
+                        format!("You turned {who}'s request to join down.")
+                    }
+                    crate::GroupEdit::CancelJoinRequest => {
+                        let mut now =
+                            self::conversation(chat_name(&conversation), "Climbing crew", true);
+                        now.left = true;
+                        now.subtitle = "You aren't a member of this group.".into();
+                        let _ = events.send(Event::Conversations(vec![now]));
+                        "You took back the request to join.".into()
+                    }
                     crate::GroupEdit::AcceptInvitation | crate::GroupEdit::DeclineInvitation => {
                         let accept = edit == crate::GroupEdit::AcceptInvitation;
                         let (_, title, _) = CONVERSATIONS
@@ -547,10 +572,63 @@ pub fn run(commands: Inbox, events: Events) {
                     )));
                 }
             }
+            // Any group link previews as a climbing group; one ending in "approve" has its
+            // admins let people in.
+            Ok(Command::PreviewGroupLink(link)) => {
+                let link = link.trim().to_owned();
+                if !link.starts_with("https://signal.group/#") {
+                    let _ = events.send(Event::Error("That isn't a Signal group link.".into()));
+                    continue;
+                }
+                let _ = events.send(Event::GroupPreview(crate::GroupPreview {
+                    approval: link.ends_with("approve"),
+                    link,
+                    title: "Climbing crew".into(),
+                    members: 12,
+                    requested: false,
+                }));
+            }
+            Ok(Command::JoinGroup(link)) => {
+                let requested = link.trim().ends_with("approve");
+                let id = chat_id(&format!("joined-{}", now_millis()));
+                let mut group = self::conversation(chat_name(&id), "Climbing crew", true);
+                group.id = id.clone();
+                group.admin = false;
+                group.left = requested;
+                group.requested = requested;
+                group.subtitle = if requested {
+                    "You asked to join this group; an admin has to let you in.".into()
+                } else {
+                    "13 members".into()
+                };
+                let _ = events.send(Event::Conversations(vec![group]));
+                if !requested {
+                    let _ = events.send(Event::Message(ChatMessage {
+                        notice: true,
+                        ..message(
+                            chat_name(&id),
+                            "You",
+                            "You joined the group.",
+                            now_millis(),
+                            true,
+                        )
+                    }));
+                }
+                let _ = events.send(Event::GroupJoined(id));
+            }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match chat_name(&conversation) {
                     "rust" => crate::Details {
                         description: Some("All things Rust 🦀, mostly GUIs".into()),
+                        invite_link: Some(
+                            "https://signal.group/#CjQKIBRustaceansMockLinkNotRealAAAAAAAAAAAAAAAAAAAAAAAAEhCapprove"
+                                .into(),
+                        ),
+                        invite_link_access: crate::InviteLinkAccess::Approval,
+                        requests: vec![Person {
+                            service_id: "grace".into(),
+                            name: "Grace".into(),
+                        }],
                         members: ["Carol", "Dana", "Eve", "Ferris"]
                             .iter()
                             .map(|name| {

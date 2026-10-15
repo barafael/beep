@@ -261,6 +261,37 @@ fn a_sent_message_is_answered() {
     agent.wait_for("the echo", |s| message(s, "You said: Hello").is_some());
 }
 
+/// A group joined through its invite link: looked up, asked to join, then taken back.
+#[test]
+fn a_group_is_joined_through_its_link() {
+    let (_app, mut agent) = app("join");
+    wait_for_chats(&mut agent);
+    agent.act("{\"type\":\"open_join_group\",\"link\":\"https://signal.group/#mock-approve\"}");
+    let looked_up = agent.wait_for("the link looked up", |s| s["join"]["title"].is_string());
+    assert_eq!(looked_up["join"]["title"], "Climbing crew");
+    assert_eq!(looked_up["join"]["approval"], true);
+    agent.act("{\"type\":\"join_group\"}");
+    let asked = agent.wait_for("the group there, asked to join", |s| {
+        s["join"].is_null()
+            && s["conversations"].as_array().is_some_and(|all| {
+                all.iter()
+                    .any(|c| c["title"] == "Climbing crew" && c["requested"] == true)
+            })
+    });
+    let group = id_of(&asked, "Climbing crew");
+    assert!(selected_is(&asked, &group), "the group opens");
+    agent.act("{\"type\":\"cancel_join_request\"}");
+    let taken_back = agent.wait_for("the request taken back", |s| {
+        message(s, "You took back the request to join.").is_some()
+    });
+    let listed = taken_back["conversations"]
+        .as_array()
+        .and_then(|all| all.iter().find(|c| c["id"] == group.as_str()))
+        .expect("the group is still listed");
+    assert_eq!(listed["requested"], false);
+    assert_eq!(listed["left"], true);
+}
+
 /// Whatever an agent does, a subscribed agent hears of it, numbered on.
 #[test]
 fn a_subscriber_hears_updates() {

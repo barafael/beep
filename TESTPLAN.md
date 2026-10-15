@@ -283,6 +283,23 @@ part of a test. Every change below reaches all members' phones.
 14. Group details → **Change picture…** → pick a photo: the group's picture changes here, on
     every phone, and the chat shows "You changed the group's picture." **Remove picture**
     takes it away everywhere. Have someone else change it from their phone: it changes here.
+15. Group details (as admin) → Invite link → **Anyone**: a link appears, **Copy** puts it on
+    the clipboard, and the chat says "You turned the invite link on." Open the link on a phone
+    that isn't in the group: it joins at once, and the chat here says they joined. A member
+    who isn't an admin sees and copies the link, without the buttons.
+16. **Admins approve**: the notice says "…with admin approval". Someone opening the link on
+    their phone asks to join: open the details again, and their request is listed. **Let in**
+    makes them a member (everyone sees "You accepted …'s request to join."); **Turn down**
+    drops the request, and tells nobody.
+17. **Reset**: a new link, and the old one no longer works on a phone. **Off**: the link goes;
+    the old one tells a phone that it isn't active.
+18. Chat list → link icon → paste a link from a phone (group settings → Group link → Share):
+    the group's name and size show. **Join**: the group opens with "You joined the group."
+    and the phones see you join. With admin approval, **Ask to join** opens the group saying
+    you asked, with **Take request back**; the admin's phone shows the request, and letting
+    you in makes the chat writable here with "… accepted your request to join." Turning you
+    down leaves it waiting until you open its details, which then say you aren't a member.
+    A `signal.group` link in a message opens this dialog, not the browser.
 
 ### 3.2 Voice messages and audio
 

@@ -363,6 +363,25 @@ enum Action {
         text: String,
     },
     OpenNewGroup,
+    /// Joining a group through its invite link: with a link, it is looked up at once.
+    OpenJoinGroup {
+        link: Option<String>,
+    },
+    PreviewGroupLink {
+        link: String,
+    },
+    JoinGroup,
+    CloseJoinGroup,
+    /// "off", "anyone" or "approval".
+    SetInviteLink {
+        access: String,
+    },
+    ResetInviteLink,
+    AnswerJoinRequest {
+        member: String,
+        approve: bool,
+    },
+    CancelJoinRequest,
     CloseGroupDraft,
     FinishGroupDraft {
         title: String,
@@ -656,6 +675,41 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.open_group_draft(None);
             (None, Update::default())
         }),
+        Action::OpenJoinGroup { link } => {
+            shared.act(|chat| (chat.open_join(link.as_deref()), Update::default()))
+        }
+        Action::PreviewGroupLink { link } => {
+            shared.act(|chat| (chat.preview_link(&link), Update::default()))
+        }
+        Action::JoinGroup => shared.act(|chat| (chat.join_group(), Update::default())),
+        Action::CloseJoinGroup => shared.act(|chat| {
+            chat.close_join();
+            (None, Update::default())
+        }),
+        Action::SetInviteLink { access } => {
+            let access = match access.as_str() {
+                "anyone" => b33p_core::InviteLinkAccess::Anyone,
+                "approval" => b33p_core::InviteLinkAccess::Approval,
+                _ => b33p_core::InviteLinkAccess::Off,
+            };
+            selected(shared, move |id, chat| {
+                chat.edit_group(id, GroupEdit::InviteLink(access))
+            })
+        }
+        Action::ResetInviteLink => selected(shared, |id, chat| {
+            chat.edit_group(id, GroupEdit::ResetInviteLink)
+        }),
+        Action::AnswerJoinRequest { member, approve } => selected(shared, |id, chat| {
+            let edit = if approve {
+                GroupEdit::ApproveRequest(member)
+            } else {
+                GroupEdit::DenyRequest(member)
+            };
+            chat.edit_group(id, edit)
+        }),
+        Action::CancelJoinRequest => selected(shared, |id, chat| {
+            chat.edit_group(id, GroupEdit::CancelJoinRequest)
+        }),
         Action::CloseGroupDraft => shared.act(|chat| {
             chat.close_group_draft();
             (None, Update::default())
@@ -941,7 +995,21 @@ struct Snapshot {
     editing: bool,
     staged: Vec<String>,
     typing: Vec<String>,
+    /// The join-a-group dialog, while open.
+    join: Option<JoinSnapshot>,
     settings: SettingsSnapshot,
+}
+
+#[derive(Serialize)]
+struct JoinSnapshot {
+    link: String,
+    /// The link is being looked up, or the group joined.
+    busy: bool,
+    /// What the link showed of its group, once looked up.
+    title: Option<String>,
+    members: u32,
+    approval: bool,
+    requested: bool,
 }
 
 #[derive(Serialize)]
@@ -976,6 +1044,8 @@ struct ConversationSnapshot {
     request: bool,
     invited: bool,
     left: bool,
+    /// We asked to join through the group's link, and wait for an admin.
+    requested: bool,
     expire_timer: u32,
     preview: String,
     /// How far our last message got; `None` without one of ours.
@@ -1062,6 +1132,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             request: chat.is_request(view.conversation),
             invited: view.conversation.invited,
             left: view.conversation.left,
+            requested: view.conversation.requested,
             expire_timer: view.conversation.expire_timer,
             preview: view.preview(),
             last_delivery: view.last_message.filter(|m| m.outgoing).map(delivery),
@@ -1150,6 +1221,14 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             .selected()
             .map(|c| chat.typing(&c.id).into_iter().map(str::to_string).collect())
             .unwrap_or_default(),
+        join: chat.join().map(|(link, preview, busy)| JoinSnapshot {
+            link: link.to_string(),
+            busy,
+            title: preview.map(|p| p.title.clone()),
+            members: preview.map_or(0, |p| p.members),
+            approval: preview.is_some_and(|p| p.approval),
+            requested: preview.is_some_and(|p| p.requested),
+        }),
         settings: SettingsSnapshot {
             theme: theme_key(settings.theme),
             style: style_key(settings.style),

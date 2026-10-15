@@ -1027,8 +1027,11 @@ async fn group_conversation(
                 ServiceIdType::PhoneNumberIdentity => m.uuid == ids.pni,
             }
         });
+    let requested = left && !invited && group.requesting_members.iter().any(|m| m.aci == own);
     let subtitle = if invited {
         "You're invited to this group.".into()
+    } else if requested {
+        "You asked to join this group; an admin has to let you in.".into()
     } else if left {
         "You aren't a member of this group.".into()
     } else {
@@ -1039,6 +1042,7 @@ async fn group_conversation(
     conversation.admin = admin;
     conversation.left = left;
     conversation.invited = invited;
+    conversation.requested = requested;
     conversation
 }
 
@@ -1401,7 +1405,95 @@ fn group_edit(edit: crate::GroupEdit) -> Result<presage::manager::GroupEdit, Str
         Edit::Leave => To::Leave,
         Edit::AcceptInvitation => To::AcceptInvitation,
         Edit::DeclineInvitation => To::DeclineInvitation,
+        Edit::InviteLink(access) => {
+            use presage::libsignal_service::groups_v2::AccessRequired;
+            To::InviteLinkAccess(match access {
+                crate::InviteLinkAccess::Off => AccessRequired::Unsatisfiable,
+                crate::InviteLinkAccess::Anyone => AccessRequired::Any,
+                crate::InviteLinkAccess::Approval => AccessRequired::Administrator,
+            })
+        }
+        Edit::ResetInviteLink => To::ResetInviteLink,
+        Edit::ApproveRequest(member) => To::ApproveRequest(aci(&member)?),
+        Edit::DenyRequest(member) => To::DenyRequest(aci(&member)?),
+        // Not a change to the group: see `Command::EditGroup`.
+        Edit::CancelJoinRequest => return Err("not in the group".into()),
     })
+}
+
+fn parse_group_link(
+    link: &str,
+) -> Result<presage::libsignal_service::groups_v2::GroupInviteLink, String> {
+    presage::libsignal_service::groups_v2::GroupInviteLink::parse(link)
+        .ok_or_else(|| "That isn't a Signal group link.".into())
+}
+
+/// The conversation of a group we are a member of.
+async fn member_of(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) -> Option<ConversationId> {
+    let own = manager.registration_data().service_ids.aci();
+    let group = manager.store().group(key).await.ok()??;
+    if !group.members.iter().any(|m| m.aci == own) {
+        return None;
+    }
+    Some(ensure_conversation(manager, ctx, Thread::Group(key), 0).await)
+}
+
+/// For a group we asked to join: whether the request still stands. A refusal isn't told to
+/// us (nor is the link being turned off), so the stored group would say we wait for ever; and
+/// an acceptance may be on its way still, in which case the server shows us the group.
+async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
+    use presage::libsignal_service::groups_v2::GroupInviteLink;
+    use presage::libsignal_service::push_service::ServiceError;
+    let own = manager.registration_data().service_ids.aci();
+    let asking = |group: &presage::model::groups::Group| {
+        !group.members.iter().any(|m| m.aci == own)
+            && group.requesting_members.iter().any(|m| m.aci == own)
+    };
+    let Ok(Some(group)) = manager.store().group(key).await else {
+        return;
+    };
+    if !asking(&group) {
+        return;
+    }
+    match manager.fetch_group(&key).await {
+        // Let in: the group is stored as it is now, with us in it.
+        Ok(_) => {
+            refresh_group(manager, ctx, key).await;
+            return;
+        }
+        Err(presage::Error::ServiceError(ServiceError::Unauthorized)) => {}
+        Err(error) => {
+            debug!(%error, "couldn't check on a request to join");
+            return;
+        }
+    }
+    let link = GroupInviteLink {
+        master_key: key,
+        password: group.invite_link_password,
+    };
+    let standing = match manager.group_join_info(&link).await {
+        Ok(info) => info.pending_admin_approval,
+        // The link is gone, and the request with it.
+        Err(presage::Error::ServiceError(ServiceError::Unauthorized)) => false,
+        Err(error) => {
+            debug!(%error, "couldn't check on a request to join");
+            return;
+        }
+    };
+    if standing {
+        return;
+    }
+    // Read again: receiving may have replaced the group meanwhile.
+    let Ok(Some(mut group)) = manager.store().group(key).await else {
+        return;
+    };
+    if asking(&group) {
+        group.requesting_members.retain(|m| m.aci != own);
+        if let Err(error) = manager.store().save_group(key, group).await {
+            warn!(%error, "failed to note that a request to join is over");
+        }
+    }
+    refresh_group(manager, ctx, key).await;
 }
 
 /// The side of a group picture as sent, as Signal's clients have it.
@@ -1498,6 +1590,11 @@ async fn group_notice(
     let editor = display_name(manager, names, editor_id).await;
     let mut lines = Vec::new();
     let mut timer = None;
+    // Turning the link on sets its password too; that is one thing to say, not two.
+    let sets_link_access = changes
+        .changes
+        .iter()
+        .any(|change| matches!(change, GroupChange::InviteLinkAccess(_)));
     for change in changes.changes {
         let line = match change {
             GroupChange::NewMember(member) => {
@@ -1550,6 +1647,41 @@ async fn group_notice(
                 let seconds = t.map_or(0, |t| t.duration);
                 timer = Some(seconds);
                 crate::timer_notice(&editor, seconds)
+            }
+            GroupChange::NewRequestingMember(member) => {
+                let name = display_name(manager, names, ServiceId::Aci(member.aci)).await;
+                format!("{name} asked to join the group.")
+            }
+            GroupChange::PromoteRequestingMember { aci, .. } => {
+                if ServiceId::Aci(aci) == own_id(manager) {
+                    format!("{editor} accepted your request to join.")
+                } else {
+                    let name = display_name(manager, names, ServiceId::Aci(aci)).await;
+                    format!("{editor} accepted {name}'s request to join.")
+                }
+            }
+            GroupChange::DeleteRequestingMember(aci) => {
+                let name = display_name(manager, names, ServiceId::Aci(aci)).await;
+                if ServiceId::Aci(aci) == editor_id {
+                    format!("{name} took back the request to join.")
+                } else if ServiceId::Aci(aci) == own_id(manager) {
+                    format!("{editor} turned your request to join down.")
+                } else {
+                    format!("{editor} turned {name}'s request to join down.")
+                }
+            }
+            GroupChange::InviteLinkAccess(access) => {
+                use presage::libsignal_service::groups_v2::AccessRequired;
+                match access {
+                    AccessRequired::Any => format!("{editor} turned the invite link on."),
+                    AccessRequired::Administrator => {
+                        format!("{editor} turned the invite link on, with admin approval.")
+                    }
+                    _ => format!("{editor} turned the invite link off."),
+                }
+            }
+            GroupChange::InviteLinkPassword(_) if !sets_link_access => {
+                format!("{editor} reset the invite link.")
             }
             _ => continue,
         };
@@ -3707,6 +3839,7 @@ async fn handle(
             | Command::Respond { .. }
             | Command::CreateGroup { .. }
             | Command::EditGroup { .. }
+            | Command::JoinGroup(_)
             | Command::SetTimer { .. }
             | Command::SetVerified { .. }
     );
@@ -3997,6 +4130,14 @@ async fn handle_command(
             let Thread::Group(key) = thread(&conversation)? else {
                 return Err("not a group".into());
             };
+            if edit == crate::GroupEdit::CancelJoinRequest {
+                manager
+                    .cancel_join_request(&key)
+                    .await
+                    .map_err(|e| format!("failed to take the request back: {e}"))?;
+                refresh_group(manager, ctx, key).await;
+                return Ok(());
+            }
             let edit = group_edit(edit)?;
             if matches!(edit, presage::manager::GroupEdit::Leave) {
                 only_admin_check(manager, key).await?;
@@ -4011,6 +4152,55 @@ async fn handle_command(
                 send_group_avatar(manager.clone(), ctx, key).await;
             }
             show_stored(manager, ctx, &conversation, &Thread::Group(key), timestamp).await;
+        }
+        Command::PreviewGroupLink(link) => {
+            let parsed = parse_group_link(&link)?;
+            // A group we are in already just opens.
+            if let Some(id) = member_of(manager, ctx, parsed.master_key).await {
+                let _ = events.send(Event::GroupJoined(id));
+                return Ok(());
+            }
+            let info = manager
+                .group_join_info(&parsed)
+                .await
+                .map_err(|e| format!("couldn't look the group up: {e}"))?;
+            use presage::libsignal_service::groups_v2::AccessRequired;
+            let approval = match info.add_from_invite_link {
+                AccessRequired::Any => false,
+                AccessRequired::Administrator => true,
+                _ => return Err("This group's invite link is turned off.".into()),
+            };
+            let _ = events.send(Event::GroupPreview(crate::GroupPreview {
+                link: link.trim().to_owned(),
+                title: info.title,
+                members: info.member_count,
+                approval,
+                requested: info.pending_admin_approval,
+            }));
+        }
+        Command::JoinGroup(link) => {
+            let parsed = parse_group_link(&link)?;
+            let key = parsed.master_key;
+            if let Some(id) = member_of(manager, ctx, key).await {
+                let _ = events.send(Event::GroupJoined(id));
+                return Ok(());
+            }
+            let joined = manager
+                .join_group(&parsed)
+                .await
+                .map_err(|e| format!("couldn't join the group: {e}"))?;
+            let thread = Thread::Group(key);
+            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
+            // Our doing, so not a request.
+            ctx.tables
+                .update(&id, |s| s.accepted = true)
+                .await
+                .map_err(db)?;
+            refresh_group(manager, ctx, key).await;
+            if let presage::manager::GroupJoin::Joined { timestamp } = joined {
+                show_stored(manager, ctx, &id, &thread, timestamp).await;
+            }
+            let _ = events.send(Event::GroupJoined(id));
         }
         Command::LoadStickers => {
             let packs = sticker_packs(manager).await;
@@ -4062,6 +4252,9 @@ async fn handle_command(
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
             };
+            if let Thread::Group(key) = thread {
+                check_request(manager, ctx, key).await;
+            }
             let details = details(manager, &ctx.tables, &thread).await;
             let _ = events.send(Event::Details {
                 conversation,
@@ -4381,6 +4574,24 @@ async fn details(manager: &mut Mgr, tables: &LocalStore, thread: &Thread) -> cra
                 details
                     .members
                     .sort_by_cached_key(|(p, admin)| (!admin, p.name.to_lowercase()));
+                use presage::libsignal_service::groups_v2::AccessRequired;
+                let access = group
+                    .access_control
+                    .as_ref()
+                    .map_or(AccessRequired::Unsatisfiable, |a| a.add_from_invite_link);
+                details.invite_link_access = match access {
+                    AccessRequired::Any => crate::InviteLinkAccess::Anyone,
+                    AccessRequired::Administrator => crate::InviteLinkAccess::Approval,
+                    _ => crate::InviteLinkAccess::Off,
+                };
+                details.invite_link = group.invite_link(*key).map(|link| link.to_url());
+                for member in &group.requesting_members {
+                    let who = ServiceId::Aci(member.aci);
+                    details.requests.push(crate::Person {
+                        service_id: who.service_id_string(),
+                        name: display_name(manager, &mut names, who).await,
+                    });
+                }
             }
         }
     }

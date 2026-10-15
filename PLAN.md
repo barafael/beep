@@ -88,7 +88,11 @@ By how much they matter, most first:
   the latest revision. People known only by phone number
   can be found (Signal's contact discovery), then messaged or added. The group's picture can
   be set and removed here (libsignal-service#473 and presage#448 carry the upload), and
-  another member's change of it shows. Left: invite links and join requests.
+  another member's change of it shows. Invite links: a member sees and copies the group's
+  link; an admin turns it on (for anyone, or with their approval) or off, resets it, and lets
+  people in who asked or turns them down. A link pasted into "Join a group by link" (or
+  clicked in a chat) shows the group and joins it, or asks to; the request can be taken back
+  (libsignal-service#473 and presage#448 carry the join). Done.
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.

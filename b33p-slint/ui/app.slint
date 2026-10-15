@@ -21,6 +21,10 @@ export struct ConversationItem {
     left: bool,
     // A group we're invited to (and not in yet): Accept or Decline.
     invited: bool,
+    // A group we asked to join through its link, waiting for an admin.
+    requested: bool,
+    // A group we're an admin of: we may change its invite link and answer requests to join.
+    admin: bool,
     // A contact whose safety number changed since we verified it: nothing is sent until that
     // is confirmed.
     safety-changed: bool,
@@ -2334,6 +2338,32 @@ export component AppWindow inherits Window {
     in property <[CandidateItem]> group-candidates;
     in property <int> group-draft-chosen;
     callback open-new-group;
+    // Joining a group through its invite link.
+    in property <bool> join-open;
+    in-out property <string> join-link;
+    // The link is being looked up, or the group joined.
+    in property <bool> join-busy;
+    // What the link shows of its group, once looked up; the title is empty until then.
+    in property <string> join-title;
+    in property <int> join-members;
+    // An admin has to let us in; we asked already.
+    in property <bool> join-approval;
+    in property <bool> join-requested;
+    callback open-join-group;
+    callback close-join-group;
+    callback preview-group-link(string);
+    callback join-group;
+    // The open group's invite link (empty while off), who it lets in (0 off, 1 anyone,
+    // 2 after an admin's approval), and who asked to join through it.
+    in property <string> details-invite-link;
+    in property <int> details-invite-access;
+    in property <[MemberItem]> details-requests;
+    callback set-invite-link(int);
+    callback reset-invite-link;
+    // Lets the person with this id in (true), or turns them down.
+    callback answer-join-request(string, bool);
+    // Takes back our own request to join the open group.
+    callback cancel-join-request;
     callback open-add-members;
     callback toggle-candidate(string);
     callback group-draft-edited;
@@ -2592,6 +2622,14 @@ export component AppWindow inherits Window {
                                     root.group-draft-name = "";
                                     root.group-draft-filter = "";
                                     root.open-new-group();
+                                }
+                            }
+                            IconButton {
+                                icon: @image-url("@lucide/link.svg");
+                                label: "Join a group by link";
+                                clicked => {
+                                    root.join-link = "";
+                                    root.open-join-group();
                                 }
                             }
                             IconButton {
@@ -3453,6 +3491,90 @@ export component AppWindow inherits Window {
                                             }
                                         }
                                     }
+                                    if root.current.group && !root.current.left: VerticalLayout {
+                                        spacing: 6px;
+                                        SectionTitle { text: "Invite link"; }
+                                        Text {
+                                            text: "Anyone with the link can join the group, or ask to.";
+                                            wrap: word-wrap;
+                                            font-size: 0.85rem;
+                                            color: Palette.foreground.with-alpha(0.7);
+                                        }
+                                        if root.current.admin: HorizontalLayout {
+                                            alignment: start;
+                                            spacing: 8px;
+                                            Button {
+                                                text: "Off";
+                                                primary: root.details-invite-access == 0;
+                                                clicked => { root.set-invite-link(0); }
+                                            }
+                                            Button {
+                                                text: "Anyone";
+                                                primary: root.details-invite-access == 1;
+                                                clicked => { root.set-invite-link(1); }
+                                            }
+                                            Button {
+                                                text: "Admins approve";
+                                                primary: root.details-invite-access == 2;
+                                                clicked => { root.set-invite-link(2); }
+                                            }
+                                        }
+                                        if root.details-invite-link != "": HorizontalLayout {
+                                            spacing: 8px;
+                                            Rectangle {
+                                                border-radius: 8px;
+                                                background: Palette.alternate-background;
+                                                horizontal-stretch: 1;
+                                                HorizontalLayout {
+                                                    padding: 10px;
+                                                    Text {
+                                                        text: root.details-invite-link;
+                                                        overflow: elide;
+                                                        font-size: 0.85rem;
+                                                        vertical-alignment: center;
+                                                        color: Palette.foreground;
+                                                    }
+                                                }
+                                            }
+                                            Button {
+                                                text: "Copy";
+                                                clicked => { root.copy-text(root.details-invite-link); }
+                                            }
+                                            if root.current.admin: Button {
+                                                text: "Reset";
+                                                clicked => { root.reset-invite-link(); }
+                                            }
+                                        }
+                                    }
+                                    if root.current.admin && root.details-requests.length > 0: VerticalLayout {
+                                        spacing: 4px;
+                                        SectionTitle { text: root.details-requests.length == 1 ? "1 request to join" : root.details-requests.length + " requests to join"; }
+                                        for person in root.details-requests: HorizontalLayout {
+                                            spacing: 10px;
+                                            padding-top: 2px;
+                                            padding-bottom: 2px;
+                                            Avatar {
+                                                width: 32px;
+                                                initials: person.initials;
+                                                tint: person.color;
+                                            }
+                                            Text {
+                                                text: person.name;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                                color: Palette.foreground;
+                                            }
+                                            Button {
+                                                text: "Turn down";
+                                                clicked => { root.answer-join-request(person.id, false); }
+                                            }
+                                            Button {
+                                                text: "Let in";
+                                                primary: true;
+                                                clicked => { root.answer-join-request(person.id, true); }
+                                            }
+                                        }
+                                    }
                                     if root.details-members.length > 0: VerticalLayout {
                                         spacing: 4px;
                                         SectionTitle { text: root.details-members.length + " members"; }
@@ -3939,7 +4061,25 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.current.left && !root.current.invited: Rectangle {
+                    if root.current.requested: Rectangle {
+                        background: Palette.alternate-background;
+                        HorizontalLayout {
+                            padding: 12px;
+                            spacing: 12px;
+                            Text {
+                                text: "You asked to join this group. An admin has to let you in.";
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                color: Palette.foreground;
+                            }
+                            Button {
+                                text: "Take request back";
+                                clicked => { root.cancel-join-request(); }
+                            }
+                        }
+                    }
+                    if root.current.left && !root.current.invited && !root.current.requested: Rectangle {
                         background: Palette.alternate-background;
                         HorizontalLayout {
                             padding: 14px;
@@ -4826,6 +4966,98 @@ export component AppWindow inherits Window {
                         primary: true;
                         enabled: root.group-draft-new ? !root.is-blank(root.group-draft-name) : root.group-draft-chosen > 0;
                         clicked => { root.finish-group-draft(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // Joining a group through its invite link: paste it, see what the group shows of itself,
+    // then join or ask to.
+    if root.join-open: Rectangle {
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
+        background: #0008;
+        TouchArea {
+            clicked => { root.close-join-group(); }
+        }
+        Rectangle {
+            width: min(440px, parent.width - 32px);
+            height: min(join-content.preferred-height, parent.height - 32px);
+            clip: true;
+            property <float> grown: 0;
+            init => { self.grown = 1; }
+            animate grown { duration: 160ms * Motion.scale; easing: ease-out; }
+            transform-scale: 0.97 + 0.03 * self.grown;
+            transform-origin: { x: self.width / 2, y: self.height / 2 };
+            border-radius: 12px;
+            background: Palette.background;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #0006;
+            TouchArea {}
+            join-content := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                Text {
+                    text: "Join a group";
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    color: Palette.foreground;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    join-link-field := LineEdit {
+                        placeholder-text: "https://signal.group/#…";
+                        text <=> root.join-link;
+                        enabled: !root.join-busy;
+                        init => { self.focus(); }
+                        accepted => { root.preview-group-link(self.text); }
+                    }
+                    Button {
+                        text: "Look up";
+                        enabled: !root.join-busy && !root.is-blank(root.join-link);
+                        clicked => { root.preview-group-link(join-link-field.text); }
+                    }
+                }
+                if root.join-busy: Text {
+                    text: "One moment…";
+                    font-size: 0.85rem;
+                    color: Palette.foreground.with-alpha(0.7);
+                }
+                if root.join-title != "" && !root.join-busy: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: root.join-title;
+                        font-weight: 600;
+                        color: Palette.foreground;
+                    }
+                    Text {
+                        text: root.join-members == 1 ? "1 member" : root.join-members + " members";
+                        font-size: 0.85rem;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                    Text {
+                        text: root.join-requested ? "You asked to join already. An admin has to let you in."
+                            : root.join-approval ? "An admin has to let you in. Asking shows them your name and picture."
+                            : "Its members see your name and picture once you join.";
+                        wrap: word-wrap;
+                        font-size: 0.85rem;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.close-join-group(); }
+                    }
+                    Button {
+                        text: root.join-approval ? "Ask to join" : "Join";
+                        primary: true;
+                        enabled: root.join-title != "" && !root.join-busy && !root.join-requested;
+                        clicked => { root.join-group(); }
                     }
                 }
             }

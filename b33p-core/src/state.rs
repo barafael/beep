@@ -341,6 +341,8 @@ pub struct ChatState {
     folder: Option<usize>,
     /// Choosing people for a new group, or to add to one.
     group_draft: Option<GroupDraft>,
+    /// Joining a group through its invite link.
+    join: Option<JoinDraft>,
     /// The stories of the last day, oldest first.
     stories: Vec<crate::Story>,
     /// The story shown: whose (a conversation) and which of theirs.
@@ -364,6 +366,14 @@ struct GroupDraft {
     /// The group they are added to; `None` for a new one.
     adding_to: Option<ConversationId>,
     chosen: Vec<ConversationId>,
+}
+
+/// See [`ChatState::open_join`].
+struct JoinDraft {
+    link: String,
+    preview: Option<crate::GroupPreview>,
+    /// The link is being looked up, or the group joined.
+    busy: bool,
 }
 
 struct ChatSearch {
@@ -818,6 +828,21 @@ impl ChatState {
                 }
                 update = update.merge(Update::reset());
             }
+            Event::GroupPreview(preview) => {
+                if let Some(join) = &mut self.join
+                    && join.link.trim() == preview.link
+                {
+                    join.preview = Some(preview);
+                    join.busy = false;
+                }
+            }
+            Event::GroupJoined(id) => {
+                self.join = None;
+                if let Some(command) = self.select(&id) {
+                    self.queued.push(command);
+                }
+                update = update.merge(Update::reset());
+            }
             Event::Folders(folders) => {
                 self.folders = folders;
                 self.folder = self.folder.filter(|&at| at < self.folders.len());
@@ -913,7 +938,12 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
-            Event::Error(error) => self.error = Some(error),
+            Event::Error(error) => {
+                if let Some(join) = &mut self.join {
+                    join.busy = false;
+                }
+                self.error = Some(error);
+            }
         }
         update
     }
@@ -1445,6 +1475,50 @@ impl ChatState {
         self.group_draft = None;
     }
 
+    /// Starts joining a group through its invite link, looking `link` up at once if given.
+    pub fn open_join(&mut self, link: Option<&str>) -> Option<Command> {
+        self.join = Some(JoinDraft {
+            link: link.unwrap_or_default().to_owned(),
+            preview: None,
+            busy: false,
+        });
+        link.and_then(|link| self.preview_link(link))
+    }
+
+    pub fn close_join(&mut self) {
+        self.join = None;
+    }
+
+    /// Looks up what the group behind `link` shows of itself; nothing while not synced or
+    /// not joining.
+    pub fn preview_link(&mut self, link: &str) -> Option<Command> {
+        let synced = self.synced;
+        let join = self.join.as_mut().filter(|_| synced)?;
+        let link = link.trim();
+        if link.is_empty() {
+            return None;
+        }
+        join.link = link.to_owned();
+        join.preview = None;
+        join.busy = true;
+        Some(Command::PreviewGroupLink(link.to_owned()))
+    }
+
+    /// Joins the group looked up with [`Self::preview_link`], or asks to.
+    pub fn join_group(&mut self) -> Option<Command> {
+        let join = self.join.as_mut()?;
+        let preview = join.preview.as_ref().filter(|_| !join.busy)?;
+        join.busy = true;
+        Some(Command::JoinGroup(preview.link.clone()))
+    }
+
+    /// While joining through a link: the link typed, what its group shows of itself once
+    /// looked up, and whether that or the joining is under way.
+    pub fn join(&self) -> Option<(&str, Option<&crate::GroupPreview>, bool)> {
+        let join = self.join.as_ref()?;
+        Some((&join.link, join.preview.as_ref(), join.busy))
+    }
+
     /// Looks up who a typed phone number belongs to, then opens their chat or chooses them for
     /// the group being made; nothing for text that isn't a phone number.
     pub fn find_number(&self, text: &str, then: crate::AfterFinding) -> Option<Command> {
@@ -1542,12 +1616,21 @@ impl ChatState {
 
     /// Changes a group.
     pub fn edit_group(&mut self, id: &ConversationId, edit: crate::GroupEdit) -> Option<Command> {
-        use crate::GroupEdit::{AcceptInvitation, DeclineInvitation};
+        use crate::GroupEdit::{AcceptInvitation, CancelJoinRequest, DeclineInvitation};
         let invitation = matches!(edit, AcceptInvitation | DeclineInvitation);
-        // An invitation is answered by someone not in the group yet; anything else needs being in.
-        let group = self
-            .conversation(id)
-            .filter(|c| c.is_group() && if invitation { c.invited } else { !c.left })?;
+        let cancelling = edit == CancelJoinRequest;
+        // An invitation is answered, and a request taken back, by someone not in the group
+        // yet; anything else needs being in.
+        let group = self.conversation(id).filter(|c| {
+            c.is_group()
+                && if invitation {
+                    c.invited
+                } else if cancelling {
+                    c.requested
+                } else {
+                    !c.left
+                }
+        })?;
         if let crate::GroupEdit::Title(title) = &edit
             && (title.trim().is_empty() || title.trim() == group.title)
         {
@@ -5274,6 +5357,57 @@ mod tests {
         assert!(
             state
                 .edit_group(&id("g:new"), crate::GroupEdit::Leave)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_group_is_joined_through_its_link() {
+        let mut state = state();
+        let link = "https://signal.group/#abc";
+        assert!(matches!(
+            state.open_join(Some(" https://signal.group/#abc ")),
+            Some(Command::PreviewGroupLink(typed)) if typed == link
+        ));
+        let (typed, preview, busy) = state.join().unwrap();
+        assert_eq!((typed, preview, busy), (link, None, true));
+        assert!(state.join_group().is_none(), "nothing looked up yet");
+        // A failed lookup leaves the dialog open for another try.
+        state.apply(Event::Error("no such group".into()));
+        assert!(!state.join().unwrap().2);
+        let preview = crate::GroupPreview {
+            link: link.into(),
+            title: "Climbing".into(),
+            members: 3,
+            approval: true,
+            requested: false,
+        };
+        state.apply(Event::GroupPreview(crate::GroupPreview {
+            link: "https://signal.group/#other".into(),
+            ..preview.clone()
+        }));
+        assert_eq!(state.join().unwrap().1, None, "an answer for another link");
+        state.apply(Event::GroupPreview(preview.clone()));
+        assert_eq!(state.join().unwrap().1, Some(&preview));
+        assert!(matches!(state.join_group(), Some(Command::JoinGroup(typed)) if typed == link));
+        assert!(state.join_group().is_none(), "already joining");
+        state.apply(Event::Conversations(vec![Conversation {
+            requested: true,
+            left: true,
+            ..conversation("g:climbing", true)
+        }]));
+        state.apply(Event::GroupJoined(id("g:climbing")));
+        assert!(state.join().is_none(), "done");
+        assert_eq!(state.selected().unwrap().id, id("g:climbing"));
+        // Waiting for an admin: the request can be taken back, nothing else.
+        assert!(
+            state
+                .edit_group(&id("g:climbing"), crate::GroupEdit::CancelJoinRequest)
+                .is_some()
+        );
+        assert!(
+            state
+                .edit_group(&id("g:climbing"), crate::GroupEdit::Leave)
                 .is_none()
         );
     }

@@ -99,6 +99,8 @@ pub struct Conversation {
     pub left: bool,
     /// A group we are invited to (and not in yet): it can be accepted or declined.
     pub invited: bool,
+    /// A group we asked to join through its invite link, waiting for an administrator.
+    pub requested: bool,
     /// How far a contact's safety number is trusted; nothing can be written to them while it
     /// [`Trust::Changed`]. Groups and Note to Self: [`Trust::Unverified`].
     pub trust: Trust,
@@ -151,6 +153,39 @@ pub enum GroupEdit {
     AcceptInvitation,
     /// Turns an invitation down.
     DeclineInvitation,
+    /// Turns the group's invite link on, for anyone or with an admin's approval, or off.
+    InviteLink(InviteLinkAccess),
+    /// Makes a new link; the one given out so far stops working.
+    ResetInviteLink,
+    /// Lets someone in who asked to join through the link (a service ID).
+    ApproveRequest(String),
+    /// Turns their request down.
+    DenyRequest(String),
+    /// Takes back our own request to join; see [`Command::JoinGroup`].
+    CancelJoinRequest,
+}
+
+/// Who a group's invite link lets in; see [`GroupEdit::InviteLink`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InviteLinkAccess {
+    #[default]
+    Off,
+    /// Anyone with the link joins at once.
+    Anyone,
+    /// Anyone with the link may ask; an administrator lets them in.
+    Approval,
+}
+
+/// What a group's invite link shows of it before joining; see [`Command::PreviewGroupLink`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupPreview {
+    pub link: String,
+    pub title: String,
+    pub members: u32,
+    /// An administrator has to let new members in.
+    pub approval: bool,
+    /// We asked to join already, and wait.
+    pub requested: bool,
 }
 
 /// More about a conversation, for its details page; see [`Command::LoadDetails`].
@@ -169,6 +204,11 @@ pub struct Details {
     pub description: Option<String>,
     /// A group's members, with whether each is an admin.
     pub members: Vec<(Person, bool)>,
+    /// A group's invite link, if it is turned on: anyone with it can join, or ask to.
+    pub invite_link: Option<String>,
+    pub invite_link_access: InviteLinkAccess,
+    /// Who asked to join through the link, for an administrator to let in or not.
+    pub requests: Vec<Person>,
 }
 
 /// A chat folder, as set up on the phone: a tab of the chat list.
@@ -758,6 +798,11 @@ pub enum Event {
     Stories(Vec<Story>),
     /// A group made with [`Command::CreateGroup`] is there.
     GroupCreated(ConversationId),
+    /// Answers [`Command::PreviewGroupLink`].
+    GroupPreview(GroupPreview),
+    /// A group joined through its link with [`Command::JoinGroup`] is there; if its
+    /// administrators have to let us in, the conversation says we asked.
+    GroupJoined(ConversationId),
     /// The chat folders, in their order (replacing those known before).
     Folders(Vec<ChatFolder>),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
@@ -845,6 +890,11 @@ pub enum Command {
         conversation: ConversationId,
         edit: GroupEdit,
     },
+    /// Looks up what a `https://signal.group/#…` link shows of its group; see
+    /// [`Event::GroupPreview`]. An error if it isn't such a link, or the link is turned off.
+    PreviewGroupLink(String),
+    /// Joins the group behind the link, or asks to; see [`Event::GroupJoined`].
+    JoinGroup(String),
     /// Gathers the installed sticker packs; see [`Event::StickerPacks`].
     LoadStickers,
     /// Sends a sticker from an installed pack.

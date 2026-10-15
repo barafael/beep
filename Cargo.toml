@@ -28,8 +28,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "84
 # open pull requests, so b33p builds on exactly what is proposed upstream:
 #   #443 paged thread reads                         #444 storage service from a linked device
 #   #447 wait for the history archive
-#   #448 create and change groups, accept or decline invitations, retry a clashing change
-#        (needs libsignal-service-rs#473)
+#   #448 create and change groups, accept or decline invitations, retry a clashing change,
+#        the group picture, invite links and join requests (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
@@ -42,11 +42,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "84
 # master key of the wrong length); #445 (drop sync messages from other accounts) is now
 # libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "a68585dadf4ae37ad2eda5cfa961be50d068625c" }
+presage = { git = "https://github.com/barafael/presage", rev = "9b3479555338c3dddd3017744b61144e396f660e" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "a68585dadf4ae37ad2eda5cfa961be50d068625c", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "9b3479555338c3dddd3017744b61144e396f660e", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -71,7 +71,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "26e7965dfafba49e4d4ff6da0a86bdee13e96de8" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f0b3d6e2e0d95cfea8cfc609b77f4281a2f3c38" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

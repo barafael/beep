@@ -249,6 +249,67 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             });
         }
     });
+    window.on_open_join_group({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (chat.open_join(None), Update::default()));
+        }
+    });
+    window.on_close_join_group({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                chat.close_join();
+                (None, Update::default())
+            });
+        }
+    });
+    window.on_preview_group_link({
+        let shared = shared.clone();
+        move |link| {
+            shared.act(|chat| (chat.preview_link(&link), Update::default()));
+        }
+    });
+    window.on_join_group({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| (chat.join_group(), Update::default()));
+        }
+    });
+    window.on_set_invite_link({
+        let shared = shared.clone();
+        move |access| {
+            let access = match access {
+                1 => b33p_core::InviteLinkAccess::Anyone,
+                2 => b33p_core::InviteLinkAccess::Approval,
+                _ => b33p_core::InviteLinkAccess::Off,
+            };
+            shared.act(|chat| {
+                let id = chat.selected().map(|c| c.id.clone());
+                (
+                    id.and_then(|id| {
+                        chat.edit_group(&id, b33p_core::GroupEdit::InviteLink(access))
+                    }),
+                    Update::default(),
+                )
+            });
+        }
+    });
+    window.on_reset_invite_link({
+        let edit = edit_selected(shared, |_, _| b33p_core::GroupEdit::ResetInviteLink);
+        move || edit(SharedString::new(), false)
+    });
+    window.on_answer_join_request(edit_selected(shared, |member, approve| {
+        if approve {
+            b33p_core::GroupEdit::ApproveRequest(member)
+        } else {
+            b33p_core::GroupEdit::DenyRequest(member)
+        }
+    }));
+    window.on_cancel_join_request({
+        let edit = edit_selected(shared, |_, _| b33p_core::GroupEdit::CancelJoinRequest);
+        move || edit(SharedString::new(), false)
+    });
     window.on_open_add_members({
         let shared = shared.clone();
         move || {
@@ -708,7 +769,19 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             window.set_calendar_open(true);
         }
     });
-    window.on_open_link(|link| crate::open_link(&link));
+    window.on_open_link({
+        let shared = shared.clone();
+        move |link| {
+            // A group's invite link is for joining here, not for the browser.
+            if link.starts_with("https://signal.group/#")
+                || link.starts_with("sgnl://signal.group/#")
+            {
+                shared.act(|chat| (chat.open_join(Some(&link)), Update::default()));
+            } else {
+                crate::open_link(&link);
+            }
+        }
+    });
     window.global::<Playback>().on_toggle({
         let shared = Rc::downgrade(shared);
         move |id| {
@@ -1202,6 +1275,21 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
             .collect();
         update_list(&window.get_group_candidates(), candidates, |a, b| a == b);
     }
+    let join = chat.join();
+    // The field is the person's while the dialog is open: set only as it opens.
+    let was_open = window.get_join_open();
+    window.set_join_open(join.is_some());
+    if let Some((link, preview, busy)) = join {
+        if !was_open {
+            window.set_join_link(link.into());
+        }
+        window.set_join_busy(busy);
+        let preview = preview.cloned().unwrap_or_default();
+        window.set_join_title(preview.title.into());
+        window.set_join_members(preview.members as i32);
+        window.set_join_approval(preview.approval);
+        window.set_join_requested(preview.requested);
+    }
     window.set_forwarding(chat.forwarding());
     window.set_forward_preview(chat.forwarded().unwrap_or_default().into());
     if chat.forwarding() {
@@ -1538,6 +1626,27 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
     window.set_details_verified(details.trust == b33p_core::Trust::Verified);
     window.set_details_safety_changed(details.trust == b33p_core::Trust::Changed);
     window.set_details_description(details.description.unwrap_or_default().into());
+    window.set_details_invite_link(details.invite_link.unwrap_or_default().into());
+    window.set_details_invite_access(match details.invite_link_access {
+        b33p_core::InviteLinkAccess::Off => 0,
+        b33p_core::InviteLinkAccess::Anyone => 1,
+        b33p_core::InviteLinkAccess::Approval => 2,
+    });
+    let requests: Vec<MemberItem> = details
+        .requests
+        .iter()
+        .map(|person| {
+            let id = ConversationId::contact(&person.service_id);
+            MemberItem {
+                id: person.service_id.as_str().into(),
+                name: person.name.as_str().into(),
+                initials: state::initials(&person.name).into(),
+                color: avatar_color(&id),
+                admin: false,
+            }
+        })
+        .collect();
+    update_list(&window.get_details_requests(), requests, |a, b| a == b);
     let members: Vec<MemberItem> = details
         .members
         .iter()
@@ -1751,6 +1860,7 @@ pub(crate) fn set_up_models(window: &AppWindow) {
     window.set_media_files(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_media_links(ModelRc::new(VecModel::<SharedItem>::default()));
     window.set_details_members(ModelRc::new(VecModel::<MemberItem>::default()));
+    window.set_details_requests(ModelRc::new(VecModel::<MemberItem>::default()));
 }
 
 /// The `VecModel` behind a model set up in [`set_up_models`].
@@ -1790,6 +1900,8 @@ fn conversation_item(
         blocked: c.settings.blocked,
         left: c.left,
         invited: c.invited,
+        requested: c.requested,
+        admin: c.admin,
         safety_changed: c.trust == b33p_core::Trust::Changed,
         group: c.is_group(),
         can_move_up: c.settings.pinned.is_some_and(|at| at > 0),
