@@ -216,6 +216,12 @@ impl LocalStore {
         self.db.begin_with("BEGIN IMMEDIATE").await
     }
 
+    /// Releases the database file, which Windows won't let a test delete while it is open.
+    #[cfg(test)]
+    pub(crate) async fn close(&self) {
+        self.db.close().await;
+    }
+
     pub(crate) async fn open(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         // Little traffic: a couple of connections are plenty.
         let db = SqlitePoolOptions::new()

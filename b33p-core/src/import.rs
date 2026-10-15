@@ -1259,8 +1259,8 @@ mod tests {
 
     #[test]
     fn stores_and_reads_back() {
-        let dir = std::env::temp_dir().join(format!("b33p-import-store-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let url = format!("sqlite://{}?mode=rwc", dir.join("store.db3").display());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1305,6 +1305,5 @@ mod tests {
                 1
             );
         });
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
