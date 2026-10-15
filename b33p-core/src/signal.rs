@@ -6237,8 +6237,8 @@ mod tests {
 
     #[test]
     fn database_opens_only_with_its_key() {
-        let dir = std::env::temp_dir().join(format!("b33p-db-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let paths = Paths {
             db: dir.join("test.db3"),
             key_source: dir.join("test.key"),
@@ -6259,16 +6259,14 @@ mod tests {
         // Encrypted: no plaintext SQLite header.
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A conversation new to b33p is read up to what was there when it came, so what arrives
     /// after stays unread; one it has settings for keeps them.
     #[test]
     fn a_new_conversation_is_read_up_to_its_start() {
-        let dir = std::env::temp_dir().join(format!("b33p-first-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -6297,6 +6295,7 @@ mod tests {
             let kept = first_settings(&ctx, &ann, 20).await;
             assert_eq!(kept.last_read, 10);
             assert!(kept.marked_unread);
+            ctx.tables.close().await;
         });
         std::fs::remove_dir_all(&dir).unwrap();
     }
