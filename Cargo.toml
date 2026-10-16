@@ -37,16 +37,18 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "ba
 #   #461 why a message failed to decrypt, and retry receipts as their own event
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
+#   servers of one's own: `SignalServers::Custom` carries its configuration (follows our
+#        libsignal-service branch)
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself) and #452 (no panic on a group
 # master key of the wrong length); #445 (drop sync messages from other accounts) is now
 # libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "b44991319be439940b2d1d032bb972c0954ede6b" }
+presage = { git = "https://github.com/barafael/presage", rev = "27af46f19c631ed2e6b48318c6673699063d5875" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b44991319be439940b2d1d032bb972c0954ede6b", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "27af46f19c631ed2e6b48318c6673699063d5875", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -65,13 +67,17 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 # Branch langis/integration of our libsignal-service fork: the revision presage pins plus
-# #473 (group changes, with the avatar upload, which presage #448 needs) and #476 (send a sync message to ourselves
-# once, not twice). Landed upstream and dropped from the branch: #474 (drop sync messages
-# from other accounts on the PNI path too), #478 (a read timeout instead of one for the whole
-# request, so the history download isn't cut off).
+# #473 (group changes, with the avatar upload, which presage #448 needs), #476 (send a sync
+# message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
+# #482 (websocket errors that name their cause, the string reasons in `ServiceError` as
+# enums, the task's outcome handed to the pipes) and servers of one's own
+# (`SignalServers::Custom`, which presage's integration branch follows). Landed upstream and
+# dropped from the branch: #474 (drop sync messages from other accounts on the PNI path too),
+# #478 (a read timeout instead of one for the whole request, so the history download isn't
+# cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "c5e2f5003a1954c2ab8f30cff4d6240da91106de" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "710b11fa1e5085fd468cc40f9912e7487effc7f0" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

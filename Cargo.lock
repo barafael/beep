@@ -733,7 +733,6 @@ dependencies = [
  "qrcode",
  "rand 0.9.5",
  "reqwest",
- "reqwest-websocket",
  "rustls",
  "serde",
  "sha2 0.10.9",
@@ -4525,7 +4524,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=c5e2f5003a1954c2ab8f30cff4d6240da91106de#c5e2f5003a1954c2ab8f30cff4d6240da91106de"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=710b11fa1e5085fd468cc40f9912e7487effc7f0#710b11fa1e5085fd468cc40f9912e7487effc7f0"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",
@@ -4561,6 +4560,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-futures",
+ "tungstenite 0.28.0",
  "url",
  "usernames",
  "uuid",
@@ -6130,7 +6130,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=b44991319be439940b2d1d032bb972c0954ede6b#b44991319be439940b2d1d032bb972c0954ede6b"
+source = "git+https://github.com/barafael/presage?rev=27af46f19c631ed2e6b48318c6673699063d5875#27af46f19c631ed2e6b48318c6673699063d5875"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6153,7 +6153,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=b44991319be439940b2d1d032bb972c0954ede6b#b44991319be439940b2d1d032bb972c0954ede6b"
+source = "git+https://github.com/barafael/presage?rev=27af46f19c631ed2e6b48318c6673699063d5875#27af46f19c631ed2e6b48318c6673699063d5875"
 dependencies = [
  "async-trait",
  "bytes",
