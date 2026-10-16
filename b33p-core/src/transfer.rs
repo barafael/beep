@@ -161,7 +161,7 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result
         )
     };
 
-    let servers = manager.registration_data().signal_servers;
+    let servers = manager.registration_data().signal_servers.clone();
     let mut response = PushService::new(servers, None, "b33p")
         .request(
             reqwest::Method::GET,

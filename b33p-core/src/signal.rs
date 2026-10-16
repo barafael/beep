@@ -552,13 +552,12 @@ fn start_receiving(
 /// server answers 403, or 401), so retrying can't help.
 fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
     use presage::libsignal_service::push_service::ServiceError;
-    use reqwest_websocket::{Error as WsError, HandshakeError};
+    use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
     match error {
         PresageError::ServiceError(ServiceError::Unauthorized) => true,
-        PresageError::ServiceError(ServiceError::WsError(error)) => matches!(
-            &**error,
-            WsError::Handshake(HandshakeError::UnexpectedStatusCode(status)) if matches!(status.as_u16(), 401 | 403)
-        ),
+        PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+            HandshakeError::UnexpectedStatusCode(status),
+        ))) => matches!(status.as_u16(), 401 | 403),
         _ => false,
     }
 }
@@ -1072,7 +1071,7 @@ async fn signed_group_change(
     use presage::libsignal_service::groups_v2::GroupOperations;
     let change = presage::proto::GroupChange::decode(context.group_change.as_deref()?).ok()?;
     let servers = presage::libsignal_service::configuration::ServiceConfiguration::from(
-        manager.registration_data().signal_servers,
+        manager.registration_data().signal_servers.clone(),
     );
     let signed = <[u8; 64]>::try_from(change.server_signature.as_slice()).is_ok_and(|signature| {
         servers
@@ -3869,7 +3868,7 @@ async fn handle_command(
     downloads: &Rc<tokio::sync::Semaphore>,
     command: Command,
 ) -> Result<(), String> {
-    let servers = manager.registration_data().signal_servers;
+    let servers = manager.registration_data().signal_servers.clone();
     let events = &ctx.events;
     let thread = |id: &ConversationId| {
         ctx.threads
@@ -6210,12 +6209,12 @@ mod tests {
     #[test]
     fn only_refused_credentials_mean_the_device_was_removed() {
         use presage::libsignal_service::push_service::ServiceError;
-        use reqwest_websocket::{Error as WsError, HandshakeError};
+        use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
         let refused = |status: u16| {
             let status = reqwest::StatusCode::from_u16(status).unwrap();
-            PresageError::ServiceError(ServiceError::WsError(Box::new(WsError::Handshake(
+            PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
                 HandshakeError::UnexpectedStatusCode(status),
-            ))))
+            )))
         };
         assert!(removed_from_account(&refused(403)));
         assert!(removed_from_account(&refused(401)));
@@ -6225,7 +6224,7 @@ mod tests {
             ServiceError::Unauthorized
         )));
         assert!(!removed_from_account(&PresageError::ServiceError(
-            ServiceError::Timeout { reason: "slow" }
+            ServiceError::Timeout { attempts: 3 }
         )));
     }
 
