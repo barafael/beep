@@ -754,7 +754,7 @@ const ITEM_KEY_INFO_PREFIX: &[u8] = b"20240801_SIGNAL_STORAGE_SERVICE_ITEM_";
 fn manifest_key(storage_key: &[u8; 32], version: u64) -> [u8; 32] {
     use hmac::{Hmac, KeyInit, Mac};
     let mut mac =
-        Hmac::<storage_sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
+        Hmac::<sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
     mac.update(b"Manifest_");
     mac.update(version.to_string().as_bytes());
     mac.finalize().into_bytes().into()
@@ -765,7 +765,7 @@ fn item_key(storage_key: &[u8; 32], raw_id: &[u8], ikm: Option<&[u8]>) -> [u8; 3
     use hmac::{Hmac, KeyInit, Mac};
     match ikm {
         Some(ikm) => {
-            let hkdf = hkdf::Hkdf::<storage_sha2::Sha256>::new(None, ikm);
+            let hkdf = hkdf::Hkdf::<sha2::Sha256>::new(None, ikm);
             let mut key = [0u8; 32];
             hkdf.expand_multi_info(&[ITEM_KEY_INFO_PREFIX, raw_id], &mut key)
                 .expect("32 bytes is a valid length");
@@ -773,7 +773,7 @@ fn item_key(storage_key: &[u8; 32], raw_id: &[u8], ikm: Option<&[u8]>) -> [u8; 3
         }
         None => {
             let mut mac =
-                Hmac::<storage_sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
+                Hmac::<sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
             mac.update(b"Item_");
             mac.update(
                 base64::engine::general_purpose::STANDARD

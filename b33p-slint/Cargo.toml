@@ -44,7 +44,7 @@ png = "0.18"
 blurhash = "0.2"
 # Plays audio and voice messages (`audio.rs`): Signal sends AAC (in MP4 or ADTS), others Ogg,
 # MP3, FLAC, WAV.
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp4", "mp3", "vorbis", "flac", "wav", "symphonia-pcm"] }
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp4", "mp3", "vorbis", "flac", "wav", "symphonia-pcm"] }
 
 [build-dependencies]
 slint-build.workspace = true
