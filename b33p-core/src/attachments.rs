@@ -221,7 +221,8 @@ pub(crate) async fn save(
         let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
         let data = download(servers, &attachment).await?;
         let path = free_path(&attachment)?;
-        std::fs::write(&path, data)
+        tokio::fs::write(&path, data)
+            .await
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         mark_downloaded(&path);
         Ok(path)
@@ -293,13 +294,16 @@ pub(crate) async fn upload(
             .and_then(|n| n.to_str())
             .unwrap_or("attachment")
             .to_owned();
-        let size = std::fs::metadata(path)
+        let size = tokio::fs::metadata(path)
+            .await
             .map_err(|e| format!("can't read “{name}”: {e}"))?
             .len();
         if size > MAX_UPLOAD_BYTES {
             return Err(format!("“{name}” is larger than Signal's limit of 100 MB."));
         }
-        let data = std::fs::read(path).map_err(|e| format!("can't read “{name}”: {e}"))?;
+        let data = tokio::fs::read(path)
+            .await
+            .map_err(|e| format!("can't read “{name}”: {e}"))?;
         let content_type = mime_guess::from_path(path)
             .first_or_octet_stream()
             .essence_str()

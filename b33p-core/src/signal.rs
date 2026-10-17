@@ -124,7 +124,7 @@ impl Paths {
                 (dir, account)
             }
             None => (
-                directories::ProjectDirs::from("io.github", "barafael", "b33p")
+                crate::settings::project_dirs()
                     .ok_or("could not determine a data directory")?
                     .data_dir()
                     .to_path_buf(),
@@ -243,15 +243,9 @@ fn write_source(paths: &Paths, source: &KeySource) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", paths.key_source.display()))
 }
 
-/// The policy for a new database password; mirrors `state::ChatState::unlock`.
+/// The policy for a new database password, the same one the password screen applies.
 fn check_new_password(password: &str) -> Result<(), String> {
-    if password.chars().count() < crate::state::MIN_PASSWORD_LEN {
-        return Err(format!(
-            "Use at least {} characters.",
-            crate::state::MIN_PASSWORD_LEN
-        ));
-    }
-    Ok(())
+    crate::state::password_problem(password).map_or(Ok(()), Err)
 }
 
 fn wait_for_password(commands: &Inbox, preferences: &Cell<Preferences>) -> Option<Password> {
@@ -1533,7 +1527,8 @@ async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]) {
         ..Default::default()
     };
     let avatar = match manager.retrieve_group_avatar(context).await {
-        Ok(bytes) => bytes.and_then(|bytes| decode_avatar(&bytes)).map(Arc::new),
+        Ok(Some(bytes)) => decode_avatar(bytes).await.map(Arc::new),
+        Ok(None) => None,
         Err(error) => {
             warn!(error = %scrubbed(&error), "failed to fetch the group's picture");
             return;
@@ -2208,7 +2203,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             }
         };
         match picture {
-            Ok(Some(bytes)) => match decode_avatar(&bytes) {
+            Ok(Some(bytes)) => match decode_avatar(bytes).await {
                 Some(avatar) => {
                     found += 1;
                     if !events.send(Event::Avatar {
@@ -2237,19 +2232,25 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
     debug!(found, none, failed, "fetched avatars");
 }
 
-/// Crops to a square and scales to [`AVATAR_SIDE`].
-fn decode_avatar(bytes: &[u8]) -> Option<Picture> {
-    let image = attachments::decode_limited(bytes)?;
-    let square = image.resize_to_fill(
-        AVATAR_SIDE,
-        AVATAR_SIDE,
-        image::imageops::FilterType::Lanczos3,
-    );
-    Some(Picture {
-        width: AVATAR_SIDE,
-        height: AVATAR_SIDE,
-        rgba: square.into_rgba8().into_raw(),
+/// Crops to a square and scales to [`AVATAR_SIDE`], off the runtime's thread: decoding and
+/// resizing take long enough to stall everything else on it.
+async fn decode_avatar(bytes: Vec<u8>) -> Option<Picture> {
+    tokio::task::spawn_blocking(move || {
+        let image = attachments::decode_limited(&bytes)?;
+        let square = image.resize_to_fill(
+            AVATAR_SIDE,
+            AVATAR_SIDE,
+            image::imageops::FilterType::Lanczos3,
+        );
+        Some(Picture {
+            width: AVATAR_SIDE,
+            height: AVATAR_SIDE,
+            rgba: square.into_rgba8().into_raw(),
+        })
     })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// What group messages carry to say which group, and in which revision.
@@ -2794,7 +2795,8 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     let events = &ctx.events;
     // Sync messages speak for our account: what our other devices sent, read, blocked or
     // accepted. Only our own devices may say so (the sender is authenticated by the session);
-    // from anyone else they are forged, and presage doesn't check (as Signal's clients do).
+    // from anyone else they are forged. Our libsignal-service fork drops them while
+    // decrypting; this keeps the rule for content that reaches here another way.
     if !from_our_account(own_id(manager), content) {
         warn!(
             sender = %content.metadata.sender.service_id_string(),

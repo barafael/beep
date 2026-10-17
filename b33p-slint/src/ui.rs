@@ -92,9 +92,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_draft_edited({
         let shared = shared.clone();
-        move |text| {
-            shared.act(|chat| (chat.draft_changed(&text), Update::default()));
-        }
+        move |text| shared.command(|chat| chat.draft_changed(&text))
     });
     window.on_toggle_pin({
         let toggle = chat_action(shared, |chat, id, ()| chat.toggle_pin(id));
@@ -159,12 +157,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             } else {
                 b33p_core::GroupEdit::DeclineInvitation
             };
-            shared.act(|chat| {
-                (
-                    chat.edit_group(&ConversationId(id.into()), edit),
-                    Update::default(),
-                )
-            });
+            shared.command(|chat| chat.edit_group(&ConversationId(id.into()), edit));
         }
     });
     window.on_find_number({
@@ -175,25 +168,16 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             } else {
                 b33p_core::AfterFinding::Choose
             };
-            shared.act(|chat| (chat.find_number(&number, then), Update::default()));
+            shared.command(|chat| chat.find_number(&number, then));
         }
     });
     window.on_confirm_safety_number({
         let shared = shared.clone();
-        move |id| {
-            shared.act(|chat| {
-                (
-                    chat.confirm_safety_number(&ConversationId(id.into())),
-                    Update::default(),
-                )
-            });
-        }
+        move |id| shared.command(|chat| chat.confirm_safety_number(&ConversationId(id.into())))
     });
     window.on_set_verified({
         let shared = shared.clone();
-        move |verified| {
-            shared.act(|chat| (chat.set_verified(verified), Update::default()));
-        }
+        move |verified| shared.command(|chat| chat.set_verified(verified))
     });
     window.on_rename_group({
         let edit = edit_selected(shared, |text, _| b33p_core::GroupEdit::Title(text));
@@ -242,39 +226,23 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_open_new_group({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.open_group_draft(None);
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.open_group_draft(None))
     });
     window.on_open_join_group({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.open_join(None), Update::default()));
-        }
+        move || shared.command(|chat| chat.open_join(None))
     });
     window.on_close_join_group({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_join();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_join())
     });
     window.on_preview_group_link({
         let shared = shared.clone();
-        move |link| {
-            shared.act(|chat| (chat.preview_link(&link), Update::default()));
-        }
+        move |link| shared.command(|chat| chat.preview_link(&link))
     });
     window.on_join_group({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.join_group(), Update::default()));
-        }
+        move || shared.command(|chat| chat.join_group())
     });
     window.on_set_invite_link({
         let shared = shared.clone();
@@ -322,12 +290,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_toggle_candidate({
         let shared = shared.clone();
-        move |id| {
-            shared.act(|chat| {
-                chat.toggle_group_member(&ConversationId(id.into()));
-                (None, Update::default())
-            });
-        }
+        move |id| shared.edit(|chat| chat.toggle_group_member(&ConversationId(id.into())))
     });
     window.on_group_draft_edited({
         let shared = shared.clone();
@@ -342,17 +305,12 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
                 return;
             };
             let name = window.get_group_draft_name();
-            shared.act(|chat| (chat.finish_group_draft(&name), Update::default()));
+            shared.command(|chat| chat.finish_group_draft(&name));
         }
     });
     window.on_close_group_draft({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_group_draft();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_group_draft())
     });
     window.on_open_stories({
         let shared = shared.clone();
@@ -360,29 +318,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_open_story({
         let shared = shared.clone();
-        move |id| {
-            shared.act(|chat| {
-                (
-                    chat.open_story(&ConversationId(id.into())),
-                    Update::default(),
-                )
-            });
-        }
+        move |id| shared.command(|chat| chat.open_story(&ConversationId(id.into())))
     });
     window.on_step_story({
         let shared = shared.clone();
-        move |by| {
-            shared.act(|chat| (chat.step_story(by as isize), Update::default()));
-        }
+        move |by| shared.command(|chat| chat.step_story(by as isize))
     });
     window.on_close_story({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_story();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_story())
     });
     window.on_post_story_text({
         let shared = shared.clone();
@@ -448,24 +392,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_open_details({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.open_details(), Update::default()));
-        }
+        move || shared.command(|chat| chat.open_details())
     });
     window.on_close_details({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_details();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_details())
     });
     window.on_open_stickers({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.load_stickers(), Update::default()));
-        }
+        move || shared.command(|chat| chat.load_stickers())
     });
     window.on_sticker_pack_chosen({
         let shared = shared.clone();
@@ -473,9 +408,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_send_sticker({
         let shared = shared.clone();
-        move |pack, id| {
-            shared.act(|chat| (chat.send_sticker(&pack, id as u32), Update::default()));
-        }
+        move |pack, id| shared.command(|chat| chat.send_sticker(&pack, id as u32))
     });
     window.on_open_media({
         let shared = shared.clone();
@@ -484,67 +417,40 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             if let Some(window) = window.upgrade() {
                 window.set_media_tab(0);
             }
-            shared.act(|chat| (chat.open_media(), Update::default()));
+            shared.command(|chat| chat.open_media());
         }
     });
     window.on_close_media({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_media();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_media())
     });
     window.on_open_chat_search({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.open_chat_search();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.open_chat_search())
     });
     window.on_close_chat_search({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.close_chat_search();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.close_chat_search())
     });
     window.on_chat_search({
         let shared = shared.clone();
-        move |text| {
-            shared.act(|chat| (chat.search_chat(&text), Update::default()));
-        }
+        move |text| shared.command(|chat| chat.search_chat(&text))
     });
     window.on_show_result({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| (None, chat.show_result(index as usize)));
-        }
+        move |index| shared.redraw(|chat| chat.show_result(index as usize))
     });
     window.on_forward({
         let shared = shared.clone();
         move |index| {
-            shared.act(|chat| {
+            shared.edit(|chat| {
                 chat.start_forward(index as usize);
-                (None, Update::default())
-            });
+            })
         }
     });
     window.on_forward_to({
         let shared = shared.clone();
-        move |id| {
-            shared.act(|chat| {
-                (
-                    chat.forward_to(&ConversationId(id.into())),
-                    Update::default(),
-                )
-            });
-        }
+        move |id| shared.command(|chat| chat.forward_to(&ConversationId(id.into())))
     });
     window.on_forward_filter_edited({
         let shared = shared.clone();
@@ -552,12 +458,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_cancel_forward({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.cancel_forward();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.cancel_forward())
     });
     window.on_pick_mention({
         let shared = shared.clone();
@@ -578,21 +479,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_load_older({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.load_older(), Update::default()));
-        }
+        move || shared.command(|chat| chat.load_older())
     });
     window.on_show_folder({
         let shared = shared.clone();
-        move |folder| {
-            shared.act(|chat| (None, chat.show_folder(usize::try_from(folder).ok())));
-        }
+        move |folder| shared.redraw(|chat| chat.show_folder(usize::try_from(folder).ok()))
     });
     window.on_show_archived({
         let shared = shared.clone();
-        move |show| {
-            shared.act(|chat| (None, chat.show_archived(show)));
-        }
+        move |show| shared.redraw(|chat| chat.show_archived(show))
     });
     window.on_shortcut({
         let shared = shared.clone();
@@ -630,10 +525,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            shared.act(|chat| {
-                chat.cancel_edit();
-                (None, Update::default())
-            });
+            shared.edit(|chat| chat.cancel_edit());
             if let Some(window) = window.upgrade() {
                 window.set_draft(shared.chat.borrow().draft().into());
             }
@@ -647,35 +539,26 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_reveal({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| (None, chat.reveal(index as usize)));
-        }
+        move |index| shared.redraw(|chat| chat.reveal(index as usize))
     });
     window.on_toggle_select({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| (None, chat.toggle_selected(index as usize)));
-        }
+        move |index| shared.redraw(|chat| chat.toggle_selected(index as usize))
     });
     window.on_select_through({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| (None, chat.select_through(index as usize)));
-        }
+        move |index| shared.redraw(|chat| chat.select_through(index as usize))
     });
     window.on_clear_selection({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (None, chat.clear_selection()));
-        }
+        move || shared.redraw(|chat| chat.clear_selection())
     });
     window.on_forward_selection({
         let shared = shared.clone();
         move || {
-            shared.act(|chat| {
+            shared.edit(|chat| {
                 chat.start_forward_selection();
-                (None, Update::default())
-            });
+            })
         }
     });
     window.on_delete_selection({
@@ -731,9 +614,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_react({
         let shared = shared.clone();
-        move |index, emoji| {
-            shared.act(|chat| (chat.react(index as usize, &emoji), Update::default()));
-        }
+        move |index, emoji| shared.command(|chat| chat.react(index as usize, &emoji))
     });
     window.on_retry_send({
         let shared = shared.clone();
@@ -751,29 +632,15 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     });
     window.on_reply({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| (None, chat.reply_to(index as usize)));
-        }
+        move |index| shared.redraw(|chat| chat.reply_to(index as usize))
     });
     window.on_cancel_reply({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.cancel_reply();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.cancel_reply())
     });
     window.on_open_attachment({
         let shared = shared.clone();
-        move |id| {
-            shared.act(|chat| {
-                (
-                    chat.open_attachment(&AttachmentId(id.into())),
-                    Update::default(),
-                )
-            });
-        }
+        move |id| shared.command(|chat| chat.open_attachment(&AttachmentId(id.into())))
     });
     window.on_open_calendar({
         let shared = shared.clone();
@@ -793,7 +660,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             if link.starts_with("https://signal.group/#")
                 || link.starts_with("sgnl://signal.group/#")
             {
-                shared.act(|chat| (chat.open_join(Some(&link)), Update::default()));
+                shared.command(|chat| chat.open_join(Some(&link)));
             } else {
                 crate::open_link(&link);
             }
@@ -857,56 +724,36 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
                 return;
             };
             let files: Vec<_> = paths.map(std::path::Path::to_path_buf).collect();
-            shared.act(|chat| {
-                chat.stage_files(files);
-                (None, Update::default())
-            });
+            shared.edit(|chat| chat.stage_files(files));
         }
     });
     window.on_stage_files({
         let shared = shared.clone();
         move |files| {
-            shared.act(|chat| {
-                chat.stage_files(files.iter().map(|f| std::path::PathBuf::from(f.as_str())));
-                (None, Update::default())
-            });
+            shared.edit(|chat| {
+                chat.stage_files(files.iter().map(|f| std::path::PathBuf::from(f.as_str())))
+            })
         }
     });
     window.on_unstage({
         let shared = shared.clone();
-        move |index| {
-            shared.act(|chat| {
-                chat.unstage(index as usize);
-                (None, Update::default())
-            });
-        }
+        move |index| shared.edit(|chat| chat.unstage(index as usize))
     });
     window.on_back({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (None, chat.deselect()));
-        }
+        move || shared.redraw(|chat| chat.deselect())
     });
     window.on_search({
         let shared = shared.clone();
-        move |text| {
-            shared.act(|chat| (None, chat.search(&text)));
-        }
+        move |text| shared.redraw(|chat| chat.search(&text))
     });
     window.on_skip_history({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| (chat.skip_history(), Update::default()));
-        }
+        move || shared.command(|chat| chat.skip_history())
     });
     window.on_dismiss_error({
         let shared = shared.clone();
-        move || {
-            shared.act(|chat| {
-                chat.dismiss_error();
-                (None, Update::default())
-            });
-        }
+        move || shared.edit(|chat| chat.dismiss_error())
     });
 
     Ok(Rc::new(Window(window)))
@@ -993,34 +840,17 @@ impl Window {
 fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
     // As build.rs chooses: Qt on Linux.
     window.set_qt(cfg!(target_os = "linux"));
-    window.set_theme(match settings.theme {
-        Theme::System => 0,
-        Theme::Light => 1,
-        Theme::Dark => 2,
-    });
-    let style = WidgetStyle::ALL
-        .iter()
-        .position(|s| *s == settings.style)
-        .unwrap_or_default();
-    window.set_widget_style(style as i32);
+    window.set_theme(index_of(&Theme::ALL, settings.theme));
+    window.set_widget_style(index_of(&WidgetStyle::ALL, settings.style));
     window.set_style_note(style_note.into());
-    window.set_text_size(match settings.text_size {
-        TextSize::Small => 0,
-        TextSize::Default => 1,
-        TextSize::Large => 2,
-    });
-    let animations = Animations::ALL
-        .iter()
-        .position(|a| *a == settings.animations)
-        .unwrap_or_default();
-    window.set_animations(animations as i32);
+    window.set_text_size(index_of(&TextSize::ALL, settings.text_size));
+    window.set_animations(index_of(&Animations::ALL, settings.animations));
     window.set_show_avatars(settings.show_avatars);
     window.set_notifications(settings.notifications);
-    window.set_notification_content(match settings.notification_content {
-        NotificationContent::NameAndMessage => 0,
-        NotificationContent::NameOnly => 1,
-        NotificationContent::Nothing => 2,
-    });
+    window.set_notification_content(index_of(
+        &NotificationContent::ALL,
+        settings.notification_content,
+    ));
     window.set_close_to_tray(settings.close_to_tray);
     window.set_read_receipts(settings.preferences.read_receipts);
     window.set_typing_indicators(settings.preferences.typing_indicators);
@@ -1035,31 +865,16 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
 
 fn read_settings(window: &AppWindow) -> Settings {
     Settings {
-        theme: match window.get_theme() {
-            1 => Theme::Light,
-            2 => Theme::Dark,
-            _ => Theme::System,
-        },
-        style: WidgetStyle::ALL
-            .get(window.get_widget_style() as usize)
-            .copied()
-            .unwrap_or_default(),
-        animations: Animations::ALL
-            .get(window.get_animations() as usize)
-            .copied()
-            .unwrap_or_default(),
-        text_size: match window.get_text_size() {
-            0 => TextSize::Small,
-            2 => TextSize::Large,
-            _ => TextSize::Default,
-        },
+        theme: at_index(&Theme::ALL, window.get_theme()),
+        style: at_index(&WidgetStyle::ALL, window.get_widget_style()),
+        animations: at_index(&Animations::ALL, window.get_animations()),
+        text_size: at_index(&TextSize::ALL, window.get_text_size()),
         show_avatars: window.get_show_avatars(),
         notifications: window.get_notifications(),
-        notification_content: match window.get_notification_content() {
-            1 => NotificationContent::NameOnly,
-            2 => NotificationContent::Nothing,
-            _ => NotificationContent::NameAndMessage,
-        },
+        notification_content: at_index(
+            &NotificationContent::ALL,
+            window.get_notification_content(),
+        ),
         show_activity: window.get_show_activity(),
         show_calendar: window.get_show_calendar(),
         close_to_tray: window.get_close_to_tray(),
@@ -1070,6 +885,19 @@ fn read_settings(window: &AppWindow) -> Settings {
             sync_to_phone: window.get_sync_to_phone(),
         },
     }
+}
+
+/// Where `choice` sits in its enum's `ALL`, which is the order the settings page lists it in.
+fn index_of<T: PartialEq>(all: &[T], choice: T) -> i32 {
+    all.iter().position(|c| *c == choice).unwrap_or_default() as i32
+}
+
+/// The choice at `index` of its enum's `ALL`, or the default for an index out of range.
+fn at_index<T: Copy + Default>(all: &[T], index: i32) -> T {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| all.get(i).copied())
+        .unwrap_or_default()
 }
 
 /// Carries out the shortcut for a key pressed anywhere in the window; whether it was one.
@@ -1105,10 +933,7 @@ fn shortcut(
                 return false;
             }
             window.set_chat_search_text(SharedString::new());
-            shared.act(|chat| {
-                chat.open_chat_search();
-                (None, Update::default())
-            });
+            shared.edit(|chat| chat.open_chat_search());
             true
         }
         (false, true, false) if is(Key::DownArrow) => open(&|chat| chat.select_relative(1)),
@@ -1295,10 +1120,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 title: c.title.as_str().into(),
                 initials: state::initials(&c.title).into(),
                 color: avatar_color(&c.id),
-                avatar: chat
-                    .avatar(&c.id)
-                    .map(|a| images.avatar(&c.id, a))
-                    .unwrap_or_default(),
+                avatar: avatar_image(chat, images, &c.id),
                 chosen: chosen.contains(&c.id),
             })
             .collect();
@@ -1330,10 +1152,7 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 title: c.title.as_str().into(),
                 initials: state::initials(&c.title).into(),
                 avatar_color: avatar_color(&c.id),
-                avatar: chat
-                    .avatar(&c.id)
-                    .map(|a| images.avatar(&c.id, a))
-                    .unwrap_or_default(),
+                avatar: avatar_image(chat, images, &c.id),
                 ..Default::default()
             })
             .collect();
@@ -1562,10 +1381,7 @@ fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
             title: ring.title.as_str().into(),
             initials: state::initials(&ring.title).into(),
             color: avatar_color(ring.conversation),
-            avatar: chat
-                .avatar(ring.conversation)
-                .map(|a| images.avatar(ring.conversation, a))
-                .unwrap_or_default(),
+            avatar: avatar_image(chat, images, ring.conversation),
             unviewed: ring.unviewed,
             time: state::format_list_time(ring.latest).into(),
         })
@@ -1665,31 +1481,13 @@ fn render_details(window: &AppWindow, chat: &ChatState) {
     let requests: Vec<MemberItem> = details
         .requests
         .iter()
-        .map(|person| {
-            let id = ConversationId::contact(&person.service_id);
-            MemberItem {
-                id: person.service_id.as_str().into(),
-                name: person.name.as_str().into(),
-                initials: state::initials(&person.name).into(),
-                color: avatar_color(&id),
-                admin: false,
-            }
-        })
+        .map(|person| member_item(person, false))
         .collect();
     update_list(&window.get_details_requests(), requests, |a, b| a == b);
     let members: Vec<MemberItem> = details
         .members
         .iter()
-        .map(|(person, admin)| {
-            let id = ConversationId::contact(&person.service_id);
-            MemberItem {
-                id: person.service_id.as_str().into(),
-                name: person.name.as_str().into(),
-                initials: state::initials(&person.name).into(),
-                color: avatar_color(&id),
-                admin: *admin,
-            }
-        })
+        .map(|(person, admin)| member_item(person, *admin))
         .collect();
     // Row by row: a new model would rebuild the rows, closing a member's menu under the
     // pointer whenever anything happens.
@@ -1962,6 +1760,24 @@ fn conversation_item(
         timer: c.expire_timer as i32,
         timer_label: b33p_core::format_timer(c.expire_timer).into(),
     }
+}
+
+/// A member of the open group, or someone asking to join it.
+fn member_item(person: &b33p_core::Person, admin: bool) -> MemberItem {
+    MemberItem {
+        id: person.service_id.as_str().into(),
+        name: person.name.as_str().into(),
+        initials: state::initials(&person.name).into(),
+        color: avatar_color(&ConversationId::contact(&person.service_id)),
+        admin,
+    }
+}
+
+/// A chat's picture as the window shows it; empty without one.
+fn avatar_image(chat: &ChatState, images: &Images, id: &ConversationId) -> slint::Image {
+    chat.avatar(id)
+        .map(|avatar| images.avatar(id, avatar))
+        .unwrap_or_default()
 }
 
 /// A stable colour per person or group, for avatars without a picture and group senders' names.

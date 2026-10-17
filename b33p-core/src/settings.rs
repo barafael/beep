@@ -26,14 +26,14 @@ impl WidgetStyle {
     pub const ALL: [Self; 2] = [Self::Native, Self::Fusion];
 
     /// Styles b33p no longer has ("fluent", …) aren't keys, so they read as the default.
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Native => "native",
             Self::Fusion => "fusion",
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|style| style.key() == key)
     }
 }
@@ -47,9 +47,9 @@ pub enum TextSize {
 }
 
 impl TextSize {
-    const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
+    pub const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
 
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Small => "small",
             Self::Default => "default",
@@ -57,7 +57,7 @@ impl TextSize {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|size| size.key() == key)
     }
 
@@ -93,7 +93,7 @@ impl Animations {
         }
     }
 
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::On => "on",
@@ -101,7 +101,7 @@ impl Animations {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|animations| animations.key() == key)
@@ -119,9 +119,9 @@ pub enum NotificationContent {
 }
 
 impl NotificationContent {
-    const ALL: [Self; 3] = [Self::NameAndMessage, Self::NameOnly, Self::Nothing];
+    pub const ALL: [Self; 3] = [Self::NameAndMessage, Self::NameOnly, Self::Nothing];
 
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::NameAndMessage => "name_and_message",
             Self::NameOnly => "name_only",
@@ -129,15 +129,15 @@ impl NotificationContent {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|content| content.key() == key)
     }
 }
 
 impl Theme {
-    const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
 
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::Light => "light",
@@ -145,7 +145,7 @@ impl Theme {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|theme| theme.key() == key)
     }
 }
@@ -293,9 +293,13 @@ impl Settings {
     }
 }
 
+/// Where b33p keeps its own files on this platform, under its one application id.
+pub fn project_dirs() -> Option<directories::ProjectDirs> {
+    directories::ProjectDirs::from("io.github", "barafael", "b33p")
+}
+
 fn path() -> Option<PathBuf> {
-    let dirs = directories::ProjectDirs::from("io.github", "barafael", "b33p")?;
-    Some(dirs.config_dir().join("settings.conf"))
+    Some(project_dirs()?.config_dir().join("settings.conf"))
 }
 
 #[cfg(test)]

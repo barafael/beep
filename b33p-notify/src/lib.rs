@@ -14,6 +14,15 @@ mod freedesktop;
 #[cfg(windows)]
 mod windows;
 
+/// `text` as character data in XML or the HTML subset notification bodies may carry.
+#[cfg(any(all(unix, not(target_os = "macos")), windows))]
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Identifies the app to the notification service.
 pub struct AppInfo {
     /// Reverse-DNS id. On Linux it names the `.desktop` file (for the app's name, icon and

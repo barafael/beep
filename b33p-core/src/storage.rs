@@ -2,10 +2,10 @@
 //! contact and group: which chats are pinned, muted, archived or marked unread, and whose safety
 //! number was verified.
 //!
-//! b33p doesn't write there yet, so its own changes must survive a sync: a setting is taken
-//! from the phone only if it changed there since the last sync (what the phone said then is kept
-//! in `b33p_remote`). Pins work the same way, and pins made only in b33p stay after the
-//! phone's (Signal allows the phone four).
+//! b33p writes there only when asked to sync to the phone, so its own changes must survive a
+//! sync: a setting is taken from the phone only if it changed there since the last sync (what
+//! the phone said then is kept in `b33p_remote`). Pins work the same way, and pins made only in
+//! b33p stay after the phone's (Signal allows the phone four).
 
 use std::collections::{HashMap, HashSet};
 
@@ -128,16 +128,10 @@ pub(crate) async fn sync(
                         .pinned_conversations
                         .iter()
                         .filter_map(|pinned| match pinned.identifier.as_ref()? {
-                            Pinned::Contact(contact) => {
-                                let who =
-                                    ServiceId::parse_from_service_id_string(&contact.service_id)
-                                        .or_else(|| {
-                                            ServiceId::parse_from_service_id_binary(
-                                                &contact.service_id_binary,
-                                            )
-                                        })?;
-                                Some(ConversationId::contact(&who.service_id_string()))
-                            }
+                            Pinned::Contact(contact) => contact_conversation(
+                                &contact.service_id,
+                                &contact.service_id_binary,
+                            ),
                             Pinned::GroupMasterKey(key) => Some(ConversationId::group(key)),
                             _ => None,
                         })
@@ -269,6 +263,14 @@ fn settings(
     }
 }
 
+/// The chat of a contact a storage record names by service ID, as a string or (older
+/// records) in binary.
+fn contact_conversation(service_id: &str, binary: &[u8]) -> Option<ConversationId> {
+    let who = ServiceId::parse_from_service_id_string(service_id)
+        .or_else(|| ServiceId::parse_from_service_id_binary(binary))?;
+    Some(ConversationId::contact(&who.service_id_string()))
+}
+
 fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
     use presage::proto::recipient::Identifier;
     let ids = |recipients: &[presage::proto::Recipient]| -> Vec<ConversationId> {
@@ -276,11 +278,7 @@ fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
             .iter()
             .filter_map(|r| match r.identifier.as_ref()? {
                 Identifier::Contact(contact) => {
-                    let who = ServiceId::parse_from_service_id_string(&contact.service_id)
-                        .or_else(|| {
-                            ServiceId::parse_from_service_id_binary(&contact.service_id_binary)
-                        })?;
-                    Some(ConversationId::contact(&who.service_id_string()))
+                    contact_conversation(&contact.service_id, &contact.service_id_binary)
                 }
                 Identifier::GroupMasterKey(key) => Some(ConversationId::group(key)),
                 Identifier::LegacyGroupId(_) => None,
@@ -331,19 +329,15 @@ fn merge(
         settings.accepted |= remote.accepted;
     }
     // Pins: the phone's in its order if they changed there, then those only pinned here.
-    let pinned = |map: &HashMap<ConversationId, ChatSettings>| {
-        let mut pins: Vec<(u32, ConversationId)> = map
-            .iter()
-            .filter_map(|(id, s)| Some((s.pinned?, id.clone())))
-            .collect();
-        pins.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
-        pins.into_iter().map(|(_, id)| id).collect::<Vec<_>>()
-    };
-    let (before_pins, now_pins) = (pinned(before), pinned(now));
+    let (before_pins, now_pins) = (pinned_order(before), pinned_order(now));
     if before_pins != now_pins {
         let theirs: HashSet<&ConversationId> = before_pins.iter().chain(&now_pins).collect();
         let mut order = now_pins.clone();
-        order.extend(pinned(local).into_iter().filter(|id| !theirs.contains(id)));
+        order.extend(
+            pinned_order(local)
+                .into_iter()
+                .filter(|id| !theirs.contains(id)),
+        );
         for (id, settings) in merged.iter_mut() {
             settings.set_pinned(order.iter().position(|p| p == id).map(|at| at as u32));
         }
@@ -442,10 +436,7 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
             };
             let edited = match record.record {
                 Some(Record::Contact(contact)) => {
-                    let aci = ServiceId::parse_from_service_id_string(&contact.aci)
-                        .or_else(|| ServiceId::parse_from_service_id_binary(&contact.aci_binary));
-                    let Some(id) = aci.map(|aci| ConversationId::contact(&aci.service_id_string()))
-                    else {
+                    let Some(id) = contact_conversation(&contact.aci, &contact.aci_binary) else {
                         continue;
                     };
                     changed.get(&id).and_then(|wanted| {

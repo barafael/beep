@@ -27,7 +27,7 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
                 // Ours, from earlier in this run; the runtime directory is private, so
                 // nobody else could have put it there.
                 if fs::symlink_metadata(&path)?.is_dir() {
-                    restrict(&path)?;
+                    crate::vault::restrict_dir(&path)?;
                     Ok(path)
                 } else {
                     Err(io::Error::new(
@@ -95,21 +95,6 @@ fn create_private(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(path)
-}
-
-#[cfg(unix)]
-fn restrict(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if fs::metadata(path)?.permissions().mode() & 0o777 != 0o700 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-/// Windows has no unix modes; the user's temporary directory already keeps others out.
-#[cfg(not(unix))]
-fn restrict(_path: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

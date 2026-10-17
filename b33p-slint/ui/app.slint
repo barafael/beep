@@ -1869,6 +1869,18 @@ component SettingRow inherits HorizontalLayout {
     }
 }
 
+// A setting that is on or off.
+component SwitchRow inherits SettingRow {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled;
+    Switch {
+        enabled: root.enabled;
+        checked <=> root.checked;
+        toggled => { root.toggled(); }
+    }
+}
+
 component SectionTitle inherits Text {
     font-size: 0.85rem;
     font-weight: 700;
@@ -1989,43 +2001,35 @@ component SettingsPage inherits Rectangle {
                             selected => { root.changed-settings(); }
                         }
                     }
-                    SettingRow {
+                    SwitchRow {
                         label: "Profile pictures";
                         hint: "Show contacts' and groups' pictures instead of initials.";
-                        Switch {
-                            checked <=> root.show-avatars;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.show-avatars;
+                        toggled => { root.changed-settings(); }
                     }
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Chats"; }
-                    SettingRow {
+                    SwitchRow {
                         label: "Activity strip";
                         hint: "A bar beside each chat showing when you wrote, and how much. Click it to jump there.";
-                        Switch {
-                            checked <=> root.show-activity;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.show-activity;
+                        toggled => { root.changed-settings(); }
                     }
-                    SettingRow {
+                    SwitchRow {
                         label: "Activity calendar";
                         hint: "A button above each chat opens a calendar of it, year by year. Click a day to go there.";
-                        Switch {
-                            checked <=> root.show-calendar;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.show-calendar;
+                        toggled => { root.changed-settings(); }
                     }
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Notifications"; }
-                    SettingRow {
+                    SwitchRow {
                         label: "New messages";
                         hint: "Notify about messages unless their chat is open in front.";
-                        Switch {
-                            checked <=> root.notifications;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.notifications;
+                        toggled => { root.changed-settings(); }
                     }
                     SettingRow {
                         label: "Show";
@@ -2040,51 +2044,41 @@ component SettingsPage inherits Rectangle {
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Privacy"; }
-                    SettingRow {
+                    SwitchRow {
                         label: "Read receipts";
                         hint: "Let people know when you've read their messages. Turned off, you don't see theirs either on your phone.";
-                        Switch {
-                            checked <=> root.read-receipts;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.read-receipts;
+                        toggled => { root.changed-settings(); }
                     }
-                    SettingRow {
+                    SwitchRow {
                         label: "Typing indicators";
                         hint: "Let people see when you're typing.";
-                        Switch {
-                            checked <=> root.typing-indicators;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.typing-indicators;
+                        toggled => { root.changed-settings(); }
                     }
-                    SettingRow {
+                    SwitchRow {
                         label: "Link previews";
                         hint: "Add a preview of the first link to messages you send. b33p fetches the page itself, so the site sees your IP address.";
-                        Switch {
-                            checked <=> root.link-previews;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.link-previews;
+                        toggled => { root.changed-settings(); }
                     }
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Background"; }
-                    SettingRow {
+                    SwitchRow {
                         label: "Keep running in the tray";
                         hint: root.tray-available
                             ? "Closing the window leaves b33p in the tray, still receiving messages."
                             : "Your desktop doesn't show tray icons, so closing the window quits b33p.";
-                        Switch {
-                            enabled: root.tray-available;
-                            checked <=> root.close-to-tray;
-                            toggled => { root.changed-settings(); }
-                        }
+                        enabled: root.tray-available;
+                        checked <=> root.close-to-tray;
+                        toggled => { root.changed-settings(); }
                     }
-                    if root.autostart-supported: SettingRow {
+                    if root.autostart-supported: SwitchRow {
                         label: "Start with the system";
                         hint: root.close-to-tray && root.tray-available ? "Starts in the tray when you log in." : "Opens b33p when you log in.";
-                        Switch {
-                            checked <=> root.start-with-system;
-                            toggled => { root.changed-start-with-system(self.checked); }
-                        }
+                        checked <=> root.start-with-system;
+                        toggled => { root.changed-start-with-system(self.checked); }
                     }
 
                     Rectangle { height: 8px; }
@@ -2129,13 +2123,11 @@ component SettingsPage inherits Rectangle {
                             color: Palette.foreground.with-alpha(0.7);
                         }
                     }
-                    SettingRow {
+                    SwitchRow {
                         label: "Sync chat settings to your phone";
                         hint: "Pinned, muted, archived and blocked chats and accepted requests changed here go to your phone too. Off: they stay on this computer, and changes on the phone still come here.";
-                        Switch {
-                            checked <=> root.sync-to-phone;
-                            toggled => { root.changed-settings(); }
-                        }
+                        checked <=> root.sync-to-phone;
+                        toggled => { root.changed-settings(); }
                     }
                     SettingRow {
                         label: "Device name";
@@ -2149,6 +2141,40 @@ component SettingsPage inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+// A dialog over everything: a dimmed background that fades in and closes it when clicked, and
+// a card that grows into place, holding the children.
+component Dialog inherits Rectangle {
+    in property <length> card-width;
+    in property <length> card-height;
+    // For a card whose height follows its contents as they change.
+    in property <bool> card-clip;
+    callback dismissed;
+    opacity: 0;
+    init => { self.opacity = 1; }
+    animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
+    background: #0008;
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+    Rectangle {
+        width: min(root.card-width, parent.width - 32px);
+        height: min(root.card-height, parent.height - 32px);
+        clip: root.card-clip;
+        property <float> grown: 0;
+        init => { self.grown = 1; }
+        animate grown { duration: 160ms * Motion.scale; easing: ease-out; }
+        transform-scale: 0.97 + 0.03 * self.grown;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        border-radius: 12px;
+        background: Palette.background;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #0006;
+        // Clicks inside don't close it.
+        TouchArea {}
+        @children
     }
 }
 
@@ -4875,116 +4901,96 @@ export component AppWindow inherits Window {
     }
 
     // Choosing people for a new group, or to add to the open one.
-    if root.group-draft-open: Rectangle {
-        // Fades in as it opens.
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
-        background: #0008;
-        TouchArea {
-            clicked => { root.close-group-draft(); }
-        }
-        Rectangle {
-            width: min(420px, parent.width - 32px);
-            height: min(560px, parent.height - 32px);
-            // Grows into place as the dimmed background fades in.
-            property <float> grown: 0;
-            init => { self.grown = 1; }
-            animate grown { duration: 160ms * Motion.scale; easing: ease-out; }
-            transform-scale: 0.97 + 0.03 * self.grown;
-            transform-origin: { x: self.width / 2, y: self.height / 2 };
-            border-radius: 12px;
-            background: Palette.background;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #0006;
-            TouchArea {}
-            VerticalLayout {
-                padding: 16px;
-                spacing: 10px;
-                Text {
-                    text: root.group-draft-new ? "New group" : "Add members";
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    color: Palette.foreground;
-                }
-                if root.group-draft-new: LineEdit {
-                    placeholder-text: "Group name";
-                    text <=> root.group-draft-name;
-                    init => { self.focus(); }
-                    edited => { root.group-draft-edited(); }
-                }
-                LineEdit {
-                    placeholder-text: "Search contacts, or type a phone number";
-                    text <=> root.group-draft-filter;
-                    edited => { root.group-draft-edited(); }
-                }
-                if root.group-filter-is-number: Button {
-                    text: "Find " + root.group-draft-filter + " on Signal";
-                    clicked => { root.find-number(root.group-draft-filter, false); }
-                }
-                ListView {
-                    vertical-stretch: 1;
-                    for candidate in root.group-candidates: Rectangle {
-                        height: 48px;
-                        border-radius: 6px;
-                        background: candidate-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
-                        animate background { duration: 120ms * Motion.scale; easing: ease-out; }
-                        candidate-touch := TouchArea {
-                            mouse-cursor: pointer;
-                            accessible-role: checkbox;
-                            accessible-label: candidate.title;
-                            accessible-checked: candidate.chosen;
-                            accessible-action-default => { self.clicked(); }
-                            clicked => { root.toggle-candidate(candidate.id); }
+    if root.group-draft-open: Dialog {
+        card-width: 420px;
+        card-height: 560px;
+        dismissed => { root.close-group-draft(); }
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                text: root.group-draft-new ? "New group" : "Add members";
+                font-size: 1.1rem;
+                font-weight: 600;
+                color: Palette.foreground;
+            }
+            if root.group-draft-new: LineEdit {
+                placeholder-text: "Group name";
+                text <=> root.group-draft-name;
+                init => { self.focus(); }
+                edited => { root.group-draft-edited(); }
+            }
+            LineEdit {
+                placeholder-text: "Search contacts, or type a phone number";
+                text <=> root.group-draft-filter;
+                edited => { root.group-draft-edited(); }
+            }
+            if root.group-filter-is-number: Button {
+                text: "Find " + root.group-draft-filter + " on Signal";
+                clicked => { root.find-number(root.group-draft-filter, false); }
+            }
+            ListView {
+                vertical-stretch: 1;
+                for candidate in root.group-candidates: Rectangle {
+                    height: 48px;
+                    border-radius: 6px;
+                    background: candidate-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                    animate background { duration: 120ms * Motion.scale; easing: ease-out; }
+                    candidate-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        accessible-role: checkbox;
+                        accessible-label: candidate.title;
+                        accessible-checked: candidate.chosen;
+                        accessible-action-default => { self.clicked(); }
+                        clicked => { root.toggle-candidate(candidate.id); }
+                    }
+                    HorizontalLayout {
+                        padding: 6px;
+                        spacing: 10px;
+                        Avatar {
+                            width: 36px;
+                            initials: candidate.initials;
+                            tint: candidate.color;
+                            picture: candidate.avatar;
                         }
-                        HorizontalLayout {
-                            padding: 6px;
-                            spacing: 10px;
-                            Avatar {
-                                width: 36px;
-                                initials: candidate.initials;
-                                tint: candidate.color;
-                                picture: candidate.avatar;
-                            }
-                            Text {
-                                text: candidate.title;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                                color: Palette.foreground;
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 22px;
-                                    height: 22px;
-                                    border-radius: 11px;
-                                    border-width: 2px;
-                                    border-color: candidate.chosen ? Palette.accent-background : Palette.border;
-                                    background: candidate.chosen ? Palette.accent-background : transparent;
-                                    if candidate.chosen: Text {
-                                        text: "✓";
-                                        color: white;
-                                        font-weight: 700;
-                                    }
+                        Text {
+                            text: candidate.title;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            color: Palette.foreground;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                border-radius: 11px;
+                                border-width: 2px;
+                                border-color: candidate.chosen ? Palette.accent-background : Palette.border;
+                                background: candidate.chosen ? Palette.accent-background : transparent;
+                                if candidate.chosen: Text {
+                                    text: "✓";
+                                    color: white;
+                                    font-weight: 700;
                                 }
                             }
                         }
                     }
                 }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Cancel";
-                        clicked => { root.close-group-draft(); }
-                    }
-                    Button {
-                        text: root.group-draft-new ? "Create" : "Add";
-                        primary: true;
-                        enabled: root.group-draft-new ? !root.is-blank(root.group-draft-name) : root.group-draft-chosen > 0;
-                        clicked => { root.finish-group-draft(); }
-                    }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.close-group-draft(); }
+                }
+                Button {
+                    text: root.group-draft-new ? "Create" : "Add";
+                    primary: true;
+                    enabled: root.group-draft-new ? !root.is-blank(root.group-draft-name) : root.group-draft-chosen > 0;
+                    clicked => { root.finish-group-draft(); }
                 }
             }
         }
@@ -4992,91 +4998,73 @@ export component AppWindow inherits Window {
 
     // Joining a group through its invite link: paste it, see what the group shows of itself,
     // then join or ask to.
-    if root.join-open: Rectangle {
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
-        background: #0008;
-        TouchArea {
-            clicked => { root.close-join-group(); }
-        }
-        Rectangle {
-            width: min(440px, parent.width - 32px);
-            height: min(join-content.preferred-height, parent.height - 32px);
-            clip: true;
-            property <float> grown: 0;
-            init => { self.grown = 1; }
-            animate grown { duration: 160ms * Motion.scale; easing: ease-out; }
-            transform-scale: 0.97 + 0.03 * self.grown;
-            transform-origin: { x: self.width / 2, y: self.height / 2 };
-            border-radius: 12px;
-            background: Palette.background;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #0006;
-            TouchArea {}
-            join-content := VerticalLayout {
-                padding: 16px;
-                spacing: 10px;
+    if root.join-open: Dialog {
+        card-width: 440px;
+        card-height: join-content.preferred-height;
+        card-clip: true;
+        dismissed => { root.close-join-group(); }
+        join-content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                text: "Join a group";
+                font-size: 1.1rem;
+                font-weight: 600;
+                color: Palette.foreground;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                join-link-field := LineEdit {
+                    placeholder-text: "https://signal.group/#…";
+                    text <=> root.join-link;
+                    enabled: !root.join-busy;
+                    init => { self.focus(); }
+                    accepted => { root.preview-group-link(self.text); }
+                }
+                Button {
+                    text: "Look up";
+                    enabled: !root.join-busy && !root.is-blank(root.join-link);
+                    clicked => { root.preview-group-link(join-link-field.text); }
+                }
+            }
+            if root.join-busy: Text {
+                text: "One moment…";
+                font-size: 0.85rem;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+            if root.join-title != "" && !root.join-busy: VerticalLayout {
+                spacing: 4px;
                 Text {
-                    text: "Join a group";
-                    font-size: 1.1rem;
+                    text: root.join-title;
                     font-weight: 600;
                     color: Palette.foreground;
                 }
-                HorizontalLayout {
-                    spacing: 8px;
-                    join-link-field := LineEdit {
-                        placeholder-text: "https://signal.group/#…";
-                        text <=> root.join-link;
-                        enabled: !root.join-busy;
-                        init => { self.focus(); }
-                        accepted => { root.preview-group-link(self.text); }
-                    }
-                    Button {
-                        text: "Look up";
-                        enabled: !root.join-busy && !root.is-blank(root.join-link);
-                        clicked => { root.preview-group-link(join-link-field.text); }
-                    }
-                }
-                if root.join-busy: Text {
-                    text: "One moment…";
+                Text {
+                    text: root.join-members == 1 ? "1 member" : root.join-members + " members";
                     font-size: 0.85rem;
                     color: Palette.foreground.with-alpha(0.7);
                 }
-                if root.join-title != "" && !root.join-busy: VerticalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: root.join-title;
-                        font-weight: 600;
-                        color: Palette.foreground;
-                    }
-                    Text {
-                        text: root.join-members == 1 ? "1 member" : root.join-members + " members";
-                        font-size: 0.85rem;
-                        color: Palette.foreground.with-alpha(0.7);
-                    }
-                    Text {
-                        text: root.join-requested ? "You asked to join already. An admin has to let you in."
-                            : root.join-approval ? "An admin has to let you in. Asking shows them your name and picture."
-                            : "Its members see your name and picture once you join.";
-                        wrap: word-wrap;
-                        font-size: 0.85rem;
-                        color: Palette.foreground.with-alpha(0.7);
-                    }
+                Text {
+                    text: root.join-requested ? "You asked to join already. An admin has to let you in."
+                        : root.join-approval ? "An admin has to let you in. Asking shows them your name and picture."
+                        : "Its members see your name and picture once you join.";
+                    wrap: word-wrap;
+                    font-size: 0.85rem;
+                    color: Palette.foreground.with-alpha(0.7);
                 }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Cancel";
-                        clicked => { root.close-join-group(); }
-                    }
-                    Button {
-                        text: root.join-approval ? "Ask to join" : "Join";
-                        primary: true;
-                        enabled: root.join-title != "" && !root.join-busy && !root.join-requested;
-                        clicked => { root.join-group(); }
-                    }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.close-join-group(); }
+                }
+                Button {
+                    text: root.join-approval ? "Ask to join" : "Join";
+                    primary: true;
+                    enabled: root.join-title != "" && !root.join-busy && !root.join-requested;
+                    clicked => { root.join-group(); }
                 }
             }
         }
@@ -5084,167 +5072,144 @@ export component AppWindow inherits Window {
 
     // Choosing where to forward a message to, over everything else; then confirming it, since
     // it goes out at once.
-    if root.forwarding: Rectangle {
-        // Fades in as it opens.
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 160ms * Motion.scale; easing: ease-out; }
-        background: #0008;
-        TouchArea {
-            clicked => { root.cancel-forward(); }
+    if root.forwarding: forward-dialog := Dialog {
+        property <string> picked-id;
+        property <string> picked-title;
+        property <bool> confirming: self.picked-id != "";
+        function pick(id: string, title: string) {
+            self.picked-id = id;
+            self.picked-title = title;
+            confirm-keys.focus();
         }
-        forward-dialog := Rectangle {
-            // The chat picked, until confirmed.
-            property <string> picked-id;
-            property <string> picked-title;
-            property <bool> confirming: self.picked-id != "";
-            function pick(id: string, title: string) {
-                self.picked-id = id;
-                self.picked-title = title;
-                confirm-keys.focus();
+        card-width: 420px;
+        card-height: self.confirming ? confirm-layout.preferred-height : 520px;
+        animate card-height { duration: 160ms * Motion.scale; easing: ease-out; }
+        card-clip: true;
+        dismissed => { root.cancel-forward(); }
+        VerticalLayout {
+            visible: !forward-dialog.confirming;
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                text: "Forward to…";
+                font-size: 1.1rem;
+                font-weight: 600;
+                color: Palette.foreground;
             }
-            width: min(420px, parent.width - 32px);
-            height: self.confirming ? min(confirm-layout.preferred-height, parent.height - 32px)
-                : min(520px, parent.height - 32px);
-            animate height { duration: 160ms * Motion.scale; easing: ease-out; }
-            clip: true;
-            // Grows into place as the dimmed background fades in.
-            property <float> grown: 0;
-            init => { self.grown = 1; }
-            animate grown { duration: 160ms * Motion.scale; easing: ease-out; }
-            transform-scale: 0.97 + 0.03 * self.grown;
-            transform-origin: { x: self.width / 2, y: self.height / 2 };
-            border-radius: 12px;
-            background: Palette.background;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #0006;
-            // Clicks inside don't close it.
-            TouchArea {}
-            VerticalLayout {
-                visible: !forward-dialog.confirming;
-                padding: 16px;
-                spacing: 10px;
-                Text {
-                    text: "Forward to…";
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    color: Palette.foreground;
-                }
-                forward-search := LineEdit {
-                    placeholder-text: "Search";
-                    text <=> root.forward-filter;
-                    init => { self.focus(); }
-                    edited => { root.forward-filter-edited(); }
-                    // Enter picks the first chat found.
-                    accepted => {
-                        if root.forward-targets.length > 0 {
-                            forward-dialog.pick(root.forward-targets[0].id, root.forward-targets[0].title);
-                        }
-                    }
-                }
-                ListView {
-                    vertical-stretch: 1;
-                    for target in root.forward-targets: Rectangle {
-                        height: 48px;
-                        border-radius: 6px;
-                        background: target-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
-                        animate background { duration: 120ms * Motion.scale; easing: ease-out; }
-                        target-touch := TouchArea {
-                            accessible-role: button;
-                            accessible-label: "Forward to " + target.title;
-                            accessible-action-default => { self.clicked(); }
-                            mouse-cursor: pointer;
-                            clicked => { forward-dialog.pick(target.id, target.title); }
-                        }
-                        HorizontalLayout {
-                            padding: 6px;
-                            spacing: 10px;
-                            Avatar {
-                                width: 36px;
-                                initials: target.initials;
-                                tint: target.avatar-color;
-                                picture: target.avatar;
-                            }
-                            Text {
-                                text: target.title;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                color: Palette.foreground;
-                            }
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    Button {
-                        text: "Cancel";
-                        clicked => { root.cancel-forward(); }
+            forward-search := LineEdit {
+                placeholder-text: "Search";
+                text <=> root.forward-filter;
+                init => { self.focus(); }
+                edited => { root.forward-filter-edited(); }
+                // Enter picks the first chat found.
+                accepted => {
+                    if root.forward-targets.length > 0 {
+                        forward-dialog.pick(root.forward-targets[0].id, root.forward-targets[0].title);
                     }
                 }
             }
-            // Enter forwards, as the primary button does.
-            confirm-keys := FocusScope {
-                enabled: forward-dialog.confirming;
-                key-pressed(event) => {
-                    if event.text == Key.Return {
-                        root.forward-to(forward-dialog.picked-id);
-                        return accept;
-                    }
-                    return reject;
-                }
-            }
-            confirm-layout := VerticalLayout {
-                visible: forward-dialog.confirming;
-                y: 0;
-                height: self.preferred-height;
-                alignment: start;
-                padding: 16px;
-                spacing: 12px;
-                Text {
-                    text: "Forward to " + forward-dialog.picked-title + "?";
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    wrap: word-wrap;
-                    color: Palette.foreground;
-                }
-                // The message, as a quote.
-                Rectangle {
+            ListView {
+                vertical-stretch: 1;
+                for target in root.forward-targets: Rectangle {
+                    height: 48px;
                     border-radius: 6px;
-                    background: Palette.foreground.with-alpha(0.06);
-                    clip: true;
-                    Rectangle {
-                        x: 0;
-                        width: 3px;
-                        background: Palette.accent-background;
+                    background: target-touch.has-hover ? Palette.foreground.with-alpha(0.08) : transparent;
+                    animate background { duration: 120ms * Motion.scale; easing: ease-out; }
+                    target-touch := TouchArea {
+                        accessible-role: button;
+                        accessible-label: "Forward to " + target.title;
+                        accessible-action-default => { self.clicked(); }
+                        mouse-cursor: pointer;
+                        clicked => { forward-dialog.pick(target.id, target.title); }
                     }
                     HorizontalLayout {
-                        padding: 10px;
-                        padding-left: 13px;
+                        padding: 6px;
+                        spacing: 10px;
+                        Avatar {
+                            width: 36px;
+                            initials: target.initials;
+                            tint: target.avatar-color;
+                            picture: target.avatar;
+                        }
                         Text {
-                            text: root.forward-preview;
-                            wrap: word-wrap;
+                            text: target.title;
+                            vertical-alignment: center;
                             overflow: elide;
-                            max-height: 5 * 1.4rem;
-                            color: Palette.foreground.with-alpha(0.8);
+                            color: Palette.foreground;
                         }
                     }
                 }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.cancel-forward(); }
+                }
+            }
+        }
+        // Enter forwards, as the primary button does.
+        confirm-keys := FocusScope {
+            enabled: forward-dialog.confirming;
+            key-pressed(event) => {
+                if event.text == Key.Return {
+                    root.forward-to(forward-dialog.picked-id);
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        confirm-layout := VerticalLayout {
+            visible: forward-dialog.confirming;
+            y: 0;
+            height: self.preferred-height;
+            alignment: start;
+            padding: 16px;
+            spacing: 12px;
+            Text {
+                text: "Forward to " + forward-dialog.picked-title + "?";
+                font-size: 1.1rem;
+                font-weight: 600;
+                wrap: word-wrap;
+                color: Palette.foreground;
+            }
+            // The message, as a quote.
+            Rectangle {
+                border-radius: 6px;
+                background: Palette.foreground.with-alpha(0.06);
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: 3px;
+                    background: Palette.accent-background;
+                }
                 HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Back";
-                        clicked => {
-                            forward-dialog.picked-id = "";
-                            forward-dialog.picked-title = "";
-                            forward-search.focus();
-                        }
+                    padding: 10px;
+                    padding-left: 13px;
+                    Text {
+                        text: root.forward-preview;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        max-height: 5 * 1.4rem;
+                        color: Palette.foreground.with-alpha(0.8);
                     }
-                    Button {
-                        text: "Forward";
-                        primary: true;
-                        clicked => { root.forward-to(forward-dialog.picked-id); }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Back";
+                    clicked => {
+                        forward-dialog.picked-id = "";
+                        forward-dialog.picked-title = "";
+                        forward-search.focus();
                     }
+                }
+                Button {
+                    text: "Forward";
+                    primary: true;
+                    clicked => { root.forward-to(forward-dialog.picked-id); }
                 }
             }
         }

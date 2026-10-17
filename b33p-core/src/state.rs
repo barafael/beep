@@ -20,6 +20,12 @@ use crate::{
 /// Minimum length for a newly chosen database password.
 pub const MIN_PASSWORD_LEN: usize = 8;
 
+/// Why `password` can't become the database password, if it can't.
+pub fn password_problem(password: &str) -> Option<String> {
+    (password.chars().count() < MIN_PASSWORD_LEN)
+        .then(|| format!("Use at least {MIN_PASSWORD_LEN} characters."))
+}
+
 /// Someone typing counts as stopped after this long without hearing from them, as in Signal.
 const TYPING_TIMEOUT_MS: u64 = 15_000;
 /// While we keep typing, Signal expects a fresh "started" this often.
@@ -273,8 +279,6 @@ pub struct ChatState {
     /// The chat list's order is stale; sorted once at the end of [`ChatState::apply`], or of
     /// a batch of them.
     sort_pending: bool,
-    /// In [`ChatState::apply_all`]: sorting waits for the batch's end.
-    batching: bool,
     /// Most recently active first; see [`ChatState::sort_conversations`].
     conversations: Vec<Conversation>,
     unread: HashMap<ConversationId, u32>,
@@ -298,8 +302,8 @@ pub struct ChatState {
     /// What the composer replies to; belongs to the selected conversation.
     replying: Option<Quote>,
     /// Conversations whose stored history has arrived (its newest page, at least).
-    loaded: HashSet<ConversationId>,
     /// Where each loaded conversation's next older page starts; `None` at the beginning.
+    /// Having an entry is what makes a conversation loaded.
     older: HashMap<ConversationId, Option<u64>>,
     /// Conversations whose next older page was asked for.
     loading_older: HashSet<ConversationId>,
@@ -420,20 +424,16 @@ impl ChatState {
     /// Applies a batch of events, sorting the chat list once at the end rather than per
     /// event (a sync brings one event per chat).
     pub fn apply_all(&mut self, events: impl IntoIterator<Item = Event>) -> Update {
-        self.batching = true;
         let update = events.into_iter().fold(Update::default(), |update, event| {
-            update.merge(self.apply(event))
+            update.merge(self.apply_one(event))
         });
-        self.batching = false;
         self.sort_if_pending();
         update
     }
 
     pub fn apply(&mut self, event: Event) -> Update {
         let update = self.apply_one(event);
-        if !self.batching {
-            self.sort_if_pending();
-        }
+        self.sort_if_pending();
         update
     }
 
@@ -498,14 +498,20 @@ impl ChatState {
                 }
             }
             Event::Conversations(list) => {
+                // A sync brings every chat at once: index the list rather than search it per chat.
+                let mut at: HashMap<ConversationId, usize> = self
+                    .conversations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.id.clone(), i))
+                    .collect();
                 for conversation in list {
-                    match self
-                        .conversations
-                        .iter_mut()
-                        .find(|c| c.id == conversation.id)
-                    {
-                        Some(existing) => *existing = conversation,
-                        None => self.conversations.push(conversation),
+                    match at.get(&conversation.id) {
+                        Some(&i) => self.conversations[i] = conversation,
+                        None => {
+                            at.insert(conversation.id.clone(), self.conversations.len());
+                            self.conversations.push(conversation);
+                        }
                     }
                 }
                 self.sort_pending = true;
@@ -541,7 +547,7 @@ impl ChatState {
                 if history.iter().any(|m| m.is(&target)) {
                     apply_reaction(history, &target, reaction, remove);
                     update.rows = self.selected.as_ref() == Some(&conversation);
-                } else if self.loaded.contains(&conversation) {
+                } else if self.is_loaded(&conversation) {
                     // To an older message, applied when its page loads.
                     self.pending_reactions
                         .entry(conversation)
@@ -565,8 +571,7 @@ impl ChatState {
                 reactions,
                 older,
             } => {
-                let newest_page = self.loaded.insert(conversation.clone());
-                self.older.insert(conversation.clone(), older);
+                let newest_page = self.older.insert(conversation.clone(), older).is_none();
                 self.loading_older.remove(&conversation);
                 let history = self.history.entry(conversation.clone()).or_default();
                 let first = history.first().map(|m| (m.timestamp, m.sender_id.clone()));
@@ -862,8 +867,7 @@ impl ChatState {
                 conversation,
                 settings,
             } => {
-                let Some(existing) = self.conversations.iter_mut().find(|c| c.id == conversation)
-                else {
+                let Some(existing) = self.conversation_mut(&conversation) else {
                     return update;
                 };
                 let read_further = settings.last_read > existing.settings.last_read;
@@ -942,7 +946,6 @@ impl ChatState {
             Event::Cleared(conversation) => {
                 self.history.remove(&conversation);
                 self.written_to.remove(&conversation);
-                self.loaded.remove(&conversation);
                 self.older.remove(&conversation);
                 self.unread.remove(&conversation);
                 if self.selected.as_ref() == Some(&conversation) {
@@ -978,7 +981,7 @@ impl ChatState {
                 {
                     details.trust = trust;
                 }
-                if let Some(listed) = self.conversations.iter_mut().find(|c| c.id == conversation) {
+                if let Some(listed) = self.conversation_mut(&conversation) {
                     listed.trust = trust;
                     update.conversations = true;
                 }
@@ -1051,7 +1054,7 @@ impl ChatState {
         let Some(id) = self.selected.clone() else {
             return;
         };
-        if self.loaded.contains(&id) {
+        if self.is_loaded(&id) {
             if let Some(command) = self.mark_read(id) {
                 self.queued.push(command);
             }
@@ -1141,7 +1144,7 @@ impl ChatState {
         self.notifications
             .pending
             .push(Notice::Withdraw(id.clone()));
-        (!self.loaded.contains(id)).then(|| Command::LoadHistory {
+        (!self.is_loaded(id)).then(|| Command::LoadHistory {
             conversation: id.clone(),
             before: None,
         })
@@ -1233,6 +1236,15 @@ impl ChatState {
         self.conversations.iter().find(|c| &c.id == id)
     }
 
+    fn conversation_mut(&mut self, id: &ConversationId) -> Option<&mut Conversation> {
+        self.conversations.iter_mut().find(|c| &c.id == id)
+    }
+
+    /// Whether the conversation's newest page of history has come.
+    fn is_loaded(&self, id: &ConversationId) -> bool {
+        self.older.contains_key(id)
+    }
+
     fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
         let muted = self
             .conversation(id)
@@ -1293,8 +1305,8 @@ impl ChatState {
         };
         let problem = if password.is_empty() {
             Some("Enter a password.".to_string())
-        } else if *new && password.chars().count() < MIN_PASSWORD_LEN {
-            Some(format!("Use at least {MIN_PASSWORD_LEN} characters."))
+        } else if *new && let Some(problem) = password_problem(password) {
+            Some(problem)
         } else if *new && password != confirmation {
             Some("The passwords don't match.".to_string())
         } else {
@@ -1507,7 +1519,7 @@ impl ChatState {
 
     /// Answers the message request in `id`.
     pub fn respond(&mut self, id: &ConversationId, response: RequestResponse) -> Option<Command> {
-        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        let conversation = self.conversation_mut(id)?;
         match response {
             RequestResponse::Accept => conversation.settings.accepted = true,
             RequestResponse::Block => conversation.settings.blocked = true,
@@ -1656,7 +1668,7 @@ impl ChatState {
     /// already in the group being added to, and without strangers whose message request is
     /// unanswered (adding them would answer it).
     pub fn group_candidates(&self, filter: &str) -> Vec<&Conversation> {
-        let filter = filter.trim().to_lowercase();
+        let filter = search_term(filter);
         let already: Vec<String> = self
             .group_draft
             .as_ref()
@@ -1675,7 +1687,7 @@ impl ChatState {
             .filter(|c| !c.is_group() && !c.note_to_self && !c.settings.blocked)
             .filter(|c| !self.is_request(c))
             .filter(|c| !already.contains(&c.id.0))
-            .filter(|c| c.title.to_lowercase().contains(&filter))
+            .filter(|c| title_matches(c, &filter))
             .collect();
         candidates.sort_by_cached_key(|c| c.title.to_lowercase());
         candidates
@@ -2086,7 +2098,7 @@ impl ChatState {
     /// Where a message can be forwarded to: chats whose title contains `filter`, in list order;
     /// not those it couldn't go to (blocked, left, or asking to write).
     pub fn forward_targets(&self, filter: &str) -> Vec<&Conversation> {
-        let filter = filter.trim().to_lowercase();
+        let filter = search_term(filter);
         self.conversations
             .iter()
             .filter(|c| self.can_write_to(c))
@@ -2095,7 +2107,7 @@ impl ChatState {
                     // As in the chat list, without the archive split.
                     c.is_group() || c.note_to_self || self.last_of(&c.id).is_some()
                 } else {
-                    c.title.to_lowercase().contains(&filter)
+                    title_matches(c, &filter)
                 }
             })
             .collect()
@@ -2448,7 +2460,7 @@ impl ChatState {
         id: &ConversationId,
         change: impl FnOnce(&mut ChatSettings),
     ) -> Option<()> {
-        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        let conversation = self.conversation_mut(id)?;
         change(&mut conversation.settings);
         self.sort_conversations();
         Some(())
@@ -2587,7 +2599,7 @@ impl ChatState {
 
     /// Sets how long new messages in a conversation last (seconds; 0 for good).
     pub fn set_timer(&mut self, id: &ConversationId, seconds: u32) -> Option<Command> {
-        let conversation = self.conversations.iter_mut().find(|c| &c.id == id)?;
+        let conversation = self.conversation_mut(id)?;
         conversation.expire_timer = seconds;
         Some(Command::SetTimer {
             conversation: id.clone(),
@@ -2906,8 +2918,7 @@ impl ChatState {
     }
 
     pub fn selected(&self) -> Option<&Conversation> {
-        let id = self.selected.as_ref()?;
-        self.conversations.iter().find(|c| &c.id == id)
+        self.conversation(self.selected.as_ref()?)
     }
 
     /// The open conversation as the chat list shows it, also while a search leaves it out of
@@ -2923,7 +2934,7 @@ impl ChatState {
     }
 
     fn listed(&self) -> impl Iterator<Item = &Conversation> {
-        let filter = self.filter.to_lowercase();
+        let filter = search_term(&self.filter);
         self.conversations.iter().filter(move |c| {
             if filter.is_empty() {
                 c.settings.archived == self.show_archived
@@ -2937,7 +2948,7 @@ impl ChatState {
                             .folder
                             .is_none_or(|at| self.in_folder(c, &self.folders[at])))
             } else {
-                c.title.to_lowercase().contains(&filter)
+                title_matches(c, &filter)
             }
         })
     }
@@ -3306,13 +3317,23 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
+/// `filter` as the chat lists match it against titles: trimmed, case folded.
+fn search_term(filter: &str) -> String {
+    filter.trim().to_lowercase()
+}
+
+/// Whether a chat's title contains a [`search_term`].
+fn title_matches(conversation: &Conversation, term: &str) -> bool {
+    conversation.title.to_lowercase().contains(term)
+}
+
+/// Signal's milliseconds as local time.
 fn zoned(timestamp: u64) -> Option<jiff::Zoned> {
     let time = jiff::Timestamp::from_millisecond(timestamp as i64).ok()?;
     Some(time.to_zoned(jiff::tz::TimeZone::system()))
 }
 
-fn local_date(timestamp: u64) -> Option<jiff::civil::Date> {
+pub(crate) fn local_date(timestamp: u64) -> Option<jiff::civil::Date> {
     zoned(timestamp).map(|time| time.date())
 }
 
@@ -3354,11 +3375,11 @@ fn day_label(timestamp: u64, now: &jiff::Zoned) -> String {
     }
 }
 
+/// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
 pub fn format_time(timestamp: u64) -> String {
-    let Ok(time) = jiff::Timestamp::from_millisecond(timestamp as i64) else {
+    let Some(time) = zoned(timestamp) else {
         return String::new();
     };
-    let time = time.to_zoned(jiff::tz::TimeZone::system());
     let format = if time.date() == jiff::Zoned::now().date() {
         "%H:%M"
     } else {

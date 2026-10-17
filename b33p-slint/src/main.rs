@@ -116,6 +116,24 @@ impl Shared {
         sent
     }
 
+    /// Changes the state; what shows follows on its own.
+    fn edit(&self, action: impl FnOnce(&mut ChatState)) {
+        self.act(|chat| {
+            action(chat);
+            (None, Update::default())
+        });
+    }
+
+    /// Sends the command the state answers with, if any.
+    fn command(&self, action: impl FnOnce(&mut ChatState) -> Option<Command>) {
+        self.act(|chat| (action(chat), Update::default()));
+    }
+
+    /// Redraws what the state says changed.
+    fn redraw(&self, action: impl FnOnce(&mut ChatState) -> Update) {
+        self.act(|chat| (None, action(chat)));
+    }
+
     /// Brings the window in line with the state, at the next turn of the event loop: a row
     /// being made asks for a picture, a key is typed, a batch of events comes, and each
     /// alone redrew before.
@@ -380,10 +398,8 @@ impl Shared {
 fn everything() -> Update {
     Update {
         screen: true,
-        conversations: true,
-        messages: MessagesUpdate::Reset,
         rows: true,
-        scroll_to_end: false,
+        ..Update::reset()
     }
 }
 

@@ -843,19 +843,20 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
         } => {
             let mut settings = shared.settings.borrow().clone();
             if let Some(key) = theme {
-                settings.theme = of_key(&key, theme_of, "theme")?;
+                settings.theme = of_key(&key, Theme::from_key, "theme")?;
             }
             if let Some(key) = style {
-                settings.style = of_key(&key, style_of, "style")?;
+                settings.style = of_key(&key, WidgetStyle::from_key, "style")?;
             }
             if let Some(key) = text_size {
-                settings.text_size = of_key(&key, text_size_of, "text_size")?;
+                settings.text_size = of_key(&key, TextSize::from_key, "text_size")?;
             }
             if let Some(key) = animations {
-                settings.animations = of_key(&key, animations_of, "animations")?;
+                settings.animations = of_key(&key, Animations::from_key, "animations")?;
             }
             if let Some(key) = notification_content {
-                settings.notification_content = of_key(&key, content_of, "notification_content")?;
+                settings.notification_content =
+                    of_key(&key, NotificationContent::from_key, "notification_content")?;
             }
             if let Some(value) = show_avatars {
                 settings.show_avatars = value;
@@ -921,85 +922,6 @@ fn selected(
 
 fn of_key<T>(key: &str, parse: fn(&str) -> Option<T>, what: &str) -> Result<T, String> {
     parse(key).ok_or_else(|| format!("unknown {what}: {key}"))
-}
-
-fn theme_of(key: &str) -> Option<Theme> {
-    Some(match key {
-        "system" => Theme::System,
-        "light" => Theme::Light,
-        "dark" => Theme::Dark,
-        _ => return None,
-    })
-}
-
-fn theme_key(theme: Theme) -> &'static str {
-    match theme {
-        Theme::System => "system",
-        Theme::Light => "light",
-        Theme::Dark => "dark",
-    }
-}
-
-fn style_of(key: &str) -> Option<WidgetStyle> {
-    WidgetStyle::ALL.into_iter().find(|s| key == style_key(*s))
-}
-
-fn style_key(style: WidgetStyle) -> &'static str {
-    match style {
-        WidgetStyle::Native => "native",
-        WidgetStyle::Fusion => "fusion",
-    }
-}
-
-fn text_size_of(key: &str) -> Option<TextSize> {
-    Some(match key {
-        "small" => TextSize::Small,
-        "default" => TextSize::Default,
-        "large" => TextSize::Large,
-        _ => return None,
-    })
-}
-
-fn text_size_key(size: TextSize) -> &'static str {
-    match size {
-        TextSize::Small => "small",
-        TextSize::Default => "default",
-        TextSize::Large => "large",
-    }
-}
-
-fn animations_of(key: &str) -> Option<Animations> {
-    Some(match key {
-        "system" => Animations::System,
-        "on" => Animations::On,
-        "off" => Animations::Off,
-        _ => return None,
-    })
-}
-
-fn animations_key(animations: Animations) -> &'static str {
-    match animations {
-        Animations::System => "system",
-        Animations::On => "on",
-        Animations::Off => "off",
-    }
-}
-
-fn content_of(key: &str) -> Option<NotificationContent> {
-    Some(match key {
-        "name_and_message" => NotificationContent::NameAndMessage,
-        "name_only" => NotificationContent::NameOnly,
-        "nothing" => NotificationContent::Nothing,
-        _ => return None,
-    })
-}
-
-fn content_key(content: NotificationContent) -> &'static str {
-    match content {
-        NotificationContent::NameAndMessage => "name_and_message",
-        NotificationContent::NameOnly => "name_only",
-        NotificationContent::Nothing => "nothing",
-    }
 }
 
 /// What the window shows, as data. Shaped like what `ui.rs` reads from the state, not like
@@ -1289,13 +1211,13 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             requested: preview.is_some_and(|p| p.requested),
         }),
         settings: SettingsSnapshot {
-            theme: theme_key(settings.theme),
-            style: style_key(settings.style),
-            text_size: text_size_key(settings.text_size),
-            animations: animations_key(settings.animations),
+            theme: settings.theme.key(),
+            style: settings.style.key(),
+            text_size: settings.text_size.key(),
+            animations: settings.animations.key(),
             show_avatars: settings.show_avatars,
             notifications: settings.notifications,
-            notification_content: content_key(settings.notification_content),
+            notification_content: settings.notification_content.key(),
             show_activity: settings.show_activity,
             show_calendar: settings.show_calendar,
             close_to_tray: settings.close_to_tray,

@@ -142,9 +142,4 @@ fn tag(key: &str) -> HSTRING {
     HSTRING::from(format!("{hash:016x}"))
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
+use crate::escape_xml as escape;

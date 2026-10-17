@@ -245,11 +245,7 @@ async fn serve(
 }
 
 /// Servers with `body-markup` interpret a subset of HTML in the body.
-fn escape_markup(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
+use crate::escape_xml as escape_markup;
 
 #[cfg(test)]
 mod tests {
