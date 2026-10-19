@@ -13,7 +13,7 @@ use b33p_core::state::{
 use b33p_core::timeline::{self, Stretch};
 use b33p_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
-    HistoryTransfer, SyncStage, Unsent, now_millis,
+    Failure, HistoryTransfer, SyncStage, Unsent, now_millis,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -755,6 +755,70 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         move || shared.edit(|chat| chat.dismiss_error())
     });
+    window.on_retry({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                (
+                    chat.retry(),
+                    Update {
+                        screen: true,
+                        ..Update::default()
+                    },
+                )
+            });
+        }
+    });
+    window.on_use_password({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                (
+                    chat.use_password(),
+                    Update {
+                        screen: true,
+                        ..Update::default()
+                    },
+                )
+            });
+        }
+    });
+    // Both forget everything shown.
+    window.on_start_over({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                (
+                    chat.start_over(),
+                    Update {
+                        screen: true,
+                        ..Update::reset()
+                    },
+                )
+            });
+        }
+    });
+    window.on_unlink({
+        let shared = shared.clone();
+        move || {
+            shared.act(|chat| {
+                (
+                    chat.unlink(),
+                    Update {
+                        screen: true,
+                        ..Update::reset()
+                    },
+                )
+            });
+        }
+    });
+    window.on_open_data_folder(|| {
+        if let Some(dir) = b33p_core::settings::data_dir()
+            && let Err(error) = open::that_detached(&dir)
+        {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open the data folder");
+        }
+    });
 
     Ok(Rc::new(Window(window)))
 }
@@ -1058,7 +1122,15 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
                 window.set_screen(Screen::Link);
             }
             state::Screen::Chats => window.set_screen(Screen::Chats),
+            state::Screen::Failed { failure, message } => {
+                window.set_failed_message(message.into());
+                window.set_can_retry(failure.can_retry());
+                window.set_can_use_password(failure.can_use_password());
+                window.set_failed_retrying(*failure == Failure::KeyringUnavailable);
+                window.set_screen(Screen::Failed);
+            }
         }
+        window.set_can_start_over(chat.can_start_over());
         window.set_account(chat.account().into());
     }
     if let Some(stage) = chat.sync_stage() {

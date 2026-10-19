@@ -208,7 +208,13 @@ impl Settings {
         let mut file = std::fs::File::create(&written)?;
         std::io::Write::write_all(&mut file, self.to_text().as_bytes())?;
         file.sync_all()?;
-        std::fs::rename(written, path)
+        std::fs::rename(written, &path)?;
+        // And the rename itself, or a power cut can bring the old file back.
+        #[cfg(unix)]
+        if let Some(dir) = path.parent() {
+            std::fs::File::open(dir)?.sync_all()?;
+        }
+        Ok(())
     }
 
     /// `key = value` lines. Unknown keys and values are ignored, so older and newer versions
@@ -296,6 +302,23 @@ impl Settings {
 /// Where b33p keeps its own files on this platform, under its one application id.
 pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("io.github", "barafael", "b33p")
+}
+
+/// Where the messages and keys are kept. `B33P_DATA_DIR` keeps a separate account, e.g. to
+/// link a second device for testing; a development aid, so release builds always use the
+/// standard place.
+pub fn data_dir() -> Option<PathBuf> {
+    if cfg!(debug_assertions)
+        && let Some(dir) = std::env::var_os("B33P_DATA_DIR")
+    {
+        return Some(PathBuf::from(dir));
+    }
+    Some(project_dirs()?.data_dir().to_path_buf())
+}
+
+/// Whether [`data_dir`] is the standard place.
+pub fn custom_data_dir() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("B33P_DATA_DIR").is_some()
 }
 
 fn path() -> Option<PathBuf> {

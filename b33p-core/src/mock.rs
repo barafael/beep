@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, ConversationKind, Delivery, Event, Events,
+    Command, Conversation, ConversationId, ConversationKind, Delivery, Event, Events, Failure,
     HistoryTransfer, Inbox, Person, Picture, QrMatrix, Quote, Reaction, Style, StyleRange,
     now_millis,
 };
@@ -86,6 +86,40 @@ fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
 }
 
 pub fn run(commands: Inbox, events: Events) {
+    // `B33P_MOCK_FAIL=<failure>` starts with that failure (e.g. `keyring-locked`, `other`), as
+    // if the store couldn't be opened; any answer carries on.
+    if cfg!(debug_assertions)
+        && let Some(failure) = std::env::var_os("B33P_MOCK_FAIL")
+    {
+        let failure = match failure.to_str() {
+            Some("keyring-unavailable") => Failure::KeyringUnavailable,
+            Some("keyring-locked") => Failure::KeyringLocked,
+            Some("key-missing") => Failure::KeyMissing,
+            Some("too-new") => Failure::StoreTooNew,
+            Some("already-running") => Failure::AlreadyRunning,
+            Some("link-failed") => Failure::LinkFailed,
+            _ => Failure::Other,
+        };
+        let _ = events.send(Event::Failed {
+            failure,
+            message: format!("This is a pretend failure ({failure:?}) of the mock backend."),
+        });
+        let answered = commands.iter().any(|command| {
+            matches!(
+                command,
+                Command::Retry | Command::StartOver | Command::UsePassword
+            )
+        });
+        if !answered {
+            return;
+        }
+    }
+    // Starts again after unlinking, as the real backend does.
+    while session(&commands, &events) {}
+}
+
+/// Returns `true` after [`Command::Unlink`], `false` once the UI has gone away.
+fn session(commands: &Inbox, events: &Events) -> bool {
     // `B33P_MOCK_PASSWORD=1` simulates a desktop without a keyring; the password is "password".
     if cfg!(debug_assertions) && std::env::var_os("B33P_MOCK_PASSWORD").is_some() {
         let mut request = Event::PasswordRequired {
@@ -108,7 +142,7 @@ pub fn run(commands: Inbox, events: Events) {
                         error: Some("Wrong password.".into()),
                     }
                 }
-                None => return,
+                None => return false,
             }
         }
     }
@@ -135,7 +169,7 @@ pub fn run(commands: Inbox, events: Events) {
                 }
                 Ok(command) => queued.push_back(command),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return false,
             }
         }
         if !skipped {
@@ -237,8 +271,12 @@ pub fn run(commands: Inbox, events: Events) {
         };
         match next {
             // The state changes these settings itself; nothing to keep here.
+            Ok(Command::Unlink) => return true,
             Ok(
                 Command::Unlock(_)
+                | Command::Retry
+                | Command::StartOver
+                | Command::UsePassword
                 | Command::SkipHistory
                 | Command::Typing { .. }
                 | Command::MarkRead { .. }
@@ -775,7 +813,7 @@ pub fn run(commands: Inbox, events: Events) {
                     false,
                 )));
             }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return false,
         }
     }
 }

@@ -236,7 +236,10 @@ export struct SearchResult {
     snippet: styled-text,
 }
 
-export enum Screen { syncing, password, link, chats }
+export enum Screen { syncing, password, link, chats, failed }
+
+// What the dialog that deletes the local data is about to do; see `wipe-confirm`.
+export enum Wipe { none, start-over, unlink }
 
 // How much the UI moves: 1 normally, 0 for reduced motion (the user's setting, or their
 // desktop's). Every animation's duration is multiplied by it, so 0 makes changes instant.
@@ -1742,6 +1745,8 @@ component PasswordScreen inherits Rectangle {
     in property <string> error;
     property <string> confirmation;
     callback unlock(string, string);
+    // The password is forgotten: start over without the messages.
+    callback forgot;
 
     background: Palette.background;
     forward-focus: password-field;
@@ -1798,6 +1803,76 @@ component PasswordScreen inherits Rectangle {
                     text: root.new ? "Continue" : "Unlock";
                     primary: true;
                     clicked => { root.submit(); }
+                }
+                if !root.new: Button {
+                    text: "Forgot your password?";
+                    clicked => { root.forgot(); }
+                }
+            }
+        }
+    }
+}
+
+// Something keeps b33p from going on: what, and what can be done about it.
+component FailedScreen inherits Rectangle {
+    in property <string> message;
+    in property <bool> can-retry;
+    in property <bool> can-start-over;
+    in property <bool> can-use-password;
+    // Tried again by itself every so often (a keyring that isn't there yet).
+    in property <bool> retrying;
+    callback retry;
+    callback start-over;
+    callback use-password;
+    callback open-data-folder;
+
+    background: Palette.background;
+
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            VerticalLayout {
+                width: 360px;
+                spacing: 12px;
+                Text {
+                    text: "b33p can't go on";
+                    font-size: 1.6rem;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    color: Palette.foreground;
+                }
+                Text {
+                    text: root.message;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    color: Palette.foreground.with-alpha(0.8);
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+                if root.retrying: Text {
+                    text: "Trying again by itself…";
+                    font-size: 0.85rem;
+                    horizontal-alignment: center;
+                    color: Palette.foreground.with-alpha(0.6);
+                }
+                Rectangle { height: 4px; }
+                if root.can-retry: Button {
+                    text: "Try again";
+                    primary: true;
+                    clicked => { root.retry(); }
+                }
+                if root.can-use-password: Button {
+                    text: "Use a password instead";
+                    clicked => { root.use-password(); }
+                }
+                if root.can-start-over: Button {
+                    text: "Start over…";
+                    clicked => { root.start-over(); }
+                }
+                Button {
+                    text: "Open data folder";
+                    clicked => { root.open-data-folder(); }
                 }
             }
         }
@@ -1917,6 +1992,7 @@ component SettingsPage inherits Rectangle {
     callback changed-start-with-system(bool);
     callback opened;
     callback close;
+    callback unlink;
 
     // Shown only while open, so this runs each time it opens.
     init => { root.opened(); }
@@ -2138,6 +2214,14 @@ component SettingsPage inherits Rectangle {
                             color: Palette.foreground.with-alpha(0.7);
                         }
                     }
+                    SettingRow {
+                        label: "Unlink this device";
+                        hint: "Removes this computer from your Signal account and deletes the messages stored here. Your phone keeps them.";
+                        Button {
+                            text: "Unlink…";
+                            clicked => { root.unlink(); }
+                        }
+                    }
                 }
             }
         }
@@ -2199,6 +2283,14 @@ export component AppWindow inherits Window {
     in property <string> sync-status;
     // The history transfer is waiting for the phone, which can be skipped.
     in property <bool> history-skippable;
+    // The failure screen's message and what it offers.
+    in property <string> failed-message;
+    in property <bool> can-retry;
+    in property <bool> can-start-over;
+    in property <bool> can-use-password;
+    in property <bool> failed-retrying;
+    // Asking before the local data is deleted.
+    in-out property <Wipe> wipe-confirm: Wipe.none;
     in property <[ConversationItem]> conversations;
     in property <[MessageItem]> messages;
     // The open chat's row in `conversations`; -1 if none, or while a search leaves it out.
@@ -2272,6 +2364,11 @@ export component AppWindow inherits Window {
     callback start-with-system-changed(bool);
     callback settings-opened;
     callback skip-history;
+    callback retry;
+    callback start-over;
+    callback use-password;
+    callback unlink;
+    callback open-data-folder;
     callback search(string);
     callback open-attachment(string);
     callback open-link(string);
@@ -2558,22 +2655,28 @@ export component AppWindow inherits Window {
                     self.shown = self.error;
                 }
             }
-            height: root.error != "" ? 36px : 0px;
+            // Long messages wrap, up to a few lines.
+            height: root.error != "" ? min(banner-layout.preferred-height, 96px) : 0px;
             animate height { duration: 150ms * Motion.scale; easing: ease-out; }
             clip: true;
             visible: self.height > 0px;
             background: #c4314b;
-            HorizontalLayout {
+            banner-layout := HorizontalLayout {
                 y: 0;
-                height: 36px;
+                height: max(self.preferred-height, 36px);
                 padding-left: 16px;
                 padding-right: 8px;
+                padding-top: 6px;
+                padding-bottom: 6px;
                 Text {
                     text: error-banner.shown;
                     color: white;
                     vertical-alignment: center;
+                    wrap: word-wrap;
                     overflow: elide;
                     horizontal-stretch: 1;
+                    accessible-role: text;
+                    accessible-label: self.text;
                 }
                 VerticalLayout {
                     alignment: center;
@@ -2626,6 +2729,23 @@ export component AppWindow inherits Window {
             new: root.password-new;
             error: root.password-error;
             unlock(password, confirmation) => { root.unlock(password, confirmation); }
+            forgot => { root.wipe-confirm = Wipe.start-over; }
+        }
+
+        if root.screen == Screen.failed: FailedScreen {
+            // Fades in, as each screen does.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 150ms * Motion.scale; easing: ease-out; }
+            message: root.failed-message;
+            can-retry: root.can-retry;
+            can-start-over: root.can-start-over;
+            can-use-password: root.can-use-password;
+            retrying: root.failed-retrying;
+            retry => { root.retry(); }
+            start-over => { root.wipe-confirm = Wipe.start-over; }
+            use-password => { root.use-password(); }
+            open-data-folder => { root.open-data-folder(); }
         }
 
         if root.screen == Screen.link: LinkScreen {
@@ -2879,6 +2999,7 @@ export component AppWindow inherits Window {
                     changed-start-with-system(enabled) => { root.start-with-system-changed(enabled); }
                     opened => { root.settings-opened(); }
                     close => { root.settings-open = false; }
+                    unlink => { root.wipe-confirm = Wipe.unlink; }
                 }
 
                 // Conversation
@@ -4998,6 +5119,52 @@ export component AppWindow inherits Window {
 
     // Joining a group through its invite link: paste it, see what the group shows of itself,
     // then join or ask to.
+    // Before the messages stored here are deleted: they can't be brought back.
+    if root.wipe-confirm != Wipe.none: Dialog {
+        card-width: 420px;
+        card-height: wipe-content.preferred-height;
+        card-clip: true;
+        dismissed => { root.wipe-confirm = Wipe.none; }
+        wipe-content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            Text {
+                text: root.wipe-confirm == Wipe.unlink ? "Unlink this device?" : "Start over?";
+                font-size: 1.1rem;
+                font-weight: 600;
+                color: Palette.foreground;
+            }
+            Text {
+                text: root.wipe-confirm == Wipe.unlink
+                    ? "This computer is removed from your Signal account, and the messages stored here are deleted. Your phone keeps its messages. To use b33p again, link it anew."
+                    : "The messages stored on this computer are deleted, and b33p is linked to your phone anew. Your phone keeps its messages; you can transfer them again while linking.";
+                wrap: word-wrap;
+                color: Palette.foreground.with-alpha(0.8);
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.wipe-confirm = Wipe.none; }
+                }
+                Button {
+                    text: root.wipe-confirm == Wipe.unlink ? "Unlink and delete" : "Delete and start over";
+                    primary: true;
+                    clicked => {
+                        if root.wipe-confirm == Wipe.unlink {
+                            root.settings-open = false;
+                            root.unlink();
+                        } else {
+                            root.start-over();
+                        }
+                        root.wipe-confirm = Wipe.none;
+                    }
+                }
+            }
+        }
+    }
+
     if root.join-open: Dialog {
         card-width: 440px;
         card-height: join-content.preferred-height;

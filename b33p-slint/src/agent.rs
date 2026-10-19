@@ -425,6 +425,12 @@ enum Action {
         confirmation: String,
     },
     SkipHistory,
+    /// On the failure screen.
+    Retry,
+    UsePassword,
+    /// What the confirmation dialog's button does: deletes the data here.
+    StartOver,
+    Unlink,
     StageFiles {
         paths: Vec<String>,
     },
@@ -787,6 +793,42 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             )
         }),
         Action::SkipHistory => shared.act(|chat| (chat.skip_history(), Update::default())),
+        Action::Retry => shared.act(|chat| {
+            (
+                chat.retry(),
+                Update {
+                    screen: true,
+                    ..Update::default()
+                },
+            )
+        }),
+        Action::UsePassword => shared.act(|chat| {
+            (
+                chat.use_password(),
+                Update {
+                    screen: true,
+                    ..Update::default()
+                },
+            )
+        }),
+        Action::StartOver => shared.act(|chat| {
+            (
+                chat.start_over(),
+                Update {
+                    screen: true,
+                    ..Update::reset()
+                },
+            )
+        }),
+        Action::Unlink => shared.act(|chat| {
+            (
+                chat.unlink(),
+                Update {
+                    screen: true,
+                    ..Update::reset()
+                },
+            )
+        }),
         Action::StageFiles { paths } => shared.act(|chat| {
             chat.stage_files(paths.into_iter().map(PathBuf::from));
             (None, Update::default())
@@ -987,6 +1029,11 @@ enum ScreenSnapshot {
     },
     Link,
     Chats,
+    /// See [`b33p_core::Event::Failed`].
+    Failed {
+        failure: String,
+        message: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -1164,6 +1211,10 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             },
             state::Screen::Link(_) => ScreenSnapshot::Link,
             state::Screen::Chats => ScreenSnapshot::Chats,
+            state::Screen::Failed { failure, message } => ScreenSnapshot::Failed {
+                failure: format!("{failure:?}"),
+                message: message.clone(),
+            },
         },
         account: chat.account().to_string(),
         synced: chat.synced(),

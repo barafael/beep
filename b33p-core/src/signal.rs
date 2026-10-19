@@ -42,14 +42,14 @@ use tracing::{debug, info, warn};
 
 use crate::{
     ChatMessage, ChatSettings, Command, Config, Conversation, ConversationId, ConversationKind,
-    Delivery, Event, Events, HistoryTransfer, Inbox, MessageRef, Password, Picture, Preferences,
-    QrMatrix, Quote, Reaction, Style, StyleRange, apply_reaction, attachments,
+    Delivery, Event, Events, Failure, HistoryTransfer, Inbox, MessageRef, Password, Picture,
+    Preferences, QrMatrix, Quote, Reaction, Style, StyleRange, apply_reaction, attachments,
     format::{self, RangeValue, WireRange},
     local::LocalStore,
     now_millis,
     scrub::{scrub, scrubbed},
     transfer,
-    vault::{self, KeySource, KeyringKey},
+    vault::{self, KeySource, KeyringKey, NoKeyring},
 };
 
 pub(crate) type Mgr = Manager<SqliteStore, Registered>;
@@ -61,30 +61,152 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
     // Kept across unlocking, linking and relinking, which take commands too.
     let preferences = Rc::new(Cell::new(config.preferences));
+    // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
+    // shutdown, which closes `commands`.
+    let (command_tx, mut commands_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        while let Some(command) = commands.recv() {
+            if command_tx.send(command).is_err() {
+                break;
+            }
+        }
+    });
+    let commands = &mut commands_rx;
+    // Held until the backend ends, so a second b33p can't open the same data.
+    let mut lock = None;
+    let mut use_password = false;
+    loop {
+        let failed = match attempt(
+            &config,
+            commands,
+            &events,
+            &preferences,
+            &mut lock,
+            use_password,
+        ) {
+            Ok(Ending::Gone) => break,
+            Ok(Ending::Wipe) => match Paths::new().and_then(|paths| wipe(&paths)) {
+                Ok(()) => {
+                    use_password = false;
+                    continue;
+                }
+                Err(message) => Failed::other(message),
+            },
+            Err(failed) => failed,
+        };
+        warn!(failure = ?failed.failure, reason = %scrub(&failed.detail), "the backend can't go on");
+        let failure = failed.failure;
+        if !events.send(Event::Failed {
+            failure,
+            message: failed.message,
+        }) {
+            break;
+        }
+        match wait_after_failure(commands, &preferences, failure) {
+            AfterFailure::Retry => {}
+            AfterFailure::StartOver => match Paths::new().and_then(|paths| wipe(&paths)) {
+                Ok(()) => use_password = false,
+                Err(message) => {
+                    let _ = events.send(Event::Error(message));
+                }
+            },
+            AfterFailure::UsePassword => use_password = true,
+            AfterFailure::Gone => break,
+        }
+    }
+    attachments::clean_opened();
+}
+
+/// How an [`attempt`] ended, other than failing.
+enum Ending {
+    /// The UI went away.
+    Gone,
+    /// The data here is to be deleted ([`Command::StartOver`], [`Command::Unlink`]); then
+    /// everything starts again.
+    Wipe,
+}
+
+/// Why an [`attempt`] failed: `message` is for the user, `detail` for the log.
+#[derive(Debug)]
+struct Failed {
+    failure: Failure,
+    message: String,
+    detail: String,
+}
+
+impl Failed {
+    fn new(failure: Failure, message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            failure,
+            message: message.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// Something unexpected, said as it is.
+    fn other(message: String) -> Self {
+        Self::new(Failure::Other, message.clone(), message)
+    }
+}
+
+impl From<String> for Failed {
+    fn from(message: String) -> Self {
+        Self::other(message)
+    }
+}
+
+/// Opens the data and runs the session on it, from the password prompt or linking on.
+/// Everything it started has stopped, and the database is closed, once it returns.
+fn attempt(
+    config: &Config,
+    commands: &mut CommandRx,
+    events: &Events,
+    preferences: &Rc<Cell<Preferences>>,
+    lock: &mut Option<std::fs::File>,
+    use_password: bool,
+) -> Result<Ending, Failed> {
+    let paths = Paths::new()?;
+    if lock.is_none() {
+        *lock = Some(lock_data(&paths)?);
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
     let local = tokio::task::LocalSet::new();
-    let (result, closed) = match unlock(&runtime, &local, &commands, &events, &preferences) {
-        Ok(Some((store, tables, closed))) => (
+    let (result, closed) = match unlock(
+        &runtime,
+        &local,
+        &paths,
+        commands,
+        events,
+        preferences,
+        use_password,
+    ) {
+        Ok(Unlocked::Open(store, tables, closed)) => (
             local.block_on(
                 &runtime,
-                session(config, store, tables, commands, events.clone(), preferences),
+                session(
+                    config,
+                    store,
+                    tables,
+                    commands,
+                    events.clone(),
+                    preferences.clone(),
+                    &paths,
+                ),
             ),
             Some(closed),
         ),
-        // The UI went away while we were waiting for a password.
-        Ok(None) => (Ok(()), None),
-        Err(error) => (Err(error), None),
+        Ok(Unlocked::Gone) => (Ok(Ending::Gone), None),
+        Ok(Unlocked::StartOver) => (Ok(Ending::Wipe), None),
+        Err(failed) => (Err(failed), None),
     };
-    if let Err(error) = result {
-        let _ = events.send(Event::Error(error));
-    }
     // Drop the tasks still holding the store, then wait for its connections to close, so
-    // `Backend::shutdown` returns only once the database is no longer in use. Inside the
-    // runtime: a task stopped mid-query drops a pooled connection, which hands itself back to
-    // the pool on the runtime (outside it, sqlx panics and the wait below never happens).
+    // `Backend::shutdown` returns only once the database is no longer in use (and it can be
+    // opened again, or deleted). Inside the runtime: a task stopped mid-query drops a pooled
+    // connection, which hands itself back to the pool on the runtime (outside it, sqlx panics
+    // and the wait below never happens).
     {
         let _context = runtime.enter();
         drop(local);
@@ -93,7 +215,56 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     if let Some(closed) = closed {
         let _ = closed.recv_timeout(Duration::from_secs(5));
     }
-    attachments::clean_opened();
+    result
+}
+
+/// The backend side of the command bridge (see [`run`]).
+type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
+
+enum AfterFailure {
+    Retry,
+    StartOver,
+    UsePassword,
+    Gone,
+}
+
+/// Waits for the user's answer to [`Event::Failed`]. A keyring that isn't there yet is tried
+/// again by itself, sooner at first: at login it is often unlocked a moment after b33p starts.
+fn wait_after_failure(
+    commands: &mut CommandRx,
+    preferences: &Cell<Preferences>,
+    failure: Failure,
+) -> AfterFailure {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("failed to build tokio runtime");
+    let mut waits = [2, 5, 10, 30].into_iter();
+    loop {
+        let next = commands.recv();
+        let command = if failure == Failure::KeyringUnavailable {
+            let wait = Duration::from_secs(waits.next().unwrap_or(60));
+            match runtime.block_on(tokio::time::timeout(wait, next)) {
+                Ok(command) => command,
+                Err(_) => return AfterFailure::Retry,
+            }
+        } else {
+            runtime.block_on(next)
+        };
+        match command {
+            None => return AfterFailure::Gone,
+            Some(Command::Retry) => return AfterFailure::Retry,
+            Some(Command::StartOver) if failure.can_start_over() => {
+                return AfterFailure::StartOver;
+            }
+            Some(Command::UsePassword) if failure.can_use_password() => {
+                return AfterFailure::UsePassword;
+            }
+            Some(Command::Preferences(changed)) => preferences.set(changed),
+            // Nothing else can be done meanwhile.
+            Some(_) => {}
+        }
+    }
 }
 
 /// Disconnects once every connection to a store has been closed.
@@ -109,27 +280,13 @@ struct Paths {
 
 impl Paths {
     fn new() -> Result<Self, String> {
-        // `B33P_DATA_DIR` keeps a separate account, e.g. to link a second device for testing.
-        // Its database key gets its own keyring entry, so it never replaces the default one.
-        // A development aid: release builds always use the standard place.
-        let custom = if cfg!(debug_assertions) {
-            std::env::var_os("B33P_DATA_DIR")
+        let dir = crate::settings::data_dir().ok_or("could not determine a data directory")?;
+        // A separate data directory gets its own keyring entry, so it never replaces the
+        // default one.
+        let keyring_account = if crate::settings::custom_data_dir() {
+            format!("{}:{}", vault::DEFAULT_ACCOUNT, dir.display())
         } else {
-            None
-        };
-        let (dir, keyring_account) = match custom {
-            Some(dir) => {
-                let dir = PathBuf::from(dir);
-                let account = format!("{}:{}", vault::DEFAULT_ACCOUNT, dir.display());
-                (dir, account)
-            }
-            None => (
-                crate::settings::project_dirs()
-                    .ok_or("could not determine a data directory")?
-                    .data_dir()
-                    .to_path_buf(),
-                vault::DEFAULT_ACCOUNT.to_owned(),
-            ),
+            vault::DEFAULT_ACCOUNT.to_owned()
         };
         // 0700: the database is only as private as the directory holding it.
         vault::restrict_dir(&dir)
@@ -154,58 +311,166 @@ impl Paths {
     fn transfer_marker(&self) -> PathBuf {
         self.dir.join("history-transfer.pending")
     }
+
+    /// Locked by the b33p that has this data open.
+    fn lock(&self) -> PathBuf {
+        self.dir.join("b33p.lock")
+    }
 }
 
-/// Obtains the database key and opens the store; `None` if the UI quit while being asked for
-/// a password. Keyring access blocks (D-Bus on Linux), so this runs outside the runtime and
-/// only enters it to open the database.
+/// Keeps a second b33p away from the same data: two processes on one registration would race
+/// each other's session state, and messages would fail to decrypt. The desktop's
+/// single-instance check usually stops it sooner, but that can't be relied on (no session bus,
+/// a binary started by hand on macOS). The lock goes with the process, however it ends.
+fn lock_data(paths: &Paths) -> Result<std::fs::File, Failed> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(paths.lock())
+        .map_err(|e| format!("failed to open {}: {e}", paths.lock().display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Failed::new(
+            Failure::AlreadyRunning,
+            "b33p is already running. Quit the other one, then try again.",
+            "the data directory is locked by another process",
+        )),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(format!("failed to lock {}: {error}", paths.lock().display()).into())
+        }
+    }
+}
+
+/// Deletes the messages and keys stored here, for linking again from scratch. The settings
+/// (elsewhere) stay, and so does the lock this process holds.
+fn wipe(paths: &Paths) -> Result<(), String> {
+    info!("deleting the local data");
+    for path in [
+        paths.db.clone(),
+        paths.db.with_extension("db3-wal"),
+        paths.db.with_extension("db3-shm"),
+        paths.transfer_marker(),
+    ] {
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("Couldn't delete {}: {error}", path.display()));
+            }
+            _ => {}
+        }
+    }
+    // The key last: while the database exists, it is the only way into it.
+    if matches!(
+        KeySource::read(&paths.key_source),
+        Ok(Some(KeySource::Keyring))
+    ) && let Err(error) = vault::delete_keyring_key(&paths.keyring_account)
+    {
+        // Harmless: a new key replaces it when linking again.
+        warn!(error = %scrubbed(&error), "could not delete the database key from the keyring");
+    }
+    match std::fs::remove_file(&paths.key_source) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
+            "Couldn't delete {}: {error}",
+            paths.key_source.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What [`unlock`] came to, other than failing.
+enum Unlocked {
+    Open(SqliteStore, LocalStore, Closed),
+    /// The UI quit while being asked for a password.
+    Gone,
+    /// The password was forgotten: [`Command::StartOver`] instead of one.
+    StartOver,
+}
+
+/// Obtains the database key and opens the store. Keyring access blocks (D-Bus on Linux), so
+/// this runs outside the runtime and only enters it to open the database. `use_password`
+/// protects a new database with a password even if a keyring might come along.
 fn unlock(
     runtime: &Runtime,
     local: &LocalSet,
-    commands: &Inbox,
+    paths: &Paths,
+    commands: &mut CommandRx,
     events: &Events,
     preferences: &Cell<Preferences>,
-) -> Result<Option<(SqliteStore, LocalStore, Closed)>, String> {
-    let paths = Paths::new()?;
-    let (salt, kdf) = match KeySource::read(&paths.key_source).map_err(|e| e.to_string())? {
+    use_password: bool,
+) -> Result<Unlocked, Failed> {
+    let source = KeySource::read(&paths.key_source).map_err(|e| {
+        Failed::new(
+            Failure::NoKeyRecorded,
+            "The record of how your messages are protected is damaged, so they can't be opened.",
+            e.to_string(),
+        )
+    })?;
+    let (salt, kdf) = match source {
         Some(KeySource::Keyring) => {
             let key = match vault::keyring_key(&paths.keyring_account) {
                 KeyringKey::Found(key) => key,
                 KeyringKey::Missing => {
-                    return Err(format!(
-                        "The database key is missing from the system keyring. To link this device \
-                         again, delete {}.",
-                        paths.dir.display()
+                    return Err(Failed::new(
+                        Failure::KeyMissing,
+                        "The key to your messages is missing from the system keyring, so they \
+                         can't be opened. Start over to link this device again.",
+                        "the database key is missing from the keyring",
                     ));
                 }
                 KeyringKey::Unavailable(reason) => {
-                    return Err(format!(
-                        "The system keyring is unavailable ({reason}). Make sure it is running and unlocked."
+                    return Err(Failed::new(
+                        Failure::KeyringUnavailable,
+                        "The system keyring, which holds the key to your messages, isn't \
+                         available yet. Make sure it is running and unlocked; b33p keeps trying.",
+                        reason,
                     ));
                 }
             };
-            return open_store(runtime, local, &paths, &key).map(Some);
+            return open_store(runtime, local, paths, &key)
+                .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                .map_err(OpenError::failed);
         }
         Some(KeySource::Password { salt, kdf }) => (salt, kdf),
         None if paths.db.exists() => {
-            return Err(format!(
-                "{} has no recorded encryption key. To link this device again, delete it.",
-                paths.db.display()
+            return Err(Failed::new(
+                Failure::NoKeyRecorded,
+                "b33p can't tell how your messages were protected, so they can't be opened. \
+                 Start over to link this device again.",
+                "the database has no recorded key source",
             ));
         }
-        None => match vault::create_keyring_key(&paths.keyring_account) {
-            Ok(key) => {
-                write_source(&paths, &KeySource::Keyring)?;
-                return open_store(runtime, local, &paths, &key).map(Some);
+        None => {
+            let created = if use_password {
+                Err(NoKeyring::Absent("a password was chosen instead".into()))
+            } else {
+                vault::create_keyring_key(&paths.keyring_account)
+            };
+            match created {
+                Ok(key) => {
+                    write_source(paths, &KeySource::Keyring)?;
+                    return open_store(runtime, local, paths, &key)
+                        .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                        .map_err(OpenError::failed);
+                }
+                // Locked now, but it may be unlocked in a moment: a password is for good, so
+                // that is the user's choice to make.
+                Err(NoKeyring::Locked(reason)) => {
+                    return Err(Failed::new(
+                        Failure::KeyringLocked,
+                        "The system keyring is locked. Unlock it to keep the key to your \
+                         messages there, or protect them with a password instead.",
+                        reason,
+                    ));
+                }
+                Err(NoKeyring::Absent(reason)) => {
+                    info!(reason = %scrubbed(&reason), "no usable system keyring; protecting the database with a password");
+                    let salt = vault::random_salt();
+                    let kdf = vault::Kdf::CURRENT;
+                    write_source(paths, &KeySource::Password { salt, kdf })?;
+                    (salt, kdf)
+                }
             }
-            Err(reason) => {
-                info!(reason = %scrubbed(&reason), "no usable system keyring; protecting the database with a password");
-                let salt = vault::random_salt();
-                let kdf = vault::Kdf::CURRENT;
-                write_source(&paths, &KeySource::Password { salt, kdf })?;
-                (salt, kdf)
-            }
-        },
+        }
     };
 
     // Until the database exists, the password is being chosen rather than checked.
@@ -216,8 +481,10 @@ fn unlock(
             new,
             error: error.take(),
         });
-        let Some(password) = wait_for_password(commands, preferences) else {
-            return Ok(None);
+        let password = match wait_for_password(commands, preferences) {
+            Answer::Password(password) => password,
+            Answer::StartOver => return Ok(Unlocked::StartOver),
+            Answer::Gone => return Ok(Unlocked::Gone),
         };
         // The UI checks this too, but the key is the only way back into the messages, so the
         // backend doesn't take a too-short one from any frontend.
@@ -226,13 +493,13 @@ fn unlock(
             continue;
         }
         let key = vault::password_key(password.expose(), &salt, kdf);
-        match open_store(runtime, local, &paths, &key) {
-            Ok(store) => return Ok(Some(store)),
-            Err(reason) if !new => {
-                warn!(reason = %scrubbed(&reason), "failed to unlock the database");
+        match open_store(runtime, local, paths, &key) {
+            Ok((store, tables, closed)) => return Ok(Unlocked::Open(store, tables, closed)),
+            Err(OpenError::WrongKey) if !new => {
+                info!("wrong password for the database");
                 error = Some("Wrong password.".into());
             }
-            Err(reason) => return Err(reason),
+            Err(error) => return Err(error.failed()),
         }
     }
 }
@@ -248,16 +515,106 @@ fn check_new_password(password: &str) -> Result<(), String> {
     crate::state::password_problem(password).map_or(Ok(()), Err)
 }
 
-fn wait_for_password(commands: &Inbox, preferences: &Cell<Preferences>) -> Option<Password> {
+/// What came instead of the password the backend waits for.
+enum Answer {
+    Password(Password),
+    StartOver,
+    Gone,
+}
+
+fn wait_for_password(commands: &mut CommandRx, preferences: &Cell<Preferences>) -> Answer {
     // Nothing else can be done before the database is open, so other commands are dropped.
-    commands.iter().find_map(|command| match command {
-        Command::Unlock(password) => Some(password),
-        Command::Preferences(changed) => {
-            preferences.set(changed);
-            None
+    loop {
+        match commands.blocking_recv() {
+            Some(Command::Unlock(password)) => return Answer::Password(password),
+            Some(Command::StartOver) => return Answer::StartOver,
+            Some(Command::Preferences(changed)) => preferences.set(changed),
+            Some(_) => {}
+            None => return Answer::Gone,
         }
-        _ => None,
-    })
+    }
+}
+
+/// Why [`open_store`] couldn't open the database.
+#[derive(Debug)]
+enum OpenError {
+    /// Not the key it was encrypted with (SQLCipher then reads garbage: "file is not a
+    /// database").
+    WrongKey,
+    /// Written by a newer b33p: it has migrations this one doesn't know.
+    TooNew,
+    /// Its migrations differ from this build's, or one was left half-done.
+    Incompatible(String),
+    Other(String),
+}
+
+impl OpenError {
+    fn of_store(error: &presage_store_sqlite::SqliteStoreError) -> Self {
+        use presage_store_sqlite::SqliteStoreError;
+        match error {
+            SqliteStoreError::Db(error) => Self::of_db(error),
+            SqliteStoreError::Migrate(error) => Self::of_migration(error),
+            error => Self::Other(error.to_string()),
+        }
+    }
+
+    fn of_db(error: &sqlx::Error) -> Self {
+        // SQLITE_NOTADB, as sqlx gives SQLite's extended result codes.
+        if let sqlx::Error::Database(e) = error
+            && e.code().as_deref() == Some("26")
+        {
+            return Self::WrongKey;
+        }
+        Self::Other(error.to_string())
+    }
+
+    fn of_migration(error: &sqlx::migrate::MigrateError) -> Self {
+        use sqlx::migrate::MigrateError;
+        match error {
+            // The first read of a wrong key may come from the migrator.
+            MigrateError::Execute(e) | MigrateError::ExecuteMigration(e, _) => match Self::of_db(e)
+            {
+                Self::WrongKey => Self::WrongKey,
+                _ => Self::Other(error.to_string()),
+            },
+            MigrateError::VersionMissing(_) => Self::TooNew,
+            error @ (MigrateError::VersionMismatch(_)
+            | MigrateError::VersionTooOld(..)
+            | MigrateError::Dirty(_)) => Self::Incompatible(error.to_string()),
+            error => Self::Other(error.to_string()),
+        }
+    }
+
+    /// What the user is told. Never that the password is wrong unless it is: they might
+    /// delete their data over it.
+    fn failed(self) -> Failed {
+        match self {
+            Self::WrongKey => Failed::new(
+                Failure::KeyMissing,
+                "The key in the system keyring doesn't open your messages. Start over to link \
+                 this device again.",
+                "the database key doesn't open the database",
+            ),
+            Self::TooNew => Failed::new(
+                Failure::StoreTooNew,
+                "Your messages were saved by a newer version of b33p. Install that version \
+                 again to open them.",
+                "the database has migrations this build doesn't know",
+            ),
+            Self::Incompatible(detail) => Failed::new(
+                Failure::StoreIncompatible,
+                "Your messages were saved by a version of b33p that this one can't read. \
+                 Install the version you used before to open them.",
+                detail,
+            ),
+            Self::Other(detail) => Failed::new(
+                Failure::Other,
+                "Your messages couldn't be opened. Try again; if it keeps failing, the log \
+                 says why.",
+                detail,
+            ),
+        }
+    }
 }
 
 fn open_store(
@@ -265,7 +622,7 @@ fn open_store(
     local: &LocalSet,
     paths: &Paths,
     key: &vault::Key,
-) -> Result<(SqliteStore, LocalStore, Closed), String> {
+) -> Result<(SqliteStore, LocalStore, Closed), OpenError> {
     // The store doesn't expose its connection pool, so it can't be closed and awaited. Instead,
     // a never-used collation holds `open`: SQLite destroys a collation when its connection
     // closes (after closing the database file), and the pool's options hold the last copy.
@@ -295,11 +652,11 @@ fn open_store(
             runtime,
             SqliteStore::open_with_options(options.clone(), OnNewIdentity::Trust),
         )
-        .map_err(|e| format!("failed to open the database: {e}"))?;
+        .map_err(|e| OpenError::of_store(&e))?;
     // Same options, so the same key and close guard.
     let tables = local
         .block_on(runtime, LocalStore::open(options))
-        .map_err(|e| format!("failed to open the database: {e}"))?;
+        .map_err(|e| OpenError::of_db(&e))?;
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
     for path in [
@@ -317,110 +674,115 @@ fn open_store(
 }
 
 async fn session(
-    config: Config,
+    config: &Config,
     store: SqliteStore,
     tables: LocalStore,
-    commands: Inbox,
+    command_rx: &mut CommandRx,
     events: Events,
     preferences: Rc<Cell<Preferences>>,
-) -> Result<(), String> {
-    // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
-    // shutdown, which closes `command_rx`.
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Some(command) = commands.recv() {
-            if command_tx.send(command).is_err() {
-                break;
-            }
-        }
-    });
-
-    let paths = Paths::new()?;
+    paths: &Paths,
+) -> Result<Ending, Failed> {
     let mut linked = match Manager::load_registered(store.clone()).await {
-        Ok(manager) if !paths.transfer_marker().exists() => {
-            let account = display_number(&manager.registration_data().phone_number);
-            let _ = events.send(Event::Linked { account });
-            Some((manager, Vec::new()))
-        }
-        Ok(manager) => {
-            unlink(manager).await;
-            let _ = events.send(Event::Error(
-                "The message history transfer was interrupted. Link this device again to retry."
-                    .into(),
-            ));
-            reset(store.clone(), &paths).await?;
-            link_with_history(
-                store.clone(),
-                &tables,
-                &config,
-                &events,
-                &mut command_rx,
-                &paths,
-                &preferences,
-            )
-            .await?
-        }
+        Ok(manager) => match Marker::read(paths) {
+            None => {
+                let account = display_number(&manager.registration_data().phone_number);
+                let _ = events.send(Event::Linked { account });
+                Some((manager, Vec::new()))
+            }
+            Some(marker) => {
+                unlink(manager).await;
+                let _ = events.send(Event::Error(
+                    "The message history transfer was interrupted. Scan the code to link this \
+                     device again and retry."
+                        .into(),
+                ));
+                reset(store.clone(), &tables, paths, marker.keeps()).await?;
+                link_with_history(
+                    store.clone(),
+                    &tables,
+                    config,
+                    &events,
+                    command_rx,
+                    paths,
+                    &preferences,
+                    marker,
+                )
+                .await?
+            }
+        },
         Err(PresageError::NotYetRegisteredError) => {
             link_with_history(
                 store.clone(),
                 &tables,
-                &config,
+                config,
                 &events,
-                &mut command_rx,
-                &paths,
+                command_rx,
+                paths,
                 &preferences,
+                Marker::Link,
             )
             .await?
         }
-        Err(error) => return Err(format!("failed to load registration: {error}")),
+        Err(error) => {
+            return Err(Failed::new(
+                Failure::Other,
+                "Your account couldn't be read from the stored data. Try again; if it keeps \
+                 failing, start over to link this device again.",
+                format!("failed to load registration: {error}"),
+            ));
+        }
     };
     // Runs until the UI goes away; if Signal removes this device meanwhile, links it again.
     loop {
         // `None`: the UI went away while linking.
         let Some((manager, pending)) = linked else {
-            return Ok(());
+            return Ok(Ending::Gone);
         };
-        if !run_linked(
-            manager,
-            pending,
-            &events,
-            &tables,
-            &mut command_rx,
-            &preferences,
-        )
-        .await
-        {
-            return Ok(());
+        match run_linked(manager, pending, &events, &tables, command_rx, &preferences).await {
+            Ended::Gone => return Ok(Ending::Gone),
+            Ended::Unlinked => return Ok(Ending::Wipe),
+            Ended::Removed => {}
         }
         let _ = events.send(Event::Error(
-            "This device was removed from your Signal account, so it can't send or receive any more. \
-             Scan the code to link it again; the messages here are kept."
+            "This device was removed from your Signal account. Scan the code to link it again; \
+             the messages here are kept."
                 .into(),
         ));
         // Linking clears the dead registration; the conversations stay.
         linked = link_with_history(
             store.clone(),
             &tables,
-            &config,
+            config,
             &events,
-            &mut command_rx,
-            &paths,
+            command_rx,
+            paths,
             &preferences,
+            Marker::Relink,
         )
         .await?;
     }
 }
 
-/// Runs a linked session: syncs, receives and handles commands. Returns `false` once the UI
-/// has gone away, `true` if Signal removed this device and it has to be linked again.
+/// How [`run_linked`] ended.
+enum Ended {
+    /// The UI went away.
+    Gone,
+    /// Signal removed this device; it has to be linked again.
+    Removed,
+    /// [`Command::Unlink`]: removed from the account here; the data is to be deleted.
+    Unlinked,
+}
+
+/// Runs a linked session: syncs, receives and handles commands, until the UI goes away, this
+/// device is unlinked, or Signal removes it.
 async fn run_linked(
     mut manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
     tables: &LocalStore,
-    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    command_rx: &mut CommandRx,
     preferences: &Rc<Cell<Preferences>>,
-) -> bool {
+) -> Ended {
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let ctx = Ctx {
         threads: Rc::default(),
@@ -478,44 +840,48 @@ async fn run_linked(
     );
     let mut failures = 0u32;
 
-    for command in pending {
+    let mut pending = pending.into_iter();
+    let ended = loop {
+        let command = match pending.next() {
+            Some(command) => command,
+            None => tokio::select! {
+                command = command_rx.recv() => match command {
+                    Some(command) => command,
+                    None => break Ended::Gone,
+                },
+                () = removed.notified() => break Ended::Removed,
+                finished = &mut receiving => {
+                    // `receive` ends on its own only once the device was removed.
+                    let Err(error) = finished else { break Ended::Removed };
+                    // Anything else it couldn't handle: start over, rather than look connected
+                    // while nothing arrives; later and later should it keep failing.
+                    warn!(error = %scrubbed(&error), "receiving failed");
+                    let _ = events.send(Event::Error(
+                        "Receiving messages failed; trying again.".into(),
+                    ));
+                    failures += 1;
+                    let after = Duration::from_secs(5 << failures.min(6));
+                    receiving = start_receiving(
+                        &manager,
+                        &ctx,
+                        &removed,
+                        avatars.clone(),
+                        repairs.clone(),
+                        after,
+                    );
+                    continue;
+                }
+            },
+        };
+        if let Command::Unlink = command {
+            info!("unlinking this device");
+            receiving.abort();
+            unlink(manager.clone()).await;
+            break Ended::Unlinked;
+        }
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
             warn!(error = %scrub(&error), "command failed");
             let _ = events.send(Event::Error(error));
-        }
-    }
-    let was_removed = loop {
-        tokio::select! {
-            command = command_rx.recv() => match command {
-                Some(command) => {
-                    if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
-                        warn!(error = %scrub(&error), "command failed");
-                        let _ = events.send(Event::Error(error));
-                    }
-                }
-                None => break false,
-            },
-            () = removed.notified() => break true,
-            finished = &mut receiving => {
-                // `receive` ends on its own only once the device was removed.
-                let Err(error) = finished else { break true };
-                // Anything else it couldn't handle: start over, rather than look connected
-                // while nothing arrives; later and later should it keep failing.
-                warn!(error = %scrubbed(&error), "receiving failed");
-                let _ = events.send(Event::Error(
-                    "Receiving messages failed; trying again.".into(),
-                ));
-                failures += 1;
-                let after = Duration::from_secs(5 << failures.min(6));
-                receiving = start_receiving(
-                    &manager,
-                    &ctx,
-                    &removed,
-                    avatars.clone(),
-                    repairs.clone(),
-                    after,
-                );
-            }
         }
     };
     latest.abort();
@@ -523,7 +889,7 @@ async fn run_linked(
     following.abort();
     stories.abort();
     receiving.abort();
-    was_removed
+    ended
 }
 
 /// Receives in the background (see [`receive`]), from `after` on.
@@ -559,19 +925,22 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
 /// Links this device and, if the user chose so on the phone, transfers the message history.
 /// The history has to be in place before live messages arrive, so this happens before
 /// anything else. A failed transfer, or the phone asking for it, starts over with a new QR
-/// code, so the user can simply try again; the database is wiped in between so nothing of a
-/// half-done import remains.
+/// code, so the user can simply try again. In between, a first link wipes the database, so
+/// nothing of a half-done import remains; linking again (`Marker::Relink`) keeps the messages
+/// that were already here.
 ///
 /// Returns the commands that arrived during the transfer, or `None` if the UI went away.
+#[allow(clippy::too_many_arguments)]
 async fn link_with_history(
     store: SqliteStore,
     tables: &LocalStore,
     config: &Config,
     events: &Events,
-    commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    commands: &mut CommandRx,
     paths: &Paths,
     preferences: &Cell<Preferences>,
-) -> Result<Option<(Mgr, Vec<Command>)>, String> {
+    mode: Marker,
+) -> Result<Option<(Mgr, Vec<Command>)>, Failed> {
     loop {
         // Nothing can be done before linking, so commands are dropped until then.
         let ui_closed = async {
@@ -591,7 +960,7 @@ async fn link_with_history(
             return Ok(Some((manager, Vec::new())));
         };
 
-        write_marker(paths)?;
+        mode.write(paths)?;
         let mut pending = Vec::new();
         let result = {
             let transfer = transfer::receive_history(&manager, key, &paths.dir, tables, events);
@@ -614,24 +983,21 @@ async fn link_with_history(
         let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
         match result {
             Ok(transfer::Outcome::Imported | transfer::Outcome::WithoutHistory) => {
-                std::fs::remove_file(paths.transfer_marker()).map_err(|e| {
-                    format!(
-                        "failed to remove {}: {e}",
-                        paths.transfer_marker().display()
-                    )
-                })?;
+                Marker::remove(paths)?;
                 return Ok(Some((manager, pending)));
             }
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
                 warn!(error = %scrub(&error), "message history transfer failed");
-                let _ = events.send(Event::Error(format!(
-                    "{error} Link this device again to retry."
-                )));
+                let _ = events.send(Event::Error(
+                    "The message history couldn't be transferred. Scan the new code to link \
+                     this device again and retry."
+                        .into(),
+                ));
             }
         }
         unlink(manager).await;
-        reset(store.clone(), paths).await?;
+        reset(store.clone(), tables, paths, mode.keeps()).await?;
     }
 }
 
@@ -643,28 +1009,86 @@ async fn unlink(manager: Mgr) {
     }
 }
 
-fn write_marker(paths: &Paths) -> Result<(), String> {
-    std::fs::write(paths.transfer_marker(), b"")
-        .map_err(|e| format!("failed to write {}: {e}", paths.transfer_marker().display()))
+/// The file that says a history transfer is under way (see [`Paths::transfer_marker`]), and
+/// whether it came with a first link or with linking again: then the messages that were here
+/// before must survive whatever happens to the transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Marker {
+    Link,
+    Relink,
 }
 
-/// Forgets the registration and everything stored with it, ready to link again.
-async fn reset(mut store: SqliteStore, paths: &Paths) -> Result<(), String> {
+impl Marker {
+    fn read(paths: &Paths) -> Option<Self> {
+        let text = std::fs::read_to_string(paths.transfer_marker()).ok()?;
+        // Empty: written by 0.1, which only knew first links.
+        Some(if text.trim() == "relink" {
+            Self::Relink
+        } else {
+            Self::Link
+        })
+    }
+
+    fn write(self, paths: &Paths) -> Result<(), String> {
+        let text = match self {
+            Self::Link => "link\n",
+            Self::Relink => "relink\n",
+        };
+        vault::write_private(&paths.transfer_marker(), text.as_bytes())
+            .map_err(|e| format!("failed to write {}: {e}", paths.transfer_marker().display()))
+    }
+
+    fn remove(paths: &Paths) -> Result<(), String> {
+        match std::fs::remove_file(paths.transfer_marker()) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
+                "failed to remove {}: {error}",
+                paths.transfer_marker().display()
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// What resetting for another try leaves in place.
+    fn keeps(self) -> Keep {
+        match self {
+            Self::Link => Keep::Nothing,
+            Self::Relink => Keep::Contents,
+        }
+    }
+}
+
+/// What [`reset`] leaves in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Keep {
+    /// The messages, contacts and groups (and b33p's own records of them): linking again.
+    Contents,
+    /// Nothing: a first link, whose half-done import must go.
+    Nothing,
+}
+
+/// Forgets the registration, and with `Keep::Nothing` everything stored with it, ready to link
+/// again.
+async fn reset(
+    mut store: SqliteStore,
+    tables: &LocalStore,
+    paths: &Paths,
+    keep: Keep,
+) -> Result<(), String> {
     store
         .clear_registration()
         .await
         .map_err(|e| format!("failed to reset the database: {e}"))?;
-    store
-        .clear_contents()
-        .await
-        .map_err(|e| format!("failed to reset the database: {e}"))?;
-    match std::fs::remove_file(paths.transfer_marker()) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
-            "failed to remove {}: {error}",
-            paths.transfer_marker().display()
-        )),
-        _ => Ok(()),
+    if keep == Keep::Nothing {
+        store
+            .clear_contents()
+            .await
+            .map_err(|e| format!("failed to reset the database: {e}"))?;
+        tables
+            .clear()
+            .await
+            .map_err(|e| format!("failed to reset the database: {e}"))?;
     }
+    Marker::remove(paths)
 }
 
 /// Links this device; also returns the one-time key for the history transfer if the user
@@ -673,7 +1097,7 @@ async fn link(
     store: SqliteStore,
     config: &Config,
     events: &Events,
-) -> Result<(Mgr, Option<[u8; 32]>), String> {
+) -> Result<(Mgr, Option<[u8; 32]>), Failed> {
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
         Manager::link_secondary_device(
@@ -700,9 +1124,32 @@ async fn link(
         },
     )
     .await;
-    let manager = linked.map_err(|e| format!("linking failed: {e}"))?;
+    let manager = linked.map_err(|e| {
+        Failed::new(
+            Failure::LinkFailed,
+            "Linking this device didn't work. Check the connection and try again.",
+            format!("linking failed: {e}"),
+        )
+    })?;
     let history_key = manager.registration_data().ephemeral_backup_key();
     Ok((manager, history_key))
+}
+
+/// A read of b33p's own tables that may fail without stopping what it serves: said in the
+/// log, then taken as empty.
+fn or_logged<T: Default>(result: Result<T, sqlx::Error>, what: &'static str) -> T {
+    result.unwrap_or_else(|error| {
+        warn!(what, error = %scrubbed(&error), "failed to read from the database");
+        T::default()
+    })
+}
+
+/// Part of the chat list couldn't be read: said, so it isn't taken for an empty account.
+fn unreadable(ctx: &Ctx, what: &'static str, error: &impl std::fmt::Display) {
+    warn!(what, error = %scrubbed(error), "failed to read the chat list");
+    let _ = ctx.events.send(Event::Error(
+        "Some chats couldn't be read from the stored data. Restart b33p to try again.".into(),
+    ));
 }
 
 pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
@@ -932,14 +1379,18 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     // Group members are mostly contacts; others are looked up once each.
     let mut names = Names::new();
     // Only verified contacts can have a changed safety number; the rest need no key lookup.
-    let verifications = ctx.tables.verifications().await.unwrap_or_default();
+    let verifications = or_logged(ctx.tables.verifications().await, "verifications");
     // The store's pins follow what is kept (also for verifications from before pinning).
     for (aci, verification) in &verifications {
         if let Some(who) = ServiceId::parse_from_service_id_string(aci) {
             pin_verified(manager, who, verification).await;
         }
     }
-    if let Ok(contacts) = store.contacts().await {
+    let contacts_read = store.contacts().await;
+    if let Err(error) = &contacts_read {
+        unreadable(ctx, "contacts", error);
+    }
+    if let Ok(contacts) = contacts_read {
         for contact in contacts.flatten() {
             let thread = Thread::Contact(ServiceId::Aci(contact.uuid.into()));
             let number = contact
@@ -979,15 +1430,21 @@ async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
     );
     note_to_self.note_to_self = true;
     all.push(note_to_self);
-    if let Ok(groups) = store.groups().await {
-        for (key, group) in groups.flatten() {
-            all.push(group_conversation(manager, threads, &mut names, key, group).await);
+    match store.groups().await {
+        Ok(groups) => {
+            for (key, group) in groups.flatten() {
+                all.push(group_conversation(manager, threads, &mut names, key, group).await);
+            }
         }
+        Err(error) => unreadable(ctx, "groups", &error),
     }
     with_settings(manager, ctx, &mut all).await;
     let _ = ctx.events.send(Event::Conversations(all));
-    if let Ok(folders) = ctx.tables.folders().await {
-        let _ = ctx.events.send(Event::Folders(folders));
+    match ctx.tables.folders().await {
+        Ok(folders) => {
+            let _ = ctx.events.send(Event::Folders(folders));
+        }
+        Err(error) => warn!(error = %scrubbed(&error), "failed to read the chat folders"),
     }
     contacts
 }
@@ -1851,9 +2308,9 @@ async fn decorate(ctx: &Ctx, id: &ConversationId, messages: &mut [ChatMessage]) 
         ctx.tables.expiries(id),
     );
     let (mut deliveries, mut edits, mut expiries) = (
-        deliveries.unwrap_or_default(),
-        edits.unwrap_or_default(),
-        expiries.unwrap_or_default(),
+        or_logged(deliveries, "deliveries"),
+        or_logged(edits, "edits"),
+        or_logged(expiries, "expiries"),
     );
     for message in messages {
         if message.outgoing {
@@ -2733,6 +3190,7 @@ async fn on_retry_receipt(
         .tables
         .conversations_of(&[timestamp])
         .await
+        .map_err(|error| warn!(error = %scrubbed(&error), "failed to look up a message"))
         .unwrap_or_default()
         .into_iter()
         .find(|(conversation, _)| *conversation == conversation_id(&Thread::Contact(sender)));
@@ -3898,8 +4356,10 @@ async fn handle_command(
                 downloads.clone(),
             ));
         }
-        // Already unlocked.
-        Command::Unlock(_) => {}
+        // Already unlocked, and nothing failed.
+        Command::Unlock(_) | Command::Retry | Command::StartOver | Command::UsePassword => {}
+        // Taken care of by `run_linked`.
+        Command::Unlink => {}
         // Only meaningful during the transfer; see `link_with_history`.
         Command::SkipHistory => {}
         Command::LoadHistory {
@@ -3942,7 +4402,7 @@ async fn handle_command(
             // The store keeps nothing of messages deleted for everyone; those of this page.
             let own = own_id(manager).service_id_string();
             let page = older.unwrap_or(0)..before.unwrap_or(u64::MAX);
-            let deleted = ctx.tables.deleted(&id).await.unwrap_or_default();
+            let deleted = or_logged(ctx.tables.deleted(&id).await, "deleted messages");
             for target in deleted
                 .into_iter()
                 .filter(|target| page.contains(&target.timestamp))
@@ -6258,11 +6718,154 @@ mod tests {
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
         drop(open_store(&runtime, &local, &paths, &key).expect("creates the database"));
         let wrong = vault::password_key("wrong horse", &[3; 16], vault::Kdf::V1);
-        assert!(open_store(&runtime, &local, &paths, &wrong).is_err());
+        // Told apart from every other failure: only this one may say "Wrong password."
+        assert!(matches!(
+            open_store(&runtime, &local, &paths, &wrong),
+            Err(OpenError::WrongKey)
+        ));
         assert!(open_store(&runtime, &local, &paths, &key).is_ok());
         // Encrypted: no plaintext SQLite header.
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
+    }
+
+    fn test_paths(dir: &std::path::Path) -> Paths {
+        Paths {
+            db: dir.join("b33p.db3"),
+            key_source: dir.join("b33p.key"),
+            dir: dir.to_path_buf(),
+            keyring_account: "unused".into(),
+        }
+    }
+
+    /// Opens and fully closes the database, as `attempt` does between tries.
+    fn open_and_close(
+        paths: &Paths,
+        key: &vault::Key,
+        then: impl AsyncFnOnce(&SqliteStore, &LocalStore),
+    ) -> Result<(), OpenError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = LocalSet::new();
+        let (store, tables, closed) = open_store(&runtime, &local, paths, key)?;
+        local.block_on(&runtime, then(&store, &tables));
+        drop((store, tables));
+        {
+            let _context = runtime.enter();
+            drop(local);
+        }
+        drop(runtime);
+        let _ = closed.recv_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// A database from a newer b33p isn't taken for a wrong password, which would invite its
+    /// owner to delete it.
+    #[test]
+    fn a_database_from_a_newer_version_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        open_and_close(&paths, &key, async |_, tables| {
+            // As a later migration would leave it.
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+                 VALUES (99991231000000, 'from the future', 1, x'00', 0)",
+            )
+            .execute(tables.pool())
+            .await
+            .unwrap();
+        })
+        .unwrap();
+        let reopened = open_and_close(&paths, &key, async |_, _| {});
+        assert!(matches!(reopened, Err(OpenError::TooNew)), "{reopened:?}");
+        let failed = reopened.unwrap_err().failed();
+        assert_eq!(failed.failure, Failure::StoreTooNew);
+        assert!(!failed.message.to_lowercase().contains("password"));
+    }
+
+    /// Linking again after the device was removed keeps the messages, whatever becomes of the
+    /// history transfer; a first link starts from nothing each time.
+    #[test]
+    fn resetting_for_another_link_keeps_what_linking_again_needs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        let ann = ConversationId::contact("ann");
+        let kept = async |store: &SqliteStore, tables: &LocalStore, keep: Keep| {
+            tables.update(&ann, |s| s.pinned = Some(1)).await.unwrap();
+            Marker::Relink.write(&paths).unwrap();
+            reset(store.clone(), tables, &paths, keep).await.unwrap();
+            assert!(Marker::read(&paths).is_none(), "the marker goes");
+            tables.settings(&ann).await.unwrap().is_some()
+        };
+        open_and_close(&paths, &key, async |store, tables| {
+            assert!(kept(store, tables, Keep::Contents).await);
+            assert!(!kept(store, tables, Keep::Nothing).await);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_marker_remembers_whether_it_was_a_first_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        assert_eq!(Marker::read(&paths), None);
+        for marker in [Marker::Link, Marker::Relink] {
+            marker.write(&paths).unwrap();
+            assert_eq!(Marker::read(&paths), Some(marker));
+        }
+        // As 0.1 left it.
+        std::fs::write(paths.transfer_marker(), b"").unwrap();
+        assert_eq!(Marker::read(&paths), Some(Marker::Link));
+        assert_eq!(Marker::Link.keeps(), Keep::Nothing);
+        assert_eq!(Marker::Relink.keeps(), Keep::Contents);
+        Marker::remove(&paths).unwrap();
+        Marker::remove(&paths).unwrap();
+        assert_eq!(Marker::read(&paths), None);
+    }
+
+    #[test]
+    fn wiping_deletes_the_data_and_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        KeySource::Password {
+            salt: [3; 16],
+            kdf: vault::Kdf::V1,
+        }
+        .write(&paths.key_source)
+        .unwrap();
+        open_and_close(&paths, &key, async |_, _| {}).unwrap();
+        Marker::Link.write(&paths).unwrap();
+        let lock = lock_data(&paths).unwrap();
+        std::fs::write(tmp.path().join("unrelated"), b"").unwrap();
+        wipe(&paths).unwrap();
+        let mut left: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["b33p.lock", "unrelated"]);
+        // Again, with nothing there: done.
+        wipe(&paths).unwrap();
+        drop(lock);
+    }
+
+    #[test]
+    fn only_one_process_has_the_data_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let held = lock_data(&paths).unwrap();
+        let second = lock_data(&paths);
+        assert!(
+            matches!(&second, Err(failed) if failed.failure == Failure::AlreadyRunning),
+            "{second:?}"
+        );
+        drop(held);
+        assert!(lock_data(&paths).is_ok());
     }
 
     /// A conversation new to b33p is read up to what was there when it came, so what arrives

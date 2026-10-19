@@ -694,8 +694,61 @@ impl std::fmt::Debug for Password {
     }
 }
 
+/// Why the backend can't go on; see [`Event::Failed`]. What the user can do about it differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The system keyring holding the database key can't be reached or is locked. The
+    /// backend keeps trying by itself, e.g. at login before the keyring is unlocked.
+    KeyringUnavailable,
+    /// First start, and the system keyring is locked: wait for it, or use a password.
+    KeyringLocked,
+    /// The keyring is there, but the database key isn't in it.
+    KeyMissing,
+    /// A database whose key was never recorded.
+    NoKeyRecorded,
+    /// The data was written by a newer b33p.
+    StoreTooNew,
+    /// The data was written by a build this one can't read.
+    StoreIncompatible,
+    /// Another b33p has the same data open.
+    AlreadyRunning,
+    /// Linking this device didn't work (no connection, or the code expired).
+    LinkFailed,
+    Other,
+    /// The backend is gone (it panicked); only restarting helps. Said by the UI, which notices.
+    Stopped,
+}
+
+impl Failure {
+    /// Whether deleting the local data and linking again ([`Command::StartOver`]) is offered.
+    /// Not where waiting can help, nor where there is nothing to lose by trying again.
+    pub fn can_start_over(self) -> bool {
+        !matches!(
+            self,
+            Self::KeyringUnavailable | Self::KeyringLocked | Self::AlreadyRunning | Self::Stopped
+        )
+    }
+
+    /// Whether trying again ([`Command::Retry`]) is offered.
+    pub fn can_retry(self) -> bool {
+        self != Self::Stopped
+    }
+
+    /// Whether protecting the data with a password instead ([`Command::UsePassword`]) is
+    /// offered.
+    pub fn can_use_password(self) -> bool {
+        self == Self::KeyringLocked
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// The backend can't go on until the user answers with [`Command::Retry`],
+    /// [`Command::StartOver`] or [`Command::UsePassword`]; `message` says why, for the user.
+    Failed {
+        failure: Failure,
+        message: String,
+    },
     /// No system keyring is available: the local database is protected by a password.
     /// `new` means none has been chosen yet; `error` explains why the last attempt failed.
     PasswordRequired {
@@ -855,6 +908,16 @@ pub enum Event {
 pub enum Command {
     /// Answer to [`Event::PasswordRequired`].
     Unlock(Password),
+    /// After [`Event::Failed`]: try again.
+    Retry,
+    /// After [`Event::Failed`], or instead of a forgotten password: deletes the messages and
+    /// keys stored here (the settings stay), and starts again with linking.
+    StartOver,
+    /// After [`Failure::KeyringLocked`]: protect the data with a password instead.
+    UsePassword,
+    /// Removes this device from the account, deletes what is stored here as
+    /// [`Command::StartOver`] does, and starts again with linking.
+    Unlink,
     /// A page of stored history: the newest messages, or those sent before `before`.
     LoadHistory {
         conversation: ConversationId,

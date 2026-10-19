@@ -153,8 +153,25 @@ impl PendingFile {
         self.temp
             .persist(&self.path)
             .map(drop)
-            .map_err(|error| error.error)
+            .map_err(|error| error.error)?;
+        sync_parent(&self.path)
     }
+}
+
+/// Makes a rename into `path`'s directory durable: without it, a power cut right after can
+/// bring back the old file (or none).
+#[cfg(unix)]
+pub fn sync_parent(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => fs::File::open(parent)?.sync_all(),
+        _ => fs::File::open(".")?.sync_all(),
+    }
+}
+
+/// Windows can't open a directory as a file; NTFS journals the rename itself.
+#[cfg(not(unix))]
+pub fn sync_parent(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// The key stored in the OS credential store, if there is a usable store.
@@ -176,15 +193,52 @@ pub fn keyring_key(account: &str) -> KeyringKey {
     }
 }
 
+/// Why [`create_keyring_key`] couldn't store a key.
+#[derive(Debug)]
+pub enum NoKeyring {
+    /// There is a credential store, but it is locked or refused access (a dismissed prompt):
+    /// it may well work in a moment.
+    Locked(String),
+    /// No usable credential store at all.
+    Absent(String),
+}
+
+impl std::fmt::Display for NoKeyring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Locked(reason) | Self::Absent(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl From<KeyringError> for NoKeyring {
+    fn from(error: KeyringError) -> Self {
+        match error {
+            KeyringError::NoStorageAccess(_) => Self::Locked(error.to_string()),
+            error => Self::Absent(error.to_string()),
+        }
+    }
+}
+
 /// Generates a key and stores it in the OS credential store; `Err` if there is no usable store.
-pub fn create_keyring_key(account: &str) -> Result<Key, String> {
+pub fn create_keyring_key(account: &str) -> Result<Key, NoKeyring> {
     let key = random_key();
-    let entry = entry(account).map_err(|e| e.to_string())?;
-    entry.set_secret(&key[..]).map_err(|e| e.to_string())?;
+    let entry = entry(account)?;
+    entry.set_secret(&key[..])?;
     // Read it back: a store that accepted the write but can't return it is no store at all.
     match entry.get_secret() {
         Ok(stored) if stored[..] == key[..] => Ok(key),
-        Ok(_) => Err("the keyring returned a different key".into()),
+        Ok(_) => Err(NoKeyring::Absent(
+            "the keyring returned a different key".into(),
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Removes the key from the OS credential store; done if there was none.
+pub fn delete_keyring_key(account: &str) -> Result<(), String> {
+    match entry(account).and_then(|entry| entry.delete_credential()) {
+        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(error) => Err(error.to_string()),
     }
 }

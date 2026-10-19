@@ -11,7 +11,7 @@ use b33p_core::settings::{Settings, WidgetStyle};
 use b33p_core::state::{AttachmentState, ChatState, MessagesUpdate, Notice, Screen, Update};
 use b33p_core::{
     AttachmentContent, AttachmentId, Backend, Command, Commands, Config, ConversationId, Event,
-    Picture, QrMatrix,
+    Failure, Picture, QrMatrix,
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -167,7 +167,10 @@ impl Shared {
             .publish(&chat, &self.settings.borrow(), self.ui().as_deref());
         if self.start_hidden.get() {
             let screen = chat.screen();
-            if matches!(screen, Screen::Password { .. } | Screen::Link(_)) || chat.error().is_some()
+            if matches!(
+                screen,
+                Screen::Password { .. } | Screen::Link(_) | Screen::Failed { .. }
+            ) || chat.error().is_some()
             {
                 self.stop_hiding();
             } else if matches!(screen, Screen::Chats) {
@@ -568,11 +571,19 @@ fn main() -> Result<(), slint::PlatformError> {
                 shared.refresh(update);
             }
             // The channel only closes early if the backend thread died without reporting why
-            // (a panic); say so instead of leaving a frozen window.
-            let update = shared.chat.borrow_mut().apply(Event::Error(
-                "The Signal backend stopped unexpectedly.".into(),
-            ));
-            shared.refresh(update);
+            // (a panic); say so instead of leaving a frozen window. Not over a failure it did
+            // report, which says more.
+            let mut chat = shared.chat.borrow_mut();
+            if !matches!(chat.screen(), Screen::Failed { .. }) {
+                let update = chat.apply(Event::Failed {
+                    failure: Failure::Stopped,
+                    message: "b33p stopped working unexpectedly. Restart it to try again; the \
+                              log says what went wrong."
+                        .into(),
+                });
+                drop(chat);
+                shared.refresh(update);
+            }
         }
     })
     .expect("the event loop is set up");
