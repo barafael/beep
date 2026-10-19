@@ -12,9 +12,9 @@ use crate::settings::NotificationContent;
 use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Details, Event, HistoryTransfer, Mention, MessageRef,
-    Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange, SyncStage,
-    Unsent, apply_reaction, format, now_millis,
+    Command, Conversation, ConversationId, Details, Event, Failure, HistoryTransfer, Mention,
+    MessageRef, Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange,
+    SyncStage, Unsent, apply_reaction, format, now_millis,
 };
 
 /// Minimum length for a newly chosen database password.
@@ -44,6 +44,11 @@ pub enum Screen {
     },
     Link(QrMatrix),
     Chats,
+    /// See [`Event::Failed`]: nothing goes on until the user answers.
+    Failed {
+        failure: Failure,
+        message: String,
+    },
 }
 
 impl Default for Screen {
@@ -452,6 +457,10 @@ impl ChatState {
             update.screen = true;
         }
         match event {
+            Event::Failed { failure, message } => {
+                self.screen = Screen::Failed { failure, message };
+                update.screen = true;
+            }
             Event::PasswordRequired { new, error } => {
                 self.screen = Screen::Password { new, error };
                 update.screen = true;
@@ -2860,6 +2869,74 @@ impl ChatState {
             .find(|a| &a.id == id)
     }
 
+    /// After a failure: tries again.
+    pub fn retry(&mut self) -> Option<Command> {
+        let Screen::Failed { failure, .. } = self.screen else {
+            return None;
+        };
+        if !failure.can_retry() {
+            return None;
+        }
+        self.screen = Screen::Syncing(SyncStage::Starting);
+        Some(Command::Retry)
+    }
+
+    /// Whether [`ChatState::start_over`] would: after some failures, or for a forgotten
+    /// password.
+    pub fn can_start_over(&self) -> bool {
+        match &self.screen {
+            Screen::Failed { failure, .. } => failure.can_start_over(),
+            Screen::Password { new, .. } => !new,
+            _ => false,
+        }
+    }
+
+    /// Deletes everything stored here and starts again with linking. The UI asks first.
+    pub fn start_over(&mut self) -> Option<Command> {
+        if !self.can_start_over() {
+            return None;
+        }
+        self.forget_account();
+        Some(Command::StartOver)
+    }
+
+    /// After [`Failure::KeyringLocked`]: protects the data with a password instead.
+    pub fn use_password(&mut self) -> Option<Command> {
+        let Screen::Failed { failure, .. } = &self.screen else {
+            return None;
+        };
+        if !failure.can_use_password() {
+            return None;
+        }
+        self.screen = Screen::Syncing(SyncStage::Starting);
+        Some(Command::UsePassword)
+    }
+
+    /// Removes this device from the account and deletes what is stored here, then starts
+    /// again with linking. Only while linked; the UI asks first.
+    pub fn unlink(&mut self) -> Option<Command> {
+        if self.account.is_empty() || !matches!(self.screen, Screen::Chats) {
+            return None;
+        }
+        self.forget_account();
+        Some(Command::Unlink)
+    }
+
+    /// Back to how a fresh start looks, for data that is being deleted. What the UI set (the
+    /// notification policy, whether the window has focus) stays.
+    fn forget_account(&mut self) {
+        let notifications = std::mem::take(&mut self.notifications);
+        *self = Self {
+            notifications: Notifications {
+                enabled: notifications.enabled,
+                content: notifications.content,
+                window_focused: notifications.window_focused,
+                ..Notifications::default()
+            },
+            ..Self::default()
+        };
+    }
+
     /// While waiting for the phone, gives up on the history transfer.
     pub fn skip_history(&mut self) -> Option<Command> {
         (self.transfer == Some(HistoryTransfer::Waiting)).then_some(Command::SkipHistory)
@@ -4412,6 +4489,78 @@ mod tests {
         let command = state.unlock("long enough", "long enough");
         assert!(matches!(command, Some(Command::Unlock(p)) if p.expose() == "long enough"));
         assert_eq!(state.screen(), &Screen::Syncing(SyncStage::Starting));
+    }
+
+    #[test]
+    fn a_failure_waits_for_an_answer() {
+        let mut state = ChatState::default();
+        assert!(state.retry().is_none(), "nothing failed");
+        state.apply(Event::Failed {
+            failure: Failure::KeyringLocked,
+            message: "locked".into(),
+        });
+        assert!(matches!(state.screen(), Screen::Failed { message, .. } if message == "locked"));
+        assert!(
+            !state.can_start_over(),
+            "waiting may help; nothing to delete"
+        );
+        assert!(state.start_over().is_none());
+        assert!(matches!(state.use_password(), Some(Command::UsePassword)));
+        assert_eq!(state.screen(), &Screen::Syncing(SyncStage::Starting));
+
+        state.apply(Event::Failed {
+            failure: Failure::KeyMissing,
+            message: "missing".into(),
+        });
+        assert!(state.use_password().is_none());
+        assert!(matches!(state.retry(), Some(Command::Retry)));
+        state.apply(Event::Failed {
+            failure: Failure::KeyMissing,
+            message: "missing".into(),
+        });
+        assert!(matches!(state.start_over(), Some(Command::StartOver)));
+        assert_eq!(state.screen(), &Screen::Syncing(SyncStage::Starting));
+
+        state.apply(Event::Failed {
+            failure: Failure::Stopped,
+            message: "gone".into(),
+        });
+        assert!(state.retry().is_none(), "nobody is there to try again");
+        assert!(!state.can_start_over());
+    }
+
+    #[test]
+    fn a_forgotten_password_starts_over() {
+        let mut state = ChatState::default();
+        state.apply(Event::PasswordRequired {
+            new: true,
+            error: None,
+        });
+        assert!(state.start_over().is_none(), "nothing to forget yet");
+        state.apply(Event::PasswordRequired {
+            new: false,
+            error: None,
+        });
+        assert!(matches!(state.start_over(), Some(Command::StartOver)));
+    }
+
+    #[test]
+    fn unlinking_forgets_the_account() {
+        let mut state = ChatState::default();
+        assert!(state.unlink().is_none(), "not linked");
+        state.set_notifications(true, NotificationContent::default());
+        state.apply(Event::Linked {
+            account: "+1 555".into(),
+        });
+        state.apply(Event::Synced);
+        let a = conversation("a", false);
+        state.apply(Event::Conversations(vec![a.clone()]));
+        assert!(state.conversation(&a.id).is_some());
+        assert!(matches!(state.unlink(), Some(Command::Unlink)));
+        assert_eq!(state.account(), "");
+        assert!(state.conversation(&a.id).is_none());
+        assert_eq!(state.screen(), &Screen::Syncing(SyncStage::Starting));
+        assert!(state.notifications.enabled, "the UI's settings stay");
     }
 
     #[test]

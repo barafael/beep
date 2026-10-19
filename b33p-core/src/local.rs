@@ -216,6 +216,12 @@ impl LocalStore {
         self.db.begin_with("BEGIN IMMEDIATE").await
     }
 
+    /// The database underneath, for tests that set it up as something else would leave it.
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.db
+    }
+
     /// Releases the database file, which Windows won't let a test delete while it is open.
     #[cfg(test)]
     pub(crate) async fn close(&self) {
@@ -244,6 +250,23 @@ impl LocalStore {
             }
         }
         Ok(Self { db })
+    }
+
+    /// Forgets everything b33p keeps here, for a database whose contents are wiped too.
+    pub(crate) async fn clear(&self) -> Result<(), sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'b33p\\_%' ESCAPE '\\'",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for table in tables {
+            // From `sqlite_master`, and b33p's own: safe to put into the statement.
+            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM \"{table}\"")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
     }
 
     /// Conversations b33p remembers something about, by id.

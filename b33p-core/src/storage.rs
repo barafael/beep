@@ -753,8 +753,7 @@ const ITEM_KEY_INFO_PREFIX: &[u8] = b"20240801_SIGNAL_STORAGE_SERVICE_ITEM_";
 
 fn manifest_key(storage_key: &[u8; 32], version: u64) -> [u8; 32] {
     use hmac::{Hmac, KeyInit, Mac};
-    let mut mac =
-        Hmac::<sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(storage_key).expect("any key length");
     mac.update(b"Manifest_");
     mac.update(version.to_string().as_bytes());
     mac.finalize().into_bytes().into()

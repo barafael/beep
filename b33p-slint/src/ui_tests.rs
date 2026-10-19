@@ -680,3 +680,81 @@ fn the_window_shows_the_chat_state() {
         "each failed message offers a retry"
     );
 }
+
+/// A failure has its own screen, with what can be done about it; deleting the data asks first.
+#[test]
+fn a_failure_offers_a_way_out() {
+    use b33p_core::state::{ChatState, Update};
+    use b33p_core::{Event, Failure};
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 500.));
+    crate::ui::set_up_models(&window);
+    let mut chat = ChatState::default();
+    chat.apply(Event::Failed {
+        failure: Failure::KeyMissing,
+        message: "The key is missing.".into(),
+    });
+    crate::ui::render(
+        &window,
+        &chat,
+        &crate::Images::default(),
+        Update {
+            screen: true,
+            ..Update::reset()
+        },
+    );
+    let retried = Rc::new(Cell::new(false));
+    window.on_retry({
+        let retried = retried.clone();
+        move || retried.set(true)
+    });
+    let started_over = Rc::new(Cell::new(false));
+    window.on_start_over({
+        let started_over = started_over.clone();
+        move || started_over.set(true)
+    });
+    window.show().unwrap();
+    settle(&window);
+
+    assert_eq!(window.get_screen(), Screen::Failed);
+    assert!(find(&window, "The key is missing.").is_some());
+    assert!(
+        find(&window, "Use a password instead").is_none(),
+        "only for a locked keyring"
+    );
+    find(&window, "Try again")
+        .unwrap()
+        .mock_single_click(PointerEventButton::Left);
+    assert!(retried.get());
+
+    find(&window, "Start over…")
+        .unwrap()
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert!(!started_over.get(), "not before it is confirmed");
+    find(&window, "Delete and start over")
+        .unwrap()
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert!(started_over.get());
+    assert!(find(&window, "Delete and start over").is_none());
+}
+
+/// A long error wraps in the banner instead of being cut off after a line.
+#[test]
+fn a_long_error_wraps() {
+    let (window, _) = window_with_messages(1);
+    let long = "This device was removed from your Signal account. Scan the code to link it \
+                again; the messages here are kept.";
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(400., 500.));
+    window.set_error(long.into());
+    settle(&window);
+    let text = find(&window, long).expect("the banner shows it");
+    assert!(text.size().height > 30., "one line only: {:?}", text.size());
+}

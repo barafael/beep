@@ -29,8 +29,9 @@ tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs"], op
 futures = { version = "0.3", optional = true }
 directories = "6"
 hex = { version = "0.4", optional = true }
-# Same version and features as presage-store-sqlite, so this only adds the options type.
-sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
+# Same version and features as presage-store-sqlite, so this only adds the options and error
+# types (`migrate`: why its migrations refuse a database).
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "migrate"], optional = true }
 argon2 = { version = "0.6", optional = true }
 getrandom = { version = "0.4", optional = true }
 keyring-core = { version = "1", optional = true }

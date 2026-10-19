@@ -43,6 +43,11 @@ struct Agent {
 
 /// Starts b33p with the mock backend and connects to its harness.
 fn app(name: &str) -> (App, Agent) {
+    app_with(name, &[])
+}
+
+/// [`app`], with more of the environment set.
+fn app_with(name: &str, env: &[(&str, &str)]) -> (App, Agent) {
     let scratch = std::env::temp_dir().join(format!("b33p-harness-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     for dir in ["config", "data", "cache", "runtime"] {
@@ -64,6 +69,7 @@ fn app(name: &str) -> (App, Agent) {
             format!("unix:path={}", scratch.join("bus").display()),
         )
         .env("QT_QPA_PLATFORM", "offscreen")
+        .envs(env.iter().copied())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -387,4 +393,26 @@ fn settings_can_be_changed() {
         agent.call("\"method\":\"act\",\"action\":{\"type\":\"set_settings\",\"theme\":\"taupe\"}");
     assert!(error.get("error").is_some());
     assert_eq!(agent.snapshot()["settings"]["theme"], "dark");
+}
+
+/// A failure at the start has its own screen; trying again carries on.
+#[test]
+fn a_failure_can_be_tried_again() {
+    let (_app, mut agent) = app_with("failure", &[("B33P_MOCK_FAIL", "key-missing")]);
+    let snapshot = agent.wait_for("the failure screen", |s| screen(s) == "failed");
+    assert_eq!(snapshot["screen"]["failure"], "KeyMissing");
+    agent.act("{\"type\":\"retry\"}");
+    wait_for_chats(&mut agent);
+}
+
+/// Unlinking forgets the chats and goes back to linking.
+#[test]
+fn unlinking_starts_again_with_linking() {
+    let (_app, mut agent) = app("unlink");
+    wait_for_chats(&mut agent);
+    agent.act("{\"type\":\"unlink\"}");
+    let snapshot = agent.wait_for("the link screen", |s| screen(s) == "link");
+    assert_eq!(snapshot["account"], "");
+    assert_eq!(snapshot["conversations"].as_array().map(Vec::len), Some(0));
+    wait_for_chats(&mut agent);
 }
