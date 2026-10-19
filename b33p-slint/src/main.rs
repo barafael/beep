@@ -170,11 +170,14 @@ impl Shared {
             .publish(&chat, &self.settings.borrow(), self.ui().as_deref());
         if self.start_hidden.get() {
             let screen = chat.screen();
-            if matches!(
-                screen,
-                Screen::Password { .. } | Screen::Link(_) | Screen::Failed { .. }
-            ) || chat.error().is_some()
-            {
+            // Not for a keyring that isn't unlocked yet: at login it usually is a moment later,
+            // and it is tried again by itself. Opened from the tray, the window says why.
+            let needs_user = match screen {
+                Screen::Password { .. } | Screen::Link(_) => true,
+                Screen::Failed { failure, .. } => *failure != Failure::KeyringUnavailable,
+                Screen::Syncing(_) | Screen::Chats => false,
+            };
+            if needs_user || chat.error().is_some() {
                 self.stop_hiding();
             } else if matches!(screen, Screen::Chats) {
                 self.start_hidden.set(false);
