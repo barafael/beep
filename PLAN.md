@@ -20,6 +20,13 @@ of scope. Steps go in order: each builds on the one before.
   receipts for 24 hours; text and photo stories posted to groups). Reviewed twice; the fixes
   are in.
 
+- **0.2.0 (done):** a screen for start-up failures with ways out (try again, start over, use a
+  password instead of a locked keyring, forgot password, unlink); the store refuses data from a
+  newer build instead of calling it a wrong password, and linking again keeps the messages;
+  a lock on the data directory; device names; the connection's state; About; a scrubbed log
+  file; builds on Debian 12; the Windows icon and `--unregister`; the AGPL text in every
+  package; release notes from CHANGELOG.md.
+
 None of M1–M3 has been checked against a real account yet. Everything below waits for that.
 
 ## 1. Verify on a real account
@@ -122,10 +129,20 @@ By how much they matter, most first:
   a release carries it.
 - **Tests:** a sticker picker test that sees the stickers (the testing backend doesn't lay
   out popups).
+- **Device name:** renaming a device that is already linked (presage has no call for it yet;
+  libsignal-service's `update_device_name` would do). Until then a new name waits for the next
+  link.
+- **macOS:** notifications (`UNUserNotificationCenter`, which wants a signed bundle);
+  notarizing the builds; a menu-bar icon that follows the menu bar's colours (Slint's tray has
+  no template images); opening the window from the Dock icon, unchecked; starting with the
+  system.
+- **Windows:** an installer, and signing (SmartScreen).
 
 ## 4. Ready for others
 
-- Packaging (`packaging/linux`) checked on a clean system, with the build from step 2.
+- Each package checked on a clean system (TESTPLAN.md §6): the AppImage on GNOME, the .deb on
+  Debian 12, the zip on Windows, the dmg on macOS.
 - Large accounts: start-up time, memory and scrolling with years of history.
 - A screen-reader pass with Orca through the main tasks.
-- A way to collect logs for bug reports without message content in them.
+- Done: logs for bug reports without message content in them (scrubbed, in a file; Settings →
+  About opens the folder).

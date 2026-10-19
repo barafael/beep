@@ -281,11 +281,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For the release notes in CHANGELOG.md.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           pattern: b33p-*
           merge-multiple: true
+      - name: Release notes from the changelog
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # The section headed "## <version>", up to the next one.
+          awk -v version="$VERSION" '
+            /^## / { inside = ($2 == version); next }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -294,9 +311,11 @@ jobs:
           (cd dist && sha256sum b33p-* > SHA256SUMS)
           prerelease=()
           [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          # The changelog's notes, then the pull requests GitHub lists.
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "b33p $VERSION" \
+            --notes-file notes.md \
             --generate-notes \
             --verify-tag \
             "${prerelease[@]}"

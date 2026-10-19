@@ -370,3 +370,50 @@ phone or a second person.
 10. Accept a group you were invited to (the ⋯ menu): no second "You created the group." or
     "added you to the group." line appears.
 
+
+## 5. When something goes wrong (0.2.0)
+
+Back up `~/.local/share/b33p` before these; some delete it on purpose.
+
+1. Quit b33p, stop the keyring (on KDE: `kwalletd6` locked or closed; GNOME: lock the
+   keyring), start b33p: "b33p can't go on" says the keyring isn't available yet and that it
+   keeps trying. Unlock the keyring: within a minute the chats appear without clicking.
+2. With autostart on, log out and in: b33p comes up in the tray even if the keyring unlocks
+   late, and no failure window stays behind.
+3. On a fresh data directory with the keyring locked: the screen offers **Use a password
+   instead**; choosing it asks for a new password, and the next start asks for it.
+4. Unlock screen → **Forgot your password?** → the dialog says the messages here are deleted;
+   **Cancel** changes nothing; **Delete and start over** shows a new linking code, and the data
+   directory holds no database. The phone still has its messages.
+5. Turn the network off, start linking: after the code fails, "Linking this device didn't
+   work" with **Try again**; turn the network on, **Try again**: a new code.
+6. Change the device name under the code, press Enter: a new code; link it: the phone's
+   Linked devices shows that name. Settings → Device name shows it too.
+7. Start a second b33p while one runs, once with `DBUS_SESSION_BUS_ADDRESS=` empty (so the
+   single-instance check can't tell): the second says b33p is already running, and the first
+   keeps working.
+8. Remove this device on the phone (Linked devices → b33p → Unlink). b33p says so and shows a
+   code; link again **with** the history transfer, and quit b33p while it downloads. Start
+   it: it asks to link again, and the chats that were there before are still there.
+9. Settings → **Unlink this device…** → **Unlink and delete**: the phone no longer lists it,
+   b33p shows a linking code, and the chats are gone here.
+10. Take the network away while chatting: the chat list says "Not connected · trying again";
+    back: "Catching up…", then nothing.
+11. Settings → About → **Open log folder**: `b33p.log` is there. Search it for a contact's
+    number, name, or a word you sent: none of them appear.
+12. Start the 0.2.0 build on the data of a newer test build whose migrations it doesn't know
+    (or on 0.1.0's data, which must just open): it says the data was saved by a newer version,
+    and never "Wrong password."
+
+## 6. The packages, on a clean system
+
+1. **AppImage** on GNOME (Wayland): it starts, has a title bar, follows the GTK theme (dark
+   too). Notifications show b33p's name and icon.
+2. **.deb** on a fresh Debian 12: `sudo apt install ./b33p-*.deb` pulls in Qt and starts from
+   the menu with its icon; `apt remove b33p` removes it.
+3. **Windows zip** on a fresh Windows 11: SmartScreen as the README says; the exe shows the
+   icon in Explorer and its version under Properties → Details; a toast shows the icon; the
+   log appears where the README says. `b33p.exe --unregister` turns off starting with Windows.
+4. **macOS dmg**: the Gatekeeper steps in the README open it; Settings has no notification
+   switches and shows ⌘ in the shortcuts; closing the window and clicking the Dock icon (note
+   what happens: PLAN.md lists it as unchecked).
