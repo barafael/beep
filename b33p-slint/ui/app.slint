@@ -1999,6 +1999,10 @@ component SettingsPage inherits Rectangle {
     // Whether the desktop shows tray icons; without, closing the window quits.
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
+    // Whether this system shows b33p's notifications at all.
+    in property <bool> notifications-supported: true;
+    // Shortcut labels in the Mac's own signs.
+    in property <bool> macos;
     in-out property <bool> start-with-system;
     in-out property <bool> read-receipts;
     in-out property <bool> typing-indicators;
@@ -2123,13 +2127,18 @@ component SettingsPage inherits Rectangle {
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Notifications"; }
-                    SwitchRow {
+                    if !root.notifications-supported: Text {
+                        text: "b33p can't show notifications on this system yet.";
+                        wrap: word-wrap;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+                    if root.notifications-supported: SwitchRow {
                         label: "New messages";
                         hint: "Notify about messages unless their chat is open in front.";
                         checked <=> root.notifications;
                         toggled => { root.changed-settings(); }
                     }
-                    SettingRow {
+                    if root.notifications-supported: SettingRow {
                         label: "Show";
                         ComboBox {
                             width: 200px;
@@ -2181,17 +2190,19 @@ component SettingsPage inherits Rectangle {
 
                     Rectangle { height: 8px; }
                     SectionTitle { text: "Keyboard shortcuts"; }
+                    // Slint takes ⌘ for Ctrl on macOS (and Ctrl for its Meta), so only the
+                    // labels differ.
                     for shortcut in [
-                        { keys: "Ctrl+K", what: "Search chats" },
-                        { keys: "Ctrl+F", what: "Search this chat" },
-                        { keys: "Alt+↑ / Alt+↓", what: "Previous / next chat" },
-                        { keys: "Alt+Shift+↓", what: "Next unread chat" },
-                        { keys: "Alt+1 … Alt+9", what: "Pinned chats" },
+                        { keys: root.macos ? "⌘K" : "Ctrl+K", what: "Search chats" },
+                        { keys: root.macos ? "⌘F" : "Ctrl+F", what: "Search this chat" },
+                        { keys: root.macos ? "⌥↑ / ⌥↓" : "Alt+↑ / Alt+↓", what: "Previous / next chat" },
+                        { keys: root.macos ? "⌥⇧↓" : "Alt+Shift+↓", what: "Next unread chat" },
+                        { keys: root.macos ? "⌥1 … ⌥9" : "Alt+1 … Alt+9", what: "Pinned chats" },
                         { keys: "↑", what: "Edit your last message (in an empty composer)" },
-                        { keys: "Shift+Enter", what: "New line" },
-                        { keys: "Ctrl+V", what: "Paste text, a picture or files" },
-                        { keys: "Ctrl+click", what: "Select a message; Shift+click selects up to it, Esc clears" },
-                        { keys: "Ctrl+C", what: "Copy the text selected in a message" },
+                        { keys: root.macos ? "⇧↩" : "Shift+Enter", what: "New line" },
+                        { keys: root.macos ? "⌘V" : "Ctrl+V", what: "Paste text, a picture or files" },
+                        { keys: root.macos ? "⌘-click" : "Ctrl+click", what: root.macos ? "Select a message; ⇧-click selects up to it, Esc clears" : "Select a message; Shift+click selects up to it, Esc clears" },
+                        { keys: root.macos ? "⌘C" : "Ctrl+C", what: "Copy the text selected in a message" },
                         { keys: "Esc", what: "Close, stop replying or editing, or clear the search or selection" },
                     ]: HorizontalLayout {
                         spacing: 16px;
@@ -2367,6 +2378,8 @@ export component AppWindow inherits Window {
     in-out property <bool> close-to-tray: true;
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
+    in property <bool> notifications-supported: true;
+    in property <bool> macos;
     in-out property <bool> start-with-system;
     in-out property <int> notification-content;
     in-out property <bool> read-receipts: true;
@@ -3066,6 +3079,8 @@ export component AppWindow inherits Window {
                     close-to-tray <=> root.close-to-tray;
                     tray-available: root.tray-available;
                     autostart-supported: root.autostart-supported;
+                    notifications-supported: root.notifications-supported;
+                    macos: root.macos;
                     start-with-system <=> root.start-with-system;
                     read-receipts <=> root.read-receipts;
                     typing-indicators <=> root.typing-indicators;

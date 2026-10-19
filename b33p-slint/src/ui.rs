@@ -27,6 +27,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
     }
     show_settings(&window, &shared.settings.borrow(), &shared.style_note());
+    window.set_notifications_supported(shared.notifier.available());
+    window.set_macos(cfg!(target_os = "macos"));
     window.set_device_name(shared.settings.borrow().device_name().into());
     set_up_models(&window);
 
@@ -850,6 +852,8 @@ impl Window {
         self.0.show()
     }
 
+    /// For focusing a window anew on Linux; see `Shared::activate`.
+    #[cfg(all(unix, not(target_os = "macos")))]
     pub fn hide(&self) {
         if let Err(error) = self.0.hide() {
             tracing::warn!(%error, "failed to close a window");

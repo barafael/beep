@@ -53,6 +53,10 @@ slint-build.workspace = true
 # The icons (Lucide), written out for the UI to use as `@image-url("@lucide/<name>.svg")`.
 lucide-static-svg = "1.55"
 
+# The program's icon and version in the Windows executable (`assets/b33p.rc`).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
 # On Linux, render through Qt only, so the native style draws real Breeze/Qt widgets and follows
 # the desktop's colors and fonts. Qt 6 is required at runtime; there is no winit fallback.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -109,6 +113,7 @@ extended-description = "A desktop Signal client. Uses the system's Qt 6, so it l
 section = "net"
 priority = "optional"
 depends = "$auto"
+license-file = ["../LICENSE", "0"]
 assets = [
     ["target/release/b33p", "usr/bin/", "755"],
     ["../packaging/linux/io.github.barafael.B33p.desktop", "usr/share/applications/", "644"],

@@ -81,12 +81,50 @@ impl Backend for Toasts {
 }
 
 /// Unpackaged apps must register their AppUserModelID (with a display name) before Windows
-/// shows their toasts.
+/// shows their toasts; the icon is optional, and taken from a file.
 fn register(app: &AppInfo) -> windows::core::Result<()> {
-    let key = windows_registry::CURRENT_USER
-        .create(format!(r"Software\Classes\AppUserModelId\{}", app.id))?;
+    let key = windows_registry::CURRENT_USER.create(app_key(app))?;
     key.set_string("DisplayName", app.name)?;
+    if let Some(path) = icon_path() {
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, app.icon));
+        match written {
+            Ok(()) => key.set_string("IconUri", path.to_string_lossy())?,
+            Err(error) => tracing::debug!(%error, "no icon for notifications"),
+        }
+    }
     Ok(())
+}
+
+pub fn unregister(app: &AppInfo) {
+    match windows_registry::CURRENT_USER.remove_tree(app_key(app)) {
+        Ok(()) => println!("Removed the notification registration."),
+        Err(error) => println!("No notification registration removed: {error}"),
+    }
+    if let Some(path) = icon_path() {
+        let _ = std::fs::remove_file(&path);
+        if let Some(dir) = path.parent() {
+            // Only if nothing else is in it.
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+fn app_key(app: &AppInfo) -> String {
+    format!(r"Software\Classes\AppUserModelId\{}", app.id)
+}
+
+/// Where the toasts' icon is written: in the user's local application data, which outlives
+/// the folder b33p was unpacked to.
+fn icon_path() -> Option<std::path::PathBuf> {
+    let dir = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::Path::new(&dir)
+            .join("b33p")
+            .join("notification-icon.ico"),
+    )
 }
 
 /// Reads what the user did from the `Activated` event.

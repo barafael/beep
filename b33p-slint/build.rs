@@ -29,6 +29,63 @@ fn main() {
         false,
         &icons,
     );
+    // Built on Windows only: the resource compiler comes with Visual Studio's tools.
+    #[cfg(windows)]
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        windows_resource(&manifest, &out);
+    }
+}
+
+/// The program's icon and version, as Windows shows them: in Explorer, on the taskbar, and
+/// under Properties → Details.
+#[cfg(windows)]
+fn windows_resource(manifest: &Path, out: &Path) {
+    let icon = manifest.join("assets/b33p.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let version = std::env::var("CARGO_PKG_VERSION").expect("run by cargo");
+    let numbers = |part: usize| {
+        version
+            .split(['.', '-', '+'])
+            .nth(part)
+            .and_then(|n| n.parse::<u16>().ok())
+            .unwrap_or(0)
+    };
+    let binary = format!("{},{},{},0", numbers(0), numbers(1), numbers(2));
+    let rc = format!(
+        r#"1 ICON "{icon}"
+1 VERSIONINFO
+FILEVERSION {binary}
+PRODUCTVERSION {binary}
+FILEOS 0x40004
+FILETYPE 0x1
+{{
+    BLOCK "StringFileInfo"
+    {{
+        BLOCK "040904B0"
+        {{
+            VALUE "CompanyName", "b33p"
+            VALUE "FileDescription", "b33p, a Signal client"
+            VALUE "FileVersion", "{version}"
+            VALUE "InternalName", "b33p"
+            VALUE "LegalCopyright", "AGPL-3.0-only"
+            VALUE "OriginalFilename", "b33p.exe"
+            VALUE "ProductName", "b33p"
+            VALUE "ProductVersion", "{version}"
+        }}
+    }}
+    BLOCK "VarFileInfo"
+    {{
+        VALUE "Translation", 0x409, 1200
+    }}
+}}
+"#,
+        icon = icon.display().to_string().replace('\\', "\\\\"),
+    );
+    let path = out.join("b33p.rc");
+    std::fs::write(&path, rc).expect("write the resource script");
+    embed_resource::compile(&path, embed_resource::NONE)
+        .manifest_optional()
+        .expect("compile the Windows resources");
 }
 
 /// Writes every Lucide icon to `$OUT_DIR/lucide/<name>.svg`; Slint embeds only those the UI

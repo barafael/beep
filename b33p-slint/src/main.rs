@@ -45,6 +45,10 @@ mod ui;
 const APP: AppInfo = AppInfo {
     id: "io.github.barafael.B33p",
     name: "b33p",
+    #[cfg(windows)]
+    icon: include_bytes!("../assets/b33p.ico"),
+    #[cfg(not(windows))]
+    icon: &[],
 };
 
 /// Everything that outlives a window: the chat state, the way to the backend, settings and
@@ -433,11 +437,27 @@ fn everything() -> Update {
 fn command_line_answer() -> Option<String> {
     match std::env::args().nth(1)?.as_str() {
         "--version" | "-V" => Some(format!("b33p {}", env!("CARGO_PKG_VERSION"))),
+        "--unregister" => {
+            if let Err(error) = autostart::set(false) {
+                println!("Starting with the system wasn't turned off: {error}");
+            }
+            b33p_notify::unregister(&APP);
+            Some(format!(
+                "b33p no longer starts with the system. Its messages and keys stay in {}, \
+                 its log in {}; delete those too to remove everything.",
+                b33p_core::settings::data_dir()
+                    .map_or_else(String::new, |dir| dir.display().to_string()),
+                b33p_core::settings::log_dir()
+                    .map_or_else(String::new, |dir| dir.display().to_string()),
+            ))
+        }
         "--help" | "-h" => Some(format!(
             "b33p {}: a Signal client for the desktop\n\n\
              Usage: b33p [--hidden]\n\n\
-             \x20 --hidden    start in the tray, as when starting with the system\n\
-             \x20 --version   print the version\n\n\
+             \x20 --hidden      start in the tray, as when starting with the system\n\
+             \x20 --version     print the version\n\
+             \x20 --unregister  stop starting with the system, and forget the notification\n\
+             \x20               registration (Windows), before deleting b33p\n\n\
              RUST_LOG raises how much is logged. Logs go to {}.\n\
              {}",
             env!("CARGO_PKG_VERSION"),

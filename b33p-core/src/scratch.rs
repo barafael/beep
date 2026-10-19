@@ -27,7 +27,7 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
                 // Ours, from earlier in this run; the runtime directory is private, so
                 // nobody else could have put it there.
                 if fs::symlink_metadata(&path)?.is_dir() {
-                    crate::vault::restrict_dir(&path)?;
+                    restrict(&path)?;
                     Ok(path)
                 } else {
                     Err(io::Error::new(
@@ -82,6 +82,20 @@ pub fn clean(name: &str) {
     });
 }
 
+/// Restricts the directory `path` to its owner. Here rather than `vault`'s, so that the mock
+/// alone (without the `signal` feature) builds.
+#[cfg(unix)]
+fn restrict(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+/// Windows has no unix modes; the user's profile directory already keeps others out.
+#[cfg(not(unix))]
+fn restrict(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// The user's private runtime directory, if the session has one.
 fn runtime_dir() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
@@ -91,6 +105,7 @@ fn runtime_dir() -> Option<PathBuf> {
 /// Makes `path` as a new directory readable by its owner only; fails if anything is there
 /// already (a directory, a file or a symbolic link alike).
 fn create_private(path: &Path) -> io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

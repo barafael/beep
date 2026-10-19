@@ -29,6 +29,17 @@ pub struct AppInfo {
     /// grouping); on Windows it becomes the AppUserModelID.
     pub id: &'static str,
     pub name: &'static str,
+    /// The app's icon as an `.ico` file, for Windows, whose toasts take it from a file;
+    /// elsewhere the desktop finds it through `id`.
+    pub icon: &'static [u8],
+}
+
+/// Removes what [`Notifier::new`] registered with the system, if anything: on Windows, the
+/// AppUserModelID and its icon. For leaving no trace after the app is deleted.
+pub fn unregister(app: &AppInfo) {
+    #[cfg(windows)]
+    windows::unregister(app);
+    let _ = app;
 }
 
 pub struct Notification {
@@ -55,6 +66,10 @@ pub enum Action {
 trait Backend {
     fn show(&self, notification: Notification);
     fn withdraw(&self, key: &str);
+
+    fn available(&self) -> bool {
+        true
+    }
 }
 
 #[allow(dead_code)] // Used where the platform has no backend, or it fails to start.
@@ -63,6 +78,10 @@ struct Disabled;
 impl Backend for Disabled {
     fn show(&self, _: Notification) {}
     fn withdraw(&self, _: &str) {}
+
+    fn available(&self) -> bool {
+        false
+    }
 }
 
 pub struct Notifier {
@@ -84,6 +103,12 @@ impl Notifier {
 
     pub fn show(&self, notification: Notification) {
         self.backend.show(notification);
+    }
+
+    /// Whether notifications can show at all: not where there is no service for them (macOS,
+    /// for now), or it failed to start.
+    pub fn available(&self) -> bool {
+        self.backend.available()
     }
 
     /// Takes back the notification for `key`, e.g. because the conversation was read.

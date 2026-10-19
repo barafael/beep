@@ -16,6 +16,8 @@ use std::path::PathBuf;
 pub const HIDDEN: &str = "--hidden";
 
 /// What to start: the AppImage rather than the binary unpacked from it, which moves.
+// Not on macOS, which has no autostart here yet.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn executable() -> io::Result<PathBuf> {
     match std::env::var_os("APPIMAGE") {
         Some(appimage) => Ok(appimage.into()),
