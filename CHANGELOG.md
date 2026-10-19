@@ -1,0 +1,69 @@
+# Changelog
+
+The release workflow takes a version's notes from here (the section headed with its number).
+
+## 0.2.0
+
+The first release for others to try. Downloads for Linux (AppImage, .deb, tarball), macOS
+(.dmg) and Windows (.zip), each for x86_64 and arm64; see the README for what each needs.
+
+### When something goes wrong
+
+- A failure at the start has a screen of its own that says what happened and what helps:
+  **Try again**, **Start over** (deletes the messages stored here and links anew, after asking),
+  or, when the system keyring is locked on the first start, **Use a password instead**. A
+  keyring that isn't unlocked yet at login is tried again by itself.
+- "Forgot your password?" on the unlock screen, and **Unlink this device** in Settings.
+- Only a wrong password reads as one: data saved by a newer b33p, or one this build can't read,
+  says so, and nothing suggests deleting it.
+- Linking again after the phone removed this device keeps the messages here, also when the
+  history transfer fails or is cut off.
+- A second b33p can't open the same data (it would break decryption for both).
+- Error messages say what to do; the banner shows them whole.
+- The chat list says when Signal is out of reach, and while it catches up.
+
+### New
+
+- The device links as "b33p on <computer name>", and the name can be changed on the link
+  screen and in Settings (it is used the next time this device is linked).
+- Settings → About: the version, the source code, the log folder and where to report a problem.
+  `b33p --version`, `--help`.
+- A log file (`logs/b33p.log` in b33p's local data folder), with every line scrubbed of
+  messages, names, numbers and IDs, so it can go with a bug report.
+- Select text in messages, and pick several messages to copy, forward or delete together.
+- Send a failed message again from its bubble.
+- Groups: set and remove the picture; invite links (show, copy, turn on or off, reset, approve
+  requests); join a group from a link.
+- One start-up screen until the messages that came meanwhile are in.
+
+### Safer
+
+- Photos are sent without their EXIF and XMP data.
+- What senders send is treated as untrusted: only what Signal's own apps accept is taken, sync
+  messages only from our own devices, and everything from blocked people is dropped, in groups
+  too. Only a message's author can delete or edit it, and deleting for everyone erases its
+  content.
+- Link previews only over https, to the internet.
+- Names, numbers and IDs stay out of the log.
+
+### Platforms
+
+- Linux builds run on Debian 12, Ubuntu 23.04, Fedora 38 and newer (they needed Ubuntu 24.04's
+  libraries before). The AppImage follows the GTK theme on GNOME and Xfce.
+- Windows: the program has its icon and version; notifications show the icon;
+  `b33p.exe --unregister` removes its registry entries before deleting it. The zip explains
+  SmartScreen.
+- macOS: the shortcuts are labelled with ⌘, ⌥ and ⇧, and the notification settings, which
+  don't work there yet, are gone.
+
+### Known limits
+
+- macOS has no notifications yet, and its builds aren't notarized (see the README).
+- Renaming a device that is already linked waits for the next link.
+- Calls and payments are out of scope.
+- See [PLAN.md](PLAN.md) for what is still missing.
+
+## 0.1.0
+
+The first build: linking with the message history, reading and sending, groups, attachments,
+stories, notifications and the tray.

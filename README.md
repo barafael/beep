@@ -34,15 +34,56 @@ read, answered and reacted to:
 - Search in a chat and in the chat list, media overview, forwarding, stories
 - Desktop notifications with click-to-open and inline reply, tray icon, single instance,
   keyboard shortcuts, screen-reader labels, reduced-motion support
+- A screen for what goes wrong at the start, with ways out: try again, start over, unlink
 
-Payments and calls are out of scope. Nothing here has been verified against a real account
-yet; see [PLAN.md](PLAN.md) for where that stands and [TESTPLAN.md](TESTPLAN.md) for the
-checklist.
+Payments and calls are out of scope. b33p is young: see [PLAN.md](PLAN.md) for where it stands,
+[TESTPLAN.md](TESTPLAN.md) for what is checked by hand, and [CHANGELOG.md](CHANGELOG.md) for
+what changed. It is not made or endorsed by Signal.
+
+## Installing
+
+Each [release](https://github.com/barafael/beep/releases) has builds for x86_64 and arm64.
+On the first start b33p shows a code: on your phone, open Signal → Settings → Linked devices
+→ Link new device, and scan it.
+
+**Linux** (Debian 12, Ubuntu 23.04, Fedora 38 or newer):
+
+- The **AppImage** brings its own Qt: `chmod +x b33p-*.AppImage` and run it.
+- The **.deb** and the **tarball** use the system's Qt 6 (6.4 or newer), so b33p takes on the
+  desktop's own style: `sudo apt install ./b33p-*.deb`, or put the tarball's `b33p` on your
+  `PATH` and its `.desktop` file and icon in `~/.local/share/applications/` and
+  `~/.local/share/icons/hicolor/scalable/apps/`.
+
+**macOS** (11 or newer): open the `.dmg` and drag b33p to Applications. The app isn't
+notarized, so macOS refuses to open it at first: right-click it in Applications → Open →
+Open, or run `xattr -dr com.apple.quarantine /Applications/b33p.app`. There are no
+notifications on macOS yet.
+
+**Windows** (10 or newer): unpack the `.zip` and run `b33p.exe`. It isn't signed, so SmartScreen
+may stop it: More info → Run anyway. Its `README.txt` says how to remove it again.
+
+### Where b33p keeps things
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Messages and keys | `~/.local/share/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\data` |
+| Log | `~/.local/share/b33p/logs` | the same, `logs` | `%LOCALAPPDATA%\barafael\b33p\data\logs` |
+| Settings | `~/.config/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\config` |
+
+The database is encrypted with a key kept in the system keyring (or, without one, derived
+from a password you choose). Settings → About opens the log folder.
+
+### Reporting a problem
+
+[Open an issue](https://github.com/barafael/beep/issues/new) with what you did, what happened,
+and the log (`b33p.log`, and `b33p.log.1` if it is there). The log leaves out messages, names,
+numbers and IDs, but look it over before you attach it. `RUST_LOG=debug` makes it more detailed.
 
 ## Building and running
 
 You need Rust and, on Linux, Qt 6 (the native style draws real Qt widgets); elsewhere Slint's
-own windowing backend is used. [packaging/](packaging) has per-platform notes.
+own windowing backend is used. The [dev container](.devcontainer) has everything for Linux,
+on the Debian 12 the releases are built on.
 
 On Windows (x86_64) you also need CMake and NASM, which BoringSSL (contact discovery) builds with:
 `scoop install cmake nasm` or `winget install Kitware.CMake NASM.NASM`, with both on `PATH`.

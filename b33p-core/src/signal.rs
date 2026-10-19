@@ -725,6 +725,13 @@ async fn session(
             }
         },
         Err(PresageError::NotYetRegisteredError) => {
+            // Not registered, yet with chats: linking again failed earlier (and is being
+            // tried again), so what is here must stay whatever becomes of the transfer.
+            let mode = if has_contents(&store).await {
+                Marker::Relink
+            } else {
+                Marker::Link
+            };
             link_with_history(
                 store.clone(),
                 &tables,
@@ -733,7 +740,7 @@ async fn session(
                 command_rx,
                 paths,
                 &preferences,
-                Marker::Link,
+                mode,
             )
             .await?
         }
@@ -785,6 +792,19 @@ async fn session(
         )
         .await?;
     }
+}
+
+/// Whether the store holds contacts or groups, from an earlier link.
+async fn has_contents(store: &SqliteStore) -> bool {
+    let contacts = store
+        .contacts()
+        .await
+        .is_ok_and(|mut contacts| contacts.next().is_some());
+    contacts
+        || store
+            .groups()
+            .await
+            .is_ok_and(|mut groups| groups.next().is_some())
 }
 
 /// How [`run_linked`] ended.
@@ -6878,6 +6898,34 @@ mod tests {
         open_and_close(&paths, &key, async |store, tables| {
             assert!(kept(store, tables, Keep::Contents).await);
             assert!(!kept(store, tables, Keep::Nothing).await);
+        })
+        .unwrap();
+    }
+
+    /// Linking again that failed and is tried again keeps the chats: the store tells.
+    #[test]
+    fn a_store_with_contacts_is_linked_again_not_anew() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        open_and_close(&paths, &key, async |store, _| {
+            assert!(!has_contents(store).await);
+            let mut store = store.clone();
+            store
+                .save_contact(&presage::model::contacts::Contact {
+                    uuid: presage::libsignal_service::prelude::Uuid::from_bytes([7; 16]),
+                    phone_number: None,
+                    name: "Ann".into(),
+                    verified: Default::default(),
+                    profile_key: Vec::new(),
+                    expire_timer: 0,
+                    expire_timer_version: 2,
+                    inbox_position: 0,
+                    avatar: None,
+                })
+                .await
+                .unwrap();
+            assert!(has_contents(&store).await);
         })
         .unwrap();
     }

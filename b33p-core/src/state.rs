@@ -5183,7 +5183,12 @@ mod tests {
             ..message("a", "You", 0, true)
         }));
         state.apply(Event::Message(message("a", "Ann", 1, false)));
-        let ours = state.messages().position(|m| m.message.outgoing).unwrap();
+        // The sent one: in another millisecond than the composed message, it doesn't replace
+        // that one's echo, which is still sending and can't be edited.
+        let ours = state
+            .messages()
+            .position(|m| m.message.outgoing && m.message.unsent.is_none())
+            .unwrap();
         let theirs = state.messages().position(|m| !m.message.outgoing).unwrap();
         assert_eq!(state.edit(theirs), None);
         assert!(state.edit(ours).is_some());
