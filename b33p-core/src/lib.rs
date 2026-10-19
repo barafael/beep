@@ -918,6 +918,9 @@ pub enum Command {
     /// Removes this device from the account, deletes what is stored here as
     /// [`Command::StartOver`] does, and starts again with linking.
     Unlink,
+    /// How this computer appears under Linked devices on the phone. While a linking code is
+    /// shown, it is replaced by one for the new name.
+    SetDeviceName(String),
     /// A page of stored history: the newest messages, or those sent before `before`.
     LoadHistory {
         conversation: ConversationId,

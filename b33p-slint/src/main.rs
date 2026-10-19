@@ -55,7 +55,6 @@ pub struct Shared {
     notifier: Notifier,
     commands: Commands,
     settings: RefCell<Settings>,
-    device_name: String,
     /// The Qt style this process started with. Qt picks it once, so changing between the
     /// system style and Fusion waits for a restart.
     qt_style_at_start: QtStyle,
@@ -371,6 +370,29 @@ impl Shared {
         }
     }
 
+    /// Names this computer anew, for the phone's list of linked devices; empty goes back to
+    /// the default name. Returns whether the backend was told (the name changed).
+    fn rename_device(&self, name: &str) -> bool {
+        let mut settings = self.settings.borrow().clone();
+        let name = b33p_core::settings::clean_device_name(name);
+        settings.device_name = (!name.is_empty()
+            && name != b33p_core::settings::default_device_name())
+        .then_some(name);
+        let name = settings.device_name();
+        if let Some(ui) = self.ui() {
+            ui.set_device_name(&name);
+        }
+        if settings == *self.settings.borrow() {
+            return false;
+        }
+        if let Err(error) = settings.save() {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
+        }
+        self.settings.replace(settings);
+        self.commands.send(Command::SetDeviceName(name));
+        true
+    }
+
     fn apply_settings(self: &Rc<Self>, settings: Settings) {
         if let Err(error) = settings.save() {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
@@ -406,7 +428,32 @@ fn everything() -> Update {
     }
 }
 
+/// What `--version` and `--help` print, answered before anything starts. (A Windows release
+/// has no console to print to.)
+fn command_line_answer() -> Option<String> {
+    match std::env::args().nth(1)?.as_str() {
+        "--version" | "-V" => Some(format!("b33p {}", env!("CARGO_PKG_VERSION"))),
+        "--help" | "-h" => Some(format!(
+            "b33p {}: a Signal client for the desktop\n\n\
+             Usage: b33p [--hidden]\n\n\
+             \x20 --hidden    start in the tray, as when starting with the system\n\
+             \x20 --version   print the version\n\n\
+             RUST_LOG raises how much is logged. Logs go to {}.\n\
+             {}",
+            env!("CARGO_PKG_VERSION"),
+            b33p_core::settings::log_dir()
+                .map_or_else(|| "stderr".into(), |dir| dir.display().to_string()),
+            env!("CARGO_PKG_REPOSITORY"),
+        )),
+        _ => None,
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
+    if let Some(answer) = command_line_answer() {
+        println!("{answer}");
+        return Ok(());
+    }
     let settings = Settings::load();
     // Qt reads its style once, when it starts, so this has to come first.
     let qt_style_at_start = if settings.style == WidgetStyle::Fusion
@@ -419,9 +466,7 @@ fn main() -> Result<(), slint::PlatformError> {
         QtStyle::System
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(logging::from_env())
-        .init();
+    logging::init();
 
     // Before the backend opens the database.
     let instance = match instance::claim(Backend::mock_requested()) {
@@ -436,10 +481,9 @@ fn main() -> Result<(), slint::PlatformError> {
     clipboard::clean();
 
     let config = Config {
+        device_name: settings.device_name(),
         preferences: settings.preferences,
-        ..Config::default()
     };
-    let device_name = config.device_name.clone();
     let backend = Backend::from_env(config);
     let (notifier, notifier_actions) = Notifier::new(&APP);
     let images = Images::default();
@@ -452,7 +496,6 @@ fn main() -> Result<(), slint::PlatformError> {
         notifier,
         commands: backend.commands(),
         settings: RefCell::new(settings.clone()),
-        device_name,
         qt_style_at_start,
         ui: RefCell::default(),
         tray: RefCell::default(),

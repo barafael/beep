@@ -57,6 +57,17 @@ impl Default for Screen {
     }
 }
 
+/// See [`ChatState::connection`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Connection {
+    /// Connected, and caught up with what came meanwhile.
+    Online,
+    /// Connected; what came meanwhile is arriving.
+    CatchingUp,
+    /// Not connected; trying again.
+    Offline,
+}
+
 /// What a call to [`ChatState::apply`] changed, so UIs can update incrementally.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Update {
@@ -275,6 +286,8 @@ pub struct ChatState {
     screen: Screen,
     account: String,
     synced: bool,
+    /// Connected to Signal; see [`ChatState::connection`].
+    connected: bool,
     transfer: Option<HistoryTransfer>,
     error: Option<String>,
     /// What was sent for each message shown as sending or failed, to send it again.
@@ -475,6 +488,8 @@ impl ChatState {
                 update.screen = true;
             }
             Event::Connected => {
+                self.connected = true;
+                update.screen = true;
                 if let Screen::Syncing(stage) = &mut self.screen {
                     *stage = SyncStage::CatchingUp { messages: 0 };
                     update.screen = true;
@@ -482,6 +497,7 @@ impl ChatState {
             }
             Event::Synced => {
                 self.synced = true;
+                update.screen = true;
                 self.announce_caught_up();
                 if matches!(self.screen, Screen::Syncing(_)) {
                     self.screen = Screen::Chats;
@@ -490,6 +506,8 @@ impl ChatState {
             }
             Event::Reconnecting => {
                 self.synced = false;
+                self.connected = false;
+                update.screen = true;
                 // Signal out of reach at the start: the chats are still there to read.
                 if matches!(self.screen, Screen::Syncing(_)) {
                     self.screen = Screen::Chats;
@@ -2951,6 +2969,15 @@ impl ChatState {
         self.synced
     }
 
+    /// How the connection to Signal is doing, for the chat list.
+    pub fn connection(&self) -> Connection {
+        match (self.synced, self.connected) {
+            (true, _) => Connection::Online,
+            (false, true) => Connection::CatchingUp,
+            (false, false) => Connection::Offline,
+        }
+    }
+
     /// What the start-up screen waits for, while it shows.
     pub fn sync_stage(&self) -> Option<SyncStage> {
         match self.screen {
@@ -4527,6 +4554,27 @@ mod tests {
         });
         assert!(state.retry().is_none(), "nobody is there to try again");
         assert!(!state.can_start_over());
+    }
+
+    #[test]
+    fn the_connection_is_followed() {
+        let mut state = ChatState::default();
+        state.apply(Event::Linked {
+            account: "me".into(),
+        });
+        assert_eq!(state.connection(), Connection::Offline);
+        state.apply(Event::Connected);
+        assert_eq!(state.connection(), Connection::CatchingUp);
+        state.apply(Event::Synced);
+        assert_eq!(state.connection(), Connection::Online);
+        assert!(
+            state.apply(Event::Reconnecting).screen,
+            "the status shows anew"
+        );
+        assert_eq!(state.connection(), Connection::Offline);
+        state.apply(Event::Connected);
+        state.apply(Event::Synced);
+        assert_eq!(state.connection(), Connection::Online);
     }
 
     #[test]

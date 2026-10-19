@@ -167,6 +167,9 @@ pub struct Settings {
     pub show_calendar: bool,
     /// Closing the window leaves b33p running in the tray, still receiving messages.
     pub close_to_tray: bool,
+    /// How this computer appears under Linked devices on the phone, if chosen; otherwise
+    /// [`default_device_name`].
+    pub device_name: Option<String>,
     pub preferences: crate::Preferences,
 }
 
@@ -183,12 +186,40 @@ impl Default for Settings {
             show_activity: false,
             show_calendar: false,
             close_to_tray: true,
+            device_name: None,
             preferences: crate::Preferences::default(),
         }
     }
 }
 
+/// The longest device name taken, in characters; Signal's apps keep theirs about this short.
+pub const MAX_DEVICE_NAME: usize = 50;
+
+/// "b33p on <computer name>", so that several computers can be told apart on the phone.
+pub fn default_device_name() -> String {
+    let host = gethostname::gethostname();
+    let host = host.to_string_lossy();
+    // The computer's name, not its domain.
+    let host = host.split('.').next().unwrap_or_default().trim();
+    if host.is_empty() {
+        "b33p".into()
+    } else {
+        clean_device_name(&format!("b33p on {host}"))
+    }
+}
+
+/// One line, of at most [`MAX_DEVICE_NAME`] characters.
+pub fn clean_device_name(name: &str) -> String {
+    let one_line = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    one_line.chars().take(MAX_DEVICE_NAME).collect()
+}
+
 impl Settings {
+    /// The name this computer links as.
+    pub fn device_name(&self) -> String {
+        self.device_name.clone().unwrap_or_else(default_device_name)
+    }
+
     /// The saved settings; defaults for anything missing or unreadable.
     pub fn load() -> Self {
         path()
@@ -269,6 +300,10 @@ impl Settings {
                 ("link_previews", "false") => settings.preferences.link_previews = false,
                 ("sync_to_phone", "true") => settings.preferences.sync_to_phone = true,
                 ("sync_to_phone", "false") => settings.preferences.sync_to_phone = false,
+                ("device_name", value) => {
+                    let name = clean_device_name(value);
+                    settings.device_name = (!name.is_empty()).then_some(name);
+                }
                 _ => {}
             }
         }
@@ -295,7 +330,11 @@ impl Settings {
             self.preferences.typing_indicators,
             self.preferences.link_previews,
             self.preferences.sync_to_phone
-        )
+        ) + &self
+            .device_name
+            .as_deref()
+            .map(|name| format!("device_name = {}\n", clean_device_name(name)))
+            .unwrap_or_default()
     }
 }
 
@@ -314,6 +353,15 @@ pub fn data_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     Some(project_dirs()?.data_dir().to_path_buf())
+}
+
+/// Where the log file goes: beside a separate data directory (`B33P_DATA_DIR`), else in the
+/// platform's place for local data.
+pub fn log_dir() -> Option<PathBuf> {
+    if custom_data_dir() {
+        return Some(data_dir()?.join("logs"));
+    }
+    Some(project_dirs()?.data_local_dir().join("logs"))
 }
 
 /// Whether [`data_dir`] is the standard place.
@@ -343,6 +391,7 @@ mod tests {
                 show_activity: true,
                 show_calendar: true,
                 close_to_tray: false,
+                device_name: Some("Work = laptop".into()),
                 preferences: crate::Preferences {
                     read_receipts: false,
                     typing_indicators: false,
@@ -352,6 +401,23 @@ mod tests {
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }
+        let unnamed = Settings::default();
+        assert_eq!(Settings::parse(&unnamed.to_text()), unnamed);
+    }
+
+    #[test]
+    fn device_names_are_one_short_line() {
+        assert_eq!(clean_device_name("  my\nlaptop  "), "my laptop");
+        assert_eq!(
+            clean_device_name(&"x".repeat(80)).chars().count(),
+            MAX_DEVICE_NAME
+        );
+        assert!(default_device_name().starts_with("b33p"));
+        assert_eq!(
+            Settings::parse("device_name =   ").device_name,
+            None,
+            "an empty name is the default one"
+        );
     }
 
     #[test]

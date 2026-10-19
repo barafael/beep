@@ -416,3 +416,22 @@ fn unlinking_starts_again_with_linking() {
     assert_eq!(snapshot["conversations"].as_array().map(Vec::len), Some(0));
     wait_for_chats(&mut agent);
 }
+
+/// The device name is kept, and empty goes back to the default one.
+#[test]
+fn the_device_can_be_renamed() {
+    let (_app, mut agent) = app("rename");
+    wait_for_chats(&mut agent);
+    let default = agent.snapshot()["settings"]["device_name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(default.starts_with("b33p"), "{default}");
+    agent.act("{\"type\":\"rename_device\",\"name\":\"  Work\\nlaptop \"}");
+    assert_eq!(agent.snapshot()["settings"]["device_name"], "Work laptop");
+    agent.act("{\"type\":\"rename_device\",\"name\":\"\"}");
+    assert_eq!(
+        agent.snapshot()["settings"]["device_name"],
+        default.as_str()
+    );
+}

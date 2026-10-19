@@ -758,3 +758,28 @@ fn a_long_error_wraps() {
     let text = find(&window, long).expect("the banner shows it");
     assert!(text.size().height > 30., "one line only: {:?}", text.size());
 }
+
+/// Settings lead to the issue tracker.
+#[test]
+fn settings_say_where_to_report_a_problem() {
+    let (window, _) = window_with_messages(1);
+    // Tall enough for the whole page: what is scrolled away isn't there to find.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 4000.));
+    window.set_settings_open(true);
+    settle(&window);
+    let opened = Rc::new(std::cell::RefCell::new(String::new()));
+    window.on_open_url({
+        let opened = opened.clone();
+        move |url| *opened.borrow_mut() = url.into()
+    });
+    find(&window, "Report…")
+        .expect("a button to report a problem")
+        .invoke_accessible_default_action();
+    assert!(
+        opened.borrow().ends_with("/issues/new"),
+        "{}",
+        opened.borrow()
+    );
+}

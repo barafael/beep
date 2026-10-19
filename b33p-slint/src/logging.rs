@@ -1,15 +1,26 @@
-//! The log filter. presage and libsignal-service log whole messages at `debug` in a few places
-//! (`?msg` on typing, story and edit messages), and a message's `Debug` prints its text, so
-//! those crates are held at `info` whatever `RUST_LOG` says. `B33P_LOG_PLAINTEXT=1` lifts
-//! that, for debugging the protocol on purpose.
+//! The log: its filter, and where it goes.
 //!
-//! Ported from fix/security-review (f3a2f15), with that opt-out added.
+//! presage and libsignal-service log whole messages at `debug` in a few places (`?msg` on
+//! typing, story and edit messages), and a message's `Debug` prints its text, so those crates
+//! are held at `info` whatever `RUST_LOG` says. What is logged at `info` still names people
+//! (service IDs, protocol addresses, numbers), in b33p's lines and the libraries' alike, so
+//! every line is scrubbed ([`b33p_core::scrub`]) on its way out. The log goes to stderr and to a
+//! file ([`b33p_core::settings::log_dir`]), which is what a bug report can carry.
+//! `B33P_LOG_PLAINTEXT=1` lifts the cap and the scrubbing, and keeps the log off the disk, for
+//! debugging the protocol on purpose.
+
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tracing_subscriber::fmt::MakeWriter;
 
 /// Targets that can hold message contents in memory, and so must never log at `debug`.
 ///
 /// `Content` derives `Debug`, and that prints the message body in plaintext, so a single
 /// `debug!(?msg, …)` anywhere in these crates writes the conversation to the log.
-const PLAINTEXT_TARGETS: [&str; 2] = ["presage", "libsignal_service"];
+const PLAINTEXT_TARGETS: [&str; 3] = ["presage", "libsignal_service", "libsignal_protocol"];
 
 /// Builds the log filter from `RUST_LOG`.
 ///
@@ -86,15 +97,164 @@ fn clamp_plaintext(rust_log: &str) -> String {
     kept.join(",")
 }
 
+/// Whether the log may hold message contents and names: `B33P_LOG_PLAINTEXT`.
+fn plaintext() -> bool {
+    std::env::var_os("B33P_LOG_PLAINTEXT").is_some()
+}
+
 /// The filter for this process: [`log_filter`] unless plaintext logging was asked for.
 pub fn from_env() -> tracing_subscriber::EnvFilter {
     let rust_log = std::env::var("RUST_LOG").unwrap_or_default();
-    if std::env::var_os("B33P_LOG_PLAINTEXT").is_some() {
+    if plaintext() {
         return tracing_subscriber::EnvFilter::builder()
             .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
             .parse_lossy(rust_log);
     }
     log_filter(&rust_log)
+}
+
+/// Starts logging for this process: to stderr and, scrubbed, to the log file.
+pub fn init() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    let registry = tracing_subscriber::registry().with(from_env());
+    if plaintext() {
+        registry
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .init();
+        return;
+    }
+    let file = b33p_core::settings::log_dir().and_then(|dir| match LogFile::open(&dir) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            eprintln!("b33p: no log file in {}: {error}", dir.display());
+            None
+        }
+    });
+    registry
+        .with(tracing_subscriber::fmt::layer().with_writer(Scrubbing(std::io::stderr)))
+        .with(file.map(|file| {
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Scrubbing(file))
+        }))
+        .init();
+}
+
+/// Writes each log line scrubbed of user data. tracing formats an event into one writer and
+/// then drops it, so the line is whole by then.
+struct Scrubbing<M>(M);
+
+impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for Scrubbing<M> {
+    type Writer = ScrubbingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        ScrubbingWriter {
+            inner: self.0.make_writer(),
+            line: Vec::new(),
+        }
+    }
+}
+
+struct ScrubbingWriter<W: Write> {
+    inner: W,
+    line: Vec<u8>,
+}
+
+impl<W: Write> Write for ScrubbingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.line.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.line.is_empty() {
+            return Ok(());
+        }
+        let line = b33p_core::scrub::scrub(&String::from_utf8_lossy(&self.line));
+        self.line.clear();
+        self.inner.write_all(line.as_bytes())?;
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Drop for ScrubbingWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+/// The log file, `b33p.log`, private to its owner. Past [`LogFile::LIMIT`] it becomes
+/// `b33p.log.1` (replacing the one before) and a new one starts, so the two hold the recent
+/// past and never grow without end.
+struct LogFile {
+    path: PathBuf,
+    limit: u64,
+    /// The open file and how much it holds.
+    file: Mutex<(File, u64)>,
+}
+
+impl LogFile {
+    const LIMIT: u64 = 5 * 1024 * 1024;
+
+    fn open(dir: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let path = dir.join("b33p.log");
+        let file = Self::append(&path)?;
+        let size = file.metadata()?.len();
+        Ok(Self {
+            path,
+            limit: Self::LIMIT,
+            file: Mutex::new((file, size)),
+        })
+    }
+
+    fn append(path: &Path) -> std::io::Result<File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(path)
+    }
+
+    fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = self
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if file.1 > 0 && file.1 + bytes.len() as u64 > self.limit {
+            std::fs::rename(&self.path, self.path.with_extension("log.1"))?;
+            *file = (Self::append(&self.path)?, 0);
+        }
+        file.0.write_all(bytes)?;
+        file.1 += bytes.len() as u64;
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for LogFile {
+    type Writer = &'a LogFile;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self
+    }
+}
+
+impl Write for &LogFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        LogFile::write(self, bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +347,11 @@ mod tests {
                             answer = 42,
                             "a message body"
                         ),
+                        "libsignal_protocol" => tracing::debug!(
+                            target: "libsignal_protocol::session_cipher",
+                            answer = 42,
+                            "a message body"
+                        ),
                         _ => tracing::debug!(
                             target: "libsignal_service::cipher::decrypt",
                             answer = 42,
@@ -211,6 +376,50 @@ mod tests {
         assert!(logged("b33p_core::signal", debug).contains("42"));
         // Nothing is logged at debug when `RUST_LOG` is unset.
         assert!(!logged("", debug).contains("42"));
+    }
+
+    /// What the libraries log at `info` names people; none of it reaches the log.
+    #[test]
+    fn every_line_is_scrubbed() {
+        let sink = Sink::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(super::Scrubbing(sink.clone()))
+            .with_env_filter(log_filter(""))
+            .finish();
+        let aci = "8c2a6a3e-0a52-4b3c-9d1e-0123456789ab";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "presage::manager::registered", sender_uuid = aci, "got a message");
+            tracing::info!(target: "libsignal_protocol::session", "{aci}.2 creating new chains");
+            tracing::info!(target: "b33p_core::signal", sender = %format!("PNI:{aci}"), "reset");
+            tracing::info!(target: "b33p_core::signal", "found +49 151 2345 6789");
+        });
+        let logged = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(logged.lines().count(), 4, "{logged}");
+        assert!(!logged.contains("8c2a6a3e"), "{logged}");
+        assert!(!logged.contains("2345"), "{logged}");
+        assert!(logged.contains("creating new chains"));
+    }
+
+    /// The log file stays under its limit, with one older file beside it.
+    #[test]
+    fn the_log_file_rotates() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = super::LogFile::open(dir.path()).unwrap();
+        log.limit = 100;
+        for n in 0..30 {
+            writeln!(&log, "line {n:03} of the log").unwrap();
+        }
+        let current = std::fs::read_to_string(dir.path().join("b33p.log")).unwrap();
+        let older = std::fs::read_to_string(dir.path().join("b33p.log.1")).unwrap();
+        assert!(current.len() <= 100 && older.len() <= 100);
+        assert!(current.ends_with("line 029 of the log\n"));
+        assert!(
+            older
+                .lines()
+                .last()
+                .is_some_and(|line| current.lines().next().unwrap() > line)
+        );
     }
 
     /// `info` still works, so this isn't just "silence everything".

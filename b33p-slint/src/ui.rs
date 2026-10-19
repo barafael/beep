@@ -7,8 +7,8 @@ use b33p_core::settings::{
     Animations, NotificationContent, Settings, TextSize, Theme, WidgetStyle,
 };
 use b33p_core::state::{
-    self, AttachmentState, ChatState, ConversationView, MessageView, MessagesUpdate, SaveState,
-    Update,
+    self, AttachmentState, ChatState, Connection, ConversationView, MessageView, MessagesUpdate,
+    SaveState, Update,
 };
 use b33p_core::timeline::{self, Stretch};
 use b33p_core::{
@@ -27,7 +27,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
     }
     show_settings(&window, &shared.settings.borrow(), &shared.style_note());
-    window.set_device_name(shared.device_name.as_str().into());
+    window.set_device_name(shared.settings.borrow().device_name().into());
     set_up_models(&window);
 
     window.window().on_close_requested({
@@ -574,7 +574,11 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             let Some(window) = window.upgrade() else {
                 return;
             };
-            let settings = read_settings(&window);
+            let settings = Settings {
+                // Not one of the page's choices: named by `rename_device`.
+                device_name: shared.settings.borrow().device_name.clone(),
+                ..read_settings(&window)
+            };
             window.set_font_scale(settings.text_size.scale());
             shared.apply_settings(settings);
             window.set_style_note(shared.style_note().into());
@@ -812,13 +816,20 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
             });
         }
     });
-    window.on_open_data_folder(|| {
-        if let Some(dir) = b33p_core::settings::data_dir()
-            && let Err(error) = open::that_detached(&dir)
-        {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open the data folder");
+    window.on_rename_device({
+        let shared = shared.clone();
+        move |name| {
+            shared.rename_device(&name);
         }
     });
+    window.on_open_data_folder(|| open_folder(b33p_core::settings::data_dir()));
+    window.on_open_log_folder(|| open_folder(b33p_core::settings::log_dir()));
+    window.on_open_url(|url| {
+        if let Err(error) = open::that_detached(url.as_str()) {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a web page");
+        }
+    });
+    window.set_version(env!("CARGO_PKG_VERSION").into());
 
     Ok(Rc::new(Window(window)))
 }
@@ -826,6 +837,10 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
 pub struct Window(AppWindow);
 
 impl Window {
+    pub fn set_device_name(&self, name: &str) {
+        self.0.set_device_name(name.into());
+    }
+
     /// Brings the window in line with `chat`, touching only what `update` says changed.
     pub fn render(&self, chat: &ChatState, images: &Images, update: Update) {
         render(&self.0, chat, images, update);
@@ -942,12 +957,23 @@ fn read_settings(window: &AppWindow) -> Settings {
         show_activity: window.get_show_activity(),
         show_calendar: window.get_show_calendar(),
         close_to_tray: window.get_close_to_tray(),
+        device_name: None,
         preferences: b33p_core::Preferences {
             read_receipts: window.get_read_receipts(),
             typing_indicators: window.get_typing_indicators(),
             link_previews: window.get_link_previews(),
             sync_to_phone: window.get_sync_to_phone(),
         },
+    }
+}
+
+/// Shows a folder of b33p's in the desktop's file manager.
+fn open_folder(dir: Option<std::path::PathBuf>) {
+    let Some(dir) = dir else { return };
+    // The log folder only exists once something was logged to it.
+    let _ = std::fs::create_dir_all(&dir);
+    if let Err(error) = open::that_detached(&dir) {
+        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a folder");
     }
 }
 
@@ -1139,6 +1165,14 @@ pub(crate) fn render(window: &AppWindow, chat: &ChatState, images: &Images, upda
     }
     window.set_can_load_older(chat.can_load_older());
     window.set_error(chat.error().unwrap_or_default().into());
+    window.set_connection_status(
+        match chat.connection() {
+            Connection::Online => "",
+            Connection::CatchingUp => "Catching up…",
+            Connection::Offline => "Not connected · trying again",
+        }
+        .into(),
+    );
     let staged: Vec<SharedString> = chat
         .staged()
         .iter()

@@ -274,6 +274,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::Unlink) => return true,
             Ok(
                 Command::Unlock(_)
+                | Command::SetDeviceName(_)
                 | Command::Retry
                 | Command::StartOver
                 | Command::UsePassword
