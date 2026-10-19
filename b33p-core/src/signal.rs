@@ -61,6 +61,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
     // Kept across unlocking, linking and relinking, which take commands too.
     let preferences = Rc::new(Cell::new(config.preferences));
+    let device_name = RefCell::new(config.device_name);
     // crossbeam -> tokio bridge, so the UI side can use plain blocking channels. It ends on
     // shutdown, which closes `commands`.
     let (command_tx, mut commands_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -77,7 +78,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     let mut use_password = false;
     loop {
         let failed = match attempt(
-            &config,
+            &device_name,
             commands,
             &events,
             &preferences,
@@ -102,7 +103,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
         }) {
             break;
         }
-        match wait_after_failure(commands, &preferences, failure) {
+        match wait_after_failure(commands, &preferences, &device_name, failure) {
             AfterFailure::Retry => {}
             AfterFailure::StartOver => match Paths::new().and_then(|paths| wipe(&paths)) {
                 Ok(()) => use_password = false,
@@ -158,7 +159,7 @@ impl From<String> for Failed {
 /// Opens the data and runs the session on it, from the password prompt or linking on.
 /// Everything it started has stopped, and the database is closed, once it returns.
 fn attempt(
-    config: &Config,
+    device_name: &RefCell<String>,
     commands: &mut CommandRx,
     events: &Events,
     preferences: &Rc<Cell<Preferences>>,
@@ -181,13 +182,14 @@ fn attempt(
         commands,
         events,
         preferences,
+        device_name,
         use_password,
     ) {
         Ok(Unlocked::Open(store, tables, closed)) => (
             local.block_on(
                 &runtime,
                 session(
-                    config,
+                    device_name,
                     store,
                     tables,
                     commands,
@@ -233,6 +235,7 @@ enum AfterFailure {
 fn wait_after_failure(
     commands: &mut CommandRx,
     preferences: &Cell<Preferences>,
+    device_name: &RefCell<String>,
     failure: Failure,
 ) -> AfterFailure {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -261,6 +264,7 @@ fn wait_after_failure(
                 return AfterFailure::UsePassword;
             }
             Some(Command::Preferences(changed)) => preferences.set(changed),
+            Some(Command::SetDeviceName(name)) => *device_name.borrow_mut() = name,
             // Nothing else can be done meanwhile.
             Some(_) => {}
         }
@@ -389,6 +393,7 @@ enum Unlocked {
 /// Obtains the database key and opens the store. Keyring access blocks (D-Bus on Linux), so
 /// this runs outside the runtime and only enters it to open the database. `use_password`
 /// protects a new database with a password even if a keyring might come along.
+#[allow(clippy::too_many_arguments)]
 fn unlock(
     runtime: &Runtime,
     local: &LocalSet,
@@ -396,6 +401,7 @@ fn unlock(
     commands: &mut CommandRx,
     events: &Events,
     preferences: &Cell<Preferences>,
+    device_name: &RefCell<String>,
     use_password: bool,
 ) -> Result<Unlocked, Failed> {
     let source = KeySource::read(&paths.key_source).map_err(|e| {
@@ -481,7 +487,7 @@ fn unlock(
             new,
             error: error.take(),
         });
-        let password = match wait_for_password(commands, preferences) {
+        let password = match wait_for_password(commands, preferences, device_name) {
             Answer::Password(password) => password,
             Answer::StartOver => return Ok(Unlocked::StartOver),
             Answer::Gone => return Ok(Unlocked::Gone),
@@ -522,13 +528,18 @@ enum Answer {
     Gone,
 }
 
-fn wait_for_password(commands: &mut CommandRx, preferences: &Cell<Preferences>) -> Answer {
+fn wait_for_password(
+    commands: &mut CommandRx,
+    preferences: &Cell<Preferences>,
+    device_name: &RefCell<String>,
+) -> Answer {
     // Nothing else can be done before the database is open, so other commands are dropped.
     loop {
         match commands.blocking_recv() {
             Some(Command::Unlock(password)) => return Answer::Password(password),
             Some(Command::StartOver) => return Answer::StartOver,
             Some(Command::Preferences(changed)) => preferences.set(changed),
+            Some(Command::SetDeviceName(name)) => *device_name.borrow_mut() = name,
             Some(_) => {}
             None => return Answer::Gone,
         }
@@ -677,7 +688,7 @@ fn open_store(
 }
 
 async fn session(
-    config: &Config,
+    device_name: &RefCell<String>,
     store: SqliteStore,
     tables: LocalStore,
     command_rx: &mut CommandRx,
@@ -703,7 +714,7 @@ async fn session(
                 link_with_history(
                     store.clone(),
                     &tables,
-                    config,
+                    device_name,
                     &events,
                     command_rx,
                     paths,
@@ -717,7 +728,7 @@ async fn session(
             link_with_history(
                 store.clone(),
                 &tables,
-                config,
+                device_name,
                 &events,
                 command_rx,
                 paths,
@@ -741,7 +752,17 @@ async fn session(
         let Some((manager, pending)) = linked else {
             return Ok(Ending::Gone);
         };
-        match run_linked(manager, pending, &events, &tables, command_rx, &preferences).await {
+        match run_linked(
+            manager,
+            pending,
+            &events,
+            &tables,
+            command_rx,
+            &preferences,
+            device_name,
+        )
+        .await
+        {
             Ended::Gone => return Ok(Ending::Gone),
             Ended::Unlinked => return Ok(Ending::Wipe),
             Ended::Removed => {}
@@ -755,7 +776,7 @@ async fn session(
         linked = link_with_history(
             store.clone(),
             &tables,
-            config,
+            device_name,
             &events,
             command_rx,
             paths,
@@ -785,6 +806,7 @@ async fn run_linked(
     tables: &LocalStore,
     command_rx: &mut CommandRx,
     preferences: &Rc<Cell<Preferences>>,
+    device_name: &RefCell<String>,
 ) -> Ended {
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let ctx = Ctx {
@@ -882,6 +904,11 @@ async fn run_linked(
             unlink(manager.clone()).await;
             break Ended::Unlinked;
         }
+        if let Command::SetDeviceName(name) = command {
+            // For the next link; the account keeps the name it was linked with.
+            *device_name.borrow_mut() = name;
+            continue;
+        }
         if let Err(error) = handle(&mut manager, &ctx, &downloads, command).await {
             warn!(error = %scrub(&error), "command failed");
             let _ = events.send(Event::Error(error));
@@ -937,7 +964,7 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
 async fn link_with_history(
     store: SqliteStore,
     tables: &LocalStore,
-    config: &Config,
+    device_name: &RefCell<String>,
     events: &Events,
     commands: &mut CommandRx,
     paths: &Paths,
@@ -945,17 +972,30 @@ async fn link_with_history(
     mode: Marker,
 ) -> Result<Option<(Mgr, Vec<Command>)>, Failed> {
     loop {
-        // Nothing can be done before linking, so commands are dropped until then.
-        let ui_closed = async {
+        // Nothing can be done before linking, so commands are dropped until then; a new name
+        // needs a new code. `true` if renamed, `false` once the UI has gone away.
+        let renamed = async {
             while let Some(command) = commands.recv().await {
-                if let Command::Preferences(changed) = command {
-                    preferences.set(changed);
+                match command {
+                    Command::Preferences(changed) => preferences.set(changed),
+                    Command::SetDeviceName(name) => {
+                        *device_name.borrow_mut() = name;
+                        return true;
+                    }
+                    _ => {}
                 }
             }
+            false
         };
+        let name = device_name.borrow().clone();
         let (manager, key) = tokio::select! {
-            linked = link(store.clone(), config, events) => linked?,
-            () = ui_closed => return Ok(None),
+            linked = link(store.clone(), name, events) => linked?,
+            renamed = renamed => {
+                if renamed {
+                    continue;
+                }
+                return Ok(None);
+            }
         };
         let account = display_number(&manager.registration_data().phone_number);
         let _ = events.send(Event::Linked { account });
@@ -1098,17 +1138,12 @@ async fn reset(
 /// chose to transfer it.
 async fn link(
     store: SqliteStore,
-    config: &Config,
+    device_name: String,
     events: &Events,
 ) -> Result<(Mgr, Option<[u8; 32]>), Failed> {
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
-        Manager::link_secondary_device(
-            store,
-            SignalServers::Production,
-            config.device_name.clone(),
-            url_tx,
-        ),
+        Manager::link_secondary_device(store, SignalServers::Production, device_name, url_tx),
         async {
             if let Ok(mut url) = url_rx.await {
                 let url = url
@@ -4362,7 +4397,7 @@ async fn handle_command(
         // Already unlocked, and nothing failed.
         Command::Unlock(_) | Command::Retry | Command::StartOver | Command::UsePassword => {}
         // Taken care of by `run_linked`.
-        Command::Unlink => {}
+        Command::Unlink | Command::SetDeviceName(_) => {}
         // Only meaningful during the transfer; see `link_with_history`.
         Command::SkipHistory => {}
         Command::LoadHistory {

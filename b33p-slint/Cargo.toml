@@ -4,6 +4,8 @@ description = "Cross-platform Signal client built with Slint"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "b33p"
@@ -94,6 +96,8 @@ i-slint-backend-testing.workspace = true
 # `src/markdown.rs` check the links and text it makes of message text.
 i-slint-common = { workspace = true, features = ["markdown"] }
 proptest = "1"
+# Scratch directories for the log file tests.
+tempfile = "3"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs

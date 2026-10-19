@@ -4,6 +4,8 @@ description = "Desktop notifications with click-to-open and inline reply"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 async-channel = "2"

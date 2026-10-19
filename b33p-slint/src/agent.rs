@@ -451,6 +451,10 @@ enum Action {
     SetWindowFocused {
         focused: bool,
     },
+    /// Names this computer for the phone's list of linked devices; empty for the default.
+    RenameDevice {
+        name: String,
+    },
     /// Changes the given settings and leaves the rest as they are.
     SetSettings {
         theme: Option<String>,
@@ -867,6 +871,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.set_window_focused(focused);
             (None, Update::default())
         }),
+        Action::RenameDevice { name } => shared.rename_device(&name),
         Action::SetSettings {
             theme,
             style,
@@ -1126,6 +1131,7 @@ struct SettingsSnapshot {
     typing_indicators: bool,
     link_previews: bool,
     sync_to_phone: bool,
+    device_name: String,
 }
 
 fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) -> Snapshot {
@@ -1276,6 +1282,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             typing_indicators: settings.preferences.typing_indicators,
             link_previews: settings.preferences.link_previews,
             sync_to_phone: settings.preferences.sync_to_phone,
+            device_name: settings.device_name(),
         },
     }
 }

@@ -7,6 +7,8 @@ version = "0.2.0"
 edition = "2024"
 # libsignal and presage are AGPL-3.0-only, so anything linking them must be too.
 license = "AGPL-3.0-only"
+repository = "https://github.com/barafael/beep"
+homepage = "https://github.com/barafael/beep"
 
 [workspace.dependencies]
 b33p-core = { path = "b33p-core", default-features = false }

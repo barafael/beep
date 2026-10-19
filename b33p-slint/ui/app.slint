@@ -1881,6 +1881,8 @@ component FailedScreen inherits Rectangle {
 
 component LinkScreen inherits Rectangle {
     in property <image> qr;
+    in-out property <string> device-name;
+    callback rename-device(string);
     background: Palette.background;
     VerticalLayout {
         alignment: center;
@@ -1913,6 +1915,22 @@ component LinkScreen inherits Rectangle {
             text: "On your phone, open Signal → Settings → Linked devices → Link new device,\nthen scan this code.";
             horizontal-alignment: center;
             color: Palette.foreground.with-alpha(0.7);
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+            Text {
+                text: "Name on your phone";
+                vertical-alignment: center;
+                color: Palette.foreground.with-alpha(0.7);
+            }
+            LineEdit {
+                width: 240px;
+                text <=> root.device-name;
+                accessible-label: "Name on your phone";
+                // A new name needs a new code.
+                accepted => { root.rename-device(self.text); }
+            }
         }
     }
 }
@@ -1987,12 +2005,16 @@ component SettingsPage inherits Rectangle {
     in-out property <bool> link-previews;
     in-out property <bool> sync-to-phone;
     in property <string> account;
-    in property <string> device-name;
+    in-out property <string> device-name;
     callback changed-settings;
     callback changed-start-with-system(bool);
     callback opened;
     callback close;
     callback unlink;
+    callback rename-device(string);
+    in property <string> version;
+    callback open-url(string);
+    callback open-log-folder;
 
     // Shown only while open, so this runs each time it opens.
     init => { root.opened(); }
@@ -2207,11 +2229,12 @@ component SettingsPage inherits Rectangle {
                     }
                     SettingRow {
                         label: "Device name";
-                        hint: "How this computer appears under Linked devices on your phone.";
-                        Text {
-                            text: root.device-name;
-                            vertical-alignment: center;
-                            color: Palette.foreground.with-alpha(0.7);
+                        hint: "How this computer appears under Linked devices on your phone. Press Enter to keep a new one; it is used the next time this device is linked.";
+                        LineEdit {
+                            width: 200px;
+                            text <=> root.device-name;
+                            accessible-label: "Device name";
+                            accepted => { root.rename-device(self.text); }
                         }
                     }
                     SettingRow {
@@ -2220,6 +2243,32 @@ component SettingsPage inherits Rectangle {
                         Button {
                             text: "Unlink…";
                             clicked => { root.unlink(); }
+                        }
+                    }
+
+                    Rectangle { height: 8px; }
+                    SectionTitle { text: "About"; }
+                    SettingRow {
+                        label: "b33p " + root.version;
+                        hint: "Free software under the GNU AGPL 3.0. Not made by Signal.";
+                        Button {
+                            text: "Source code";
+                            clicked => { root.open-url("https://github.com/barafael/beep"); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Report a problem";
+                        hint: "Describe what happened and attach the log. It leaves out messages, names and numbers, but look it over first.";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: "Open log folder";
+                                clicked => { root.open-log-folder(); }
+                            }
+                            Button {
+                                text: "Report…";
+                                clicked => { root.open-url("https://github.com/barafael/beep/issues/new"); }
+                            }
                         }
                     }
                 }
@@ -2283,6 +2332,8 @@ export component AppWindow inherits Window {
     in property <string> sync-status;
     // The history transfer is waiting for the phone, which can be skipped.
     in property <bool> history-skippable;
+    // Says so while not connected to Signal, or still catching up; empty otherwise.
+    in property <string> connection-status;
     // The failure screen's message and what it offers.
     in property <string> failed-message;
     in property <bool> can-retry;
@@ -2333,7 +2384,7 @@ export component AppWindow inherits Window {
     callback open-calendar;
     // By id: the open chat's place in the list changes as chats move.
     changed selected-id => { root.calendar-open = false; }
-    in property <string> device-name;
+    in-out property <string> device-name;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
     // before it is changed.
@@ -2369,6 +2420,11 @@ export component AppWindow inherits Window {
     callback use-password;
     callback unlink;
     callback open-data-folder;
+    callback open-log-folder;
+    // A web page, in the browser.
+    callback open-url(string);
+    callback rename-device(string);
+    in property <string> version;
     callback search(string);
     callback open-attachment(string);
     callback open-link(string);
@@ -2750,6 +2806,8 @@ export component AppWindow inherits Window {
 
         if root.screen == Screen.link: LinkScreen {
             qr: root.link-qr;
+            device-name <=> root.device-name;
+            rename-device(name) => { root.rename-device(name); }
             // Fades in, as each screen does.
             opacity: 0;
             init => { self.opacity = 1; }
@@ -2821,6 +2879,26 @@ export component AppWindow inherits Window {
                                 label: "Settings";
                                 active: root.settings-open;
                                 clicked => { root.settings-open = !root.settings-open; }
+                            }
+                        }
+                        if root.connection-status != "": HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            padding-bottom: 6px;
+                            spacing: 6px;
+                            Spinner {
+                                indeterminate: true;
+                                width: 14px;
+                                height: 14px;
+                            }
+                            Text {
+                                text: root.connection-status;
+                                font-size: 0.85rem;
+                                color: Palette.foreground.with-alpha(0.7);
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                accessible-role: text;
+                                accessible-label: self.text;
                             }
                         }
                         HorizontalLayout {
@@ -2994,7 +3072,11 @@ export component AppWindow inherits Window {
                     link-previews <=> root.link-previews;
                     sync-to-phone <=> root.sync-to-phone;
                     account: root.account;
-                    device-name: root.device-name;
+                    device-name <=> root.device-name;
+                    rename-device(name) => { root.rename-device(name); }
+                    version: root.version;
+                    open-url(url) => { root.open-url(url); }
+                    open-log-folder => { root.open-log-folder(); }
                     changed-settings => { root.settings-changed(); }
                     changed-start-with-system(enabled) => { root.start-with-system-changed(enabled); }
                     opened => { root.settings-opened(); }
