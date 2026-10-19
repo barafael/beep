@@ -90,6 +90,34 @@ fn settings_of(row: &SqliteRow) -> ChatSettings {
     }
 }
 
+/// The version of b33p's tables this build writes, kept in `b33p_meta` as `schema`. Changes
+/// that older builds read correctly ([`SCHEMA`]'s `IF NOT EXISTS` tables, [`ADDED_COLUMNS`])
+/// keep it; one they would misread raises it, so that they refuse the database instead.
+const SCHEMA_VERSION: i64 = 1;
+
+/// Why [`LocalStore::open`] failed.
+#[derive(Debug)]
+pub(crate) enum OpenError {
+    Db(sqlx::Error),
+    /// Written by a newer b33p, at this [`SCHEMA_VERSION`].
+    TooNew(i64),
+}
+
+impl From<sqlx::Error> for OpenError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Db(error)
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Db(error) => error.fmt(f),
+            Self::TooNew(version) => write!(f, "b33p's tables are at version {version}"),
+        }
+    }
+}
+
 const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS b33p_conversation (
         id TEXT PRIMARY KEY NOT NULL,
@@ -228,12 +256,28 @@ impl LocalStore {
         self.db.close().await;
     }
 
-    pub(crate) async fn open(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
+    pub(crate) async fn open(options: SqliteConnectOptions) -> Result<Self, OpenError> {
         // Little traffic: a couple of connections are plenty.
         let db = SqlitePoolOptions::new()
             .max_connections(2)
             .connect_with(options)
             .await?;
+        // Before changing anything: a newer b33p may have changed the tables in ways this one
+        // would get wrong.
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'schema'")
+                .fetch_optional(&db)
+                .await
+                .or_else(|error| match &error {
+                    // Made before the version was kept, or not at all yet.
+                    sqlx::Error::Database(e) if e.message().contains("no such table") => Ok(None),
+                    _ => Err(error),
+                })?;
+        if let Some(found) = found
+            && found > SCHEMA_VERSION
+        {
+            return Err(OpenError::TooNew(found));
+        }
         for statement in SCHEMA {
             sqlx::query(*statement).execute(&db).await?;
         }
@@ -249,6 +293,13 @@ impl LocalStore {
                 sqlx::query(*statement).execute(&db).await?;
             }
         }
+        sqlx::query(
+            "INSERT INTO b33p_meta (key, value) VALUES ('schema', ?)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(SCHEMA_VERSION)
+        .execute(&db)
+        .await?;
         Ok(Self { db })
     }
 
@@ -942,6 +993,29 @@ mod tests {
             author_id: author.into(),
             timestamp: ts,
         }
+    }
+
+    /// An older b33p refuses tables a newer one changed in ways it would misread, and keeps
+    /// opening its own.
+    #[test]
+    fn tables_from_a_newer_version_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            local.close().await;
+            let local = open(&dir).await;
+            sqlx::query("UPDATE b33p_meta SET value = ? WHERE key = 'schema'")
+                .bind(SCHEMA_VERSION + 1)
+                .execute(&local.db)
+                .await
+                .unwrap();
+            local.close().await;
+            let options = SqliteConnectOptions::new().filename(dir.path().join("local.db3"));
+            assert!(matches!(
+                LocalStore::open(options).await,
+                Err(OpenError::TooNew(v)) if v == SCHEMA_VERSION + 1
+            ));
+        });
     }
 
     #[test]

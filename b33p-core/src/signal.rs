@@ -656,7 +656,10 @@ fn open_store(
     // Same options, so the same key and close guard.
     let tables = local
         .block_on(runtime, LocalStore::open(options))
-        .map_err(|e| OpenError::of_db(&e))?;
+        .map_err(|e| match e {
+            crate::local::OpenError::Db(e) => OpenError::of_db(&e),
+            crate::local::OpenError::TooNew(_) => OpenError::TooNew,
+        })?;
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
     for path in [
@@ -6784,6 +6787,42 @@ mod tests {
         let failed = reopened.unwrap_err().failed();
         assert_eq!(failed.failure, Failure::StoreTooNew);
         assert!(!failed.message.to_lowercase().contains("password"));
+    }
+
+    /// presage's migrations as this build has them: a version and its checksum per line. Users'
+    /// databases record each migration they ran, and sqlx refuses a database whose migrations
+    /// were changed or dropped since (see `a_database_from_a_newer_version_says_so`). Rebuilding
+    /// the presage fork's integration branch must therefore only ever add migrations at the end:
+    /// a line here that changes means existing users would be locked out. New lines are added
+    /// to the file on purpose, where review sees them.
+    #[test]
+    fn presage_migrations_only_ever_grow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        let mut applied = String::new();
+        open_and_close(&paths, &key, async |_, tables| {
+            let rows: Vec<(i64, Vec<u8>)> =
+                sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                    .fetch_all(tables.pool())
+                    .await
+                    .unwrap();
+            for (version, checksum) in rows {
+                applied += &format!("{version} {}\n", hex::encode(checksum));
+            }
+        })
+        .unwrap();
+        let known = include_str!("../tests/presage-migrations.txt");
+        for line in known.lines() {
+            assert!(
+                applied.lines().any(|applied| applied == line),
+                "presage migration changed or gone: {line}\nnow:\n{applied}"
+            );
+        }
+        assert_eq!(
+            applied, known,
+            "new presage migrations: add them to tests/presage-migrations.txt"
+        );
     }
 
     /// Linking again after the device was removed keeps the messages, whatever becomes of the

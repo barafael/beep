@@ -64,7 +64,13 @@ plus the temporary #473 pin.
 
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
-PR lands. A CI job (build, test, clippy) later.
+PR lands.
+
+When rebuilding presage's branch, its store migrations may only grow at the end: users'
+databases record every migration they ran, and sqlx refuses one whose migrations changed or
+went missing. `presage_migrations_only_ever_grow` checks them against
+`b33p-core/tests/presage-migrations.txt` (identical to 0.1.0's). b33p's own tables carry a
+version (`SCHEMA_VERSION` in `local.rs`), raised only for a change older builds would misread.
 
 ## 3. M4: close the gaps M1–M3 left
 
