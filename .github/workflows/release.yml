@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       label: ${{ steps.version.outputs.label }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - id: version
@@ -58,23 +58,28 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    # Built on Debian 12, so it runs on Debian 12, Ubuntu 23.04, Fedora 38 and newer (glibc
+    # 2.36, Qt 6.4): see .devcontainer/Containerfile.
+    container:
+      image: docker.io/library/rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
     env:
       QMAKE: /usr/lib/qt6/bin/qmake
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Install build dependencies
+        # The packages of .devcontainer/Containerfile, and curl for linuxdeploy.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang cmake pkg-config file desktop-file-utils \
-            qt6-base-dev qt6-base-dev-tools qt6-wayland \
-            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            clang cmake pkg-config protobuf-compiler \
+            qt6-base-dev qt6-base-dev-tools qt6-wayland qt6-gtk-platformtheme \
+            libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev \
+            file desktop-file-utils xz-utils curl
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
@@ -87,7 +92,7 @@ jobs:
           NAME: b33p-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}
         run: |
           mkdir "$NAME"
-          cp target/release/b33p packaging/linux/io.github.barafael.B33p.desktop "$NAME/"
+          cp target/release/b33p packaging/linux/io.github.barafael.B33p.desktop LICENSE README.md "$NAME/"
           cp b33p-slint/assets/b33p.svg "$NAME/io.github.barafael.B33p.svg"
           # xz, as the .deb uses: 12.1 MB instead of gzip's 17.2 MB for this binary.
           tar -I "xz -9 -T0" -cf "$NAME.tar.xz" "$NAME"
@@ -108,8 +113,12 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           LINUXDEPLOY_OUTPUT_VERSION: ${{ needs.version.outputs.label }}
           LDAI_OUTPUT: b33p-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}.AppImage
-          # Qt's Wayland client, so b33p runs natively on Wayland desktops, not through XWayland.
+          # Qt's Wayland client, so b33p runs natively on Wayland desktops, not through XWayland
+          # (with its window decorations, which come along with it).
           EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
+          # Qt's GTK theme, which the AppImage turns on under GNOME and Xfce: their colours,
+          # dark included, rather than Fusion's own.
+          DEPLOY_PLATFORM_THEMES: "1"
         run: |
           # Fixed releases, checked: whatever they contain ends up in the AppImage.
           base=https://github.com/linuxdeploy
@@ -157,7 +166,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Install build dependencies
@@ -165,7 +174,9 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
@@ -180,6 +191,7 @@ jobs:
           app=dmg/b33p.app
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp target/release/b33p "$app/Contents/MacOS/"
+          cp LICENSE "$app/Contents/Resources/"
           sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
 
           iconset=b33p.iconset
@@ -216,7 +228,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       # BoringSSL (contact discovery) assembles GNU-style .S files on arm64, which MSVC can't, and
@@ -236,7 +248,9 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release
@@ -250,7 +264,9 @@ jobs:
           ZIP: b33p-${{ needs.version.outputs.label }}-windows-${{ matrix.arch }}.zip
         run: |
           mkdir b33p
-          cp target/release/b33p.exe b33p/
+          cp target/release/b33p.exe LICENSE b33p/
+          # Windows line ends, for Notepad.
+          sed 's/$/\r/' packaging/windows/README.txt > b33p/README.txt
           7z a "$ZIP" b33p
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
