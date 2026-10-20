@@ -62,6 +62,10 @@ jobs:
     # 2.36, Qt 6.4): see .devcontainer/Containerfile.
     container:
       image: docker.io/library/rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+    # In a container, steps run with sh unless told otherwise; they were written for bash.
+    defaults:
+      run:
+        shell: bash
     env:
       QMAKE: /usr/lib/qt6/bin/qmake
     steps:
