@@ -1,11 +1,13 @@
-# The Linux build environment, for development and for the release builds alike: Debian 12, so
-# what is built here runs on Debian 12, Ubuntu 23.04, Fedora 38 and anything newer (glibc
-# 2.36, Qt 6.4). The CI and release jobs run install-deps.sh in the same image.
+# The Linux build environment: Debian 12, so what is built here runs on Debian 12, Ubuntu 23.04,
+# Fedora 38 and anything newer (glibc 2.36, Qt 6.4). The CI and release jobs build on this base
+# image too, pinned there by digest (the dev container follows the tag, and Rust with it), with
+# the same packages: install-deps.sh.
 FROM docker.io/library/rust:1-bookworm
 
-COPY install-deps.sh /usr/local/bin/
-RUN install-deps.sh
+# This directory is the build context (devcontainer.json, README.md). The script runs from /tmp
+# and goes again, so that no copy of it sits on PATH to go stale against the workspace's.
+COPY install-deps.sh /tmp/
+RUN sh /tmp/install-deps.sh && rm -rf /var/lib/apt/lists/* /tmp/install-deps.sh
 
-RUN rustup component add clippy rustfmt
-
-ENV QMAKE=/usr/lib/qt6/bin/qmake
+# rust-src: the standard library's sources, for rust-analyzer (devcontainer.json).
+RUN rustup component add clippy rustfmt rust-src

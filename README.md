@@ -83,7 +83,7 @@ numbers and IDs, but look it over before you attach it. `RUST_LOG=debug` makes i
 
 You need Rust and, on Linux, Qt 6 (the native style draws real Qt widgets); elsewhere Slint's
 own windowing backend is used. The [dev container](.devcontainer) has everything for Linux,
-on the Debian 12 the releases are built on.
+on the Debian 12 the releases are built on; its `install-deps.sh` lists the Debian packages.
 
 On Windows (x86_64) you also need CMake and NASM, which BoringSSL (contact discovery) builds with:
 `scoop install cmake nasm` or `winget install Kitware.CMake NASM.NASM`, with both on `PATH`.
