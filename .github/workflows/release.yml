@@ -58,32 +58,32 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
-    # Built on Debian 12, so it runs on Debian 12, Ubuntu 23.04, Fedora 38 and newer (glibc
-    # 2.36, Qt 6.4): see .devcontainer.
+    # Built on Debian 12, so it runs on Debian 12 and newer: see .devcontainer/Containerfile.
     container:
       image: docker.io/library/rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
     # In a container, steps run with sh unless told otherwise; they were written for bash.
     defaults:
       run:
         shell: bash
-    env:
-      QMAKE: /usr/lib/qt6/bin/qmake
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Install build dependencies
-        # The dev container's packages, and curl for linuxdeploy.
-        run: .devcontainer/install-deps.sh curl
+        run: .devcontainer/install-deps.sh
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: release
-          lookup-only: true
       - name: Build
-        run: cargo build --release --locked -p b33p-slint
+        run: |
+          cargo build --release --locked -p b33p-slint
+          # BoringSSL (contact discovery) is linked in statically; OpenSSL must not come along
+          # (Cargo.toml: SQLCipher builds with a crypto provider in pure Rust instead).
+          needed=$(readelf -d target/release/b33p | grep NEEDED)
+          if grep -E 'libssl|libcrypto' <<<"$needed"; then
+            echo "::error::b33p links OpenSSL next to BoringSSL"
+            exit 1
+          fi
       # The tarball and the .deb use the system's Qt (6.4 or newer); the AppImage brings its own.
       - name: Package tarball
         env:
@@ -175,10 +175,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: release
-          lookup-only: true
       - name: Build
         run: cargo build --release --locked -p b33p-slint
       - name: Package app bundle and disk image
@@ -249,10 +245,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: release
-          lookup-only: true
       - name: Build
         # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
         shell: pwsh

@@ -1,0 +1,2 @@
+# The dev container's build runs this with /bin/sh, which a CRLF shebang would break.
+*.sh text eol=lf
