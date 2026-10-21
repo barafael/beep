@@ -1,17 +1,10 @@
 # The Linux build environment, for development and for the release builds alike: Debian 12, so
 # what is built here runs on Debian 12, Ubuntu 23.04, Fedora 38 and anything newer (glibc
-# 2.36, Qt 6.4). The release and CI workflows install the same packages; keep them in step.
-#
-# cmake, clang: BoringSSL (contact discovery); protoc: protocol types; Qt 6: the UI backend.
-# The GTK platform theme and the packaging tools are for the AppImage.
+# 2.36, Qt 6.4). The CI and release jobs run install-deps.sh in the same image.
 FROM docker.io/library/rust:1-bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang cmake pkg-config protobuf-compiler \
-        qt6-base-dev qt6-base-dev-tools qt6-wayland qt6-gtk-platformtheme \
-        libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev \
-        file desktop-file-utils xz-utils \
-    && rm -rf /var/lib/apt/lists/*
+COPY install-deps.sh /usr/local/bin/
+RUN install-deps.sh
 
 RUN rustup component add clippy rustfmt
 
