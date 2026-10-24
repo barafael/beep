@@ -54,6 +54,52 @@ use crate::{
 
 pub(crate) type Mgr = Manager<SqliteStore, Registered>;
 
+/// One send at a time for the account. A send loads the recipient's session from the store,
+/// encrypts with its next counter, and saves it; two at once (a typing indicator in the
+/// background, the message right after it) encrypt with the same counter, and the recipient
+/// refuses the second as "message with old counter". One account per process, so one lock.
+static SENDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// presage's sends, taken in turn ([`SENDING`]). Every send goes through these.
+trait SendInTurn {
+    async fn send_in_turn(
+        &mut self,
+        recipient: impl Into<ServiceId>,
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>>;
+
+    async fn send_to_group_in_turn(
+        &mut self,
+        master_key: &[u8],
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>>;
+}
+
+impl SendInTurn for Mgr {
+    async fn send_in_turn(
+        &mut self,
+        recipient: impl Into<ServiceId>,
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>> {
+        let _turn = SENDING.lock().await;
+        self.send_message(recipient, message, timestamp).await
+    }
+
+    async fn send_to_group_in_turn(
+        &mut self,
+        master_key: &[u8],
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>> {
+        let _turn = SENDING.lock().await;
+        self.send_message_to_group(master_key, message, timestamp)
+            .await
+    }
+}
+
 /// Maps the opaque ids handed to the UI back to presage threads.
 type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
 
@@ -1415,7 +1461,7 @@ async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
     let own = own_id(manager);
     if let Err(error) = manager
         .clone()
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), ?kind, "failed to ask the primary device");
@@ -1668,17 +1714,23 @@ fn own_removal(
     removed
 }
 
-/// Whether `changes` is `sender` taking themselves out of the group, as a member or an
-/// invitee: the one message a non-member may still send to the group.
-fn leaves_group(
+/// Whether `changes` is `sender` changing their own place in the group: leaving it as a member
+/// or an invitee, asking to join through the link or taking that back, or joining through it.
+/// The messages a non-member may still send to the group (Desktop sends its request to the
+/// members, ts/groups.preload.ts `modifyGroupV2`).
+fn own_membership_change(
     changes: &presage::libsignal_service::groups_v2::GroupChanges,
     sender: ServiceId,
 ) -> bool {
     use presage::libsignal_service::groups_v2::GroupChange;
     ServiceId::Aci(changes.editor) == sender
         && changes.changes.iter().any(|change| match change {
-            GroupChange::DeleteMember(who) => ServiceId::Aci(*who) == sender,
+            GroupChange::DeleteMember(who) | GroupChange::DeleteRequestingMember(who) => {
+                ServiceId::Aci(*who) == sender
+            }
             GroupChange::DeletePendingMember(who) => *who == sender,
+            GroupChange::NewRequestingMember(member) => ServiceId::Aci(member.aci) == sender,
+            GroupChange::NewMember(member) => ServiceId::Aci(member.aci) == sender,
             _ => false,
         })
 }
@@ -1828,7 +1880,7 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
             timestamp: vec![story.timestamp],
         };
         if let Err(error) = manager
-            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .send_in_turn(author, ContentBody::ReceiptMessage(receipt), timestamp)
             .await
         {
             debug!(error = %scrubbed(&error), "failed to send a viewed receipt");
@@ -2829,8 +2881,8 @@ async fn send_to(
     timestamp: u64,
 ) -> Result<(), SendError> {
     let sent = match thread {
-        Thread::Contact(recipient) => manager.send_message(*recipient, body, timestamp).await,
-        Thread::Group(key) => manager.send_message_to_group(key, body, timestamp).await,
+        Thread::Contact(recipient) => manager.send_in_turn(*recipient, body, timestamp).await,
+        Thread::Group(key) => manager.send_to_group_in_turn(key, body, timestamp).await,
     };
     sent.map_err(|error| match untrusted(&error) {
         Some(who) => SendError::Untrusted(who),
@@ -2954,12 +3006,16 @@ async fn sender_name(manager: &Mgr, names: &mut Names, sender: ServiceId) -> Str
     if let Some(name) = names.get(&id) {
         return name.clone();
     }
-    let name = manager
+    let title = manager
         .thread_title(&Thread::Contact(sender))
         .await
         .unwrap_or_default();
-    let name = crate::format::name(&name);
-    names.insert(id, name.clone());
+    let name = crate::format::name(&title);
+    // Without a contact yet, presage titles it with its id (`thread_title`): not kept, so the
+    // name shows once the contact is saved.
+    if !title.is_empty() && title != id {
+        names.insert(id, name.clone());
+    }
     name
 }
 
@@ -3268,7 +3324,7 @@ async fn on_retry_receipt(
     // a change, one version up).
     data.expire_timer = None;
     data.expire_timer_version = None;
-    match manager.clone().send_message(sender, data, timestamp).await {
+    match manager.clone().send_in_turn(sender, data, timestamp).await {
         Ok(()) => {
             info!(sender = %sender.service_id_string(), timestamp, "sent a message again");
             let mut repairs = repairs.borrow_mut();
@@ -3422,9 +3478,10 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
-    // From someone not in the group (any more), unless it is the change that took them out:
-    // Signal's clients drop those. Only a change the server signed, made by the sender, says
-    // so; anything else that claims to be a change is as good as none.
+    // From someone not in the group (any more, or yet), unless it is the change of their own
+    // place in it (`own_membership_change`): Signal's clients drop those. Only a change the
+    // server signed, made by the sender, says so; anything else that claims to be a change is
+    // as good as none.
     if let Thread::Group(key) = &thread
         && !is_outgoing(manager, content)
         && let Ok(Some(group)) = manager.store().group(*key).await
@@ -3433,13 +3490,13 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             .iter()
             .any(|member| ServiceId::Aci(member.aci) == content.metadata.sender)
     {
-        let leaving = match data_of(content).and_then(|(data, _)| data.group_v2.as_ref()) {
+        let own = match data_of(content).and_then(|(data, _)| data.group_v2.as_ref()) {
             Some(context) => signed_group_change(manager, *key, context)
                 .await
-                .is_some_and(|changes| leaves_group(&changes, content.metadata.sender)),
+                .is_some_and(|changes| own_membership_change(&changes, content.metadata.sender)),
             None => false,
         };
-        if !leaving {
+        if !own {
             debug!(
                 sender = %content.metadata.sender.service_id_string(),
                 "dropped a message from someone not in the group"
@@ -4618,7 +4675,7 @@ async fn handle_command(
                 ..Default::default()
             };
             manager
-                .send_message_to_group(&key, ContentBody::StoryMessage(message.clone()), timestamp)
+                .send_to_group_in_turn(&key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
                 .map_err(|e| format!("failed to post the story: {e}"))?;
             ctx.tables.add_story(&stored).await.map_err(db)?;
@@ -4645,12 +4702,12 @@ async fn handle_command(
                 .await
                 .map_err(|e| format!("failed to create the group: {e}"))?;
             let thread = Thread::Group(key);
-            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
-            // Ours, so not a request.
+            // Ours, so not a request: accepted before it is first shown.
             ctx.tables
-                .update(&id, |s| s.accepted = true)
+                .update(&conversation_id(&thread), |s| s.accepted = true)
                 .await
                 .map_err(db)?;
+            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             refresh_group(manager, ctx, key).await;
             show_stored(manager, ctx, &id, &thread, timestamp).await;
             let _ = events.send(Event::GroupCreated(id));
@@ -5283,7 +5340,7 @@ async fn set_verified(
     let padding = NullMessage::generate(&mut rand::rng()).padding;
     let timestamp = now_millis();
     if let Err(error) = manager
-        .send_message(
+        .send_in_turn(
             who,
             ContentBody::NullMessage(NullMessage {
                 padding: padding.clone(),
@@ -5297,7 +5354,7 @@ async fn set_verified(
     let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
     manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
+        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
         .map_err(|e| format!("done here, but your other devices couldn't be told: {e}"))?;
     Ok(())
@@ -5906,7 +5963,7 @@ async fn link_preview(
 async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
     let own = own_id(manager);
     if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), "failed to tell our other devices");
@@ -6049,7 +6106,7 @@ async fn send_read(
         ..Default::default()
     };
     if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         debug!(error = %scrubbed(&error), "failed to tell our other devices what was read");
@@ -6103,7 +6160,7 @@ async fn send_read(
             timestamp: timestamps,
         };
         if let Err(error) = manager
-            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
+            .send_in_turn(author, ContentBody::ReceiptMessage(receipt), timestamp)
             .await
         {
             debug!(error = %scrubbed(&error), "failed to send a read receipt");
@@ -6310,34 +6367,59 @@ mod tests {
         }
     }
 
-    /// Someone who isn't in a group may still send it one thing: their own leaving (as a
-    /// member or an invitee). Being removed by someone else, or any other change, is not it.
+    /// Someone who isn't in a group may still send it a change of their own place in it: leaving
+    /// (as a member or an invitee), asking to join or taking that back. Being removed by someone
+    /// else, or any other change, is not it.
     #[test]
-    fn a_non_member_may_only_leave() {
-        use presage::libsignal_service::groups_v2::GroupChange;
+    fn a_non_member_may_only_change_their_own_membership() {
+        use presage::libsignal_service::groups_v2::{GroupChange, RequestingMember};
+        use presage::libsignal_service::zkgroup::profiles::ProfileKey;
         let (bob, admin) = (aci(2), aci(3));
         let sender = ServiceId::Aci(bob);
-        assert!(leaves_group(
+        let request = |who| {
+            GroupChange::NewRequestingMember(RequestingMember {
+                aci: who,
+                profile_key: ProfileKey::create([0; 32]),
+                timestamp: 0,
+            })
+        };
+        assert!(own_membership_change(
+            &changes(bob, vec![request(bob)]),
+            sender
+        ));
+        assert!(own_membership_change(
+            &changes(bob, vec![GroupChange::DeleteRequestingMember(bob)]),
+            sender
+        ));
+        assert!(!own_membership_change(
+            &changes(bob, vec![request(admin)]),
+            sender
+        ));
+        assert!(!own_membership_change(
+            &changes(admin, vec![request(bob)]),
+            sender
+        ));
+        assert!(own_membership_change(
             &changes(bob, vec![GroupChange::DeleteMember(bob)]),
             sender
         ));
-        assert!(leaves_group(
+        assert!(own_membership_change(
             &changes(bob, vec![GroupChange::DeletePendingMember(sender)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(admin, vec![GroupChange::DeleteMember(bob)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(bob, vec![GroupChange::DeleteMember(admin)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(bob, vec![GroupChange::Title("hi".into())]),
             sender
         ));
-        assert!(!leaves_group(&changes(bob, vec![]), sender));
+        assert!(!own_membership_change(&changes(bob, vec![]), sender));
     }
 
     /// A change that takes us out of a group, in whichever role, is recognised, so that the
