@@ -167,12 +167,8 @@ pub(crate) async fn sync(
             })
             .collect();
     set_pins(&mut remote, &pins);
-    let local = tables.conversations().await.map_err(db)?;
-    let before = tables.remote().await.map_err(db)?;
-    let changed = merge(&local, &before, &remote);
-    tables.save_settings(&changed).await.map_err(db)?;
-    tables
-        .set_remote(&remote, manifest.version)
+    let changed = tables
+        .take_remote(&remote, manifest.version, merge)
         .await
         .map_err(db)?;
     info!(

@@ -3709,26 +3709,23 @@ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::
             }
         }
     }
-    let mut changed = Vec::new();
-    for (id, mut settings) in all {
+    let mut blocking = Vec::new();
+    for (id, settings) in all {
         let blocked = now_blocked.remove(&id);
         if settings.blocked != blocked {
-            settings.blocked = blocked;
-            changed.push((id, settings));
+            blocking.push((id, blocked));
         }
     }
     // Blocked, but nothing remembered about them yet.
-    changed.extend(now_blocked.into_iter().map(|id| {
-        let settings = ChatSettings {
-            blocked: true,
-            ..ChatSettings::default()
-        };
-        (id, settings)
-    }));
-    if let Err(error) = ctx.tables.save_settings(&changed).await {
-        warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
-        return;
-    }
+    blocking.extend(now_blocked.into_iter().map(|id| (id, true)));
+    // Only `blocked`: the rest may have changed here since `all` was read.
+    let changed = match ctx.tables.set_blocked(&blocking).await {
+        Ok(changed) => changed,
+        Err(error) => {
+            warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
+            return;
+        }
+    };
     for (conversation, settings) in changed {
         let _ = ctx.events.send(Event::Settings {
             conversation,
