@@ -643,7 +643,7 @@ pub(crate) async fn store<S: ContentsStore>(
     store: &mut S,
     tables: &crate::local::LocalStore,
     record: Record,
-) -> Result<(), String>
+) -> Result<(), crate::Error>
 where
     S::ContentsStoreError: std::fmt::Display,
 {
@@ -684,10 +684,12 @@ where
             return tables
                 .set_expiries(&conversation, &[(message, at)])
                 .await
-                .map_err(|e| format!("failed to store the message history: {e}"));
+                .map_err(|e| {
+                    crate::Error::storage(format!("failed to store the message history: {e}"))
+                });
         }
     };
-    result.map_err(|e| format!("failed to store the message history: {e}"))
+    result.map_err(|e| crate::Error::storage(format!("failed to store the message history: {e}")))
 }
 
 #[cfg(test)]

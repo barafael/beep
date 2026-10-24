@@ -10,31 +10,38 @@ use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::generated::{
-    AppWindow, ConversationItem, DeliveryState, MessageItem, Screen, StoryItem,
+    Account, AppWindow, ChatList, Composer, ConversationItem, DeliveryState, Groups, MessageItem,
+    OpenChat, Panels, Prefs, Screen, StoryItem,
 };
+use crate::rows::Rows;
 
-fn window_with_messages(count: usize) -> (AppWindow, Rc<VecModel<MessageItem>>) {
+fn window_with_messages(count: usize) -> (AppWindow, Rc<Rows<MessageItem>>) {
     i_slint_backend_testing::init_no_event_loop();
     let window = AppWindow::new().unwrap();
     window
         .window()
         .set_size(slint::LogicalSize::new(800., 500.));
-    window.set_screen(Screen::Chats);
+    window.global::<Account>().set_screen(Screen::Chats);
     let ann = ConversationItem {
         id: "a".into(),
         title: "Ann".into(),
         ..Default::default()
     };
-    window.set_conversations(ModelRc::new(VecModel::from(vec![ann.clone()])));
-    window.set_selected(0);
-    window.set_selected_id("a".into());
-    window.set_current(ann);
-    let messages = Rc::new(VecModel::from(
+    window
+        .global::<ChatList>()
+        .set_conversations(ModelRc::new(VecModel::from(vec![ann.clone()])));
+    window.global::<ChatList>().set_selected(0);
+    window.global::<ChatList>().set_selected_id("a".into());
+    window.global::<ChatList>().set_current(ann);
+    let messages = Rc::new(Rows::default());
+    messages.set_vec(
         (0..count)
             .map(|n| message(&format!("Message {n}")))
-            .collect::<Vec<_>>(),
-    ));
-    window.set_messages(messages.clone().into());
+            .collect(),
+    );
+    window
+        .global::<OpenChat>()
+        .set_messages(messages.clone().into());
     window.show().unwrap();
     settle(&window);
     (window, messages)
@@ -87,11 +94,13 @@ fn newest_shown(window: &AppWindow, count: usize) -> Option<(usize, ElementHandl
 fn a_notice_is_drawn_as_a_line_not_a_message() {
     let (window, messages) = window_with_messages(2);
     let text = "Your safety number with Ann has changed.";
-    messages.push(MessageItem {
-        notice: true,
-        ..message(text)
-    });
-    messages.push(message("After"));
+    messages.extend([
+        MessageItem {
+            notice: true,
+            ..message(text)
+        },
+        message("After"),
+    ]);
     settle(&window);
     let notice = find(&window, text).expect("the notice is shown");
     let after = find(&window, "After").expect("so is the next message");
@@ -129,12 +138,12 @@ fn a_notice_is_drawn_as_a_line_not_a_message() {
 fn a_text_story_can_be_clicked_through() {
     let (window, _messages) = window_with_messages(0);
     let stepped = Rc::new(Cell::new(0));
-    window.on_step_story({
+    window.global::<Panels>().on_step_story({
         let stepped = stepped.clone();
         move |by| stepped.set(stepped.get() + by)
     });
-    window.set_stories_open(true);
-    window.set_story(StoryItem {
+    window.global::<Panels>().set_stories_open(true);
+    window.global::<Panels>().set_story(StoryItem {
         shown: true,
         author: "Ferris".into(),
         time: "11:42".into(),
@@ -152,22 +161,34 @@ fn a_text_story_can_be_clicked_through() {
     assert_eq!(stepped.get(), 1);
 }
 
-/// A message that failed to go out offers to be sent again, from its bubble.
+/// A message that failed to go out offers to be sent again, from its bubble; one Signal
+/// refused doesn't, since sending it again would be refused too.
 #[test]
 fn a_failed_message_offers_a_retry() {
-    let (window, messages) = window_with_messages(2);
+    let (window, messages) = window_with_messages(3);
     messages.set_row_data(
         1,
         MessageItem {
+            key: "2:me".into(),
             outgoing: true,
             delivery: DeliveryState::Failed,
+            can_send_again: true,
             ..message("never went out")
         },
     );
-    let retried = Rc::new(Cell::new(None));
-    window.on_retry_send({
+    messages.set_row_data(
+        2,
+        MessageItem {
+            key: "3:me".into(),
+            outgoing: true,
+            delivery: DeliveryState::Failed,
+            ..message("refused")
+        },
+    );
+    let retried = Rc::new(std::cell::RefCell::new(None));
+    window.global::<OpenChat>().on_retry_send({
         let retried = retried.clone();
-        move |index| retried.set(Some(index))
+        move |key| *retried.borrow_mut() = Some(key)
     });
     settle(&window);
     assert_eq!(
@@ -178,7 +199,7 @@ fn a_failed_message_offers_a_retry() {
     find(&window, "Send again")
         .expect("offered")
         .mock_single_click(PointerEventButton::Left);
-    assert_eq!(retried.get(), Some(1));
+    assert_eq!(retried.borrow().as_deref(), Some("2:me"));
 }
 
 /// Not a test: a fixed workload for callgrind (`cargo test ... bench_message_list -- --ignored`
@@ -210,7 +231,7 @@ fn phase_scroll(window: &AppWindow) {
 
 /// Switches chats twice: every row goes and comes again.
 #[inline(never)]
-fn phase_switch(window: &AppWindow, messages: &Rc<VecModel<MessageItem>>) {
+fn phase_switch(window: &AppWindow, messages: &Rc<Rows<MessageItem>>) {
     for round in 0..2 {
         let items: Vec<_> = (0..200)
             .map(|n| message(&format!("Round {round} message {n}")))
@@ -224,7 +245,7 @@ fn phase_switch(window: &AppWindow, messages: &Rc<VecModel<MessageItem>>) {
 fn the_safety_number_can_be_marked_verified() {
     let (window, _messages) = window_with_messages(1);
     let asked = Rc::new(Cell::new(None));
-    window.on_set_verified({
+    window.global::<Groups>().on_set_verified({
         let asked = asked.clone();
         move |verified| asked.set(Some(verified))
     });
@@ -232,22 +253,24 @@ fn the_safety_number_can_be_marked_verified() {
     window
         .window()
         .set_size(slint::LogicalSize::new(800., 1200.));
-    window.set_details_open(true);
-    window.set_details_safety_number("12345 67890".into());
+    window.global::<Groups>().set_details_open(true);
+    window
+        .global::<Groups>()
+        .set_details_safety_number("12345 67890".into());
     settle(&window);
     assert!(
         find(&window, "Copy").is_some(),
         "the safety number's buttons show"
     );
-    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_none());
+    assert!(find(&window, "Verified: you compared it with theirs.").is_none());
     find(&window, "Mark as verified")
         .expect("offered")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(asked.get(), Some(true));
 
-    window.set_details_verified(true);
+    window.global::<Groups>().set_details_verified(true);
     settle(&window);
-    assert!(find(&window, "✓ Verified: you compared it with theirs.").is_some());
+    assert!(find(&window, "Verified: you compared it with theirs.").is_some());
     find(&window, "Clear verification")
         .expect("offered once verified")
         .mock_single_click(PointerEventButton::Left);
@@ -260,12 +283,12 @@ fn the_safety_number_can_be_marked_verified() {
 fn a_changed_safety_number_holds_the_composer() {
     let (window, _messages) = window_with_messages(1);
     let confirmed = Rc::new(std::cell::RefCell::new(None));
-    window.on_confirm_safety_number({
+    window.global::<Groups>().on_confirm_safety_number({
         let confirmed = confirmed.clone();
         move |id| *confirmed.borrow_mut() = Some(id)
     });
     let opened = Rc::new(Cell::new(false));
-    window.on_open_details({
+    window.global::<Groups>().on_open_details({
         let opened = opened.clone();
         move || opened.set(true)
     });
@@ -277,8 +300,10 @@ fn a_changed_safety_number_holds_the_composer() {
         safety_changed: true,
         ..Default::default()
     };
-    window.set_conversations(ModelRc::new(VecModel::from(vec![changed.clone()])));
-    window.set_current(changed);
+    window
+        .global::<ChatList>()
+        .set_conversations(ModelRc::new(VecModel::from(vec![changed.clone()])));
+    window.global::<ChatList>().set_current(changed);
     settle(&window);
     assert!(find(&window, notice).is_some());
     find(&window, "Show safety number")
@@ -296,7 +321,7 @@ fn a_changed_safety_number_holds_the_composer() {
 fn an_invitation_is_answered_in_the_chat() {
     let (window, _messages) = window_with_messages(1);
     let answers = Rc::new(std::cell::RefCell::new(Vec::new()));
-    window.on_answer_invitation({
+    window.global::<Groups>().on_answer_invitation({
         let answers = answers.clone();
         move |id, accept| answers.borrow_mut().push((id.to_string(), accept))
     });
@@ -310,9 +335,11 @@ fn an_invitation_is_answered_in_the_chat() {
         invited: true,
         ..Default::default()
     };
-    window.set_conversations(ModelRc::new(VecModel::from(vec![club.clone()])));
-    window.set_selected_id(club.id.clone());
-    window.set_current(club);
+    window
+        .global::<ChatList>()
+        .set_conversations(ModelRc::new(VecModel::from(vec![club.clone()])));
+    window.global::<ChatList>().set_selected_id(club.id.clone());
+    window.global::<ChatList>().set_current(club);
     settle(&window);
     assert!(find(&window, text).is_some());
     for label in ["Decline", "Accept"] {
@@ -331,17 +358,19 @@ fn an_invitation_is_answered_in_the_chat() {
 fn a_typed_number_can_be_messaged() {
     let (window, _messages) = window_with_messages(1);
     let found = Rc::new(std::cell::RefCell::new(None));
-    window.on_find_number({
+    window.global::<ChatList>().on_find_number({
         let found = found.clone();
         move |number, open| *found.borrow_mut() = Some((number.to_string(), open))
     });
-    window.set_search_text("+49 151 23456789".into());
+    window
+        .global::<ChatList>()
+        .set_search_text("+49 151 23456789".into());
     settle(&window);
     assert!(
         find(&window, "Message +49 151 23456789").is_none(),
         "only once it is a number"
     );
-    window.set_search_is_number(true);
+    window.global::<ChatList>().set_search_is_number(true);
     settle(&window);
     find(&window, "Message +49 151 23456789")
         .expect("offered")
@@ -355,9 +384,9 @@ fn a_typed_number_can_be_messaged() {
 #[test]
 fn scrolling_to_the_top_asks_for_older_messages() {
     let (window, _messages) = window_with_messages(60);
-    window.set_can_load_older(true);
+    window.global::<OpenChat>().set_can_load_older(true);
     let asked = Rc::new(Cell::new(0));
-    window.on_load_older({
+    window.global::<OpenChat>().on_load_older({
         let asked = asked.clone();
         move || asked.set(asked.get() + 1)
     });
@@ -384,9 +413,7 @@ fn older_messages_put_in_above_leave_the_view_in_place() {
         .find(|label| find(&window, label).is_some())
         .expect("something is shown");
     let before = find(&window, &label).unwrap().absolute_position().y;
-    for n in 0..10 {
-        messages.insert(n, message(&format!("Older {n}")));
-    }
+    messages.prepend((0..10).map(|n| message(&format!("Older {n}"))).collect());
     settle(&window);
     let after = find(&window, &label)
         .expect("still shown")
@@ -402,25 +429,33 @@ fn older_messages_put_in_above_leave_the_view_in_place() {
 fn clicking_a_mention_candidate_picks_it() {
     let (window, _messages) = window_with_messages(3);
     let picked = Rc::new(Cell::new(None));
-    window.on_pick_mention({
+    window.global::<Composer>().on_pick_mention({
         let picked = picked.clone();
         move |index| picked.set(Some(index))
     });
     let names: Vec<SharedString> = vec!["Ann".into(), "Andrea".into()];
-    window.set_mention_candidates(ModelRc::new(VecModel::from(names)));
+    window
+        .global::<Composer>()
+        .set_mention_candidates(ModelRc::new(VecModel::from(names)));
     settle(&window);
     find(&window, "@Andrea")
         .expect("listed")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(picked.get(), Some(1));
-    assert_eq!(window.get_mention_candidates().row_count(), 2);
+    assert_eq!(
+        window
+            .global::<Composer>()
+            .get_mention_candidates()
+            .row_count(),
+        2
+    );
 }
 
 #[test]
 fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
     let (window, _messages) = window_with_messages(3);
     let to = Rc::new(std::cell::RefCell::new(None));
-    window.on_forward_to({
+    window.global::<Panels>().on_forward_to({
         let to = to.clone();
         move |id| *to.borrow_mut() = Some(id)
     });
@@ -429,11 +464,13 @@ fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
         title: title.into(),
         ..Default::default()
     };
-    window.set_forward_targets(ModelRc::new(VecModel::from(vec![
-        target("b", "Bob"),
-        target("c", "Carol"),
-    ])));
-    window.set_forwarding(true);
+    window
+        .global::<Panels>()
+        .set_forward_targets(ModelRc::new(VecModel::from(vec![
+            target("b", "Bob"),
+            target("c", "Carol"),
+        ])));
+    window.global::<Panels>().set_forwarding(true);
     settle(&window);
     find(&window, "Carol")
         .expect("listed")
@@ -451,19 +488,19 @@ fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
 fn picked_messages_get_a_bar_to_act_on_them() {
     let (window, _messages) = window_with_messages(3);
     let cleared = Rc::new(Cell::new(false));
-    window.on_clear_selection({
+    window.global::<OpenChat>().on_clear_selection({
         let cleared = cleared.clone();
         move || cleared.set(true)
     });
     assert!(find(&window, "Clear selection").is_none());
-    window.set_selected_count(2);
+    window.global::<OpenChat>().set_selected_count(2);
     settle(&window);
     assert!(find(&window, "2 messages selected").is_some());
     assert!(
         find(&window, "Forward selected").is_none(),
         "not until all can go"
     );
-    window.set_can_forward_selection(true);
+    window.global::<OpenChat>().set_can_forward_selection(true);
     settle(&window);
     assert!(find(&window, "Forward selected").is_some());
     find(&window, "Clear selection")
@@ -476,8 +513,8 @@ fn picked_messages_get_a_bar_to_act_on_them() {
 fn jumping_brings_the_row_into_view() {
     let (window, _messages) = window_with_messages(60);
     assert!(find(&window, "Message 10").is_none());
-    window.set_jump_row(10);
-    window.set_jump_serial(1);
+    window.global::<OpenChat>().set_jump_row(10);
+    window.global::<OpenChat>().set_jump_serial(1);
     settle(&window);
     assert!(find(&window, "Message 10").is_some());
 }
@@ -486,22 +523,26 @@ fn jumping_brings_the_row_into_view() {
 fn clicking_a_search_result_shows_it() {
     let (window, _messages) = window_with_messages(3);
     let shown = Rc::new(Cell::new(None));
-    window.on_show_result({
+    window.global::<Panels>().on_show_result({
         let shown = shown.clone();
         move |index| shown.set(Some(index))
     });
-    window.set_chat_search_open(true);
-    window.set_chat_search_text("moon".into());
+    window.global::<Panels>().set_chat_search_open(true);
+    window
+        .global::<Panels>()
+        .set_chat_search_text("moon".into());
     let result = |text: &str| crate::generated::SearchResult {
         sender: "Ann".into(),
         when: "Oct 2".into(),
         text: text.into(),
         snippet: slint::StyledText::from_plain_text(text),
     };
-    window.set_search_results(ModelRc::new(VecModel::from(vec![
-        result("the moon"),
-        result("a moon rising"),
-    ])));
+    window
+        .global::<Panels>()
+        .set_search_results(ModelRc::new(VecModel::from(vec![
+            result("the moon"),
+            result("a moon rising"),
+        ])));
     settle(&window);
     find(&window, "a moon rising")
         .expect("listed")
@@ -551,7 +592,7 @@ fn shortcuts_reach_rust_from_the_composer() {
     assert!(pressed.contains(&("k".into(), true, false, false)));
     // Not a shortcut: it reaches the composer.
     assert!(pressed.contains(&("x".into(), false, false, false)));
-    assert_eq!(window.get_draft(), "x");
+    assert_eq!(window.global::<Composer>().get_draft(), "x");
 }
 
 /// Only the opening: the testing backend doesn't lay out a popup's contents (that happens when
@@ -560,7 +601,7 @@ fn shortcuts_reach_rust_from_the_composer() {
 fn the_sticker_button_asks_for_the_packs() {
     let (window, _messages) = window_with_messages(3);
     let opened = Rc::new(Cell::new(false));
-    window.on_open_stickers({
+    window.global::<Composer>().on_open_stickers({
         let opened = opened.clone();
         move || opened.set(true)
     });
@@ -583,20 +624,24 @@ fn the_sticker_button_asks_for_the_packs() {
 fn chat_rows_speak_for_themselves() {
     let (window, _messages) = window_with_messages(3);
     let selected = Rc::new(std::cell::RefCell::new(None));
-    window.on_select({
+    window.global::<ChatList>().on_select({
         let selected = selected.clone();
         move |id| *selected.borrow_mut() = Some(id)
     });
-    window.set_selected(-1);
-    window.set_selected_id(SharedString::new());
-    window.set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
-        id: "b".into(),
-        title: "Bob".into(),
-        unread: 2,
-        muted: true,
-        preview: "See you".into(),
-        ..Default::default()
-    }])));
+    window.global::<ChatList>().set_selected(-1);
+    window
+        .global::<ChatList>()
+        .set_selected_id(SharedString::new());
+    window
+        .global::<ChatList>()
+        .set_conversations(ModelRc::new(VecModel::from(vec![ConversationItem {
+            id: "b".into(),
+            title: "Bob".into(),
+            unread: 2,
+            muted: true,
+            preview: "See you".into(),
+            ..Default::default()
+        }])));
     settle(&window);
     let row = find(&window, "Bob, 2 unread, muted, See you").expect("one item says it all");
     row.invoke_accessible_default_action();
@@ -661,11 +706,17 @@ fn the_window_shows_the_chat_state() {
             screen: true,
             ..Update::reset()
         },
+        true,
     );
     window.show().unwrap();
     settle(&window);
 
-    let delivery: Vec<_> = window.get_messages().iter().map(|m| m.delivery).collect();
+    let delivery: Vec<_> = window
+        .global::<OpenChat>()
+        .get_messages()
+        .iter()
+        .map(|m| m.delivery)
+        .collect();
     assert_eq!(
         delivery,
         [
@@ -679,6 +730,69 @@ fn the_window_shows_the_chat_state() {
         2,
         "each failed message offers a retry"
     );
+}
+
+/// The chat list follows events row by row: a chat with a new message moves to the top with
+/// its new preview, and the rows it passed move down.
+#[test]
+fn the_chat_list_follows_events() {
+    use b33p_core::state::{ChatState, Update};
+    use b33p_core::{ChatMessage, ChatSettings, Conversation, ConversationId, Event};
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    crate::ui::set_up_models(&window);
+    let mut chat = ChatState::default();
+    chat.apply(Event::Linked {
+        account: "me".into(),
+    });
+    chat.apply(Event::Synced);
+    let person = |name: &str| Conversation {
+        id: ConversationId::contact(name),
+        title: name.into(),
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    };
+    chat.apply(Event::Conversations(vec![
+        person("ann"),
+        person("bob"),
+        person("cid"),
+    ]));
+    let from = |name: &str, body: &str, timestamp| {
+        Event::Message(ChatMessage {
+            conversation: ConversationId::contact(name),
+            sender_id: name.into(),
+            sender: name.into(),
+            body: body.into(),
+            timestamp,
+            ..ChatMessage::default()
+        })
+    };
+    chat.apply_all([
+        from("ann", "a", 3),
+        from("bob", "b", 2),
+        from("cid", "c", 1),
+    ]);
+    let images = crate::Images::default();
+    crate::ui::render(&window, &chat, &images, Update::reset(), true);
+    let rows = || -> Vec<(String, String)> {
+        window
+            .global::<ChatList>()
+            .get_conversations()
+            .iter()
+            .map(|c| (c.title.to_string(), c.preview.to_string()))
+            .collect()
+    };
+    assert_eq!(rows()[0].0, "ann");
+
+    let update = chat.apply(from("cid", "newest", 4));
+    crate::ui::render(&window, &chat, &images, update, false);
+    let titles: Vec<_> = rows().into_iter().map(|(title, _)| title).collect();
+    assert_eq!(titles, ["cid", "ann", "bob"]);
+    assert!(rows()[0].1.contains("newest"), "{:?}", rows()[0]);
 }
 
 /// A failure has its own screen, with what can be done about it; deleting the data asks first.
@@ -706,21 +820,22 @@ fn a_failure_offers_a_way_out() {
             screen: true,
             ..Update::reset()
         },
+        true,
     );
     let retried = Rc::new(Cell::new(false));
-    window.on_retry({
+    window.global::<Account>().on_retry({
         let retried = retried.clone();
         move || retried.set(true)
     });
     let started_over = Rc::new(Cell::new(false));
-    window.on_start_over({
+    window.global::<Account>().on_start_over({
         let started_over = started_over.clone();
         move || started_over.set(true)
     });
     window.show().unwrap();
     settle(&window);
 
-    assert_eq!(window.get_screen(), Screen::Failed);
+    assert_eq!(window.global::<Account>().get_screen(), Screen::Failed);
     assert!(find(&window, "The key is missing.").is_some());
     assert!(
         find(&window, "Use a password instead").is_none(),
@@ -753,10 +868,33 @@ fn a_long_error_wraps() {
     window
         .window()
         .set_size(slint::LogicalSize::new(400., 500.));
-    window.set_error(long.into());
+    window.global::<Account>().set_error(long.into());
     settle(&window);
     let text = find(&window, long).expect("the banner shows it");
     assert!(text.size().height > 30., "one line only: {:?}", text.size());
+}
+
+/// The error banner offers to try again only when that may work.
+#[test]
+fn the_error_offers_to_try_again_when_that_may_work() {
+    let (window, _) = window_with_messages(1);
+    let account = window.global::<Account>();
+    account.set_error("Couldn't reach Signal.".into());
+    settle(&window);
+    assert!(find(&window, "Dismiss").is_some(), "the banner shows");
+    assert!(find(&window, "Try again").is_none());
+
+    account.set_can_retry_error(true);
+    let retried = Rc::new(Cell::new(false));
+    account.on_retry_error({
+        let retried = retried.clone();
+        move || retried.set(true)
+    });
+    settle(&window);
+    find(&window, "Try again")
+        .expect("offered")
+        .mock_single_click(PointerEventButton::Left);
+    assert!(retried.get());
 }
 
 /// Settings lead to the issue tracker.
@@ -767,10 +905,10 @@ fn settings_say_where_to_report_a_problem() {
     window
         .window()
         .set_size(slint::LogicalSize::new(800., 4000.));
-    window.set_settings_open(true);
+    window.global::<Prefs>().set_settings_open(true);
     settle(&window);
     let opened = Rc::new(std::cell::RefCell::new(String::new()));
-    window.on_open_url({
+    window.global::<Account>().on_open_url({
         let opened = opened.clone();
         move |url| *opened.borrow_mut() = url.into()
     });
@@ -782,4 +920,49 @@ fn settings_say_where_to_report_a_problem() {
         "{}",
         opened.borrow()
     );
+}
+
+/// A button that is only an icon says what it does when the pointer rests on it.
+#[test]
+fn icon_buttons_have_tooltips() {
+    use slint::platform::WindowEvent;
+    let (window, _) = window_with_messages(1);
+    let shown = |window: &AppWindow| {
+        i_slint_core::window::WindowInner::from_pub(window.window())
+            .active_popups
+            .borrow()
+            .len()
+    };
+    let button = find(&window, "Search this chat").expect("the chat header's button");
+    let at = button.absolute_position();
+    let size = button.size();
+    let centre = slint::LogicalPosition::new(at.x + size.width / 2., at.y + size.height / 2.);
+    assert_eq!(shown(&window), 0);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: centre });
+    settle(&window);
+    // Resting there, moving a little, as a hand does.
+    window.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(centre.x + 1., centre.y),
+    });
+    for _ in 0..10 {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+        slint::platform::update_timers_and_animations();
+    }
+    assert!(shown(&window) > 0, "a tooltip shows");
+}
+
+/// An emoji goes where the caret is, in place of what is selected, and the caret after it;
+/// offsets inside a character or past the end don't split or overrun the draft.
+#[test]
+fn an_emoji_goes_where_the_caret_is() {
+    use crate::ui::splice;
+    assert_eq!(splice("Hi you", "👋", 2, 2), ("Hi👋 you".into(), 6));
+    assert_eq!(splice("Hi you", "👋", 3, 6), ("Hi 👋".into(), 7));
+    assert_eq!(splice("Hi you", "👋", 6, 3), ("Hi 👋".into(), 7));
+    assert_eq!(splice("", "👋", 0, 0), ("👋".into(), 4));
+    assert_eq!(splice("é", "x", 1, 1), ("xé".into(), 1));
+    assert_eq!(splice("ab", "x", 99, 99), ("abx".into(), 3));
+    assert_eq!(splice("ab", "x", -5, 1), ("xb".into(), 1));
 }

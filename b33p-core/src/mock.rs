@@ -2,8 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, ConversationKind, Delivery, Event, Events, Failure,
-    HistoryTransfer, Inbox, Person, Picture, QrMatrix, Quote, Reaction, Style, StyleRange,
+    Command, Conversation, ConversationId, ConversationKind, Delivery, Error, Event, Events,
+    Failure, HistoryTransfer, Inbox, Person, Picture, QrMatrix, Quote, Reaction, Style, StyleRange,
     now_millis,
 };
 
@@ -607,17 +607,27 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         then,
                     });
                 } else {
-                    let _ = events.send(Event::Error(format!(
+                    let _ = events.send(Event::Error(Error::refused(format!(
                         "Nobody on Signal has the number {number}."
-                    )));
+                    ))));
                 }
             }
             // Any group link previews as a climbing group; one ending in "approve" has its
-            // admins let people in.
+            // admins let people in, and one ending in "offline" fails as if Signal were out of
+            // reach, to see the error offer to try again.
             Ok(Command::PreviewGroupLink(link)) => {
                 let link = link.trim().to_owned();
                 if !link.starts_with("https://signal.group/#") {
-                    let _ = events.send(Event::Error("That isn't a Signal group link.".into()));
+                    let _ = events.send(Event::Error(Error::refused(
+                        "That isn't a Signal group link.",
+                    )));
+                    continue;
+                }
+                if link.ends_with("offline") {
+                    let _ = events.send(Event::CommandFailed {
+                        error: Error::unreachable("couldn't look the group up: mock timeout"),
+                        command: Command::PreviewGroupLink(link),
+                    });
                     continue;
                 }
                 let _ = events.send(Event::GroupPreview(crate::GroupPreview {
@@ -763,14 +773,21 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         )
                     })
                     .collect();
-                // Sending takes a moment, and `/fail` fails, to see both in the UI.
+                // Sending takes a moment; `/fail` fails as if offline (worth trying again),
+                // `/refuse` as if Signal refused it (not).
                 std::thread::sleep(Duration::from_millis(1200));
-                if body == "/fail" {
+                if body == "/fail" || body == "/refuse" {
+                    let error = if body == "/fail" {
+                        Error::unreachable("failed to send: mock timeout")
+                    } else {
+                        Error::refused("failed to send: recipient is not registered")
+                    };
                     let _ = events.send(Event::SendFailed {
                         conversation,
                         timestamp,
+                        retryable: error.retryable(),
                     });
-                    let _ = events.send(Event::Error("failed to send: mock failure".into()));
+                    let _ = events.send(Event::Error(error));
                     continue;
                 }
                 let echo = format!("You said: {body}");

@@ -60,6 +60,21 @@ impl Player {
         }
     }
 
+    /// Goes to `fraction` (0 to 1) of what plays, if it is `id` and its length is known.
+    pub fn seek(&mut self, id: &AttachmentId, fraction: f32) -> Result<(), String> {
+        let Some(playing) = self.current.as_ref().filter(|p| &p.id == id) else {
+            return Ok(());
+        };
+        let Some(length) = playing.length else {
+            return Ok(());
+        };
+        let at = length.mul_f32(fraction.clamp(0.0, 1.0));
+        playing
+            .player
+            .try_seek(at)
+            .map_err(|e| format!("can't skip in this audio: {e}"))
+    }
+
     pub fn stop(&mut self) {
         if let Some(playing) = self.current.take() {
             playing.player.stop();

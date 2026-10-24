@@ -1,0 +1,312 @@
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PanelHeader, SectionTitle, SettingRow, SwitchRow } from "widgets.slint";
+
+export component SettingsPage inherits Rectangle {
+    // Qt draws the window (Linux): its style is chosen, its colours are the desktop's. Elsewhere
+    // there is no style to choose, but a theme.
+    in property <bool> qt;
+    in-out property <int> theme;
+    in-out property <int> widget-style;
+    in property <string> style-note;
+    in-out property <int> text-size;
+    // In the order of `Animations::ALL`.
+    in-out property <int> animations;
+    in-out property <bool> show-avatars;
+    in-out property <bool> notifications;
+    in-out property <int> notification-content;
+    in-out property <bool> show-activity;
+    in-out property <bool> show-calendar;
+    in-out property <bool> close-to-tray;
+    // Whether the desktop shows tray icons; without, closing the window quits.
+    in property <bool> tray-available: true;
+    in property <bool> autostart-supported;
+    // Whether this system shows b33p's notifications at all.
+    in property <bool> notifications-supported: true;
+    // Shortcut labels in the Mac's own signs.
+    in property <bool> macos;
+    in-out property <bool> start-with-system;
+    in-out property <bool> read-receipts;
+    in-out property <bool> typing-indicators;
+    in-out property <bool> link-previews;
+    in-out property <bool> sync-to-phone;
+    in property <string> account;
+    in-out property <string> device-name;
+    callback changed-settings;
+    callback changed-start-with-system(bool);
+    callback opened;
+    callback close;
+    callback unlink;
+    callback rename-device(string);
+    in property <string> version;
+    callback open-url(string);
+    callback open-log-folder;
+
+    // Shown only while open, so this runs each time it opens.
+    init => { root.opened(); }
+
+    VerticalLayout {
+        // As tall as the chat's header, which it takes the place of.
+        PanelHeader {
+            height: Theme.header;
+            title: "Settings";
+            back-label: "Close settings";
+            back => { root.close(); }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                alignment: center;
+                padding-left: Theme.space-xl;
+                padding-right: Theme.space-xl;
+                VerticalLayout {
+                    preferred-width: 520px;
+                    max-width: 520px;
+                    padding-top: Theme.space-xl;
+                    padding-bottom: Theme.space-xl;
+                    spacing: 14px;
+                    alignment: start;
+
+                    SectionTitle { text: "Appearance"; }
+                    // Qt's styles take their colours from the desktop.
+                    if !root.qt: SettingRow {
+                        label: "Theme";
+                        ComboBox {
+                            width: 200px;
+                            model: ["System", "Light", "Dark"];
+                            current-index <=> root.theme;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+                    if root.qt: SettingRow {
+                        label: "Style";
+                        hint: root.style-note;
+                        ComboBox {
+                            width: 200px;
+                            // In the order of `WidgetStyle::ALL`.
+                            model: ["System", "Fusion"];
+                            current-index <=> root.widget-style;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Text size";
+                        ComboBox {
+                            width: 200px;
+                            model: ["Small", "Default", "Large"];
+                            current-index <=> root.text-size;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Animations";
+                        hint: "System follows your desktop's setting for reduced motion.";
+                        ComboBox {
+                            width: 200px;
+                            model: ["System", "On", "Off"];
+                            current-index <=> root.animations;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+                    SwitchRow {
+                        label: "Profile pictures";
+                        hint: "Show contacts' and groups' pictures instead of initials.";
+                        checked <=> root.show-avatars;
+                        toggled => { root.changed-settings(); }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Chats"; }
+                    SwitchRow {
+                        label: "Activity strip";
+                        hint: "A bar beside each chat showing when you wrote, and how much. Click it to jump there.";
+                        checked <=> root.show-activity;
+                        toggled => { root.changed-settings(); }
+                    }
+                    SwitchRow {
+                        label: "Activity calendar";
+                        hint: "A button above each chat opens a calendar of it, year by year. Click a day to go there.";
+                        checked <=> root.show-calendar;
+                        toggled => { root.changed-settings(); }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Notifications"; }
+                    if !root.notifications-supported: Text {
+                        text: "b33p can't show notifications on this system yet.";
+                        wrap: word-wrap;
+                        color: Theme.text-secondary;
+                    }
+                    if root.notifications-supported: SwitchRow {
+                        label: "New messages";
+                        hint: "Notify about messages unless their chat is open in front.";
+                        checked <=> root.notifications;
+                        toggled => { root.changed-settings(); }
+                    }
+                    if root.notifications-supported: SettingRow {
+                        label: "Show";
+                        ComboBox {
+                            width: 200px;
+                            enabled: root.notifications;
+                            model: ["Name and message", "Name only", "Nothing"];
+                            current-index <=> root.notification-content;
+                            selected => { root.changed-settings(); }
+                        }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Privacy"; }
+                    SwitchRow {
+                        label: "Read receipts";
+                        hint: "Let people know when you've read their messages. Turned off, you don't see theirs either on your phone.";
+                        checked <=> root.read-receipts;
+                        toggled => { root.changed-settings(); }
+                    }
+                    SwitchRow {
+                        label: "Typing indicators";
+                        hint: "Let people see when you're typing.";
+                        checked <=> root.typing-indicators;
+                        toggled => { root.changed-settings(); }
+                    }
+                    SwitchRow {
+                        label: "Link previews";
+                        hint: "Add a preview of the first link to messages you send. b33p fetches the page itself, so the site sees your IP address.";
+                        checked <=> root.link-previews;
+                        toggled => { root.changed-settings(); }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Background"; }
+                    SwitchRow {
+                        label: "Keep running in the tray";
+                        hint: root.tray-available
+                            ? "Closing the window leaves b33p in the tray, still receiving messages."
+                            : "Your desktop doesn't show tray icons, so closing the window quits b33p.";
+                        enabled: root.tray-available;
+                        checked <=> root.close-to-tray;
+                        toggled => { root.changed-settings(); }
+                    }
+                    if root.autostart-supported: SwitchRow {
+                        label: "Start with the system";
+                        hint: root.close-to-tray && root.tray-available ? "Starts in the tray when you log in." : "Opens b33p when you log in.";
+                        checked <=> root.start-with-system;
+                        toggled => { root.changed-start-with-system(self.checked); }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Keyboard shortcuts"; }
+                    // Slint takes ⌘ for Ctrl on macOS (and Ctrl for its Meta), so only the
+                    // labels differ.
+                    for shortcut in [
+                        { keys: root.macos ? "⌘K" : "Ctrl+K", what: "Search chats" },
+                        { keys: root.macos ? "⌘F" : "Ctrl+F", what: "Search this chat" },
+                        { keys: root.macos ? "⌥↑ / ⌥↓" : "Alt+↑ / Alt+↓", what: "Previous / next chat" },
+                        { keys: root.macos ? "⌥⇧↓" : "Alt+Shift+↓", what: "Next unread chat" },
+                        { keys: root.macos ? "⌥1 … ⌥9" : "Alt+1 … Alt+9", what: "Pinned chats" },
+                        { keys: "↑ ↓ Enter", what: "In the search for chats: go through those found, open one" },
+                        { keys: "↑", what: "Edit your last message (in an empty composer)" },
+                        { keys: root.macos ? "⇧↩" : "Shift+Enter", what: "New line" },
+                        { keys: root.macos ? "⌘V" : "Ctrl+V", what: "Paste text, a picture or files" },
+                        { keys: root.macos ? "⌘-click" : "Ctrl+click", what: root.macos ? "Select a message; ⇧-click selects up to it, Esc clears" : "Select a message; Shift+click selects up to it, Esc clears" },
+                        { keys: root.macos ? "⌘C" : "Ctrl+C", what: "Copy the text selected in a message" },
+                        { keys: "Esc", what: "Close, stop replying or editing, or clear the search or selection" },
+                    ]: HorizontalLayout {
+                        spacing: Theme.space-l;
+                        // The keys as a key cap.
+                        HorizontalLayout {
+                            alignment: start;
+                            min-width: 140px;
+                            max-width: 140px;
+                            VerticalLayout {
+                                alignment: start;
+                                Rectangle {
+                                    width: keys.preferred-width + 2 * Theme.space-s;
+                                    height: keys.preferred-height + Theme.space-xs;
+                                    border-radius: Theme.radius-s;
+                                    background: Theme.surface-raised;
+                                    border-width: 1px;
+                                    border-color: Theme.divider;
+                                    keys := Text {
+                                        text: shortcut.keys;
+                                        font-size: 1rem * Theme.body-small;
+                                        font-weight: 600;
+                                        color: Theme.text;
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: shortcut.what;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            color: Theme.text-secondary;
+                        }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "Account"; }
+                    SettingRow {
+                        label: "Account";
+                        Text {
+                            text: root.account;
+                            overflow: elide;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                    SwitchRow {
+                        label: "Sync chat settings to your phone";
+                        hint: "Pinned, muted, archived and blocked chats and accepted requests changed here go to your phone too. Off: they stay on this computer, and changes on the phone still come here.";
+                        checked <=> root.sync-to-phone;
+                        toggled => { root.changed-settings(); }
+                    }
+                    SettingRow {
+                        label: "Device name";
+                        hint: "How this computer appears under Linked devices on your phone. Press Enter to keep a new one; it is used the next time this device is linked.";
+                        LineEdit {
+                            width: 200px;
+                            text <=> root.device-name;
+                            accessible-label: "Device name";
+                            accepted => { root.rename-device(self.text); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Unlink this device";
+                        hint: "Removes this computer from your Signal account and deletes the messages stored here. Your phone keeps them.";
+                        Button {
+                            text: "Unlink…";
+                            clicked => { root.unlink(); }
+                        }
+                    }
+
+                    Rectangle { height: Theme.space-s; }
+                    SectionTitle { text: "About"; }
+                    SettingRow {
+                        label: "b33p " + root.version;
+                        hint: "Free software under the GNU AGPL 3.0. Not made by Signal.";
+                        Button {
+                            text: "Source code";
+                            clicked => { root.open-url("https://github.com/barafael/beep"); }
+                        }
+                    }
+                    SettingRow {
+                        label: "Report a problem";
+                        hint: "Describe what happened and attach the log. It leaves out messages, names and numbers, but look it over first.";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: "Open log folder";
+                                clicked => { root.open-log-folder(); }
+                            }
+                            Button {
+                                text: "Report…";
+                                clicked => { root.open-url("https://github.com/barafael/beep/issues/new"); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

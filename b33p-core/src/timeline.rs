@@ -136,7 +136,7 @@ fn count(n: u32, one: &str, many: &str) -> String {
 /// first message's to the last message's, with the empty ones between.
 pub fn buckets(history: &[ChatMessage], span: Span) -> Vec<Bucket> {
     let tz = TimeZone::system();
-    let date_of = crate::state::local_date;
+    let date_of = |timestamp| crate::state::local_date_in(&tz, timestamp);
     // Where a bucket starting on `start` ends, in Signal's milliseconds.
     let end_of = |start: Date| {
         start

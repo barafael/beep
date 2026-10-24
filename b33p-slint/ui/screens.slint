@@ -1,0 +1,250 @@
+// The screens before the chats: starting and catching up, the password, linking, and what
+// went wrong. They share one layout: b33p's mark, a title, and what to do, in a column.
+
+import { Button, LineEdit, Spinner } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { Display, FadeIn, Hint } from "widgets.slint";
+
+// A start-up screen's column, in the middle of the window.
+component StartPage inherits FadeIn {
+    in property <string> title;
+    in property <bool> mark: true;
+    background: Theme.surface;
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            padding-left: Theme.space-xl;
+            padding-right: Theme.space-xl;
+            VerticalLayout {
+                // Narrower in a narrow window.
+                preferred-width: 360px;
+                max-width: 360px;
+                spacing: Theme.space-m;
+                if root.mark: HorizontalLayout {
+                    alignment: center;
+                    padding-bottom: Theme.space-s;
+                    Image {
+                        source: @image-url("../assets/b33p.svg");
+                        width: 64px;
+                        height: 64px;
+                        accessible-role: none;
+                    }
+                }
+                if root.title != "": Display { text: root.title; }
+                @children
+            }
+        }
+    }
+}
+
+// Until the messages are caught up with: what is being waited for, the one wait that can be
+// skipped, and the chats to go to while the rest comes in.
+export component SyncingScreen inherits StartPage {
+    in property <string> status;
+    // The history transfer is waiting for the phone.
+    in property <bool> skippable;
+    // Catching up: the chats can show meanwhile.
+    in property <bool> can-start;
+    callback skip;
+    callback start;
+    // Only when catching up takes a while: a button that comes and goes at once is a distraction.
+    property <bool> waited;
+    Timer {
+        interval: 1500ms;
+        running: root.can-start && !root.waited;
+        triggered => { root.waited = true; }
+    }
+    HorizontalLayout {
+        alignment: center;
+        Spinner { indeterminate: true; }
+    }
+    Text {
+        text: root.status;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        color: Theme.text-secondary;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    if root.skippable: HorizontalLayout {
+        alignment: center;
+        Button {
+            text: "Skip";
+            clicked => { root.skip(); }
+        }
+    }
+    if root.can-start && root.waited: VerticalLayout {
+        spacing: Theme.space-s;
+        HorizontalLayout {
+            alignment: center;
+            Button {
+                text: "Start";
+                primary: true;
+                clicked => { root.start(); }
+            }
+        }
+        Hint {
+            text: "The chats show now; what is still coming in follows.";
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component PasswordScreen inherits StartPage {
+    // Choosing a password for a new database, rather than unlocking an existing one.
+    in property <bool> new;
+    in property <string> error;
+    property <string> confirmation;
+    callback unlock(string, string);
+    // The password is forgotten: start over without the messages.
+    callback forgot;
+
+    title: root.new ? "Choose a password" : "Unlock b33p";
+    forward-focus: password-field;
+
+    function submit() {
+        root.unlock(password-field.text, root.confirmation);
+        password-field.text = "";
+        root.confirmation = "";
+        password-field.focus();
+    }
+
+    Text {
+        text: root.new
+            ? "No system keyring was found, so b33p will encrypt your messages with this password. It can't be recovered if you forget it."
+            : "Enter the password that protects your messages on this computer.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        color: Theme.text-secondary;
+    }
+    password-field := LineEdit {
+        input-type: password;
+        placeholder-text: "Password";
+        // When choosing a password, Tab leads on to the confirmation field.
+        accepted => {
+            if !root.new { root.submit(); }
+        }
+    }
+    if root.new: LineEdit {
+        text <=> root.confirmation;
+        input-type: password;
+        placeholder-text: "Repeat password";
+        accepted => { root.submit(); }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        wrap: word-wrap;
+        color: Theme.danger-text;
+        horizontal-alignment: center;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    Button {
+        text: root.new ? "Continue" : "Unlock";
+        primary: true;
+        clicked => { root.submit(); }
+    }
+    if !root.new: Button {
+        text: "Forgot your password?";
+        clicked => { root.forgot(); }
+    }
+}
+
+// Something keeps b33p from going on: what, and what can be done about it.
+export component FailedScreen inherits StartPage {
+    in property <string> message;
+    in property <bool> can-retry;
+    in property <bool> can-start-over;
+    in property <bool> can-use-password;
+    // Tried again by itself every so often (a keyring that isn't there yet).
+    in property <bool> retrying;
+    callback retry;
+    callback start-over;
+    callback use-password;
+    callback open-data-folder;
+
+    title: "b33p can't go on";
+    Text {
+        text: root.message;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        color: Theme.text-secondary;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    if root.retrying: Hint {
+        text: "Trying again by itself…";
+        horizontal-alignment: center;
+    }
+    Rectangle { height: Theme.space-xs; }
+    if root.can-retry: Button {
+        text: "Try again";
+        primary: true;
+        clicked => { root.retry(); }
+    }
+    if root.can-use-password: Button {
+        text: "Use a password instead";
+        clicked => { root.use-password(); }
+    }
+    if root.can-start-over: Button {
+        text: "Start over…";
+        clicked => { root.start-over(); }
+    }
+    Button {
+        text: "Open data folder";
+        clicked => { root.open-data-folder(); }
+    }
+}
+
+export component LinkScreen inherits StartPage {
+    in property <image> qr;
+    in-out property <string> device-name;
+    callback rename-device(string);
+    title: "Link b33p to your phone";
+    // The code is the picture here.
+    mark: false;
+    HorizontalLayout {
+        alignment: center;
+        padding-top: Theme.space-s;
+        padding-bottom: Theme.space-s;
+        // White whatever the scheme: phones read dark modules on light best.
+        Rectangle {
+            width: 280px;
+            height: 280px;
+            border-radius: Theme.radius-l;
+            background: white;
+            drop-shadow-blur: Theme.dialog-blur;
+            drop-shadow-color: Theme.popover-shadow;
+            Image {
+                width: parent.width - 24px;
+                height: self.width;
+                source: root.qr;
+                image-rendering: pixelated;
+                accessible-role: image;
+                accessible-label: "The code to scan";
+            }
+        }
+    }
+    Text {
+        text: "On your phone, open Signal → Settings → Linked devices → Link new device, then scan this code.";
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        color: Theme.text-secondary;
+    }
+    HorizontalLayout {
+        spacing: Theme.space-s;
+        Text {
+            text: "Name on your phone";
+            vertical-alignment: center;
+            color: Theme.text-secondary;
+        }
+        LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.device-name;
+            accessible-label: "Name on your phone";
+            // A new name needs a new code.
+            accepted => { root.rename-device(self.text); }
+        }
+    }
+}

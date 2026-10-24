@@ -15,7 +15,7 @@ done yet; this records what a trial build for `wasm32-unknown-unknown` found (Oc
 - Five don't, and the demo can do without them: `arboard` (clipboard), `open` (links),
   `mundy` (reduced motion), `rfd` (file picker) and `rodio` (audio).
 - Without those five, 22 errors remain, all in our code that uses them: `audio.rs`,
-  `clipboard.rs`, `motion.rs`, and a few lines of `ui.rs` and `main.rs`. Gating them with `cfg`
+  `clipboard.rs`, `motion.rs`, and a few lines of `ui/` and `main.rs`. Gating them with `cfg`
   is enough.
 
 ## What needs work

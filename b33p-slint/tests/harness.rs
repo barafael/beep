@@ -288,6 +288,50 @@ fn a_sent_message_is_answered() {
     agent.wait_for("the echo", |s| message(s, "You said: Hello").is_some());
 }
 
+/// What fails for a reason that may pass can be tried again; what Signal refused can't. The
+/// mock fails `/fail` as if offline and `/refuse` as if the recipient left Signal, and looks a
+/// link ending in "offline" up as if Signal were out of reach.
+#[test]
+fn failures_offer_to_try_again_when_that_may_work() {
+    let (_app, mut agent) = app("errors");
+    let chats = wait_for_chats(&mut agent);
+    let alice = id_of(&chats, "Alice");
+    agent.act(&format!(
+        "{{\"type\":\"select\",\"conversation\":\"{alice}\"}}"
+    ));
+    agent.wait_for("Alice selected", |s| selected_is(s, &alice));
+    for text in ["/fail", "/refuse"] {
+        agent.act(&format!("{{\"type\":\"type\",\"text\":\"{text}\"}}"));
+        agent.act("{\"type\":\"send\"}");
+    }
+    let failed = agent.wait_for("both sends failed", |s| {
+        message(s, "/fail").and_then(|m| m["delivery"].as_str()) == Some("failed")
+            && message(s, "/refuse").and_then(|m| m["delivery"].as_str()) == Some("refused")
+    });
+    assert!(failed["error"].is_string());
+    assert_eq!(
+        failed["can_retry_error"], false,
+        "bubbles offer sends again"
+    );
+    agent.act("{\"type\":\"dismiss_error\"}");
+
+    agent.act("{\"type\":\"open_join_group\",\"link\":\"https://signal.group/#offline\"}");
+    let offered = agent.wait_for("the lookup failed", |s| s["can_retry_error"] == true);
+    assert!(
+        offered["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("couldn't look the group up")),
+        "{}",
+        offered["error"]
+    );
+    // The mock fails the lookup at once, so a snapshot taken now may already show the next
+    // failure: whether the lookup went out again is what the answer says.
+    let tried = agent.act("{\"type\":\"retry_error\"}");
+    assert_eq!(tried["result"]["command_sent"], true, "tried again");
+    // The mock fails it again, and offers it again.
+    agent.wait_for("failed again", |s| s["can_retry_error"] == true);
+}
+
 /// A group joined through its invite link: looked up, asked to join, then taken back.
 #[test]
 fn a_group_is_joined_through_its_link() {

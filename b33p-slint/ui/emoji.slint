@@ -1,0 +1,119 @@
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, Popover, Pressable } from "widgets.slint";
+
+// A group of emoji, as Unicode orders them ("Smileys & emotion", …); `icon` is one of them.
+export struct EmojiGroup {
+    name: string,
+    icon: string,
+    emoji: [string],
+}
+
+// All emoji, set once by Rust (`emoji.rs`), and the ones used lately.
+export global Emojis {
+    in property <[EmojiGroup]> groups;
+    // Most recently used first.
+    in property <[string]> recent;
+    // Those whose names or short codes have the text in them, e.g. "heart", "thumbs".
+    pure callback search(string) -> [string];
+    // One was picked: it goes to the front of `recent`.
+    callback used(string);
+}
+
+// Picks an emoji: by group, among the ones used lately, or by name.
+export component EmojiPicker inherits Popover {
+    callback picked(string);
+    width: 8 * root.cell + 2 * Theme.space-s + 14px;
+    height: 340px;
+    property <length> cell: 36px;
+    property <int> columns: 8;
+    // -1 for the ones used lately.
+    property <int> group: Emojis.recent.length > 0 ? -1 : 0;
+    property <string> query;
+    property <[string]> shown: root.query != "" ? Emojis.search(root.query)
+        : root.group < 0 ? Emojis.recent
+        : Emojis.groups[root.group].emoji;
+
+    function pick(emoji: string) {
+        Emojis.used(emoji);
+        root.picked(emoji);
+    }
+
+    function show-group(group: int) {
+        root.group = group;
+        root.query = "";
+        search.text = "";
+        grid.content-y = 0;
+    }
+
+    VerticalLayout {
+        padding: Theme.space-s;
+        spacing: Theme.space-s;
+        search := LineEdit {
+            placeholder-text: "Search emoji";
+            init => { self.focus(); }
+            edited(text) => {
+                root.query = text;
+                grid.content-y = 0;
+            }
+            // Enter takes the first found.
+            accepted => {
+                if root.shown.length > 0 {
+                    root.pick(root.shown[0]);
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 2px;
+            alignment: start;
+            if Emojis.recent.length > 0: Pressable {
+                width: 28px;
+                height: 28px;
+                selected: root.group < 0 && root.query == "";
+                accessible-role: AccessibleRole.tab;
+                accessible-label: "Recently used";
+                clicked => { root.show-group(-1); }
+                Icon {
+                    source: @image-url("@lucide/clock.svg");
+                    width: Theme.icon-small;
+                }
+            }
+            for group[index] in Emojis.groups: Pressable {
+                width: 28px;
+                height: 28px;
+                selected: root.group == index && root.query == "";
+                accessible-role: AccessibleRole.tab;
+                accessible-label: group.name;
+                clicked => { root.show-group(index); }
+                Text {
+                    text: group.icon;
+                    font-size: 1rem * Theme.body-small;
+                }
+            }
+        }
+        if root.shown.length == 0: Text {
+            text: root.query != "" ? "No emoji called that." : "";
+            horizontal-alignment: center;
+            color: Theme.text-tertiary;
+        }
+        grid := ListView {
+            vertical-stretch: 1;
+            for row in ceil(root.shown.length / root.columns): HorizontalLayout {
+                alignment: start;
+                for column in root.columns: Pressable {
+                    property <int> at: row * root.columns + column;
+                    property <string> emoji: self.at < root.shown.length ? root.shown[self.at] : "";
+                    visible: self.emoji != "";
+                    width: root.cell;
+                    height: root.cell;
+                    accessible-label: self.emoji;
+                    clicked => { root.pick(self.emoji); }
+                    Text {
+                        text: parent.emoji;
+                        font-size: 1rem * Theme.emoji;
+                    }
+                }
+            }
+        }
+    }
+}

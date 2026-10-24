@@ -18,8 +18,9 @@ use presage::{
 };
 use tracing::{debug, info};
 
+use crate::signal::errors::{failed, http, service_failed, storage_service_failed};
 use crate::{
-    ChatSettings, ConversationId, Event, Events,
+    ChatSettings, ConversationId, Error, Event, Events,
     local::{LocalStore, Verification},
     signal::Mgr,
 };
@@ -44,11 +45,11 @@ pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<(bool, Option<Verifications>), String> {
+) -> Result<(bool, Option<Verifications>), Error> {
     let Some(service) = manager
         .storage_service()
         .await
-        .map_err(|e| format!("failed to reach the storage service: {e}"))?
+        .map_err(failed("failed to reach the storage service"))?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
         return Ok((false, None));
@@ -60,10 +61,13 @@ pub(crate) async fn sync(
     } else {
         tables.storage_version().await.map_err(db)?
     };
-    let Some(manifest) = service
-        .manifest_if_changed(known)
-        .await
-        .map_err(|e| format!("failed to read the storage manifest: {e}"))?
+    let Some(manifest) =
+        service
+            .manifest_if_changed(known)
+            .await
+            .map_err(storage_service_failed(
+                "failed to read the storage manifest",
+            ))?
     else {
         return Ok((true, None));
     };
@@ -236,11 +240,11 @@ async fn read(
     service: &StorageService,
     keys: Vec<Vec<u8>>,
     ikm: Option<&[u8]>,
-) -> Result<Vec<Record>, String> {
+) -> Result<Vec<Record>, Error> {
     let records = service
         .read_items(keys, ikm)
         .await
-        .map_err(|e| format!("failed to read storage records: {e}"))?;
+        .map_err(storage_service_failed("failed to read storage records"))?;
     Ok(records.into_iter().filter_map(|r| r.record).collect())
 }
 
@@ -296,8 +300,10 @@ fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
     }
 }
 
-fn db(error: sqlx::Error) -> String {
-    format!("failed to save the storage service's settings: {error}")
+fn db(error: sqlx::Error) -> Error {
+    Error::storage(format!(
+        "failed to save the storage service's settings: {error}"
+    ))
 }
 
 /// The local settings to change: those the phone changed since it said `before` (or that it
@@ -377,18 +383,18 @@ const MAX_PINS: usize = 4;
 /// Writes what was changed here (pins, mutes, archive, blocks, accepted requests) to the
 /// storage service. Records are changed in their bytes, field by field, so fields b33p
 /// doesn't know stay as the phone wrote them; and only on top of the version b33p last read.
-pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, String> {
+pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, Error> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     let Some((service, key)) = manager
         .storage_access()
         .await
-        .map_err(|e| format!("failed to reach the storage service: {e}"))?
+        .map_err(failed("failed to reach the storage service"))?
     else {
         return Ok(Written::NoKey);
     };
     let key: [u8; 32] = Vec::from(key)
         .try_into()
-        .map_err(|_| "a storage key has 32 bytes".to_string())?;
+        .map_err(|_| Error::refused("a storage key has 32 bytes"))?;
     let client = Client::new(service).await?;
     let (manifest, manifest_bytes) = client.manifest(&key).await?;
     if manifest.version != tables.storage_version().await.map_err(db)? {
@@ -517,10 +523,10 @@ fn next_manifest(
     version: u64,
     device: u32,
     replaced: &[(Vec<u8>, Vec<u8>)],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     let before = presage::proto::ManifestRecord::decode(manifest)
-        .map_err(|_| "invalid storage manifest".to_string())?;
+        .map_err(|_| Error::refused("invalid storage manifest"))?;
     let next = crate::wire::set_varint(manifest, 1, version)
         .and_then(|m| crate::wire::set_varint(&m, 3, u64::from(device)))
         .and_then(|m| {
@@ -532,9 +538,9 @@ fn next_manifest(
                 crate::wire::set_bytes(identifier, 1, new)
             })
         })
-        .ok_or("the storage manifest couldn't be changed")?;
+        .ok_or_else(|| Error::refused("the storage manifest couldn't be changed"))?;
     let check = presage::proto::ManifestRecord::decode(&*next)
-        .map_err(|_| "the changed storage manifest is invalid".to_string())?;
+        .map_err(|_| Error::refused("the changed storage manifest is invalid"))?;
     let written: Vec<&Vec<u8>> = check.identifiers.iter().map(|id| &id.raw).collect();
     let adds_up = check.version == version
         && check.source_device == device
@@ -544,7 +550,9 @@ fn next_manifest(
             .iter()
             .all(|(old, new)| !written.contains(&old) && written.contains(&new));
     if !adds_up {
-        return Err("the changed storage manifest doesn't add up; not writing it".into());
+        return Err(Error::refused(
+            "the changed storage manifest doesn't add up; not writing it",
+        ));
     }
     Ok(next)
 }
@@ -624,7 +632,7 @@ struct Client {
 impl Client {
     async fn new(
         service: presage::libsignal_service::push_service::PushService,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Error> {
         use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
         #[derive(serde::Deserialize)]
         struct Auth {
@@ -637,14 +645,14 @@ impl Client {
                 Endpoint::service("/v1/storage/auth"),
                 HttpAuthOverride::NoOverride,
             )
-            .map_err(|e| format!("storage service: {e}"))?
+            .map_err(service_failed("storage service"))?
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| format!("storage service: {e}"))?
+            .map_err(http("storage service"))?
             .json()
             .await
-            .map_err(|e| format!("storage service: {e}"))?;
+            .map_err(http("storage service"))?;
         Ok(Self {
             service,
             auth: presage::libsignal_service::push_service::HttpAuth {
@@ -658,7 +666,7 @@ impl Client {
         &self,
         method: reqwest::Method,
         path: &str,
-    ) -> Result<reqwest::RequestBuilder, String> {
+    ) -> Result<reqwest::RequestBuilder, Error> {
         use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
         self.service
             .request(
@@ -666,29 +674,29 @@ impl Client {
                 Endpoint::storage(path.to_owned()),
                 HttpAuthOverride::Identified(self.auth.clone()),
             )
-            .map_err(|e| format!("storage service: {e}"))
+            .map_err(service_failed("storage service"))
     }
 
     /// The manifest, decoded and as its bytes (to change those).
     async fn manifest(
         &self,
         key: &[u8; 32],
-    ) -> Result<(presage::proto::ManifestRecord, Vec<u8>), String> {
+    ) -> Result<(presage::proto::ManifestRecord, Vec<u8>), Error> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
         let bytes = self
             .request(reqwest::Method::GET, "/v1/storage/manifest")?
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| format!("storage manifest: {e}"))?
+            .map_err(http("storage manifest"))?
             .bytes()
             .await
-            .map_err(|e| format!("storage manifest: {e}"))?;
+            .map_err(http("storage manifest"))?;
         let manifest = presage::proto::StorageManifest::decode(bytes)
-            .map_err(|_| "invalid storage manifest".to_string())?;
+            .map_err(|_| Error::refused("invalid storage manifest"))?;
         let plaintext = decrypt(&manifest_key(key, manifest.version), &manifest.value)?;
         let record = presage::proto::ManifestRecord::decode(&*plaintext)
-            .map_err(|_| "invalid storage manifest".to_string())?;
+            .map_err(|_| Error::refused("invalid storage manifest"))?;
         Ok((record, plaintext))
     }
 
@@ -698,7 +706,7 @@ impl Client {
         key: &[u8; 32],
         ids: Vec<Vec<u8>>,
         ikm: Option<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
         let body = presage::proto::ReadOperation { read_key: ids }.encode_to_vec();
         let bytes = self
@@ -708,12 +716,12 @@ impl Client {
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| format!("storage records: {e}"))?
+            .map_err(http("storage records"))?
             .bytes()
             .await
-            .map_err(|e| format!("storage records: {e}"))?;
+            .map_err(http("storage records"))?;
         let items = presage::proto::StorageItems::decode(bytes)
-            .map_err(|_| "invalid storage records".to_string())?;
+            .map_err(|_| Error::refused("invalid storage records"))?;
         items
             .items
             .into_iter()
@@ -725,7 +733,7 @@ impl Client {
     }
 
     /// Writes; `false` if the manifest changed meanwhile (409).
-    async fn write(&self, operation: &presage::proto::WriteOperation) -> Result<bool, String> {
+    async fn write(&self, operation: &presage::proto::WriteOperation) -> Result<bool, Error> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
         let response = self
             .request(reqwest::Method::PUT, "/v1/storage")?
@@ -733,13 +741,11 @@ impl Client {
             .body(operation.encode_to_vec())
             .send()
             .await
-            .map_err(|e| format!("storage write: {e}"))?;
+            .map_err(http("storage write"))?;
         if response.status() == reqwest::StatusCode::CONFLICT {
             return Ok(false);
         }
-        response
-            .error_for_status()
-            .map_err(|e| format!("storage write: {e}"))?;
+        response.error_for_status().map_err(http("storage write"))?;
         Ok(true)
     }
 }
@@ -784,14 +790,14 @@ fn item_key(storage_key: &[u8; 32], raw_id: &[u8], ikm: Option<&[u8]>) -> [u8; 3
     }
 }
 
-fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, String> {
+fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Error> {
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
     let (iv, ciphertext) = blob
         .split_first_chunk::<IV_LEN>()
-        .ok_or("invalid storage blob")?;
+        .ok_or_else(|| Error::refused("invalid storage blob"))?;
     Aes256Gcm::new(key.into())
         .decrypt(iv.into(), ciphertext)
-        .map_err(|_| "invalid storage blob".to_string())
+        .map_err(|_| Error::refused("invalid storage blob"))
 }
 
 fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {

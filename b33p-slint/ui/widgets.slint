@@ -1,0 +1,504 @@
+// The shared pieces the window is built from. Each takes its look from `Theme` and `Motion`, so
+// that the same kind of thing looks and moves the same everywhere.
+
+import { Button, Palette, Spinner, Switch } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+
+// A Lucide icon (`@image-url("@lucide/<name>.svg")`, see `build.rs`). They are all drawn on
+// the same square grid, so icons of the same size placed side by side share their center.
+export component Icon inherits Image {
+    in property <color> tint: Theme.text-secondary;
+    width: Theme.icon;
+    height: self.width;
+    image-fit: contain;
+    colorize: root.tint;
+    accessible-role: none;
+}
+
+// Text, by role. Everything else is plain `Text` in `Theme.text`.
+export component Display inherits Text {
+    font-size: 1rem * Theme.display;
+    font-weight: 600;
+    horizontal-alignment: center;
+    wrap: word-wrap;
+    color: Theme.text;
+}
+
+export component Heading inherits Text {
+    font-size: 1rem * Theme.heading;
+    font-weight: 700;
+    color: Theme.text;
+}
+
+export component Title inherits Text {
+    font-size: 1rem * Theme.title;
+    font-weight: 600;
+    color: Theme.text;
+}
+
+// What explains a setting, a dialog or a bar: smaller, quieter, wrapping.
+export component Hint inherits Text {
+    font-size: 1rem * Theme.body-small;
+    wrap: word-wrap;
+    color: Theme.text-tertiary;
+}
+
+// Times, counts, senders' names: small and quiet.
+export component Small inherits Text {
+    font-size: 1rem * Theme.small;
+    color: Theme.text-tertiary;
+}
+
+export component Caption inherits Text {
+    font-size: 1rem * Theme.caption;
+    color: Theme.text-tertiary;
+}
+
+export component SectionTitle inherits Text {
+    font-size: 1rem * Theme.body-small;
+    font-weight: 700;
+    color: Theme.accent;
+}
+
+// Fades in as it appears, as panels, screens and popovers do.
+export component FadeIn inherits Rectangle {
+    opacity: 0;
+    init => { self.opacity = 1; }
+    animate opacity { duration: Motion.normal; easing: ease-out; }
+}
+
+// Something to click that isn't a button: a row, a tab, a tile. Lit while hovered or pressed,
+// tinted while selected.
+export component Pressable inherits Rectangle {
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    // A hand over it (rows that open something); off for rows that only select.
+    in property <bool> hand: true;
+    out property <bool> has-hover: touch.has-hover;
+    callback clicked;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    border-radius: Theme.radius-s;
+    background: root.selected ? Theme.selected
+        : touch.pressed ? Theme.pressed
+        : touch.has-hover && root.enabled ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.hand && root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+    @children
+}
+
+// A button that is only an icon. Every icon button looks and lines up the same: a fixed square
+// with the icon in its middle, and its label as the tooltip.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    // What it does, for screen readers and as its tooltip.
+    in property <string> label;
+    // Hidden until hovered when false, e.g. a message's actions.
+    in property <bool> shown: true;
+    // Highlighted, e.g. while the panel it opens is open.
+    in property <bool> active;
+    // A dot in the corner, e.g. for something new behind it.
+    in property <bool> badge;
+    in property <length> icon-size: Theme.icon;
+    in property <color> tint: Theme.text-secondary;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    width: Theme.button;
+    height: Theme.button;
+    border-radius: self.height / 2;
+    // On the icon and the badge, not on the button: a see-through container is drawn
+    // through a layer of its own, one per button, hidden or not.
+    property <float> presence: root.shown || root.active || touch.has-hover ? 1 : 0;
+    animate presence { duration: Motion.fast; easing: ease-out; }
+    background: root.active ? Theme.selected
+        : touch.pressed ? Theme.pressed
+        : touch.has-hover ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        // Made only while hovered: there is one in every button, those in every message's row
+        // too, and each made costs.
+        if self.has-hover && root.label != "": Tooltip {
+            text: @markdown("\{root.label}");
+        }
+    }
+    Icon {
+        source: root.icon;
+        tint: root.tint;
+        opacity: root.presence;
+        width: root.icon-size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    if root.badge: Rectangle {
+        opacity: root.presence;
+        x: parent.width - self.width - 4px;
+        y: 4px;
+        width: 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+    }
+}
+
+// Sends the draft: a paper plane on the accent color, or a check mark while editing a message.
+export component SendButton inherits Rectangle {
+    in property <bool> enabled: true;
+    // Saving an edit rather than sending.
+    in property <bool> saving;
+    callback clicked;
+    property <string> label: root.saving ? "Save" : "Send";
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    width: 36px;
+    height: 36px;
+    border-radius: Theme.radius-m;
+    background: !root.enabled ? Theme.pressed
+        : touch.pressed ? Theme.accent.darker(0.2)
+        : touch.has-hover ? Theme.accent.brighter(0.1) : Theme.accent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    property <color> tint: root.enabled ? Theme.on-accent : Theme.text-faint;
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+        if self.has-hover && root.enabled: Tooltip {
+            text: @markdown("\{root.label}");
+        }
+    }
+    if !root.saving: Path {
+        // Nudged right of center, where a plane's weight is.
+        x: (parent.width - self.width) / 2 + 1px;
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M 2.01 21 L 23 12 L 2.01 3 L 2 10 L 17 12 L 2 14 Z";
+        fill: root.tint;
+        accessible-role: none;
+    }
+    if root.saving: Icon {
+        source: @image-url("@lucide/check.svg");
+        tint: root.tint;
+        width: 20px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+export component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <color> tint;
+    // Shown instead of the initials when set.
+    in property <image> picture;
+    width: 40px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: tint;
+    // The initials give way to the picture (round already) as it fades in (see `AttachmentView`).
+
+    Text {
+        text: initials;
+        color: Theme.on-accent;
+        font-size: root.width * 0.4;
+        font-weight: 600;
+        opacity: 1 - photo.opacity;
+    }
+    photo := Image {
+        width: root.width;
+        height: root.height;
+        source: root.picture;
+        image-fit: cover;
+        opacity: root.picture.width > 0 ? 1 : 0;
+        animate opacity { duration: Motion.slow; easing: ease-out; }
+    }
+}
+
+// A tab of a row of tabs (folders, the media overview's, sticker packs): a pill, tinted while
+// chosen, with a count of what is new behind it.
+export component Tab inherits Pressable {
+    in property <string> text;
+    in property <int> count;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: root.count > 0 ? root.text + ", " + root.count + " unread" : root.text;
+    accessible-item-selected: root.selected;
+    height: 28px;
+    width: label.preferred-width + 2 * Theme.space-m;
+    border-radius: self.height / 2;
+    label := Text {
+        text: root.count > 0 ? root.text + " " + root.count : root.text;
+        font-size: 1rem * Theme.body-small;
+        font-weight: root.selected ? 600 : 400;
+        color: Theme.text;
+    }
+}
+
+// A small rounded label with a border: reactions, files waiting to go out, the day over a
+// day's messages.
+export component Chip inherits Rectangle {
+    // Ours, or chosen: drawn in the accent colour.
+    in property <bool> active;
+    height: 24px;
+    border-radius: self.height / 2;
+    background: root.active ? Theme.selected : Theme.surface-raised;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.divider;
+}
+
+// What floats over the window for a moment: the reaction bar, the pickers, tooltips of our own.
+export component Popover inherits FadeIn {
+    border-radius: Theme.radius-l;
+    background: Theme.surface-raised;
+    border-width: 1px;
+    border-color: Theme.divider;
+    drop-shadow-blur: Theme.popover-blur;
+    drop-shadow-color: Theme.popover-shadow;
+}
+
+// A bar over the composer about the chat (a request, an invitation, a changed safety number,
+// being blocked): what is up, and what can be done about it.
+export component Banner inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    background: Theme.surface-raised;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    HorizontalLayout {
+        padding: Theme.space-m;
+        padding-left: Theme.space-l;
+        spacing: Theme.space-m;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Icon { source: root.icon; }
+        }
+        Text {
+            text: root.text;
+            wrap: word-wrap;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            color: Theme.text;
+        }
+        @children
+    }
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.divider;
+    }
+}
+
+// The top of a page shown in place of the chat (details, media, search, the calendar, settings):
+// a way back, a title, and whatever else the page puts there.
+export component PanelHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> back-label: "Back to chat";
+    callback back;
+    height: Theme.panel-header;
+    HorizontalLayout {
+        padding-left: Theme.space-s;
+        padding-right: Theme.space-m;
+        spacing: Theme.space-s;
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: @image-url("@lucide/arrow-left.svg");
+                label: root.back-label;
+                clicked => { root.back(); }
+            }
+        }
+        if root.title != "": VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Title {
+                text: root.title;
+                overflow: elide;
+            }
+            if root.subtitle != "": Small {
+                text: root.subtitle;
+                overflow: elide;
+            }
+        }
+        @children
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.divider;
+    }
+}
+
+// Nothing to show yet: an icon and a line about it, in the middle.
+export component EmptyState inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> text;
+    alignment: center;
+    spacing: Theme.space-m;
+    padding: Theme.space-xl;
+    if root.icon.width > 0: HorizontalLayout {
+        alignment: center;
+        Icon {
+            source: root.icon;
+            width: 40px;
+            tint: Theme.text-faint;
+        }
+    }
+    Text {
+        text: root.text;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        color: Theme.text-tertiary;
+    }
+}
+
+// Waiting for something: a spinner in the middle.
+export component Busy inherits HorizontalLayout {
+    alignment: center;
+    padding: Theme.space-s;
+    Spinner {
+        indeterminate: true;
+        width: 20px;
+        height: 20px;
+    }
+}
+
+export component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: Theme.space-l;
+    VerticalLayout {
+        alignment: center;
+        horizontal-stretch: 1;
+        Text { text: root.label; color: Theme.text; }
+        if root.hint != "": Hint { text: root.hint; }
+    }
+    // The controls' column: each keeps its own height, centered beside the label and hint,
+    // and they all end at the same right edge.
+    VerticalLayout {
+        alignment: center;
+        width: 200px;
+        HorizontalLayout {
+            alignment: end;
+            @children
+        }
+    }
+}
+
+// A setting that is on or off.
+export component SwitchRow inherits SettingRow {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled;
+    Switch {
+        enabled: root.enabled;
+        checked <=> root.checked;
+        toggled => { root.toggled(); }
+    }
+}
+
+// A dialog over everything: a dimmed background that fades in and closes it when clicked, and
+// a card that grows into place, holding the children (usually a `DialogLayout`).
+export component Dialog inherits Rectangle {
+    in property <length> card-width;
+    in property <length> card-height;
+    // For a card whose height follows its contents as they change.
+    in property <bool> card-clip;
+    callback dismissed;
+    opacity: 0;
+    init => { self.opacity = 1; }
+    animate opacity { duration: Motion.normal; easing: ease-out; }
+    background: Theme.scrim;
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+    Rectangle {
+        width: min(root.card-width, parent.width - 2 * Theme.space-l);
+        height: min(root.card-height, parent.height - 2 * Theme.space-l);
+        clip: root.card-clip;
+        property <float> grown: 0;
+        init => { self.grown = 1; }
+        animate grown { duration: Motion.normal; easing: ease-out; }
+        transform-scale: 0.97 + 0.03 * self.grown;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        border-radius: Theme.radius-l;
+        background: Theme.surface;
+        drop-shadow-blur: Theme.dialog-blur;
+        drop-shadow-color: Theme.dialog-shadow;
+        // Clicks inside don't close it.
+        TouchArea {}
+        @children
+    }
+}
+
+// A dialog's contents: its title, then what it holds, spaced alike in every dialog.
+export component DialogLayout inherits VerticalLayout {
+    in property <string> title;
+    padding: Theme.space-l;
+    spacing: Theme.space-m;
+    if root.title != "": Title {
+        text: root.title;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+// A dialog's buttons, at its bottom right: Cancel first, then what the dialog is for.
+export component DialogButtons inherits HorizontalLayout {
+    alignment: end;
+    spacing: Theme.space-s;
+    padding-top: Theme.space-xs;
+    @children
+}
+
+// Asks before something that can't be undone. Cancel is the default (Enter takes it, as Esc
+// does); the action is a plain button saying exactly what it does.
+export component ConfirmDialog inherits Dialog {
+    in property <string> title;
+    in property <string> text;
+    // E.g. "Leave group", "Unlink and delete".
+    in property <string> action;
+    callback confirmed;
+    card-width: 420px;
+    card-height: content.preferred-height;
+    card-clip: true;
+    keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape || event.text == Key.Return {
+                root.dismissed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    content := DialogLayout {
+        title: root.title;
+        Text {
+            text: root.text;
+            wrap: word-wrap;
+            color: Theme.text-secondary;
+        }
+        DialogButtons {
+            Button {
+                text: "Cancel";
+                primary: true;
+                clicked => { root.dismissed(); }
+            }
+            Button {
+                text: root.action;
+                clicked => { root.confirmed(); }
+            }
+        }
+    }
+}

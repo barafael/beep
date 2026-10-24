@@ -1,0 +1,238 @@
+import { Button, LineEdit, ListView, Spinner } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { EmptyState, Heading, Icon, IconButton, Pressable, Small, Tab } from "widgets.slint";
+import { ConversationRow } from "conversation-row.slint";
+import { Account, Prefs, ChatList, Groups, Panels } from "state.slint";
+
+// The chat list and what is above it: the title and its buttons, the connection, the
+// search, the folders.
+export component ChatListPane inherits Rectangle {
+    in property <bool> narrow;
+    in property <length> sidebar-width;
+    // The chat found that Enter in the search field opens; ↑ and ↓ move it.
+    property <int> search-cursor;
+    // Fixed (but draggable) beside a chat; the whole window when narrow.
+    horizontal-stretch: root.narrow ? 1 : 0;
+    min-width: root.narrow ? 0px : root.sidebar-width;
+    max-width: root.narrow ? 100000px : root.sidebar-width;
+    background: Theme.surface-raised;
+    VerticalLayout {
+        // As tall as the chat's header beside it, so that the titles line up.
+        HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-top: (Theme.header - Theme.button) / 2;
+            padding-bottom: self.padding-top;
+            spacing: Theme.space-xs;
+            height: Theme.header;
+            if ChatList.showing-archived: IconButton {
+                icon: @image-url("@lucide/arrow-left.svg");
+                label: "Back to chats";
+                clicked => { ChatList.show-archived(false); }
+            }
+            Heading {
+                text: ChatList.showing-archived ? "Archived" : "Chats";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: @image-url("@lucide/circle-dashed.svg");
+                label: Panels.unviewed-stories > 0 ? "Stories, " + Panels.unviewed-stories + " new" : "Stories";
+                badge: Panels.unviewed-stories > 0;
+                clicked => {
+                    Panels.stories-open = true;
+                    Panels.open-stories();
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/plus.svg");
+                label: "New group";
+                clicked => {
+                    Groups.group-draft-name = "";
+                    Groups.group-draft-filter = "";
+                    Groups.open-new-group();
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/link.svg");
+                label: "Join a group by link";
+                clicked => {
+                    Groups.join-link = "";
+                    Groups.open-join-group();
+                }
+            }
+            IconButton {
+                icon: @image-url("@lucide/settings.svg");
+                label: "Settings";
+                active: Prefs.settings-open;
+                clicked => { Prefs.settings-open = !Prefs.settings-open; }
+            }
+        }
+        if Account.connection-status != "": HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-bottom: 6px;
+            spacing: 6px;
+            // Still while offline: a spinner there would redraw the window for as
+            // long as the network is gone.
+            if Account.offline: VerticalLayout {
+                alignment: center;
+                Icon {
+                    source: @image-url("@lucide/wifi-off.svg");
+                    width: Theme.icon-small;
+                }
+            }
+            if !Account.offline: Spinner {
+                indeterminate: true;
+                width: Theme.icon-small;
+                height: Theme.icon-small;
+            }
+            Text {
+                text: Account.connection-status;
+                font-size: 1rem * Theme.body-small;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+        }
+        HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-bottom: Theme.space-s;
+            LineEdit {
+                placeholder-text: "Search or start a chat";
+                text <=> ChatList.search-text;
+                property <int> focus-request: ChatList.focus-search-request;
+                changed focus-request => { self.focus(); }
+                edited(text) => {
+                    root.search-cursor = 0;
+                    chat-list.content-y = 0;
+                    ChatList.search(text);
+                }
+                // Enter opens the chat found first (or the one moved to with the
+                // arrows), or looks up the number typed.
+                accepted => {
+                    if ChatList.search-text != "" && root.search-cursor < ChatList.conversations.length {
+                        Prefs.settings-open = false;
+                        ChatList.select(ChatList.conversations[root.search-cursor].id);
+                    } else if ChatList.search-is-number {
+                        ChatList.find-number(ChatList.search-text, true);
+                    }
+                }
+                key-pressed(event) => {
+                    if ChatList.search-text == "" || ChatList.conversations.length == 0 {
+                        return reject;
+                    }
+                    if event.text == Key.DownArrow {
+                        root.search-cursor = min(root.search-cursor + 1, ChatList.conversations.length - 1);
+                    } else if event.text == Key.UpArrow {
+                        root.search-cursor = max(root.search-cursor - 1, 0);
+                    } else {
+                        return reject;
+                    }
+                    // Kept in view; rows are 64px high.
+                    if -chat-list.content-y > root.search-cursor * 64px {
+                        chat-list.content-y = -root.search-cursor * 64px;
+                    } else if -chat-list.content-y + chat-list.visible-height < (root.search-cursor + 1) * 64px {
+                        chat-list.content-y = chat-list.visible-height - (root.search-cursor + 1) * 64px;
+                    }
+                    return accept;
+                }
+            }
+        }
+        if ChatList.search-is-number: HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-bottom: Theme.space-s;
+            Button {
+                text: "Message " + ChatList.search-text;
+                clicked => { ChatList.find-number(ChatList.search-text, true); }
+            }
+        }
+        if ChatList.folders.length > 0 && !ChatList.showing-archived && ChatList.search-text == "": HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-bottom: 6px;
+            spacing: Theme.space-xs;
+            alignment: start;
+            Tab {
+                text: "All";
+                accessible-label: "All chats";
+                selected: ChatList.folder == -1;
+                clicked => { ChatList.show-folder(-1); }
+            }
+            for name[index] in ChatList.folders: Tab {
+                text: name;
+                count: ChatList.folder-unread[index];
+                selected: ChatList.folder == index;
+                clicked => { ChatList.show-folder(index); }
+            }
+        }
+        if ChatList.archived-count > 0 && !ChatList.showing-archived && ChatList.search-text == "": HorizontalLayout {
+            padding-left: Theme.space-s;
+            padding-right: Theme.space-s;
+            Pressable {
+                height: 40px;
+                accessible-label: "Archived chats, " + ChatList.archived-count;
+                clicked => { ChatList.show-archived(true); }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: Theme.space-m;
+                    // In the avatars' column.
+                    Rectangle {
+                        width: 40px;
+                        Icon {
+                            source: @image-url("@lucide/archive.svg");
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    Text {
+                        text: "Archived chats";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        color: Theme.text-secondary;
+                    }
+                    Small {
+                        text: ChatList.archived-unread > 0 ? ChatList.archived-count + " · " + ChatList.archived-unread + " unread" : ChatList.archived-count;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        if ChatList.search-text != "" && ChatList.conversations.length == 0 && !ChatList.search-is-number: EmptyState {
+            icon: @image-url("@lucide/search.svg");
+            text: "No chats found. Type a phone number to message someone new.";
+        }
+        if ChatList.search-text == "" && ChatList.conversations.length == 0 && ChatList.showing-archived: EmptyState {
+            icon: @image-url("@lucide/archive.svg");
+            text: "No archived chats.";
+        }
+        chat-list := ListView {
+            for item[index] in ChatList.conversations: HorizontalLayout {
+                padding-left: Theme.space-s;
+                padding-right: Theme.space-s;
+                ConversationRow {
+                    item: item;
+                    selected: index == ChatList.selected;
+                    // Where Enter in the search field goes.
+                    border-width: ChatList.search-text != "" && index == root.search-cursor ? 1px : 0px;
+                    border-color: Theme.accent;
+                    clicked => {
+                        Prefs.settings-open = false;
+                        ChatList.select(item.id);
+                    }
+                    toggle-pin => { ChatList.toggle-pin(item.id); }
+                    move-pin(by) => { ChatList.move-pin(item.id, by); }
+                    mark-read(read) => { ChatList.mark-read(item.id, read); }
+                    mute(seconds) => { ChatList.mute(item.id, seconds); }
+                    archive(archived) => { ChatList.archive(item.id, archived); }
+                    block(blocked) => { ChatList.block(item.id, blocked); }
+                }
+            }
+        }
+    }
+}

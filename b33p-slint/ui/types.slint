@@ -1,0 +1,297 @@
+// The data Rust hands the window, and the window's enums.
+
+// What a chat's preview is about: words only, or a message without them (a photo, a file, …),
+// or a change of the disappearing-message timer.
+export enum PreviewKind { words, photo, sticker, video, audio, voice, file, timer }
+
+export struct ConversationItem {
+    id: string,
+    title: string,
+    initials: string,
+    avatar-color: color,
+    // Profile or group picture; empty (zero width) if there is none.
+    avatar: image,
+    preview: string,
+    // When the newest message came: "14:05", "Mon", "Oct 2".
+    time: string,
+    // Under the title in the chat header: a phone number, "4 members", …
+    subtitle: string,
+    unread: int,
+    pinned: bool,
+    // A message request, waiting for Accept, Delete or Block.
+    request: bool,
+    blocked: bool,
+    // A group we're no longer in.
+    left: bool,
+    // A group we're invited to (and not in yet): Accept or Decline.
+    invited: bool,
+    // A group we asked to join through its link, waiting for an admin.
+    requested: bool,
+    // A group we're an admin of: we may change its invite link and answer requests to join.
+    admin: bool,
+    // A contact whose safety number changed since we verified it: nothing is sent until that
+    // is confirmed.
+    safety-changed: bool,
+    // A group: we may manage it (name, members).
+    group: bool,
+    // Among the pinned ones.
+    can-move-up: bool,
+    can-move-down: bool,
+    muted: bool,
+    // Marked unread by hand: a dot, no count.
+    marked-unread: bool,
+    archived: bool,
+    // What the preview is about, for an icon before it.
+    preview-kind: PreviewKind,
+    // "Ann is typing…", shown instead of the preview; empty otherwise.
+    typing: string,
+    // Disappearing messages: seconds, 0 for off; and as said, e.g. "1 hour".
+    timer: int,
+    timer-label: string,
+}
+
+export struct AttachmentItem {
+    id: string,
+    // Shown as a picture (photos, stickers); otherwise as a row with a label.
+    inline: bool,
+    // Not shown at all; fetched for its content (the full text of a long message).
+    hidden: bool,
+    // Ask the backend for it once it is shown.
+    fetch: bool,
+    // Empty (zero width) until downloaded.
+    picture: image,
+    // The picture's size in the bubble, known before it is downloaded.
+    width: length,
+    height: length,
+    // E.g. "route-notes.pdf · 240 KB"; the icon says what kind it is.
+    label: string,
+    // "Saved to Downloads", an error, or empty.
+    status: string,
+    // The download failed; clicking the picture's place asks again.
+    can-retry: bool,
+    can-save: bool,
+    // Blurred, shown until the picture is there (and for videos, which aren't downloaded to
+    // be shown); empty if the sender made none.
+    placeholder: image,
+    caption: string,
+    // A video, opened in the desktop's player; `gif` for one meant to loop like a GIF.
+    video: bool,
+    // Audio or a voice message, played here.
+    audio: bool,
+    gif: bool,
+}
+
+export struct ReactionItem {
+    emoji: string,
+    count: int,
+    // One of them is ours; clicking takes it back.
+    mine: bool,
+}
+
+// How far one of our messages got; `incoming` for others' messages.
+export enum DeliveryState { incoming, sending, failed, sent, delivered, read }
+
+// An answer to a message request.
+export enum RequestAnswer { accept, delete, block }
+
+export struct MessageItem {
+    // Which message it is, for acting on it (its row moves as messages come and go).
+    key: string,
+    sender: string,
+    // With links made clickable.
+    body: styled-text,
+    has-body: bool,
+    time: string,
+    outgoing: bool,
+    // Show the sender above the bubble (groups, first of a run).
+    show-sender: bool,
+    // "Today", "Monday", "Oct 2" on the first message of a day; empty otherwise.
+    day: string,
+    // Messages by the same person within a few minutes are drawn as a run.
+    first: bool,
+    last: bool,
+    // Incoming group messages leave room for the sender's avatar, shown at the end of a run.
+    avatar-column: bool,
+    sender-avatar: image,
+    sender-initials: string,
+    sender-color: color,
+    // The message this one replies to; both empty if it isn't a reply.
+    quote-author: string,
+    quote-text: string,
+    attachments: [AttachmentItem],
+    reactions: [ReactionItem],
+    // Plain text, for copying.
+    text: string,
+    delivery: DeliveryState,
+    edited: bool,
+    deleted: bool,
+    // A line about the conversation that nobody wrote (e.g. a new safety number): drawn as
+    // centred text, with nothing to reply, react to or delete.
+    notice: bool,
+    // Ours, not sent, and sending it again may work (Signal didn't refuse it).
+    can-send-again: bool,
+    // A notice that the disappearing-message timer changed, drawn with a timer.
+    timer-notice: bool,
+    // Time left until it disappears, e.g. "5m"; empty if it doesn't.
+    expires: string,
+    // Ours and recent enough to edit or delete for everyone.
+    can-edit: bool,
+    // The first message that came after the chat was last read.
+    first-unread: bool,
+    // Just arrived or sent: it fades in as it is shown. Cleared again soon after, so it
+    // doesn't when scrolled back to.
+    fresh: bool,
+    can-forward: bool,
+    // The search result last shown.
+    highlighted: bool,
+    // Picked, with others, for an action on all of them; see `toggle-select`.
+    selected: bool,
+    // A preview of the link in it; `preview-url` is empty if there is none.
+    preview-url: string,
+    preview-title: string,
+    preview-description: string,
+    // The site, e.g. "www.rust-lang.org".
+    preview-site: string,
+    preview-image: AttachmentItem,
+    has-preview-image: bool,
+}
+
+// Someone (or a group) with stories.
+export struct RingItem {
+    id: string,
+    title: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    unviewed: bool,
+    // When the newest was posted.
+    time: string,
+}
+
+// The story shown.
+export struct StoryItem {
+    shown: bool,
+    author: string,
+    time: string,
+    // E.g. "1 / 3".
+    position: string,
+    text-story: bool,
+    text: string,
+    foreground: color,
+    background: color,
+    picture: AttachmentItem,
+}
+
+// Someone to choose for a group.
+export struct CandidateItem {
+    id: string,
+    title: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    chosen: bool,
+}
+
+// A group member on the details page.
+export struct MemberItem {
+    // Their service ID.
+    id: string,
+    name: string,
+    initials: string,
+    color: color,
+    admin: bool,
+}
+
+// A sticker in the picker.
+export struct StickerTile {
+    pack: string,
+    id: int,
+    picture: image,
+    emoji: string,
+}
+
+// A row of the sticker picker's grid.
+export struct StickerRow {
+    tiles: [StickerTile],
+}
+
+// A file or link in the media overview, with who sent it when.
+export struct SharedItem {
+    attachment: AttachmentItem,
+    // For links.
+    url: string,
+    sender: string,
+    when: string,
+}
+
+// A message found by searching a chat.
+export struct SearchResult {
+    sender: string,
+    // When it was sent, e.g. "Oct 2, 14:05".
+    when: string,
+    // The text around the match.
+    text: string,
+    // The same, with the match in bold.
+    snippet: styled-text,
+}
+
+export enum Screen { syncing, password, link, chats, failed }
+
+// What the window asks about before doing it, since it can't be undone; see `confirm`.
+export enum Confirm {
+    none,
+    // Delete the data here: to link again, or for good.
+    start-over,
+    unlink,
+    leave-group,
+    // Answers to the open chat's message request.
+    block-request,
+    delete-request,
+    // The message at `confirm-message`, or the ones picked.
+    delete-for-everyone,
+    delete-selection-for-everyone,
+}
+
+// One entry of the activity strip: a week or a month, or a long silence folded into one.
+// Positions are fractions of the strip's height.
+export struct ActivityItem {
+    y: float,
+    height: float,
+    // 0–1 each, on a square-root scale so quiet weeks still show next to busy ones.
+    mine: float,
+    others: float,
+    media: bool,
+    quiet: bool,
+    // Set where a new year begins.
+    year: string,
+    label: string,
+    summary: string,
+    // Indexes into the messages: its first, and one past its last.
+    first: int,
+    end: int,
+}
+
+// A day of the activity calendar, in a year's grid of weeks (columns) and weekdays (rows).
+export struct DayCell {
+    column: int,
+    row: int,
+    // 0 for none, up to 1 for the busiest day of the chat.
+    level: float,
+    label: string,
+    summary: string,
+    // Index of its first message; only days with messages can be opened.
+    first: int,
+    active: bool,
+    // Before the chat began, or still to come: drawn fainter than a day without messages.
+    outside: bool,
+}
+
+export struct CalendarYear {
+    year: string,
+    summary: string,
+    // Without messages: a line instead of a grid.
+    quiet: bool,
+    days: [DayCell],
+    // Each month's first column, January first.
+    months: [int],
+}

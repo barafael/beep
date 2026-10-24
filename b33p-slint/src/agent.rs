@@ -16,6 +16,8 @@
 //! → `{"id":4,"method":"subscribe"}`
 //! ← `{"id":4,"result":{"seq":0}}`
 //! ← `{"event":"update","seq":1,"snapshot":{…}}` — pushed after every redraw
+//! → `{"id":5,"method":"screenshot","path":"/somewhere/shot.png"}`
+//! ← `{"id":5,"result":{"width":1000,"height":680}}` — the window as drawn, as a PNG
 //!
 //! Errors come as `{"id":…,"error":"…"}`, including for requests that didn't parse; `id` is
 //! then 0 or missing, and the connection stays open.
@@ -206,6 +208,17 @@ fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Reque
             Ok(command_sent) => json!({ "command_sent": command_sent }),
             Err(error) => return send(reply, request.id, Err(error)),
         },
+        Call::Screenshot { path } => {
+            let Some(window) = shared.ui() else {
+                return send(reply, request.id, Err("there is no window".into()));
+            };
+            // What is pending is drawn first, as the person would see it.
+            shared.flush();
+            match window.screenshot(std::path::Path::new(&path)) {
+                Ok((width, height)) => json!({ "width": width, "height": height }),
+                Err(error) => return send(reply, request.id, Err(error)),
+            }
+        }
     };
     send(reply, request.id, Ok(result));
 }
@@ -233,7 +246,13 @@ enum Call {
     Snapshot,
     Subscribe,
     Unsubscribe,
-    Act { action: Action },
+    Act {
+        action: Action,
+    },
+    /// Writes the window, as drawn, to `path` as a PNG.
+    Screenshot {
+        path: String,
+    },
 }
 
 /// Everything the window's own handlers can do, named for what a person does. Every arm takes
@@ -420,11 +439,15 @@ enum Action {
         show: bool,
     },
     DismissError,
+    /// The error banner's "Try again".
+    RetryError,
     Unlock {
         password: String,
         confirmation: String,
     },
     SkipHistory,
+    /// Goes to the chats while catching up, as the start screen's button does.
+    Start,
     /// On the failure screen.
     Retry,
     UsePassword,
@@ -454,6 +477,18 @@ enum Action {
     /// Names this computer for the phone's list of linked devices; empty for the default.
     RenameDevice {
         name: String,
+    },
+    /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
+    /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
+    /// "leave_group".
+    Show {
+        what: String,
+        open: bool,
+    },
+    /// Gives the window this size, in logical pixels, as dragging its edge would.
+    Resize {
+        width: f32,
+        height: f32,
     },
     /// Changes the given settings and leaves the rest as they are.
     SetSettings {
@@ -784,6 +819,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.dismiss_error();
             (None, Update::default())
         }),
+        Action::RetryError => shared.act(|chat| (chat.retry_error(), Update::default())),
         Action::Unlock {
             password,
             confirmation,
@@ -797,6 +833,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             )
         }),
         Action::SkipHistory => shared.act(|chat| (chat.skip_history(), Update::default())),
+        Action::Start => shared.act(|chat| (None, chat.start())),
         Action::Retry => shared.act(|chat| {
             (
                 chat.retry(),
@@ -872,6 +909,17 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             (None, Update::default())
         }),
         Action::RenameDevice { name } => shared.rename_device(&name),
+        Action::Show { what, open } => {
+            let window = shared.ui().ok_or("there is no window")?;
+            window.show_part(&what, open, &shared.chat.borrow())?;
+            shared.refresh(Update::default());
+            false
+        }
+        Action::Resize { width, height } => {
+            let window = shared.ui().ok_or("there is no window")?;
+            window.resize(width, height);
+            false
+        }
         Action::SetSettings {
             theme,
             style,
@@ -981,6 +1029,8 @@ struct Snapshot {
     account: String,
     synced: bool,
     error: Option<String>,
+    /// The error offers "Try again" (`retry_error`).
+    can_retry_error: bool,
     unread_total: u32,
     /// Only a direct `snapshot` answer has it; pushed updates don't look at the window.
     window: Option<WindowSnapshot>,
@@ -1225,6 +1275,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
         account: chat.account().to_string(),
         synced: chat.synced(),
         error: chat.error().map(str::to_string),
+        can_retry_error: chat.can_retry_error(),
         unread_total: chat.unread_total(),
         window: window.map(|window| WindowSnapshot {
             visible: window.visible(),
@@ -1291,6 +1342,7 @@ fn delivery(message: &b33p_core::ChatMessage) -> &'static str {
     match message.unsent {
         Some(b33p_core::Unsent::Sending) => "sending",
         Some(b33p_core::Unsent::Failed) => "failed",
+        Some(b33p_core::Unsent::Refused) => "refused",
         None => match message.delivery {
             b33p_core::Delivery::Sent => "sent",
             b33p_core::Delivery::Delivered => "delivered",

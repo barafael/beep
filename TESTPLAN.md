@@ -28,6 +28,13 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    back); turn the network on: messages arrive, with no banner or bar.
 3. Link a fresh install with the history transfer: the same screen walks through waiting for
    the phone (with **Skip**), downloading and importing, then the catch-up, then the chats.
+4. Leave b33p closed for a few days, with messages coming in meanwhile, then start it: while
+   it catches up, a **Start** button appears after a moment. Clicking it shows the chats at
+   once; the list says "Catching up…" until the rest is in, and the messages that are still
+   coming appear in their chats as they come. Without clicking, the chats come as before.
+5. The first start after this version, on a large account: "Opening your messages…" may
+   take a few seconds longer once (b33p indexes the messages); later starts are faster than
+   before, the chat list included.
 
 ### 1.1 Read state and receipts
 
@@ -84,9 +91,10 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.5 Disappearing messages
 
 1. Chat ⋮ → **Disappearing messages → 30 seconds** (1:1 chat).
-   - A notice "You set disappearing messages to 30 seconds." On their phone the timer is set.
-2. Send a message: it shows ⏱ with the time left and disappears after 30 seconds, here and
-   on their phone.
+   - A notice "You set disappearing messages to 30 seconds.", with a timer icon before it. On
+     their phone the timer is set. In the chat list, the preview has the timer icon too.
+2. Send a message: it shows a timer icon with the time left and disappears after 30 seconds,
+   here and on their phone.
 3. Have them send one: its timer starts when you read it.
 4. Change the timer on the phone: b33p shows the notice and the new timer in the header.
 5. Group chats: see 3.1.
@@ -369,6 +377,49 @@ phone or a second person.
    within a minute (the log says "sent a message again").
 10. Accept a group you were invited to (the ⋯ menu): no second "You created the group." or
     "added you to the group." line appears.
+
+## 4b. The UI review (October 2026)
+
+What the review of snappiness and looks changed. Most of it is covered by tests; these need
+a real account, a desktop or a person.
+
+1. Open a chat with many unread messages: it opens at "New messages", not at its end. With
+   only a few unread, it opens at the end as before.
+2. Scroll up in a busy chat and have someone write: a round ↓ button appears at the bottom
+   right with how many came; clicking it goes to the newest message.
+3. In the chat list's search, type part of a name: ↑ and ↓ move a frame through what is
+   found, Enter opens it. A phone number and Enter offers to message it.
+4. Point at an icon button (header, composer, sidebar): its name shows as a tooltip. Point at
+   a message inside a run: its time shows.
+5. Point at a message: beside Reply, **⋯** opens the same menu as right-clicking. The
+   reaction bar has **+**, which opens every emoji; picking one reacts.
+6. The composer's emoji button opens a picker with groups, search and recently used ones
+   (kept after a restart). An emoji goes where the caret is, not at the end.
+7. Play a voice message, then click or drag along its bar: it plays from there.
+8. Leave a group, block or delete a message request, unlink, start over, or delete a message
+   for everyone: each asks first. Enter and Esc take Cancel.
+9. Pull the network cable: the list says "Not connected" with a crossed-out Wi-Fi icon and no
+   spinner, and the window stops redrawing (CPU idle).
+10. With the window in the background, receive a few hundred messages in a burst: the window
+    stays responsive while they come in.
+11. Look through the window in Breeze light, Breeze dark and Fusion dark: colours, text
+    sizes, corners and spacing are alike everywhere (`python3 docs/screenshots/shoot.py`
+    takes the pictures; `compare.py` compares two runs).
+12. With Orca: a message reads its text, then who wrote it, when, and how far it got.
+13. On a slow connection, send a large file, and while it uploads: type in another chat (they
+    see you typing), open a third chat (its messages load), react to something and send a
+    short message in the first chat. The reaction and the message go out after the file, in
+    that order, on their phone too.
+14. Delete a message for everyone while it is still sending: it doesn't come back once sent.
+15. Receive a photo, a voice message, a file and a sticker without text in different chats:
+    each preview in the list has an icon before its word, and the notification still starts
+    with an emoji. Change a chat's disappearing-message timer: the notice and the preview have
+    a timer icon.
+16. With hundreds of chats, receive messages in a few of them while scrolled down the list:
+    the list doesn't jump, and each chat moves to the top with its new preview.
+17. Pull the network cable and react to a message, or open a group link: the error banner
+    offers **Try again**, which works once the cable is back. Send a message to a number that
+    has left Signal: it says "Not sent", with no Retry.
 
 
 ## 5. When something goes wrong (0.2.0)

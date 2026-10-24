@@ -1,0 +1,122 @@
+// The window's look in one place: colours, text sizes, corners, spacing, shadows and motion.
+// Colours derive from the style's `Palette`, so they follow the desktop (Breeze, Fusion, light or
+// dark); the rest is b33p's own. Elements use these, never literal values (`ui/check-theme.py`
+// keeps it that way).
+
+import { Palette } from "std-widgets.slint";
+
+// How much the UI moves: 1 normally, 0 for reduced motion (the user's setting, or their
+// desktop's). Every animation's duration is multiplied by it, so 0 makes changes instant.
+export global Motion {
+    in property <float> scale: 1;
+    // Hover and press feedback, small things appearing.
+    out property <duration> fast: 120ms * self.scale;
+    // Panels, dialogs and screens coming and going; bars sliding open.
+    out property <duration> normal: 160ms * self.scale;
+    // Pictures fading in over their placeholder; a message going out.
+    out property <duration> slow: 240ms * self.scale;
+    // A search result lighting up, then settling.
+    out property <duration> flash: 900ms * self.scale;
+    // How often Rust reports how far audio has played: the bar glides from one to the next.
+    out property <duration> playback-tick: 200ms * self.scale;
+}
+
+export global Theme {
+    // Dark schemes need lighter accents for text on the background.
+    out property <bool> dark: Palette.background.to-hsv().value < 0.5;
+
+    // How strongly text and fills show, as alpha: for colours made from another than the
+    // foreground (`ink.with-alpha(Theme.secondary)` on our own bubbles).
+    out property <float> secondary: 0.7;
+    out property <float> tertiary: 0.55;
+    out property <float> faint: 0.4;
+    out property <float> fill: 0.1;
+    out property <float> fill-strong: 0.2;
+
+    // Text, by how much it matters.
+    out property <color> text: Palette.foreground;
+    out property <color> text-secondary: Palette.foreground.with-alpha(self.secondary);
+    out property <color> text-tertiary: Palette.foreground.with-alpha(self.tertiary);
+    out property <color> text-faint: Palette.foreground.with-alpha(self.faint);
+    // On the accent colour (our bubbles, badges, the send button): white reads on any style's.
+    out property <color> on-accent: white;
+
+    // Fills laid over the background.
+    out property <color> hover: Palette.foreground.with-alpha(0.06);
+    out property <color> pressed: Palette.foreground.with-alpha(self.fill);
+    out property <color> subtle: Palette.foreground.with-alpha(0.025);
+    out property <color> selected: Palette.accent-background.with-alpha(0.18);
+    out property <color> accent: Palette.accent-background;
+    // Lines between areas.
+    out property <color> divider: Palette.border;
+
+    // Surfaces: the window, the sidebar and bars, popovers.
+    out property <color> surface: Palette.background;
+    out property <color> surface-raised: Palette.alternate-background;
+    // Text fields of our own (the composer), and selected text in them.
+    out property <color> field: Palette.control-background;
+    out property <color> selection: Palette.selection-background;
+    out property <color> selection-text: Palette.selection-foreground;
+    // Behind a dialog, and over a video's thumbnail under its play button.
+    out property <color> scrim: #0008;
+    // Over the chat while files are dragged onto it.
+    out property <color> veil: Palette.background.with-alpha(0.85);
+    // Stories are shown on near-black, whatever the scheme.
+    out property <color> stage: #101418;
+    out property <color> on-stage: white;
+    out property <color> on-stage-secondary: white.with-alpha(self.secondary);
+    out property <color> on-stage-faint: white.with-alpha(self.faint);
+    out property <color> stage-hover: white.with-alpha(self.fill);
+
+    // Something went wrong: banners and the "Not sent" pill (white text on it), and error text.
+    out property <color> danger: #c4314b;
+    out property <color> danger-text: self.dark ? #ff7a8e : #c4314b;
+
+    // Message bubbles. Ours are darkened so white text reads even on a light accent (Breeze's
+    // dark scheme).
+    out property <color> bubble-outgoing: Palette.accent-background.darker(0.35);
+    out property <color> bubble-outgoing-text: white;
+    out property <color> bubble-incoming: Palette.alternate-background;
+    out property <color> bubble-incoming-text: Palette.alternate-foreground;
+    out property <color> highlight: Palette.accent-background.brighter(0.6);
+
+    // Text sizes, in `rem` (a global can't say rem itself, since the text size is the window's):
+    // `font-size: 1rem * Theme.caption`. The text components in `widgets.slint` do this.
+    out property <float> caption: 0.75;
+    out property <float> small: 0.8;
+    out property <float> body-small: 0.85;
+    out property <float> title: 1.1;
+    out property <float> heading: 1.3;
+    out property <float> display: 1.6;
+    // Emoji as pictures (the pickers, reactions).
+    out property <float> emoji: 1.2;
+
+    // Corners. Pills (badges, chips, tabs) are round: half their height.
+    out property <length> radius-xs: 2px;
+    out property <length> radius-s: 6px;
+    out property <length> radius-m: 8px;
+    out property <length> radius-l: 12px;
+    out property <length> bubble-radius: 16px;
+    // Where a bubble faces its neighbour in a run.
+    out property <length> bubble-radius-tight: 5px;
+
+    // Spacing.
+    out property <length> space-xs: 4px;
+    out property <length> space-s: 8px;
+    out property <length> space-m: 12px;
+    out property <length> space-l: 16px;
+    out property <length> space-xl: 24px;
+
+    // Sizes.
+    out property <length> icon: 18px;
+    out property <length> icon-small: 14px;
+    out property <length> button: 32px;
+    out property <length> header: 60px;
+    out property <length> panel-header: 48px;
+
+    // Shadows: popovers (menus, pickers, tooltips) and dialogs.
+    out property <length> popover-blur: 8px;
+    out property <color> popover-shadow: #0003;
+    out property <length> dialog-blur: 16px;
+    out property <color> dialog-shadow: #0006;
+}

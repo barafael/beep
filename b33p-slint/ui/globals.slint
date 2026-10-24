@@ -1,0 +1,52 @@
+// What plays, for the audio rows: set by Rust, read by every row.
+export global Playback {
+    // The attachment playing (or paused); empty if none.
+    in property <string> id;
+    in property <bool> paused;
+    // 0 to 1.
+    in property <float> progress;
+    // E.g. "0:07 / 0:42".
+    in property <string> time;
+    // Play this one (from the start), or pause or carry on if it is the one playing.
+    callback toggle(string);
+    // Go to this far (0 to 1) into this one, starting it if it isn't playing.
+    callback seek(string, float);
+}
+
+// The text selected in a message, for copying (Ctrl+C or the message's menu): one message's
+// at a time, the one at `owner`; the others drop theirs when it changes. -1 for none. The text
+// stays in the `StyledText`, which reaches the clipboard itself; `copy-request` asks the one at
+// `owner` to copy it.
+export global TextSelection {
+    in-out property <int> owner: -1;
+    // Bumped to ask the message at `owner` to copy its selection.
+    in-out property <int> copy-request;
+    public function clear() {
+        self.owner = -1;
+    }
+    public function copy() {
+        self.copy-request += 1;
+    }
+}
+
+// How long a chat can be muted for, in seconds (-1 for good).
+export global MuteChoices {
+    out property <[{ label: string, seconds: int }]> choices: [
+        { label: "For 1 hour", seconds: 3600 },
+        { label: "For 8 hours", seconds: 28800 },
+        { label: "For 1 week", seconds: 604800 },
+        { label: "Always", seconds: -1 },
+    ];
+}
+
+// How long messages last in a chat with disappearing messages, in seconds (0 for off).
+export global TimerChoices {
+    out property <[string]> labels: ["Off", "30 seconds", "5 minutes", "1 hour", "8 hours", "1 day", "1 week", "4 weeks"];
+    out property <[int]> seconds: [0, 30, 300, 3600, 28800, 86400, 604800, 2419200];
+    // The place of `seconds` among the choices; -1 for a time set elsewhere that isn't one.
+    public pure function index-of(seconds: int) -> int {
+        seconds == 0 ? 0 : seconds == 30 ? 1 : seconds == 300 ? 2 : seconds == 3600 ? 3
+            : seconds == 28800 ? 4 : seconds == 86400 ? 5 : seconds == 604800 ? 6
+            : seconds == 2419200 ? 7 : -1
+    }
+}
