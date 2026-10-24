@@ -27,7 +27,7 @@ tracing = { version = "0.1", optional = true }
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs"], optional = true }
+tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 # The computer's name, for the default device name.

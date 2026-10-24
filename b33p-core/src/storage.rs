@@ -166,9 +166,7 @@ pub(crate) async fn sync(
                 ))
             })
             .collect();
-    for (position, id) in pins.iter().enumerate() {
-        remote.entry(id.clone()).or_default().pinned = Some(position as u32);
-    }
+    set_pins(&mut remote, &pins);
     let local = tables.conversations().await.map_err(db)?;
     let before = tables.remote().await.map_err(db)?;
     let changed = merge(&local, &before, &remote);
@@ -198,6 +196,21 @@ pub(crate) async fn sync(
             now: verifications,
         }),
     ))
+}
+
+/// Puts the account record's pins on the phone's chats, archived ones left out: Signal unpins a
+/// chat it archives, but Signal-Android writes only that chat's record then (ThreadTable.kt
+/// `setArchived`, `markNeedsSyncWithoutRefresh(recipientIds)`), so the account record can still
+/// list it. Taken as pinned there, a pin of it made here would look unchanged and never be
+/// written, and the phone would stay without it.
+fn set_pins(remote: &mut HashMap<ConversationId, ChatSettings>, pins: &[ConversationId]) {
+    let shown: Vec<&ConversationId> = pins
+        .iter()
+        .filter(|id| !remote.get(*id).is_some_and(|settings| settings.archived))
+        .collect();
+    for (position, id) in (0u32..).zip(shown) {
+        remote.entry(id.clone()).or_default().pinned = Some(position);
+    }
 }
 
 /// The verifications that changed on the phone since it said `before`; the rest are left as
@@ -928,6 +941,22 @@ mod tests {
         let later = map(&[("b", pinned(0))]);
         let changed: HashMap<_, _> = merge(&local, &now, &later).into_iter().collect();
         assert_eq!(changed[&id("a")].pinned, None);
+    }
+
+    #[test]
+    fn archived_chats_are_not_pinned_on_the_phone() {
+        // Android archived "a" and kept it in the account record's pins.
+        let archived = ChatSettings {
+            archived: true,
+            ..ChatSettings::default()
+        };
+        let mut remote = map(&[("a", archived)]);
+        set_pins(&mut remote, &[id("a"), id("b")]);
+        assert_eq!(remote[&id("a")].pinned, None);
+        assert_eq!(remote[&id("b")].pinned, Some(0));
+        // Unarchived and pinned here again: a change of pins, which gets written.
+        let local = map(&[("a", pinned(0)), ("b", pinned(1))]);
+        assert_ne!(wanted_pins(&local), pinned_order(&remote));
     }
 
     /// The cipher here must be libsignal-service's, both ways.
