@@ -1,0 +1,16 @@
+[package]
+name = "testbox-vnc"
+description = "A box display's VNC client, shared by testbox/viewer and testbox/web."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own, as its users are.
+[workspace]
+
+[dependencies]
+vnc-rs = "0.6"
+tokio = { version = "1", features = ["net", "time", "sync", "macros"] }
+landlock = "0.4.7"
+testbox-tools = { path = "../tools" }

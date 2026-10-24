@@ -1,0 +1,3 @@
+[alias]
+# The test box's commands, as an xtask: nothing to install beyond cargo.
+testbox = "run --quiet -p xtask --"

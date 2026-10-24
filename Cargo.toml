@@ -1,6 +1,15 @@
 [workspace]
-members = ["b33p-core", "b33p-harness", "b33p-notify", "b33p-slint"]
+members = ["b33p-core", "b33p-harness", "b33p-notify", "b33p-slint", "xtask"]
 resolver = "3"
+# testbox/tools, testbox/stickers, testbox/vnc, testbox/viewer and testbox/web are workspaces of
+# their own (their Cargo.toml say why).
+exclude = [
+    "testbox/tools",
+    "testbox/stickers",
+    "testbox/vnc",
+    "testbox/viewer",
+    "testbox/web",
+]
 
 [workspace.package]
 version = "0.2.0"

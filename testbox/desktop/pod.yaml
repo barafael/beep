@@ -1,0 +1,20 @@
+# Signal-Desktop, driven by driver.ts (`cargo testbox up --desktop`). A container for
+# testbox/pod.yaml's list, in its @CLIENTS@ line: in the box's pod, as libsignal-net's local
+# override reaches the server on localhost only (libsignal
+# rust/bridge/shared/testing/src/net_env.rs:32 `hostname: "localhost"`).
+      {
+        name: "desktop",
+        image: "localhost/b33p-testbox-desktop",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "HOME", value: "/home/desktop" },
+          { name: "DESKTOP_DRIVER_SOCKET", value: "/run/b33p/desktop.sock" },
+        ],
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "desktop-home", mountPath: "/home/desktop" },
+          { name: "run", mountPath: "/run/b33p" },
+          { name: "files", mountPath: "/files", readOnly: true },
+          { name: "view-desktop", mountPath: "/run/view" },
+        ],
+      },

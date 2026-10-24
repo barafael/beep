@@ -1,0 +1,20 @@
+# CDN0: Garage, which takes S3 POST-object uploads (Garage PR #222, commit f6f8b7f on
+# git.deuxfleurs.fr), Signal-Server's policies (`PostPolicyGenerator`) among them given the
+# `bucket` field `cdn0` adds. The binary from its image on Debian, behind the front in
+# testbox/tools (`cdn0`), which terminates TLS and maps the CDN's paths onto the `cdn` bucket. The
+# build context is the repository, for the tools' sources.
+FROM docker.io/dxflrs/garage:v2.1.0@sha256:850490b7aef237f30859c7deeae8a7c99121cccbdf13dc57d6d10ae6e3e3694d AS garage
+
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
+WORKDIR /src
+COPY testbox/tools testbox/tools
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/testbox/tools/target \
+    cargo build --release --locked --manifest-path testbox/tools/Cargo.toml --features cdn0 --bin cdn0 \
+    && cp testbox/tools/target/release/cdn0 /usr/local/bin/
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+COPY --from=garage /garage /usr/local/bin/garage
+COPY --from=tools /usr/local/bin/cdn0 /usr/local/bin/cdn0
+ENTRYPOINT ["cdn0"]

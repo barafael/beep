@@ -1,0 +1,23 @@
+[package]
+name = "testbox-viewer"
+description = "The box's displays in a window (`cargo testbox vnc`)."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own, out of b33p's: only `cargo testbox vnc` builds it, not a box run or a
+# workspace build.
+[workspace]
+
+[dependencies]
+# Its own window and renderer: no Qt, nothing of b33p's Slint fork.
+slint = { version = "1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-software",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+testbox-vnc = { path = "../vnc" }
+testbox-tools = { path = "../tools" }
