@@ -1,0 +1,12 @@
+# Container builds that take the repository as their context (testbox/*/Containerfile) need the
+# sources, not the build output.
+target
+testbox/tools/target
+.git
+testbox/stickers/target
+testbox/android/agent/build
+testbox/android/agent/.gradle
+testbox/desktop/node_modules
+testbox/viewer/target
+testbox/vnc/target
+testbox/web/target

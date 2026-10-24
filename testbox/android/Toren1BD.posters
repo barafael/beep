@@ -1,0 +1,10 @@
+poster wall
+size 0.6 0.6
+position 0.215 -0.2 -1.2
+rotation 0 0 0
+default poster.png
+
+poster table
+size 1 1
+position -2.205 -0.077 3.949
+rotation -90 0 120

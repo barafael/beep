@@ -1,0 +1,7 @@
+# Typed data only: no JSON trees, no type erasure. serde_yaml::Value stays allowed for one thing,
+# Signal-Server's test.yml (src/bin/provision.rs `write_server_config` says why).
+disallowed-types = [
+    { path = "serde_json::Value", reason = "use a typed struct" },
+    { path = "serde_json::Map", reason = "use a typed struct" },
+    { path = "std::any::Any", reason = "no type erasure: use a concrete type or a generic" },
+]

@@ -1,0 +1,17 @@
+# Signal-Android's local flavor on an emulator (`cargo testbox up --android`). A
+# container for testbox/pod.yaml's list, in its @CLIENTS@ line: in the box's pod, as the
+# emulator reaches the server through `adb reverse` on localhost. The image holds the APK, built
+# for the box's keys.
+      {
+        name: "android",
+        image: "localhost/b33p-testbox-android",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [{ name: "ANDROID_DRIVER_SOCKET", value: "/run/b33p/android.sock" }],
+        # KVM, as `--device` would pass it (kube play's CDI selector).
+        resources: { limits: { "podman.io/device=/dev/kvm": 1 } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "run", mountPath: "/run/b33p" },
+          { name: "view-android", mountPath: "/run/view" },
+        ],
+      },

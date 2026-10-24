@@ -1,0 +1,31 @@
+[package]
+name = "testbox-stickers"
+description = "Seeds a sticker pack in the testbox and installs it."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own: it runs in the presage image (testbox/presage/Containerfile), on the presage b33p pins, with the same
+# patches as b33p's workspace (Cargo.toml there says why each).
+[workspace]
+
+[dependencies]
+testbox-tools = { path = "../tools" }
+presage = { git = "https://github.com/barafael/presage", rev = "27af46f19c631ed2e6b48318c6673699063d5875" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "27af46f19c631ed2e6b48318c6673699063d5875" }
+# libsignal-service's (its `PushService::request` takes a `reqwest::Method`).
+reqwest = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
+rand = "0.9"
+hex = "0.4"
+# The stickers' pictures.
+png = "0.18"
+
+[patch.crates-io]
+libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
+
+[patch."https://github.com/whisperfish/libsignal-service-rs"]
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "710b11fa1e5085fd468cc40f9912e7487effc7f0" }

@@ -1,0 +1,106 @@
+Server values are build fields (`app/build.gradle.kts:263` to `:300`). Sending fails after the
+build's expiry (`PushSendJob.kt:161`). Signal-Server asks every new session for a captcha
+(`VerificationController.java:236` "unconditionally request a captcha").
+
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index f128335..a33b92a 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -84,6 +84,7 @@ val selectableVariants = listOf(
+   "playStagingRelease",
+   "playProdQuickstart",
+   "playStagingQuickstart",
++  "playLocalDebug",
+   "websiteProdSpinner",
+   "websiteProdRelease",
+   "githubProdSpinner",
+@@ -298,6 +299,9 @@ android {
+     buildConfigField("String", "RECAPTCHA_PROOF_URL", "\"https://signalcaptchas.org/challenge/generate.html\"")
+     buildConfigField("String", "WEBAUTHN_RP_ID", "\"login.signal.org\"")
+     buildConfigField("org.signal.libsignal.net.Network.Environment", "LIBSIGNAL_NET_ENV", "org.signal.libsignal.net.Network.Environment.PRODUCTION")
++    // Set by the local flavor: libsignal-net then talks to localhost:LIBSIGNAL_LOCAL_PORT.
++    buildConfigField("String", "LIBSIGNAL_LOCAL_ROOT_CERT", "null")
++    buildConfigField("int", "LIBSIGNAL_LOCAL_PORT", "0")
+     buildConfigField("int", "LIBSIGNAL_LOG_LEVEL", "org.signal.libsignal.protocol.logging.SignalProtocolLogger.INFO")
+ 
+     buildConfigField("String", "BUILD_DISTRIBUTION_TYPE", "\"unset\"")
+@@ -505,6 +509,52 @@ android {
+       buildConfigField("String", "BUILD_ENVIRONMENT_TYPE", "\"Staging\"")
+       buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"pk_test_sngOd8FnXNkpce9nPXawKrJD00kIDngZkD\"")
+     }
++
++    // A server on the device's localhost, such as Signal-Server's test mode: its values from the
++    // JSON file the property signalLocalConfig names. The trust store is the flavor's own
++    // res/raw/whisper.store, with the password "whisper".
++    create("local") {
++      dimension = "environment"
++
++      applicationIdSuffix = ".local"
++
++      // Read through fileContents, so that the configuration cache sees a change to the file.
++      val local = providers.gradleProperty("signalLocalConfig").orNull
++        ?.let { groovy.json.JsonSlurper().parseText(providers.fileContents(layout.projectDirectory.file(it)).asText.get()) as Map<*, *> }
++        ?: emptyMap<String, Any>()
++      fun quoted(key: String): String {
++        val value = local[key]?.toString() ?: ""
++        require('"' !in value && '\\' !in value) { "signalLocalConfig: $key needs escaping" }
++        return "\"$value\""
++      }
++      // Each service at its own URL where the server has one; the rest at the chat server.
++      val urls = mapOf(
++        "SIGNAL_URL" to "service_url",
++        "STORAGE_URL" to "storage_url",
++        "SIGNAL_CDN_URL" to "cdn0_url",
++        "SIGNAL_CDN2_URL" to "cdn2_url",
++        "SIGNAL_CDN3_URL" to "cdn3_url",
++        "SIGNAL_CDSI_URL" to "service_url",
++        "SIGNAL_SVR2_URL" to "service_url"
++      )
++      for ((field, key) in urls) {
++        buildConfigField("String", field, quoted(if (local[key] != null) key else "service_url"))
++      }
++      for (ips in listOf("SIGNAL_SERVICE_IPS", "SIGNAL_STORAGE_IPS", "SIGNAL_CDN_IPS", "SIGNAL_CDN2_IPS", "SIGNAL_CDN3_IPS", "SIGNAL_CDSI_IPS", "SIGNAL_SVR2_IPS")) {
++        buildConfigField("String[]", ips, "new String[]{}")
++      }
++      buildConfigField("String[]", "UNIDENTIFIED_SENDER_TRUST_ROOTS", "new String[]{${quoted("unidentified_sender_trust_root")}}")
++      buildConfigField("String", "ZKGROUP_SERVER_PUBLIC_PARAMS", quoted("zkgroup_server_public_params"))
++      buildConfigField("String", "GENERIC_SERVER_PUBLIC_PARAMS", quoted("generic_server_public_params"))
++      buildConfigField("String", "BACKUP_SERVER_PUBLIC_PARAMS", quoted("backup_server_public_params"))
++      buildConfigField("String", "SIGNAL_CAPTCHA_URL", quoted("captcha_url"))
++      buildConfigField("String", "RECAPTCHA_PROOF_URL", quoted("captcha_url"))
++      buildConfigField("String", "LIBSIGNAL_LOCAL_ROOT_CERT", quoted("root_certificate_der"))
++      buildConfigField("int", "LIBSIGNAL_LOCAL_PORT", local["chat_port"]?.toString() ?: "0")
++      buildConfigField("String", "MOBILE_COIN_ENVIRONMENT", "\"testnet\"")
++      buildConfigField("int", "LIBSIGNAL_LOG_LEVEL", "org.signal.libsignal.protocol.logging.SignalProtocolLogger.DEBUG")
++      buildConfigField("String", "BUILD_ENVIRONMENT_TYPE", "\"Local\"")
++    }
+   }
+ 
+   lint {
+diff --git a/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java b/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
+index 2f1c3dc..20ab2c9 100644
+--- a/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
++++ b/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
+@@ -14,6 +14,7 @@ import org.signal.billing.BillingFactory;
+ import org.signal.core.models.ServiceId.ACI;
+ import org.signal.core.models.ServiceId.PNI;
+ import org.signal.core.util.AppForegroundObserver;
++import org.signal.core.util.Base64;
+ import org.signal.core.util.ByteUnit;
+ import org.signal.core.util.SleepTimer;
+ import org.signal.core.util.ThreadUtil;
+@@ -364,7 +365,13 @@ public class ApplicationDependencyProvider implements AppDependencies.Provider {
+ 
+   @Override
+   public @NonNull Network provideLibsignalNetwork(@NonNull SignalServiceConfiguration config, @NonNull NetworkProxyState proxyState) {
+-    Network network = new Network(BuildConfig.LIBSIGNAL_NET_ENV, StandardUserAgentInterceptor.USER_AGENT, RemoteConfig.getLibsignalConfigs(), Network.BuildVariant.PRODUCTION);
++    Network network;
++    if (BuildConfig.LIBSIGNAL_LOCAL_ROOT_CERT != null) {
++      int port = BuildConfig.LIBSIGNAL_LOCAL_PORT;
++      network = Network.localTestServer(StandardUserAgentInterceptor.USER_AGENT, port, port, port, port, Base64.decodeOrThrow(BuildConfig.LIBSIGNAL_LOCAL_ROOT_CERT), 2);
++    } else {
++      network = new Network(BuildConfig.LIBSIGNAL_NET_ENV, StandardUserAgentInterceptor.USER_AGENT, RemoteConfig.getLibsignalConfigs(), Network.BuildVariant.PRODUCTION);
++    }
+     LibSignalNetworkExtensions.applyConfiguration(network, config);
+ 
+     ProxyConfig proxyConfig = ProxyConfig.resolve(config, BuildConfig.SIGNAL_URL);

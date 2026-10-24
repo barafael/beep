@@ -1,0 +1,112 @@
+Android's chat runs on libsignal-net (Signal-Android `LibSignalChatConnection.kt:68`), whose
+environments are `STAGING(0)` and `PRODUCTION(1)` only (`Network.java:25`), roots compiled in
+(`rust/net/src/certs.rs:10`, `:12`). The local override is Node's only (`net.rs:152`
+`#[bridge_fn(jni = false, ffi = false)]`; `node/ts/net.ts:130` `localTestServer: true`).
+
+diff --git a/java/client/src/main/java/org/signal/libsignal/net/Network.java b/java/client/src/main/java/org/signal/libsignal/net/Network.java
+index 09968ff..25de02d 100644
+--- a/java/client/src/main/java/org/signal/libsignal/net/Network.java
++++ b/java/client/src/main/java/org/signal/libsignal/net/Network.java
+@@ -17,6 +17,7 @@ import org.signal.libsignal.internal.BridgedStringMap;
+ import org.signal.libsignal.internal.CompletableFuture;
+ import org.signal.libsignal.internal.Native;
+ import org.signal.libsignal.internal.NativeHandleGuard;
++import org.signal.libsignal.internal.NativeTesting;
+ import org.signal.libsignal.internal.TokioAsyncContext;
+ import org.signal.libsignal.net.internal.ConnectChatBridge;
+ 
+@@ -95,6 +96,34 @@ public class Network {
+     this.connectionManager = new ConnectionManager(env, userAgent, remoteConfig, buildVariant);
+   }
+ 
++  private Network(ConnectionManager connectionManager) {
++    this.tokioAsyncContext = new TokioAsyncContext();
++    this.connectionManager = connectionManager;
++  }
++
++  /**
++   * A network for a server on {@code localhost}, trusting {@code rootCertificateDer}: the Java
++   * counterpart of Node's {@code localTestServer} option. Needs the testing library
++   * (signal_jni_testing).
++   *
++   * <p>{@code httpVersion} is 1 or 2.
++   */
++  public static Network localTestServer(
++      String userAgent,
++      int chatPort,
++      int cdsiPort,
++      int svr2Port,
++      int svrBPort,
++      byte[] rootCertificateDer,
++      int httpVersion) {
++    return new Network(
++        new ConnectionManager(
++            NativeTesting.TESTING_ConnectionManager_newLocalOverride(
++                userAgent, chatPort, cdsiPort, svr2Port, svrBPort, rootCertificateDer, httpVersion),
++            // Only key transparency reads it; the local environment has no key transparency.
++            Environment.STAGING));
++  }
++
+   /**
+    * Get the SVR-B (Secure Value Recovery for Backups) service for this network instance.
+    *
+@@ -405,6 +434,11 @@ public class Network {
+       this.environment = env;
+     }
+ 
++    private ConnectionManager(long nativeHandle, Environment env) {
++      super(nativeHandle);
++      this.environment = env;
++    }
++
+     private void setProxy(
+         String scheme, String host, Integer port, String username, String password)
+         throws IOException {
+diff --git a/java/shared/java/org/signal/libsignal/internal/NativeTesting.kt b/java/shared/java/org/signal/libsignal/internal/NativeTesting.kt
+index c6e719a..81a8656 100644
+--- a/java/shared/java/org/signal/libsignal/internal/NativeTesting.kt
++++ b/java/shared/java/org/signal/libsignal/internal/NativeTesting.kt
+@@ -163,6 +163,17 @@ public object NativeTesting {
+   @JvmStatic
+   public external fun TESTING_ConnectionManager_isUsingProxy(manager: ObjectHandle): Int
+ 
++  @JvmStatic
++  public external fun TESTING_ConnectionManager_newLocalOverride(
++    userAgent: String,
++    chatPort: Int,
++    cdsiPort: Int,
++    svr2Port: Int,
++    svrBPort: Int,
++    rootCertificateDer: ByteArray,
++    httpVersion: Int,
++  ): ObjectHandle
++
+   @JvmStatic
+   public external fun TESTING_ConvertOptionalUuid(present: Boolean): UUID?
+ 
+diff --git a/rust/bridge/shared/testing/src/lib.rs b/rust/bridge/shared/testing/src/lib.rs
+index 7502154..e325c07 100644
+--- a/rust/bridge/shared/testing/src/lib.rs
++++ b/rust/bridge/shared/testing/src/lib.rs
+@@ -25,7 +25,7 @@ pub mod convert;
+ pub mod crypto;
+ pub mod message_backup;
+ pub mod net;
+-#[cfg(feature = "node")]
++#[cfg(any(feature = "node", feature = "jni"))]
+ pub mod net_env;
+ pub mod protocol;
+ pub mod types;
+diff --git a/rust/bridge/shared/testing/src/net.rs b/rust/bridge/shared/testing/src/net.rs
+index 5571c77..35726ee 100644
+--- a/rust/bridge/shared/testing/src/net.rs
++++ b/rust/bridge/shared/testing/src/net.rs
+@@ -149,7 +149,7 @@ fn TESTING_ServerMessageAck_Create() -> ServerMessageAck {
+     ServerMessageAck::new(Box::new(|_| Ok(())))
+ }
+ 
+-#[bridge_fn(jni = false, ffi = false)]
++#[bridge_fn(ffi = false)]
+ fn TESTING_ConnectionManager_newLocalOverride(
+     userAgent: String,
+     chatPort: AsType<NonZeroU16, u16>,

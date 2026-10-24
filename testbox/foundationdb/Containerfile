@@ -1,0 +1,20 @@
+# FoundationDB at the server version Signal-Server's CI runs (.github/workflows/test.yml
+# `foundationdb/foundationdb:7.3.68`), its binaries copied from that image onto Debian, started by
+# testbox/tools (`foundationdb`). The build context is the repository, for the tools' sources.
+FROM docker.io/foundationdb/foundationdb:7.3.68@sha256:2d9050a3946c37918d9312ef59293173e349b7c080827a8f2a3c4d7b8e59acb6 AS foundationdb
+
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
+WORKDIR /src
+COPY testbox/tools testbox/tools
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/testbox/tools/target \
+    cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
+        --features foundationdb --bin foundationdb \
+    && cp testbox/tools/target/release/foundationdb /usr/local/bin/
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+COPY --from=foundationdb /usr/bin/fdbserver /usr/bin/fdbcli /usr/bin/
+COPY --from=foundationdb /usr/lib/libfdb_c.so /usr/lib/
+COPY --from=tools /usr/local/bin/foundationdb /usr/local/bin/foundationdb
+ENTRYPOINT ["foundationdb"]

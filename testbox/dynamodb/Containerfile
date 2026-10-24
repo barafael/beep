@@ -1,0 +1,12 @@
+# DynamoDB Local at the version Signal-Server's tests pin (pom.xml `dynamodb.image`), copied from
+# that image onto Debian. The jar runs on Java 17 or later; Debian's own JRE.
+FROM docker.io/amazon/dynamodb-local:3.3.1@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab AS dynamodb-local
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=dynamodb-local /home/dynamodblocal /opt/dynamodb-local
+WORKDIR /opt/dynamodb-local
+# As Signal-Server's tests run it (storage/DynamoDbExtension.java `withCommand`): one database for
+# any credentials and region, and no telemetry (the box has no egress).
+ENTRYPOINT ["java", "-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb", "-disableTelemetry"]

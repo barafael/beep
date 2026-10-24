@@ -1,0 +1,24 @@
+# CDN3: signalapp/tus-server at the pin under `wrangler dev`, which its README names for "a dev
+# server you can interact with over localhost". Node at the Desktop image's version; tus-server's
+# own .nvmrc is older.
+FROM docker.io/library/node:24.21.0-trixie-slim@sha256:c83040f7e24bacea68e58a0b96a484ba430bf24abb2973eab7ba4701144b7b63
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+ARG TUS_SERVER_REV=5cbbc5c42d1d126bb2c1b4f837b5103d5d8f5407
+WORKDIR /opt/tus-server
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/tus-server "$TUS_SERVER_REV" \
+    && git checkout -q FETCH_HEAD
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+# The box has no egress: no metrics, no update check.
+ENV WRANGLER_SEND_METRICS=false CI=true
+# The shared secret from the keys (testbox/tools `provision` writes tus.env); TLS with the keys'
+# certificate for localhost; R2 and durable objects kept in /data. Port 8446 is CDN3's URL
+# (testbox/tools `provision`, `CDN3_URL`).
+ENTRYPOINT ["/opt/tus-server/node_modules/.bin/wrangler", "dev", \
+    "--ip", "127.0.0.1", "--port", "8446", \
+    "--env-file", "/keys/tus.env", \
+    "--local-protocol", "https", \
+    "--https-key-path", "/keys/tls.key", "--https-cert-path", "/keys/tls.crt", \
+    "--persist-to", "/data"]

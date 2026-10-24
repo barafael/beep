@@ -1,0 +1,4 @@
+# typeshare's settings for the agent's protocol, generated from testbox/tools/src/agent.rs
+# (testbox/android/Containerfile, stage `protocol`).
+[kotlin]
+package = "org.b33p.testbox.agent.protocol"
