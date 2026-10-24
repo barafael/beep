@@ -47,58 +47,13 @@ use crate::{
     format::{self, RangeValue, WireRange},
     local::LocalStore,
     now_millis,
+    outbox::{Outbox, SendFailure, Sending, Sends as _},
     scrub::{scrub, scrubbed},
     transfer,
     vault::{self, KeySource, KeyringKey, NoKeyring},
 };
 
 pub(crate) type Mgr = Manager<SqliteStore, Registered>;
-
-/// One send at a time for the account. A send loads the recipient's session from the store,
-/// encrypts with its next counter, and saves it; two at once (a typing indicator in the
-/// background, the message right after it) encrypt with the same counter, and the recipient
-/// refuses the second as "message with old counter". One account per process, so one lock.
-static SENDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// presage's sends, taken in turn ([`SENDING`]). Every send goes through these.
-trait SendInTurn {
-    async fn send_in_turn(
-        &mut self,
-        recipient: impl Into<ServiceId>,
-        message: impl Into<ContentBody>,
-        timestamp: u64,
-    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>>;
-
-    async fn send_to_group_in_turn(
-        &mut self,
-        master_key: &[u8],
-        message: impl Into<ContentBody>,
-        timestamp: u64,
-    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>>;
-}
-
-impl SendInTurn for Mgr {
-    async fn send_in_turn(
-        &mut self,
-        recipient: impl Into<ServiceId>,
-        message: impl Into<ContentBody>,
-        timestamp: u64,
-    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>> {
-        let _turn = SENDING.lock().await;
-        self.send_message(recipient, message, timestamp).await
-    }
-
-    async fn send_to_group_in_turn(
-        &mut self,
-        master_key: &[u8],
-        message: impl Into<ContentBody>,
-        timestamp: u64,
-    ) -> Result<(), PresageError<presage_store_sqlite::SqliteStoreError>> {
-        let _turn = SENDING.lock().await;
-        self.send_message_to_group(master_key, message, timestamp)
-            .await
-    }
-}
 
 /// Maps the opaque ids handed to the UI back to presage threads.
 type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
@@ -875,6 +830,8 @@ async fn run_linked(
     device_name: &RefCell<String>,
 ) -> Ended {
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
+    let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
+    let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
@@ -884,13 +841,14 @@ async fn run_linked(
         storage_changed: Rc::default(),
         storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
         trust: Rc::default(),
+        outbox,
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
         // The answer arrives through `receive` as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
-        if let Err(error) = manager.request_contacts().await {
+        if let Err(error) = ctx.outbox.request_contacts().await {
             warn!(error = %scrubbed(&error), "failed to request contacts");
         }
     }
@@ -901,7 +859,7 @@ async fn run_linked(
             sync_message::request::Type::Blocked,
             sync_message::request::Type::Keys,
         ] {
-            request_sync(&manager, kind).await;
+            request_sync(&manager, &ctx.outbox, kind).await;
         }
     }
     // Before receiving starts, or what arrives meanwhile would count twice (or not at all).
@@ -985,6 +943,9 @@ async fn run_linked(
     following.abort();
     stories.abort();
     receiving.abort();
+    // Not drained: after an unlink there is nobody to send to, and a session after this one
+    // must not send alongside it.
+    sending.abort();
     ended
 }
 
@@ -1375,6 +1336,8 @@ struct Ctx {
     /// How far each contact's safety number is trusted, as the UI was last told; see
     /// [`publish_trust`].
     trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
+    /// Every send goes through here, one at a time ([`outbox`](crate::outbox)).
+    outbox: Outbox,
 }
 
 /// The thread a conversation id stands for; see [`conversation_id`].
@@ -1451,7 +1414,7 @@ async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
 }
 
 /// Asks our primary device to send something it keeps (the blocked list, the storage key).
-async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
+async fn request_sync(manager: &Mgr, outbox: &Outbox, kind: sync_message::request::Type) {
     let sync = SyncMessage {
         content: Some(SyncContent::Request(sync_message::Request {
             r#type: Some(kind.into()),
@@ -1459,9 +1422,8 @@ async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
         ..SyncMessage::with_padding(&mut rand::rng())
     };
     let own = own_id(manager);
-    if let Err(error) = manager
-        .clone()
-        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
+    if let Err(error) = outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), ?kind, "failed to ask the primary device");
@@ -1866,7 +1828,7 @@ async fn send_stories(manager: &Mgr, ctx: &Ctx) {
 }
 
 /// Tells a story's author we viewed it (with `receipts`), and our other devices.
-async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
+async fn send_viewed(manager: Mgr, outbox: Outbox, story: MessageRef, receipts: bool) {
     let timestamp = now_millis();
     let Some(author) = ServiceId::parse_from_service_id_string(&story.author_id) else {
         return;
@@ -1879,12 +1841,14 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
             r#type: Some(receipt_message::Type::Viewed as i32),
             timestamp: vec![story.timestamp],
         };
-        if let Err(error) = manager
-            .send_in_turn(author, ContentBody::ReceiptMessage(receipt), timestamp)
-            .await
-        {
-            debug!(error = %scrubbed(&error), "failed to send a viewed receipt");
-        }
+        outbox
+            .post_message(
+                author,
+                ContentBody::ReceiptMessage(receipt),
+                timestamp,
+                "a viewed receipt",
+            )
+            .await;
     }
     let sync = SyncMessage {
         viewed: vec![sync_message::Viewed {
@@ -1894,7 +1858,7 @@ async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
         }],
         ..Default::default()
     };
-    send_sync(&mut manager, sync).await;
+    send_sync(&manager, &outbox, sync).await;
 }
 
 /// Why someone can't be put in a group.
@@ -2539,7 +2503,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
                     content: Some(SyncContent::FetchLatest(latest)),
                     ..Default::default()
                 };
-                send_sync(manager, sync).await;
+                send_sync(manager, &ctx.outbox, sync).await;
                 return;
             }
             Ok(Written::Nothing | Written::NoKey) => return,
@@ -2875,18 +2839,20 @@ fn untrusted(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> Op
 
 /// Sends to a contact, or to everyone in a group.
 async fn send_to(
-    manager: &mut Mgr,
+    outbox: &Outbox,
     thread: &Thread,
     body: ContentBody,
     timestamp: u64,
 ) -> Result<(), SendError> {
     let sent = match thread {
-        Thread::Contact(recipient) => manager.send_in_turn(*recipient, body, timestamp).await,
-        Thread::Group(key) => manager.send_to_group_in_turn(key, body, timestamp).await,
+        Thread::Contact(recipient) => outbox.message(*recipient, body, timestamp).await,
+        Thread::Group(key) => outbox.group_message(*key, body, timestamp).await,
     };
-    sent.map_err(|error| match untrusted(&error) {
-        Some(who) => SendError::Untrusted(who),
-        None => SendError::Other(format!("failed to send: {error}")),
+    sent.map_err(|failure| match &failure {
+        SendFailure::Presage(error) if let Some(who) = untrusted(error) => {
+            SendError::Untrusted(who)
+        }
+        _ => SendError::Other(format!("failed to send: {failure}")),
     })
 }
 
@@ -2911,7 +2877,7 @@ async fn deliver(
             ));
         }
     }
-    match send_to(manager, thread, body, timestamp).await {
+    match send_to(&ctx.outbox, thread, body, timestamp).await {
         Err(SendError::Untrusted(who)) => {
             hold_changed(manager, ctx, who).await;
             Err(SendError::Untrusted(who).into())
@@ -3199,11 +3165,7 @@ async fn handle_received(
                     .is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
             if reset {
                 repairs.borrow_mut().resets.insert(sender, Instant::now());
-                match manager
-                    .clone()
-                    .send_session_reset(&sender, now_millis())
-                    .await
-                {
+                match ctx.outbox.session_reset(sender, now_millis()).await {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
                     Err(error) => warn!(error = %scrubbed(&error), "failed to reset the session"),
                 }
@@ -3324,7 +3286,7 @@ async fn on_retry_receipt(
     // a change, one version up).
     data.expire_timer = None;
     data.expire_timer_version = None;
-    match manager.clone().send_in_turn(sender, data, timestamp).await {
+    match ctx.outbox.message(sender, data, timestamp).await {
         Ok(()) => {
             info!(sender = %sender.service_id_string(), timestamp, "sent a message again");
             let mut repairs = repairs.borrow_mut();
@@ -4622,7 +4584,12 @@ async fn handle_command(
             ctx.tables.story_viewed(&story).await.map_err(db)?;
             send_stories(manager, ctx).await;
             let receipts = ctx.preferences.get().read_receipts;
-            tokio::task::spawn_local(send_viewed(manager.clone(), story, receipts));
+            tokio::task::spawn_local(send_viewed(
+                manager.clone(),
+                ctx.outbox.clone(),
+                story,
+                receipts,
+            ));
         }
         Command::SendStory {
             conversation,
@@ -4674,8 +4641,8 @@ async fn handle_command(
                 allows_replies: Some(true),
                 ..Default::default()
             };
-            manager
-                .send_to_group_in_turn(&key, ContentBody::StoryMessage(message.clone()), timestamp)
+            ctx.outbox
+                .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
                 .map_err(|e| format!("failed to post the story: {e}"))?;
             ctx.tables.add_story(&stored).await.map_err(db)?;
@@ -4689,7 +4656,7 @@ async fn handle_command(
                 })),
                 ..Default::default()
             };
-            send_sync(manager, sync).await;
+            send_sync(manager, &ctx.outbox, sync).await;
         }
         Command::CreateGroup { title, members } => {
             let members = members
@@ -4697,8 +4664,9 @@ async fn handle_command(
                 .map(|id| member_aci(id))
                 .collect::<Option<Vec<_>>>()
                 .ok_or(PHONE_NUMBER_ONLY)?;
-            let (key, timestamp) = manager
-                .create_group(title.trim(), &members)
+            let (key, timestamp) = ctx
+                .outbox
+                .create_group(title.trim().to_owned(), members)
                 .await
                 .map_err(|e| format!("failed to create the group: {e}"))?;
             let thread = Thread::Group(key);
@@ -4729,8 +4697,9 @@ async fn handle_command(
                 only_admin_check(manager, key).await?;
             }
             let picture = matches!(edit, presage::manager::GroupEdit::Avatar(_));
-            let timestamp = manager
-                .change_group(&key, edit)
+            let timestamp = ctx
+                .outbox
+                .change_group(key, edit)
                 .await
                 .map_err(|e| format!("failed to change the group: {e}"))?;
             refresh_group(manager, ctx, key).await;
@@ -4771,8 +4740,9 @@ async fn handle_command(
                 let _ = events.send(Event::GroupJoined(id));
                 return Ok(());
             }
-            let joined = manager
-                .join_group(&parsed)
+            let joined = ctx
+                .outbox
+                .join_group(parsed)
                 .await
                 .map_err(|e| format!("couldn't join the group: {e}"))?;
             let thread = Thread::Group(key);
@@ -4817,7 +4787,7 @@ async fn handle_command(
                 .update(&conversation, |s| s.blocked = blocked)
                 .await
                 .map_err(db)?;
-            send_blocked(manager.clone(), ctx).await;
+            send_blocked(manager, ctx).await;
         }
         Command::Respond {
             conversation,
@@ -5020,8 +4990,7 @@ async fn handle_command(
                 return Ok(());
             }
             let thread = thread(&conversation)?;
-            // In the background: it may take a moment, and nobody waits for it.
-            tokio::task::spawn_local(send_typing(manager.clone(), thread, typing));
+            send_typing(&ctx.outbox, thread, typing).await;
         }
         Command::MarkRead {
             conversation,
@@ -5080,8 +5049,9 @@ async fn handle_command(
             let thread = thread(&conversation)?;
             if let Thread::Group(key) = thread {
                 let edit = presage::manager::GroupEdit::Timer(seconds);
-                let timestamp = manager
-                    .change_group(&key, edit)
+                let timestamp = ctx
+                    .outbox
+                    .change_group(key, edit)
                     .await
                     .map_err(|e| format!("failed to change the group: {e}"))?;
                 refresh_group(manager, ctx, key).await;
@@ -5339,8 +5309,9 @@ async fn set_verified(
     remember_verification(manager, ctx, who, &key, state, Verifier::Here).await?;
     let padding = NullMessage::generate(&mut rand::rng()).padding;
     let timestamp = now_millis();
-    if let Err(error) = manager
-        .send_in_turn(
+    if let Err(error) = ctx
+        .outbox
+        .message(
             who,
             ContentBody::NullMessage(NullMessage {
                 padding: padding.clone(),
@@ -5353,8 +5324,8 @@ async fn set_verified(
     }
     let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
-    manager
-        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), timestamp)
+    ctx.outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
         .map_err(|e| format!("done here, but your other devices couldn't be told: {e}"))?;
     Ok(())
@@ -5960,10 +5931,10 @@ async fn link_preview(
 }
 
 /// Tells our other devices about something done here.
-async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
+async fn send_sync(manager: &Mgr, outbox: &Outbox, sync: SyncMessage) {
     let own = own_id(manager);
-    if let Err(error) = manager
-        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
+    if let Err(error) = outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), "failed to tell our other devices");
@@ -5971,7 +5942,7 @@ async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
 }
 
 /// Tells our other devices whom we block now: the whole list, as Signal expects.
-async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
+async fn send_blocked(manager: &Mgr, ctx: &Ctx) {
     let Ok(all) = ctx.tables.conversations().await else {
         return;
     };
@@ -5981,7 +5952,7 @@ async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
             continue;
         };
         let number = match thread {
-            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(&manager, who).await,
+            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(manager, who).await,
             _ => None,
         };
         list_blocked(&mut blocked, &thread, number);
@@ -5990,7 +5961,7 @@ async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
         content: Some(SyncContent::Blocked(blocked)),
         ..Default::default()
     };
-    send_sync(&mut manager, sync).await;
+    send_sync(manager, &ctx.outbox, sync).await;
 }
 
 /// Answers a message request, here and on our other devices.
@@ -6033,7 +6004,7 @@ async fn respond(
                 .update(conversation, |s| s.blocked = true)
                 .await
                 .map_err(db)?;
-            send_blocked(manager.clone(), ctx).await;
+            send_blocked(manager, ctx).await;
             Type::Block
         }
     };
@@ -6052,12 +6023,13 @@ async fn respond(
         content: Some(SyncContent::MessageRequestResponse(answer)),
         ..Default::default()
     };
-    send_sync(manager, sync).await;
+    send_sync(manager, &ctx.outbox, sync).await;
     Ok(())
 }
 
-/// Tells a conversation we started or stopped typing.
-async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
+/// Tells a conversation we started or stopped typing. Queued, not waited for: it goes out
+/// before whatever is queued after it, such as the message that was being typed.
+async fn send_typing(outbox: &Outbox, thread: Thread, typing: bool) {
     use typing_message::Action;
     let timestamp = now_millis();
     let mut message = TypingMessage {
@@ -6073,11 +6045,10 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
         message.group_id = Some(group_identifier(key).to_vec());
     }
     let body = ContentBody::TypingMessage(message);
-    if let Err(error) = send_to(&mut manager, &thread, body, timestamp).await {
-        debug!(
-            error = String::from(error),
-            "failed to send a typing indicator"
-        );
+    const WHAT: &str = "a typing indicator";
+    match thread {
+        Thread::Contact(to) => outbox.post_message(to, body, timestamp, WHAT).await,
+        Thread::Group(key) => outbox.post_group_message(key, body, timestamp, WHAT).await,
     }
 }
 
@@ -6087,7 +6058,7 @@ async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
 const STORAGE_WAIT: Duration = Duration::from_secs(2 * 60);
 
 async fn send_read(
-    mut manager: Mgr,
+    manager: Mgr,
     ctx: Ctx,
     conversation: ConversationId,
     messages: Vec<MessageRef>,
@@ -6105,12 +6076,14 @@ async fn send_read(
         read,
         ..Default::default()
     };
-    if let Err(error) = manager
-        .send_in_turn(own, ContentBody::SynchronizeMessage(sync), now_millis())
-        .await
-    {
-        debug!(error = %scrubbed(&error), "failed to tell our other devices what was read");
-    }
+    ctx.outbox
+        .post_message(
+            own,
+            ContentBody::SynchronizeMessage(sync),
+            now_millis(),
+            "what was read to our other devices",
+        )
+        .await;
     // Whether this is a message request, and who is blocked, comes with the phone's settings.
     // Right after linking they haven't been read yet, so wait: a read receipt would tell a
     // stranger we read their message. Not for ever, though (the phone may never answer): then
@@ -6159,12 +6132,14 @@ async fn send_read(
             r#type: Some(receipt_message::Type::Read as i32),
             timestamp: timestamps,
         };
-        if let Err(error) = manager
-            .send_in_turn(author, ContentBody::ReceiptMessage(receipt), timestamp)
-            .await
-        {
-            debug!(error = %scrubbed(&error), "failed to send a read receipt");
-        }
+        ctx.outbox
+            .post_message(
+                author,
+                ContentBody::ReceiptMessage(receipt),
+                timestamp,
+                "a read receipt",
+            )
+            .await;
     }
 }
 
@@ -7096,6 +7071,7 @@ mod tests {
                 storage_changed: Rc::default(),
                 storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
                 trust: Rc::default(),
+                outbox: tokio::sync::mpsc::channel(1).0,
             };
             let ann = ConversationId::contact("ann");
             assert_eq!(first_settings(&ctx, &ann, 10).await.last_read, 10);

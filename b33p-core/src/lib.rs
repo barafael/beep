@@ -14,6 +14,8 @@ mod import;
 mod local;
 mod mock;
 #[cfg(feature = "signal")]
+mod outbox;
+#[cfg(feature = "signal")]
 mod preview;
 mod qr;
 pub mod scratch;
