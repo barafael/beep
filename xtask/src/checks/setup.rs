@@ -20,7 +20,6 @@ const ANDROID_NUMBER: &str = "+15555550103";
 /// b33p-slint/src/ui.rs `sync_status` for `HistoryTransfer::Waiting`.
 const WAITING_FOR_HISTORY: &str = "Waiting for your phone to send your message history…";
 
-
 /// What the checks without Android start from: no egress, the server healthy, two presage-cli
 /// accounts, and b33p linked to the primary.
 pub(super) struct LinkedBox<'pod> {
