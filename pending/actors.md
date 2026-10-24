@@ -16,9 +16,9 @@ b33p-core runs on one thread (a `LocalSet`), so nothing runs at the same time; b
 - **Sessions.** A send loads a session, ratchets, and saves it, with awaits in between; two
   sends at once used the same counter (#51). `Sending` puts b33p's sends in one queue; presage's
   own sends and decryption are still beside it.
-- **Chat settings.** `LocalStore::update` (local.rs) reads a row, changes it, and writes it
-  back: two updates of one chat at once (the phone's read sync from `receive`, a pin from the
-  command loop, a merge from `follow_storage`) and one is lost.
+- **Chat settings.** `LocalStore::update`, the storage merge and the phone's blocked list each
+  read settings, awaited, and wrote them back whole: a change in between was lost (#61 fixes
+  all three with transactions).
 - **`Ctx`.** `threads` and `trust` are `Rc<RefCell<…>>` that the command loop, `receive`,
   `follow_storage`, `AvatarFetcher` and others read and write; `expiring` and `storage_changed`
   are `Notify`s that stand in for messages; `Repairs` is another shared `RefCell`.
@@ -27,6 +27,12 @@ b33p-core runs on one thread (a `LocalSet`), so nothing runs at the same time; b
 
 Each of these is right today only by reasoning about where the awaits are. An actor makes it
 right by construction: what it owns, only it changes, one message at a time.
+
+Not every one is a bug. Sessions and settings were (steps 0 and 1). The `RefCell`s are never
+borrowed across an await (clippy's `await_holding_refcell_ref`, on by default, would fail CI),
+and a `Notify` keeps a wakeup that comes before anyone waits, so steps 2 to 6 make the code
+easier to reason about rather than fix something seen. They are worth doing as signal.rs
+grows, one at a time, each with the testbox phases run before and after.
 
 ## How (the post's rules, applied)
 
@@ -51,7 +57,7 @@ right by construction: what it owns, only it changes, one message at a time.
 | `SENDING` mutex | — | `Sending` (done, #60) |
 | `LocalStore::update` | the settings table | one transaction (step 1, #61) |
 | `sweep_expired`, `expire_stories` | `ctx.expiring` (`Notify`), the tables | `Expiry` (step 2) |
-| `follow_storage`, `write_storage` | `ctx.storage_changed`, `storage_read`, tables | `Storage` (step 3) |
+| `follow_storage`, `write_storage` | `ctx.storage_changed`, `storage_read` | `Storage` (step 3; its merge is one transaction since #61) |
 | `AvatarFetcher` | `Rc<Cell<AvatarRun>>`, `threads` | `Avatars` (step 4) |
 | `ctx.threads`, `ctx.trust` | 17 and 4 uses in signal.rs | `Registry` (step 5) |
 | `receive`, the command loop | all of the above | sources that send to the actors (step 6) |
