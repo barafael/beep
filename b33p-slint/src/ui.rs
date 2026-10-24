@@ -69,12 +69,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |text| {
-            if shared.act(|chat| chat.compose(&text))
-                && let Some(window) = window.upgrade()
-            {
-                // Empty once sent; after an edit, what was being written before it.
-                window.set_draft(shared.chat.borrow().draft().into());
-                shared.refresh(Update::default());
+            if let Some(window) = window.upgrade() {
+                send(&shared, &window, &text);
             }
         }
     });
@@ -284,8 +280,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         move || {
             shared.act(|chat| {
-                let id = chat.selected().map(|c| c.id.clone());
-                chat.open_group_draft(id);
+                chat.open_add_members();
                 (None, Update::default())
             });
         }
@@ -516,10 +511,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         let shared = shared.clone();
         let window = window.as_weak();
         move |index| {
-            let text = shared.chat.borrow_mut().edit(index as usize);
-            if let (Some(text), Some(window)) = (text, window.upgrade()) {
-                window.set_draft(text.into());
-                shared.refresh(Update::default());
+            if let Some(window) = window.upgrade() {
+                edit(&shared, &window, index as usize);
             }
         }
     });
@@ -916,6 +909,38 @@ impl Window {
     #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn set_draft(&self, text: &str) {
         self.0.set_draft(text.into());
+    }
+
+    /// The send button, for the harness; returns whether a command went out.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn send(&self, shared: &Shared) -> bool {
+        send(shared, &self.0, &self.0.get_draft())
+    }
+
+    /// A message's Edit, for the harness.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn edit(&self, shared: &Shared, index: usize) {
+        edit(shared, &self.0, index);
+    }
+}
+
+/// Sends `text`, the composer's: during an edit that is the edit, which the state keeps out of
+/// the chat's draft. The composer is then empty, or after an edit holds what was being written
+/// before it. Returns whether a command went out.
+fn send(shared: &Shared, window: &AppWindow, text: &str) -> bool {
+    let sent = shared.act(|chat| chat.compose(text));
+    if sent {
+        window.set_draft(shared.chat.borrow().draft().into());
+        shared.refresh(Update::default());
+    }
+    sent
+}
+
+/// Puts the message's text in the composer, to be edited there.
+fn edit(shared: &Shared, window: &AppWindow, index: usize) {
+    if let Some(text) = shared.chat.borrow_mut().edit(index) {
+        window.set_draft(text.into());
+        shared.refresh(Update::default());
     }
 }
 

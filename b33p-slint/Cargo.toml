@@ -17,7 +17,7 @@ signal = ["b33p-core/signal"]
 # The agent harness (`agent.rs`, `B33P_AGENT_SOCKET`): a socket a script can use to read what
 # the window shows and to act as if it were the input, for tests and demonstrations. Unix
 # only; never part of a release build.
-harness = ["dep:serde", "dep:serde_json"]
+harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 b33p-core.workspace = true
@@ -29,7 +29,8 @@ slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "s
 i-slint-core.workspace = true
 tracing = "0.1"
 async-channel = "2"
-# The harness's JSON protocol (`agent.rs`).
+# The harness's JSON protocol (`agent.rs`, its types in b33p-harness).
+b33p-harness = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 # Whether the desktop asks for reduced motion (`motion.rs`).
