@@ -1,5 +1,5 @@
 [workspace]
-members = ["b33p-core", "b33p-notify", "b33p-slint"]
+members = ["b33p-core", "b33p-harness", "b33p-notify", "b33p-slint"]
 resolver = "3"
 
 [workspace.package]
@@ -12,6 +12,7 @@ homepage = "https://github.com/barafael/beep"
 
 [workspace.dependencies]
 b33p-core = { path = "b33p-core", default-features = false }
+b33p-harness = { path = "b33p-harness" }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 

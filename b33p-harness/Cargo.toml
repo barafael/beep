@@ -1,0 +1,16 @@
+[package]
+name = "b33p-harness"
+description = "The protocol of b33p's agent harness, shared by the app and its clients."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# `From` between the settings enums and b33p-core's, for the app's side.
+core = ["dep:b33p-core"]
+
+[dependencies]
+b33p-core = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
+

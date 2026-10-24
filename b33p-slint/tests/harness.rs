@@ -4,6 +4,8 @@
 //! a scratch home, so a test leaves nothing behind.
 
 #![cfg(all(feature = "harness", target_family = "unix"))]
+// Every outcome is handled: a discarded `Result` would hide a failure.
+#![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -11,7 +13,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use b33p_harness::{
+    Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
+    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme,
+};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 /// How long any single wait may take: the mock needs a couple of seconds to link, its echo a
 /// few more to come back.
@@ -21,27 +28,55 @@ const PATIENCE: Duration = Duration::from_secs(60);
 struct App {
     child: Child,
     scratch: PathBuf,
+    /// Reads the app's log, which must keep flowing or the app blocks on a full pipe.
+    log: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for App {
+    /// A drop can't fail the test, and mustn't panic during a panic: what goes wrong taking the
+    /// app down is reported.
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.scratch);
+        match self.child.kill() {
+            Ok(()) => {}
+            // Exited by itself already.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(error) => eprintln!("killing the app: {error}"),
+        }
+        if let Err(error) = self.child.wait() {
+            eprintln!("waiting for the app: {error}");
+        }
+        if let Some(log) = self.log.take()
+            && log.join().is_err()
+        {
+            eprintln!("the app's log reader panicked");
+        }
+        if let Err(error) = std::fs::remove_dir_all(&self.scratch) {
+            eprintln!("removing {}: {error}", self.scratch.display());
+        }
     }
 }
+
+/// What b33p logs once its agent socket listens (b33p-slint/src/agent.rs `start`).
+const LISTENING: &str = b33p_harness::LISTENING;
 
 /// One connection to the harness: requests out, JSON lines in.
 struct Agent {
     stream: UnixStream,
     lines: BufReader<UnixStream>,
     next_id: u64,
-    /// Answers read past while waiting for an update: the window is redrawn once per turn
-    /// of its event loop, so an action's answer may come before the update it causes.
-    skipped: Vec<Value>,
+    /// Replies read while waiting for something else, kept for whoever asks for them.
+    skipped: Vec<String>,
+    /// Whether the app pushes its state to this connection after every redraw yet.
+    subscribed: bool,
 }
 
-/// Starts b33p with the mock backend and connects to its harness.
+/// Enough of a line to tell a reply from a pushed update, and whose reply it is.
+#[derive(Deserialize)]
+struct Header {
+    id: Option<u64>,
+    event: Option<String>,
+}
+
 fn app(name: &str) -> (App, Agent) {
     app_with(name, &[])
 }
@@ -49,12 +84,18 @@ fn app(name: &str) -> (App, Agent) {
 /// [`app`], with more of the environment set.
 fn app_with(name: &str, env: &[(&str, &str)]) -> (App, Agent) {
     let scratch = std::env::temp_dir().join(format!("b33p-harness-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
+    // Left by an earlier run that died, if any.
+    match std::fs::remove_dir_all(&scratch) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            panic!("removing {}: {error}", scratch.display())
+        }
+        Ok(()) | Err(_) => {}
+    }
     for dir in ["config", "data", "cache", "runtime"] {
         std::fs::create_dir_all(scratch.join(dir)).unwrap();
     }
     let socket = scratch.join("agent.sock");
-    let child = Command::new(env!("CARGO_BIN_EXE_b33p"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_b33p"))
         .env("B33P_MOCK", "1")
         .env("B33P_AGENT_SOCKET", &socket)
         .env("XDG_CONFIG_HOME", scratch.join("config"))
@@ -69,198 +110,241 @@ fn app_with(name: &str, env: &[(&str, &str)]) -> (App, Agent) {
             format!("unix:path={}", scratch.join("bus").display()),
         )
         .env("QT_QPA_PLATFORM", "offscreen")
+        // Its log, at the default level: it says when the socket listens.
+        .env_remove("RUST_LOG")
         .envs(env.iter().copied())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("b33p starts");
-    let deadline = Instant::now() + PATIENCE;
-    let stream = loop {
-        match UnixStream::connect(&socket) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
+    let (listening, heard) = std::sync::mpsc::channel();
+    // The log goes to stderr (b33p-slint/src/logging.rs `init`).
+    let output = child.stderr.take().expect("stderr is piped");
+    let log = std::thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            match line {
+                // The test may have stopped listening; the rest of the log is drained all the same.
+                Ok(line) if line.contains(LISTENING) => listening.send(()).unwrap_or(()),
+                Ok(_) => {}
+                Err(_) => return,
             }
-            Err(error) => panic!("no agent socket at {}: {error}", socket.display()),
         }
+    });
+    let app = App {
+        child,
+        scratch,
+        log: Some(log),
     };
+    heard
+        .recv_timeout(PATIENCE)
+        .unwrap_or_else(|error| panic!("b33p never said its agent socket listens: {error}"));
+    let stream = UnixStream::connect(&socket)
+        .unwrap_or_else(|error| panic!("no agent socket at {}: {error}", socket.display()));
     let writer = stream.try_clone().expect("a second handle to the socket");
-    // Reads come back at least once a second, so a quiet app can't stall the test past its
-    // deadlines; the read methods treat a timeout as "not yet".
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("the socket takes a read timeout");
     (
-        App { child, scratch },
+        app,
         Agent {
             stream: writer,
             lines: BufReader::new(stream),
             next_id: 1,
             skipped: Vec::new(),
+            subscribed: false,
         },
     )
 }
 
 impl Agent {
-    fn send(&mut self, line: &str) {
+    fn send_line(&mut self, line: &str) {
         writeln!(self.stream, "{line}").expect("the socket takes writes");
     }
 
-    /// Sends one request and waits for its answer, skipping pushed updates on the way.
-    fn call(&mut self, request: &str) -> Value {
+    /// Sends `call` without waiting for its answer; returns its id.
+    fn send(&mut self, call: Call) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.send(&format!("{{\"id\":{id},{request}}}"));
+        let line = serde_json::to_string(&Request { id, call }).expect("requests serialize");
+        self.send_line(&line);
+        id
+    }
+
+    fn reply<T: DeserializeOwned>(&mut self, call: Call) -> Reply<T> {
+        let id = self.send(call);
         self.answer(id)
     }
 
-    /// Reads lines until the answer to `id` comes, unless it was read past already.
-    fn answer(&mut self, id: u64) -> Value {
-        let is_answer = |value: &Value| value.get("id").and_then(Value::as_u64) == Some(id);
-        if let Some(at) = self.skipped.iter().position(is_answer) {
-            return self.skipped.remove(at);
-        }
-        let deadline = Instant::now() + PATIENCE;
-        loop {
-            let value = self.line(deadline);
-            if is_answer(&value) {
-                return value;
-            }
-        }
+    fn result<T: DeserializeOwned>(&mut self, call: Call) -> T {
+        Result::from(self.reply(call).outcome)
+            .unwrap_or_else(|error| panic!("the app refused: {error}"))
     }
 
-    /// The next pushed update that satisfies `until`, skipping unrelated ones on the way —
-    /// the backend produces redraws of its own (read receipts, …), which an agent waiting
-    /// for one thing must wade past.
-    fn next_event_matching(&mut self, what: &str, until: impl Fn(&Value) -> bool) -> Value {
+    /// The answer to request `id`, whether read already or still to come.
+    fn answer<T: DeserializeOwned>(&mut self, id: u64) -> Reply<T> {
+        let is_answer = |line: &String| header(line).id == Some(id);
+        let line = match self.skipped.iter().position(is_answer) {
+            Some(at) => self.skipped.remove(at),
+            None => {
+                let deadline = Instant::now() + PATIENCE;
+                loop {
+                    let line = self.line(deadline);
+                    if is_answer(&line) {
+                        break line;
+                    }
+                }
+            }
+        };
+        serde_json::from_str(&line).unwrap_or_else(|error| panic!("{error}: {line}"))
+    }
+
+    fn act(&mut self, action: Action) -> bool {
+        self.result::<Acted>(Call::Act { action }).command_sent
+    }
+
+    fn select(&mut self, conversation: &str) {
+        self.act(Action::Select {
+            conversation: conversation.to_owned(),
+        });
+    }
+
+    fn type_text(&mut self, text: &str) {
+        self.act(Action::Type {
+            text: text.to_owned(),
+        });
+    }
+
+    fn snapshot(&mut self) -> Snapshot {
+        self.result(Call::Snapshot)
+    }
+
+    fn next_update_matching(&mut self, what: &str, until: impl Fn(&Pushed) -> bool) -> Pushed {
         let deadline = Instant::now() + PATIENCE;
         loop {
-            let value = self.line(deadline);
-            if value.get("event").is_some() {
-                if until(&value) {
-                    return value;
+            let line = self.line(deadline);
+            if header(&line).event.is_some() {
+                let update: Pushed = serde_json::from_str(&line).expect("an update");
+                if until(&update) {
+                    return update;
                 }
             } else {
-                self.skipped.push(value);
+                self.skipped.push(line);
             }
             assert!(Instant::now() < deadline, "no update {what}");
         }
     }
 
-    fn line(&mut self, deadline: Instant) -> Value {
-        loop {
-            let mut line = String::new();
-            match self.lines.read_line(&mut line) {
-                Ok(0) => panic!("the app closed the connection"),
-                Ok(_) => {
-                    return serde_json::from_str(&line).expect("a JSON line");
-                }
-                // The read timeout: not yet, but the deadline still holds.
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        || error.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(error) => panic!("the socket answers: {error}"),
+    /// The next line: a read that blocks, bounded by the time left until `deadline`.
+    fn line(&mut self, deadline: Instant) -> String {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "the app went quiet");
+        self.lines
+            .get_ref()
+            .set_read_timeout(Some(left))
+            .expect("the socket takes a read timeout");
+        let mut line = String::new();
+        match self.lines.read_line(&mut line) {
+            Ok(0) => panic!("the app closed the connection"),
+            Ok(_) => line,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                panic!("the app went quiet")
             }
-            assert!(Instant::now() < deadline, "the app went quiet");
+            Err(error) => panic!("the socket answers: {error}"),
         }
     }
 
-    fn result(&mut self, request: &str) -> Value {
-        self.call(request)["result"].clone()
-    }
-
-    fn act(&mut self, action: &str) -> Value {
-        self.call(&format!("\"method\":\"act\",\"action\":{action}"))
-    }
-
-    fn snapshot(&mut self) -> Value {
-        self.result("\"method\":\"snapshot\"")
-    }
-
-    /// Polls for the state to come to satisfy `until`, e.g. for the backend to catch up.
-    fn wait_for(&mut self, what: &str, until: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + PATIENCE;
-        loop {
-            let snapshot = self.snapshot();
-            if until(&snapshot) {
-                return snapshot;
-            }
-            assert!(Instant::now() < deadline, "never {what}: {snapshot}");
-            std::thread::sleep(Duration::from_millis(200));
+    /// Waits for the state to come to satisfy `until`, e.g. for the backend to catch up. Nothing
+    /// polls: the app pushes its state after every redraw, and every change redraws.
+    fn wait_for(&mut self, what: &str, until: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        // Subscribed before the first look, so no change between the two goes unseen.
+        if !self.subscribed {
+            self.result::<Subscribed>(Call::Subscribe);
+            self.subscribed = true;
         }
+        let snapshot = self.snapshot();
+        if until(&snapshot) {
+            return snapshot;
+        }
+        self.next_update_matching(what, |update| until(&update.snapshot))
+            .snapshot
     }
 }
 
-fn screen(snapshot: &Value) -> &str {
-    snapshot["screen"]["name"].as_str().unwrap_or("")
+fn header(line: &str) -> Header {
+    serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}"))
 }
 
 /// The message with this exact text, if it is on screen.
-fn message<'a>(snapshot: &'a Value, text: &str) -> Option<&'a Value> {
-    snapshot["messages"]
-        .as_array()?
-        .iter()
-        .find(|m| m["text"].as_str() == Some(text))
+fn message<'a>(snapshot: &'a Snapshot, text: &str) -> Option<&'a MessageSnapshot> {
+    snapshot.messages.iter().find(|m| m.text == text)
 }
 
-/// The mock links, then shows its canned chats.
+fn conversation<'a>(snapshot: &'a Snapshot, title: &str) -> &'a ConversationSnapshot {
+    snapshot
+        .conversations
+        .iter()
+        .find(|c| c.title == title)
+        .unwrap_or_else(|| panic!("a chat called {title} in {:?}", snapshot.conversations))
+}
+
 /// The chats screen with the mock's chats listed: a contact is listed once its latest
 /// message is known, which comes after the screen.
-fn wait_for_chats(agent: &mut Agent) -> Value {
+fn wait_for_chats(agent: &mut Agent) -> Snapshot {
     agent.wait_for("the mock's chats", |s| {
-        screen(s) == "chats"
-            && s["conversations"].as_array().is_some_and(|all| {
-                ["Alice", "Bob"]
-                    .iter()
-                    .all(|name| all.iter().any(|c| c["title"] == *name))
-            })
+        s.screen == ScreenSnapshot::Chats
+            && ["Alice", "Bob"]
+                .iter()
+                .all(|name| s.conversations.iter().any(|c| c.title == *name))
     })
 }
 
-fn id_of(chats: &Value, title: &str) -> String {
-    chats["conversations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["title"].as_str() == Some(title))
-        .unwrap_or_else(|| panic!("a chat called {title} in {}", chats["conversations"]))["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+fn id_of(chats: &Snapshot, title: &str) -> String {
+    conversation(chats, title).id.clone()
 }
 
-fn selected_is(snapshot: &Value, id: &str) -> bool {
-    snapshot["selected"].as_str() == Some(id)
+fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
+    snapshot.selected.as_deref() == Some(id)
+}
+
+/// Changes only the theme and the text size.
+fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
+    Action::SetSettings {
+        theme: Some(theme),
+        style: None,
+        text_size: Some(text_size),
+        animations: None,
+        show_avatars: None,
+        notifications: None,
+        notification_content: None,
+        show_activity: None,
+        show_calendar: None,
+        close_to_tray: None,
+        read_receipts: None,
+        typing_indicators: None,
+        link_previews: None,
+        sync_to_phone: None,
+    }
 }
 
 /// Starting, connecting, and reading are the test; also that nonsense is refused.
 #[test]
 fn an_agent_sees_the_chats() {
     let (_app, mut agent) = app("chats");
-    let ping = agent.result("\"method\":\"ping\"");
-    assert_eq!(ping["mock"], true);
-    let error = agent.call("\"method\":\"teleport\"");
-    assert!(error.get("error").is_some());
+    let ping: Pong = agent.result(Call::Ping);
+    assert!(ping.mock);
+    // Not a request at all, so by hand.
+    agent.send_line("{\"id\":7,\"method\":\"teleport\"}");
+    assert!(matches!(agent.answer::<Pong>(7).outcome, Outcome::Err(_)));
     let chats = wait_for_chats(&mut agent);
-    assert!(chats["conversations"].as_array().unwrap().len() > 3);
-    let alice = id_of(&chats, "Alice");
-    let chats = agent.snapshot();
-    let alice_row = chats["conversations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["id"].as_str() == Some(&alice))
-        .unwrap();
-    assert_eq!(alice_row["group"], false);
-    assert_eq!(alice_row["request"], false);
+    assert!(chats.conversations.len() > 3);
+    let alice = conversation(&chats, "Alice");
+    assert!(!alice.group);
+    assert!(!alice.request);
+    // The mock gives Alice a picture and Bob none.
+    assert!(alice.avatar);
+    assert!(!conversation(&chats, "Bob").avatar);
     // Note to Self is there and known as such.
-    let own = chats["conversations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["title"].as_str() == Some("Note to Self"))
-        .unwrap();
-    assert_eq!(own["note_to_self"], true);
+    assert!(conversation(&chats, "Note to Self").note_to_self);
 }
 
 /// The whole round trip of a message: typed, sent, delivered, read, answered.
@@ -269,23 +353,78 @@ fn a_sent_message_is_answered() {
     let (_app, mut agent) = app("send");
     let chats = wait_for_chats(&mut agent);
     let alice = id_of(&chats, "Alice");
-    agent.act(&format!(
-        "{{\"type\":\"select\",\"conversation\":\"{alice}\"}}"
-    ));
+    agent.select(&alice);
     assert!(selected_is(
         &agent.wait_for("Alice selected", |s| selected_is(s, &alice)),
         &alice
     ));
-    agent.act("{\"type\":\"type\",\"text\":\"Hello\"}");
-    assert_eq!(agent.snapshot()["draft"], "Hello");
-    agent.act("{\"type\":\"send\"}");
-    assert_eq!(agent.snapshot()["draft"], "");
+    agent.type_text("Hello");
+    assert_eq!(agent.snapshot().draft, "Hello");
+    agent.act(Action::Send);
+    assert_eq!(agent.snapshot().draft, "");
     let read = agent.wait_for("the message read", |s| {
-        message(s, "Hello").and_then(|m| m["delivery"].as_str()) == Some("read")
+        message(s, "Hello").and_then(|m| m.delivery) == Some(Delivery::Read)
     });
-    assert_eq!(message(&read, "Hello").unwrap()["outgoing"], true);
+    assert!(message(&read, "Hello").unwrap().outgoing);
     // The mock answers in person.
     agent.wait_for("the echo", |s| message(s, "You said: Hello").is_some());
+}
+
+/// An edit through the harness goes out as the composer's text, as the send button sends it:
+/// the state keeps an edit out of the chat's draft, so sending the draft would send nothing.
+#[test]
+fn a_sent_message_is_edited() {
+    let (_app, mut agent) = app("edit");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Alice"));
+    agent.type_text("Hello");
+    agent.act(Action::Send);
+    // Not while it is sending: only a sent message can be edited.
+    let sent = agent.wait_for("the message sent", |s| {
+        message(s, "Hello")
+            .and_then(|m| m.delivery)
+            .is_some_and(|delivery| delivery != Delivery::Sending)
+    });
+    let index = message(&sent, "Hello").unwrap().index;
+    agent.act(Action::Edit { index });
+    agent.type_text("Hello, edited");
+    agent.act(Action::Send);
+    let edited = agent.wait_for("the edit", |s| message(s, "Hello, edited").is_some());
+    assert!(message(&edited, "Hello, edited").unwrap().edited);
+    assert!(!edited.editing);
+}
+
+/// A picture fetched for display and a file saved, with their states in the snapshot.
+#[test]
+fn attachments_are_fetched_and_saved() {
+    let (_app, mut agent) = app("attachments");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Alice"));
+    let attachment = |snapshot: &Snapshot, id: &str| {
+        snapshot
+            .messages
+            .iter()
+            .flat_map(|m| &m.attachments)
+            .find(|a| a.id == id)
+            .cloned()
+    };
+    agent.wait_for("Alice's photo", |s| attachment(s, "photo").is_some());
+    agent.act(Action::FetchAttachment {
+        id: "photo".to_owned(),
+    });
+    agent.wait_for("the photo downloaded", |s| {
+        attachment(s, "photo").is_some_and(|a| a.download == Some(Download::Ready))
+    });
+    agent.act(Action::SaveAttachment {
+        id: "notes".to_owned(),
+    });
+    let saved = agent.wait_for("the notes saved", |s| {
+        attachment(s, "notes").is_some_and(|a| matches!(a.saved, Some(Saved::Saved(_))))
+    });
+    let Some(Saved::Saved(path)) = attachment(&saved, "notes").unwrap().saved else {
+        unreachable!("waited for it")
+    };
+    assert!(path.ends_with("route-notes.pdf"));
 }
 
 /// A group joined through its invite link: looked up, asked to join, then taken back.
@@ -293,30 +432,35 @@ fn a_sent_message_is_answered() {
 fn a_group_is_joined_through_its_link() {
     let (_app, mut agent) = app("join");
     wait_for_chats(&mut agent);
-    agent.act("{\"type\":\"open_join_group\",\"link\":\"https://signal.group/#mock-approve\"}");
-    let looked_up = agent.wait_for("the link looked up", |s| s["join"]["title"].is_string());
-    assert_eq!(looked_up["join"]["title"], "Climbing crew");
-    assert_eq!(looked_up["join"]["approval"], true);
-    agent.act("{\"type\":\"join_group\"}");
+    agent.act(Action::OpenJoinGroup {
+        link: Some("https://signal.group/#mock-approve".to_owned()),
+    });
+    let looked_up = agent.wait_for("the link looked up", |s| {
+        s.join.as_ref().is_some_and(|join| join.title.is_some())
+    });
+    let join = looked_up.join.unwrap();
+    assert_eq!(join.title.as_deref(), Some("Climbing crew"));
+    assert!(join.approval);
+    agent.act(Action::JoinGroup);
     let asked = agent.wait_for("the group there, asked to join", |s| {
-        s["join"].is_null()
-            && s["conversations"].as_array().is_some_and(|all| {
-                all.iter()
-                    .any(|c| c["title"] == "Climbing crew" && c["requested"] == true)
-            })
+        s.join.is_none()
+            && s.conversations
+                .iter()
+                .any(|c| c.title == "Climbing crew" && c.requested)
     });
     let group = id_of(&asked, "Climbing crew");
     assert!(selected_is(&asked, &group), "the group opens");
-    agent.act("{\"type\":\"cancel_join_request\"}");
+    agent.act(Action::CancelJoinRequest);
     let taken_back = agent.wait_for("the request taken back", |s| {
         message(s, "You took back the request to join.").is_some()
     });
-    let listed = taken_back["conversations"]
-        .as_array()
-        .and_then(|all| all.iter().find(|c| c["id"] == group.as_str()))
+    let listed = taken_back
+        .conversations
+        .iter()
+        .find(|c| c.id == group)
         .expect("the group is still listed");
-    assert_eq!(listed["requested"], false);
-    assert_eq!(listed["left"], true);
+    assert!(!listed.requested);
+    assert!(listed.left);
 }
 
 /// Stories are shown one after another: a picture, then a text one, whose box is sized from the
@@ -325,24 +469,27 @@ fn a_group_is_joined_through_its_link() {
 fn stories_are_shown_in_turn() {
     let (_app, mut agent) = app("stories");
     let chats = wait_for_chats(&mut agent);
-    let alice = id_of(&chats, "Alice");
-    let rust = id_of(&chats, "Rustaceans 🦀");
-    agent.act(&format!(
-        "{{\"type\":\"open_story\",\"conversation\":\"{alice}\"}}"
-    ));
-    let picture = agent.wait_for("Alice's story", |s| s["story"]["author"] == "Alice");
-    assert_eq!(picture["story"]["position"], 1);
-    assert_eq!(picture["story"]["count"], 2);
-    assert!(picture["story"]["text"].is_null(), "the first is a picture");
-    agent.act(&format!(
-        "{{\"type\":\"open_story\",\"conversation\":\"{rust}\"}}"
-    ));
-    let text = agent.wait_for("Ferris's story", |s| s["story"]["author"] == "Ferris");
-    assert_eq!(text["story"]["text"], "cargo build --release 🦀");
+    let story_by =
+        |s: &Snapshot, author: &str| s.story.as_ref().is_some_and(|story| story.author == author);
+    agent.act(Action::OpenStory {
+        conversation: id_of(&chats, "Alice"),
+    });
+    let picture = agent.wait_for("Alice's story", |s| story_by(s, "Alice"));
+    let story = picture.story.unwrap();
+    assert_eq!((story.position, story.count), (1, 2));
+    assert!(story.text.is_none(), "the first is a picture");
+    agent.act(Action::OpenStory {
+        conversation: id_of(&chats, "Rustaceans 🦀"),
+    });
+    let text = agent.wait_for("Ferris's story", |s| story_by(s, "Ferris"));
+    assert_eq!(
+        text.story.unwrap().text.as_deref(),
+        Some("cargo build --release 🦀")
+    );
     // The window drew the text story (and did not die doing it).
     let drawn = agent.snapshot();
-    assert_eq!(drawn["story"]["author"], "Ferris");
-    assert!(drawn["window"].is_object(), "the window answers");
+    assert!(story_by(&drawn, "Ferris"));
+    assert!(drawn.window.is_some(), "the window answers");
 }
 
 /// Whatever an agent does, a subscribed agent hears of it, numbered on.
@@ -352,31 +499,29 @@ fn a_subscriber_hears_updates() {
     let chats = wait_for_chats(&mut agent);
     let alice = id_of(&chats, "Alice");
     let bob = id_of(&chats, "Bob");
-    agent.act(&format!(
-        "{{\"type\":\"select\",\"conversation\":\"{alice}\"}}"
-    ));
+    agent.select(&alice);
     agent.wait_for("Alice selected", |s| selected_is(s, &alice));
-    let seq = agent.result("\"method\":\"subscribe\"")["seq"]
-        .as_u64()
-        .unwrap();
+    let subscribed: Subscribed = agent.result(Call::Subscribe);
     // Sent without waiting for its answer: reading for the answer could eat the very update
     // we are after.
-    agent.send(&format!(
-        "{{\"id\":900,\"method\":\"act\",\"action\":{{\"type\":\"select\",\"conversation\":\"{bob}\"}}}}"
-    ));
-    let update = agent.next_event_matching("of Bob selected", |update| {
-        update["snapshot"]["selected"].as_str() == Some(bob.as_str())
+    let select = |conversation: &str| Call::Act {
+        action: Action::Select {
+            conversation: conversation.to_owned(),
+        },
+    };
+    let to_bob = agent.send(select(&bob));
+    let update = agent.next_update_matching("of Bob selected", |update| {
+        selected_is(&update.snapshot, &bob)
     });
-    assert!(update["seq"].as_u64().unwrap() > seq);
-    let answer = agent.answer(900);
-    assert_eq!(answer["result"]["command_sent"], true);
-    agent.send(&format!(
-        "{{\"id\":901,\"method\":\"act\",\"action\":{{\"type\":\"select\",\"conversation\":\"{alice}\"}}}}"
-    ));
-    let second = agent.next_event_matching("of Alice selected again", |update| {
-        update["snapshot"]["selected"].as_str() == Some(alice.as_str())
+    assert!(update.seq > subscribed.seq);
+    let acted = Result::from(agent.answer::<Acted>(to_bob).outcome)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(acted.command_sent);
+    agent.send(select(&alice));
+    let second = agent.next_update_matching("of Alice selected again", |update| {
+        selected_is(&update.snapshot, &alice)
     });
-    assert!(second["seq"].as_u64().unwrap() > update["seq"].as_u64().unwrap());
+    assert!(second.seq > update.seq);
 }
 
 /// Settings change as asked, keep what isn't named, and refuse what isn't known.
@@ -384,24 +529,31 @@ fn a_subscriber_hears_updates() {
 fn settings_can_be_changed() {
     let (_app, mut agent) = app("settings");
     wait_for_chats(&mut agent);
-    agent.act("{\"type\":\"set_settings\",\"theme\":\"dark\",\"text_size\":\"large\"}");
-    let snapshot = agent.snapshot();
-    assert_eq!(snapshot["settings"]["theme"], "dark");
-    assert_eq!(snapshot["settings"]["text_size"], "large");
-    assert_eq!(snapshot["settings"]["show_avatars"], true);
-    let error =
-        agent.call("\"method\":\"act\",\"action\":{\"type\":\"set_settings\",\"theme\":\"taupe\"}");
-    assert!(error.get("error").is_some());
-    assert_eq!(agent.snapshot()["settings"]["theme"], "dark");
+    agent.act(theme_and_text_size(Theme::Dark, TextSize::Large));
+    let settings = agent.snapshot().settings;
+    assert_eq!(settings.theme, Theme::Dark);
+    assert_eq!(settings.text_size, TextSize::Large);
+    assert!(settings.show_avatars);
+    // No such theme, so no such `Theme`: by hand.
+    agent.send_line(
+        "{\"id\":8,\"method\":\"act\",\"action\":{\"type\":\"set_settings\",\"theme\":\"taupe\"}}",
+    );
+    assert!(matches!(agent.answer::<Acted>(8).outcome, Outcome::Err(_)));
+    assert_eq!(agent.snapshot().settings.theme, Theme::Dark);
 }
 
 /// A failure at the start has its own screen; trying again carries on.
 #[test]
 fn a_failure_can_be_tried_again() {
     let (_app, mut agent) = app_with("failure", &[("B33P_MOCK_FAIL", "key-missing")]);
-    let snapshot = agent.wait_for("the failure screen", |s| screen(s) == "failed");
-    assert_eq!(snapshot["screen"]["failure"], "KeyMissing");
-    agent.act("{\"type\":\"retry\"}");
+    let snapshot = agent.wait_for("the failure screen", |s| {
+        matches!(s.screen, ScreenSnapshot::Failed { .. })
+    });
+    let ScreenSnapshot::Failed { failure, .. } = snapshot.screen else {
+        unreachable!("waited for it")
+    };
+    assert_eq!(failure, "KeyMissing");
+    agent.act(Action::Retry);
     wait_for_chats(&mut agent);
 }
 
@@ -410,10 +562,12 @@ fn a_failure_can_be_tried_again() {
 fn unlinking_starts_again_with_linking() {
     let (_app, mut agent) = app("unlink");
     wait_for_chats(&mut agent);
-    agent.act("{\"type\":\"unlink\"}");
-    let snapshot = agent.wait_for("the link screen", |s| screen(s) == "link");
-    assert_eq!(snapshot["account"], "");
-    assert_eq!(snapshot["conversations"].as_array().map(Vec::len), Some(0));
+    agent.act(Action::Unlink);
+    let snapshot = agent.wait_for("the link screen", |s| {
+        matches!(s.screen, ScreenSnapshot::Link { .. })
+    });
+    assert_eq!(snapshot.account, "");
+    assert!(snapshot.conversations.is_empty());
     wait_for_chats(&mut agent);
 }
 
@@ -422,16 +576,14 @@ fn unlinking_starts_again_with_linking() {
 fn the_device_can_be_renamed() {
     let (_app, mut agent) = app("rename");
     wait_for_chats(&mut agent);
-    let default = agent.snapshot()["settings"]["device_name"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let default = agent.snapshot().settings.device_name;
     assert!(default.starts_with("b33p"), "{default}");
-    agent.act("{\"type\":\"rename_device\",\"name\":\"  Work\\nlaptop \"}");
-    assert_eq!(agent.snapshot()["settings"]["device_name"], "Work laptop");
-    agent.act("{\"type\":\"rename_device\",\"name\":\"\"}");
-    assert_eq!(
-        agent.snapshot()["settings"]["device_name"],
-        default.as_str()
-    );
+    agent.act(Action::RenameDevice {
+        name: "  Work\nlaptop ".to_owned(),
+    });
+    assert_eq!(agent.snapshot().settings.device_name, "Work laptop");
+    agent.act(Action::RenameDevice {
+        name: String::new(),
+    });
+    assert_eq!(agent.snapshot().settings.device_name, default);
 }
