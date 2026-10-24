@@ -1586,6 +1586,12 @@ impl ChatState {
         })
     }
 
+    /// The open group's "add members": a draft adding to it.
+    pub fn open_add_members(&mut self) {
+        let id = self.selected().map(|conversation| conversation.id.clone());
+        self.open_group_draft(id);
+    }
+
     /// Starts choosing people for a new group, or to add to `adding_to`.
     pub fn open_group_draft(&mut self, adding_to: Option<ConversationId>) {
         self.group_draft = Some(GroupDraft {

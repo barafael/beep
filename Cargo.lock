@@ -740,6 +740,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "windows-native-keyring-store",
  "xattr",

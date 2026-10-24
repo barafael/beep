@@ -6,6 +6,7 @@ pub struct QrMatrix {
     pub width: usize,
     /// Row-major, `true` = dark module.
     pub modules: Vec<bool>,
+    pub encoded_text: String,
 }
 
 impl QrMatrix {
@@ -18,6 +19,7 @@ impl QrMatrix {
                 .into_iter()
                 .map(|c| c == Color::Dark)
                 .collect(),
+            encoded_text: data.to_owned(),
         })
     }
 
