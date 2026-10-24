@@ -4,6 +4,11 @@ Manual checks against a real Signal account, for what automated tests can't cove
 Signal servers, the phone, and the desktop around b33p. Each check says what to do and what
 should happen. Note anything that differs, with the log (`RUST_LOG=b33p=debug` helps).
 
+Much of what this plan does by hand against Signal-Desktop and Signal-Android, the
+[test box](testbox/README.md) does automatically, against Signal-Server's test mode: a pass there
+doesn't stand in for these checks against Signal's servers and a real phone, but it is the quicker
+first look.
+
 ## Before you start
 
 - Build and run: `cargo run --release -p b33p-slint`.
