@@ -700,7 +700,7 @@ async fn session(
     let mut linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) => match Marker::read(paths) {
             None => {
-                debug_only_unless_production(&manager.registration_data().signal_servers)?;
+                test_servers_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
                 let _ = events.send(Event::Linked { account });
                 Some((manager, Vec::new()))
@@ -1162,16 +1162,25 @@ async fn reset(
     Marker::remove(paths)
 }
 
+// Other servers are a build's choice, not the environment's: `debug_assertions` alone is a
+// profile setting a release can turn on.
+#[cfg(all(feature = "test-servers", not(debug_assertions)))]
+compile_error!("the `test-servers` feature is for test builds: build without `--release`");
+
+/// The servers a new link goes to: Signal's.
+#[cfg(not(feature = "test-servers"))]
+fn link_servers() -> Result<SignalServers, String> {
+    Ok(SignalServers::Production)
+}
+
 /// The servers a new link goes to. `B33P_SIGNAL_SERVERS` names others: `staging`, or a TOML
 /// file describing servers of one's own, such as the testbox's, in the form presage-cli's
-/// `--servers-file` reads. A development aid like `B33P_DATA_DIR`, so release builds ignore it.
+/// `--servers-file` reads.
+#[cfg(feature = "test-servers")]
 fn link_servers() -> Result<SignalServers, String> {
     let Ok(name) = std::env::var("B33P_SIGNAL_SERVERS") else {
         return Ok(SignalServers::Production);
     };
-    if !cfg!(debug_assertions) {
-        return Ok(SignalServers::Production);
-    }
     if let Ok(servers) = name.parse() {
         return Ok(servers);
     }
@@ -1182,13 +1191,13 @@ fn link_servers() -> Result<SignalServers, String> {
     Ok(SignalServers::Custom(Box::new(configuration)))
 }
 
-/// A store a debug build linked to other servers ([`link_servers`]) stays out of release builds.
-fn debug_only_unless_production(servers: &SignalServers) -> Result<(), String> {
-    if cfg!(debug_assertions) || *servers == SignalServers::Production {
+/// A store linked to other servers ([`link_servers`]) stays out of builds without them.
+fn test_servers_unless_production(servers: &SignalServers) -> Result<(), String> {
+    if cfg!(feature = "test-servers") || *servers == SignalServers::Production {
         Ok(())
     } else {
         Err(format!(
-            "This store is linked to the {servers} servers, which only debug builds use."
+            "This store is linked to the {servers} servers, which only test builds use."
         ))
     }
 }

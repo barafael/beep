@@ -17,7 +17,7 @@ RUN --network=none \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --offline --locked -p b33p-slint --features harness \
+    cargo build --offline --locked -p b33p-slint --features harness,test-servers \
     && cp target/debug/b33p /usr/local/bin/b33p
 # `with-display` built here, on the Debian it runs on: the other images' is trixie's.
 RUN --network=none \
