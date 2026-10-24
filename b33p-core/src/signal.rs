@@ -3006,6 +3006,44 @@ struct Repairs {
 
 const SESSION_RESET_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// The delivery receipts we owe, by sender, until they are sent. While the queue drains after
+/// connecting, each sender's are gathered and go out together once it is empty, as
+/// Signal-Desktop holds its own back until then; after that, each goes out at once.
+#[derive(Default)]
+struct Receipts {
+    owed: HashMap<ServiceId, Vec<u64>>,
+    /// The queue has drained since connecting.
+    live: bool,
+}
+
+/// Timestamps per receipt at most, as Signal-Desktop batches them.
+const RECEIPT_TIMESTAMPS: usize = 100;
+
+impl Receipts {
+    fn owe(&mut self, sender: ServiceId, timestamp: u64) {
+        self.owed.entry(sender).or_default().push(timestamp);
+    }
+
+    async fn send(&mut self, outbox: &Outbox) {
+        for (sender, timestamps) in std::mem::take(&mut self.owed) {
+            for timestamps in timestamps.chunks(RECEIPT_TIMESTAMPS) {
+                let receipt = ReceiptMessage {
+                    r#type: Some(receipt_message::Type::Delivery as i32),
+                    timestamp: timestamps.to_vec(),
+                };
+                outbox
+                    .post_message(
+                        sender,
+                        ContentBody::ReceiptMessage(receipt),
+                        now_millis(),
+                        "a delivery receipt",
+                    )
+                    .await;
+            }
+        }
+    }
+}
+
 /// Display names by sender service ID, so each sender is looked up in the store only once.
 type Names = HashMap<String, String>;
 
@@ -3041,6 +3079,8 @@ async fn receive(
 ) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
+    // Kept across reconnects: what was owed before a drop goes out once the queue drains again.
+    let mut receipts = Receipts::default();
     let mut backoff = Duration::from_secs(1);
     let woke = Rc::new(tokio::sync::Notify::new());
     let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
@@ -3054,6 +3094,7 @@ async fn receive(
                 if !ctx.events.send(Event::Connected) {
                     return;
                 }
+                receipts.live = false;
                 pin_mut!(messages);
                 loop {
                     // Only between messages, so one is never handled halfway.
@@ -3071,9 +3112,17 @@ async fn receive(
                     };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &ctx, &avatars, &mut names, &repairs, received)
-                        .await
-                    {
+                    let handled = handle_received(
+                        &manager,
+                        &ctx,
+                        &avatars,
+                        &mut names,
+                        &repairs,
+                        &mut receipts,
+                        received,
+                    )
+                    .await;
+                    if !handled {
                         return;
                     }
                 }
@@ -3155,12 +3204,15 @@ async fn handle_received(
     avatars: &AvatarFetcher,
     names: &mut Names,
     repairs: &Rc<RefCell<Repairs>>,
+    receipts: &mut Receipts,
     received: Received,
 ) -> bool {
     let events = &ctx.events;
     match received {
         Received::QueueEmpty => {
             info!("synced with Signal");
+            receipts.live = true;
+            receipts.send(&ctx.outbox).await;
             events.send(Event::Synced)
         }
         Received::Contacts => {
@@ -3240,7 +3292,13 @@ async fn handle_received(
             on_retry_receipt(manager, ctx, repairs, sender, sender_device, &message).await;
             true
         }
-        Received::Content(content) => handle_content(manager, ctx, names, &content).await,
+        Received::Content(content) => {
+            let handled = handle_content(manager, ctx, names, receipts, &content).await;
+            if receipts.live {
+                receipts.send(&ctx.outbox).await;
+            }
+            handled
+        }
     }
 }
 
@@ -3367,7 +3425,13 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
 }
 
 /// Returns `false` once the UI has gone away.
-async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &Content) -> bool {
+async fn handle_content(
+    manager: &Mgr,
+    ctx: &Ctx,
+    names: &mut Names,
+    receipts: &mut Receipts,
+    content: &Content,
+) -> bool {
     let events = &ctx.events;
     // Sync messages speak for our account: what our other devices sent, read, blocked or
     // accepted. Only our own devices may say so (the sender is authenticated by the session);
@@ -3533,6 +3597,17 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
         return true;
     }
+    // As Signal's clients: a delivery receipt for each message (a reaction, an edit, a delete
+    // too) that came by sealed sender, which is when `needs_receipt` is set. It names the
+    // envelope's timestamp, which for an edit is the edit's own. Not to an unanswered message
+    // request: as with read receipts, a stranger isn't told the message arrived.
+    if content.metadata.needs_receipt
+        && !is_outgoing(manager, content)
+        && data_of(content).is_some()
+        && accepted(ctx, &id, *ctx.storage_read.borrow()).await
+    {
+        receipts.owe(content.metadata.sender, stored_at(content));
+    }
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         return events.send(Event::Reaction {
             conversation: id,
@@ -3660,6 +3735,22 @@ async fn is_unanswered_request(ctx: &Ctx, id: &ConversationId) -> bool {
             .ok()
             .flatten()
             .is_some_and(|s| s.accepted)
+}
+
+/// Whether `id` may be told that its messages arrived or were read: not while it is a message
+/// request. Which chats are comes with the phone's settings (`settings_read`); before those are
+/// read, only a chat accepted here counts, which is known without the phone.
+async fn accepted(ctx: &Ctx, id: &ConversationId, settings_read: bool) -> bool {
+    if settings_read {
+        !is_unanswered_request(ctx, id).await
+    } else {
+        ctx.tables
+            .settings(id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.accepted)
+    }
 }
 
 /// The conversation a sync message names by ACI (as text or bytes) or group id.
@@ -6137,17 +6228,7 @@ async fn send_read(
         return;
     }
     // Not to unanswered message requests, nor to anyone we block.
-    let accepted = if settings_read {
-        !is_unanswered_request(&ctx, &conversation).await
-    } else {
-        ctx.tables
-            .settings(&conversation)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|s| s.accepted)
-    };
-    if !accepted {
+    if !accepted(&ctx, &conversation, settings_read).await {
         return;
     }
     let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
@@ -7084,6 +7165,108 @@ mod tests {
         );
         drop(held);
         assert!(lock_data(&paths).is_ok());
+    }
+
+    /// Delivery receipts go out one per sender, at most `RECEIPT_TIMESTAMPS` timestamps each,
+    /// and only once.
+    #[test]
+    fn delivery_receipts_are_gathered_by_sender() {
+        use crate::outbox::{Reply, Send};
+        let who = |n: u8| {
+            ServiceId::parse_from_service_id_string(&format!(
+                "00000000-0000-0000-0000-0000000000{n:02}"
+            ))
+            .unwrap()
+        };
+        let (ann, bob) = (who(1), who(2));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (outbox, mut queued) = tokio::sync::mpsc::channel(8);
+            let mut receipts = Receipts::default();
+            for timestamp in 0..RECEIPT_TIMESTAMPS as u64 + 1 {
+                receipts.owe(ann, timestamp);
+            }
+            receipts.owe(bob, 7);
+            receipts.send(&outbox).await;
+            receipts.send(&outbox).await;
+            drop(outbox);
+            let mut sent = Vec::new();
+            while let Some(send) = queued.recv().await {
+                let Send::Message {
+                    to,
+                    body: ContentBody::ReceiptMessage(receipt),
+                    reply: Reply::Log(_),
+                    ..
+                } = send
+                else {
+                    panic!("not a receipt");
+                };
+                assert_eq!(receipt.r#type(), receipt_message::Type::Delivery);
+                sent.push((to, receipt.timestamp));
+            }
+            sent.sort_by_key(|(to, timestamps)| (to.service_id_string(), timestamps.len()));
+            let expected = [
+                (ann, vec![RECEIPT_TIMESTAMPS as u64]),
+                (ann, (0..RECEIPT_TIMESTAMPS as u64).collect()),
+                (bob, vec![7]),
+            ];
+            assert_eq!(sent, expected);
+        });
+    }
+
+    /// Before the phone's settings are read, only a chat accepted here hears that its
+    /// messages arrived; after, every chat but an unanswered message request does.
+    #[test]
+    fn receipts_go_only_to_accepted_chats() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.join("local.db3"))
+                .create_if_missing(true);
+            let (events, _ui) = async_channel::unbounded();
+            let ctx = Ctx {
+                threads: Rc::default(),
+                events: Events(events),
+                tables: LocalStore::open(options).await.unwrap(),
+                preferences: Rc::new(Cell::new(Preferences::default())),
+                expiring: Rc::default(),
+                storage_changed: Rc::default(),
+                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
+                trust: Rc::default(),
+                outbox: tokio::sync::mpsc::channel(1).0,
+            };
+            let (ann, bob) = (
+                ConversationId::contact("ann"),
+                ConversationId::contact("bob"),
+            );
+            ctx.tables
+                .update(&ann, |s| s.accepted = true)
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &ann, false).await);
+            assert!(!accepted(&ctx, &bob, false).await);
+
+            ctx.tables
+                .take_remote(&HashMap::new(), 1, |_, _, _| Vec::new())
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &ann, true).await);
+            assert!(!accepted(&ctx, &bob, true).await);
+            ctx.tables
+                .update(&bob, |s| s.accepted = true)
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &bob, true).await);
+            ctx.tables.close().await;
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A conversation new to b33p is read up to what was there when it came, so what arrives
