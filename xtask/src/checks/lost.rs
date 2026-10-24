@@ -42,7 +42,7 @@ pub(super) fn none(containers: &Pod) -> Result<()> {
         lost.extend(
             log.lines()
                 .filter(|line| B33P.iter().any(|needle| line.contains(needle)))
-                .map(|line| format!("b33p: {}", line.trim())),
+                .map(|line| format!("b33p: {}", plain(line).trim())),
         );
     }
     if containers.running(Service::Android) {
@@ -64,6 +64,20 @@ pub(super) fn none(containers: &Pod) -> Result<()> {
     let count = lost.len();
     lost.truncate(LISTED);
     Err(Error::Failed(format!("{count} lost:\n{}", lost.join("\n"))))
+}
+
+/// `line` without the colours of b33p's log (SGR escapes, `ESC [ … m`).
+fn plain(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            chars.by_ref().find(|&c| c == 'm');
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
 }
 
 /// The lines of Signal-Android's `logcat` that tell of a lost message.
@@ -97,6 +111,12 @@ fn envelope(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colours_are_left_out() {
+        let line = "\u{1b}[33m WARN\u{1b}[0m \u{1b}[2mb33p_core::signal\u{1b}[0m: lost a message";
+        assert_eq!(plain(line), " WARN b33p_core::signal: lost a message");
+    }
 
     /// A duplicate of an envelope decrypted before was delivered again; any other duplicate,
     /// and any decryption error, is a lost message.
