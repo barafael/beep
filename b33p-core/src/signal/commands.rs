@@ -1,6 +1,7 @@
 //! What each command from the UI does in a linked session.
 
-use super::errors::{db, failed, store_failed};
+use super::errors::{db, failed, send_failed, store_failed};
+use crate::outbox::Sends as _;
 use crate::{Error, ErrorKind};
 use std::rc::Rc;
 
@@ -28,7 +29,8 @@ use super::{
     BackgroundKind, Ctx, Mgr,
     avatars::send_group_avatar,
     conversations::{
-        Names, details, display_name, ensure_conversation, find_number, or_logged, own_id,
+        Names, conversation_id, details, display_name, ensure_conversation, find_number, or_logged,
+        own_id,
     },
     groups::{
         PHONE_NUMBER_ONLY, check_request, group_edit, member_aci, member_of, only_admin_check,
@@ -58,7 +60,7 @@ pub(super) fn command_failed(events: &Events, error: Error, command: Command) {
     let _ = events.send(Event::CommandFailed { error, command });
 }
 
-/// Whether `command` goes through the outbox (see `run_linked`): it sends something to the
+/// Whether `command` is taken in order (`in_order` in `run_linked`): it sends something to the
 /// other side, where the order is seen. One task takes them one after another, so a message's
 /// edit, reactions and deletion never overtake it, and accepting a request goes before the
 /// reply; meanwhile everything else (typing, receipts, history, settings) keeps flowing,
@@ -305,7 +307,12 @@ async fn handle_command(
             ctx.tables.story_viewed(&story).await.map_err(db)?;
             send_stories(manager, ctx).await;
             let receipts = ctx.preferences.get().read_receipts;
-            tokio::task::spawn_local(send_viewed(manager.clone(), story, receipts));
+            tokio::task::spawn_local(send_viewed(
+                manager.clone(),
+                ctx.outbox.clone(),
+                story,
+                receipts,
+            ));
         }
         Command::SendStory {
             conversation,
@@ -357,10 +364,10 @@ async fn handle_command(
                 allows_replies: Some(true),
                 ..Default::default()
             };
-            manager
-                .send_message_to_group(&key, ContentBody::StoryMessage(message.clone()), timestamp)
+            ctx.outbox
+                .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
-                .map_err(failed("failed to post the story"))?;
+                .map_err(send_failed("failed to post the story"))?;
             ctx.tables.add_story(&stored).await.map_err(db)?;
             send_stories(manager, ctx).await;
             // Sending tells our other devices of data messages only; this one they hear of here.
@@ -372,7 +379,7 @@ async fn handle_command(
                 })),
                 ..Default::default()
             };
-            send_sync(manager, sync).await;
+            send_sync(manager, &ctx.outbox, sync).await;
         }
         Command::CreateGroup { title, members } => {
             let members = members
@@ -380,17 +387,18 @@ async fn handle_command(
                 .map(|id| member_aci(id))
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| Error::refused(PHONE_NUMBER_ONLY))?;
-            let (key, timestamp) = manager
-                .create_group(title.trim(), &members)
+            let (key, timestamp) = ctx
+                .outbox
+                .create_group(title.trim().to_owned(), members)
                 .await
-                .map_err(failed("failed to create the group"))?;
+                .map_err(send_failed("failed to create the group"))?;
             let thread = Thread::Group(key);
-            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
-            // Ours, so not a request.
+            // Ours, so not a request: accepted before it is first shown.
             ctx.tables
-                .update(&id, |s| s.accepted = true)
+                .update(&conversation_id(&thread), |s| s.accepted = true)
                 .await
                 .map_err(db)?;
+            let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             refresh_group(manager, ctx, key).await;
             show_stored(manager, ctx, &id, &thread, timestamp).await;
             let _ = events.send(Event::GroupCreated(id));
@@ -412,10 +420,11 @@ async fn handle_command(
                 only_admin_check(manager, key).await?;
             }
             let picture = matches!(edit, presage::manager::GroupEdit::Avatar(_));
-            let timestamp = manager
-                .change_group(&key, edit)
+            let timestamp = ctx
+                .outbox
+                .change_group(key, edit)
                 .await
-                .map_err(failed("failed to change the group"))?;
+                .map_err(send_failed("failed to change the group"))?;
             refresh_group(manager, ctx, key).await;
             if picture {
                 send_group_avatar(manager.clone(), ctx, key).await;
@@ -454,10 +463,11 @@ async fn handle_command(
                 let _ = events.send(Event::GroupJoined(id));
                 return Ok(());
             }
-            let joined = manager
-                .join_group(&parsed)
+            let joined = ctx
+                .outbox
+                .join_group(parsed)
                 .await
-                .map_err(failed("couldn't join the group"))?;
+                .map_err(send_failed("couldn't join the group"))?;
             let thread = Thread::Group(key);
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             // Our doing, so not a request.
@@ -503,7 +513,7 @@ async fn handle_command(
                 .update(&conversation, |s| s.blocked = blocked)
                 .await
                 .map_err(db)?;
-            send_blocked(manager.clone(), ctx).await;
+            send_blocked(manager, ctx).await;
         }
         Command::Respond {
             conversation,
@@ -727,8 +737,7 @@ async fn handle_command(
                 return Ok(());
             }
             let thread = thread(&conversation)?;
-            // In the background: it may take a moment, and nobody waits for it.
-            tokio::task::spawn_local(send_typing(manager.clone(), thread, typing));
+            send_typing(&ctx.outbox, thread, typing).await;
         }
         Command::MarkRead {
             conversation,
@@ -787,10 +796,11 @@ async fn handle_command(
             let thread = thread(&conversation)?;
             if let Thread::Group(key) = thread {
                 let edit = presage::manager::GroupEdit::Timer(seconds);
-                let timestamp = manager
-                    .change_group(&key, edit)
+                let timestamp = ctx
+                    .outbox
+                    .change_group(key, edit)
                     .await
-                    .map_err(failed("failed to change the group"))?;
+                    .map_err(send_failed("failed to change the group"))?;
                 refresh_group(manager, ctx, key).await;
                 show_stored(manager, ctx, &conversation, &thread, timestamp).await;
                 return Ok(());
@@ -826,7 +836,7 @@ mod tests {
     use crate::MessageRef;
 
     #[test]
-    fn what_the_other_side_sees_goes_through_the_outbox() {
+    fn what_the_other_side_sees_is_taken_in_order() {
         let conversation = ConversationId("c".into());
         let target = MessageRef {
             author_id: "a".into(),

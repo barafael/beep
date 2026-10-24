@@ -1,0 +1,104 @@
+[package]
+name = "testbox-tools"
+description = "The testbox's own programs, one per container that needs one."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own, out of b33p's: an image builds its tool without b33p's dependencies.
+[workspace]
+
+[features]
+# The library's async half (`process::spawn_logged`, `process::supervise`).
+async = ["dep:tokio"]
+cdn0 = [
+    "async",
+    "dep:axum",
+    "dep:axum-server",
+    "dep:futures-util",
+    "dep:reqwest",
+    "reqwest/stream",
+    "dep:rustls",
+    "dep:toml",
+]
+foundationdb = ["async"]
+android = []
+storage = ["async", "dep:googleapis-tonic-google-bigtable-admin-v2", "dep:tonic"]
+provision = [
+    "async",
+    "dep:base64",
+    "dep:hex",
+    "dep:libsignal-protocol",
+    "dep:p12-keystore",
+    "dep:rand",
+    "dep:rcgen",
+    "dep:reqwest",
+    "reqwest/json",
+    "dep:serde_yaml",
+    "dep:time",
+    "dep:toml",
+    "dep:zkgroup",
+]
+
+[[bin]]
+name = "cdn0"
+required-features = ["cdn0"]
+
+[[bin]]
+name = "foundationdb"
+required-features = ["foundationdb"]
+
+[[bin]]
+name = "android"
+required-features = ["android"]
+
+[[bin]]
+name = "storage"
+required-features = ["storage"]
+
+[[bin]]
+name = "provision"
+required-features = ["provision"]
+
+[[bin]]
+name = "with-display"
+
+[dependencies]
+derive_more = { version = "2", features = ["display", "error"] }
+serde = { version = "1", features = ["derive"] }
+# The drivers' protocol and the keys' JSON.
+serde_json = "1"
+# The chat menu's labels, from its items' names.
+strum = { version = "0.27", features = ["derive"] }
+# The agent protocol's Kotlin side is generated from its Rust (src/agent.rs); the attribute alone.
+typeshare = "1"
+
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
+# ring, as rcgen builds it: rustls' default provider, aws-lc-rs, is a long C build.
+axum-server = { version = "0.7", optional = true, features = ["tls-rustls-no-provider"] }
+# The upload with the bucket field in front, streamed.
+futures-util = { version = "0.3", optional = true, default-features = false }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
+# Plain HTTP to Garage on the same localhost: no TLS of its own.
+reqwest = { version = "0.12", optional = true, default-features = false }
+serde_yaml = { version = "0.9", optional = true }
+tokio = { version = "1", optional = true, features = ["macros", "rt", "process", "io-util", "time", "fs", "signal", "sync"] }
+toml = { version = "1", optional = true }
+
+base64 = { version = "0.22", optional = true }
+hex = { version = "0.4", optional = true }
+# The sealed-sender certificate and the zkgroup public parameters, at the libsignal b33p's
+# Cargo.lock resolves (presage's pin), as the server's own `certificate` command and
+# GenericServerSecretParams make them.
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0", optional = true }
+zkgroup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0", optional = true }
+# Jetty's keystore.
+p12-keystore = { version = "0.4", optional = true }
+# libsignal's (rand 0.9 `CryptoRng`).
+rand = { version = "0.9", optional = true }
+rcgen = { version = "0.14", optional = true }
+time = { version = "0.3", optional = true }
+# Bigtable's admin API, generated from googleapis by tonic-build; plain gRPC to the emulator.
+googleapis-tonic-google-bigtable-admin-v2 = { version = "0.45", optional = true }
+tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "codegen"] }

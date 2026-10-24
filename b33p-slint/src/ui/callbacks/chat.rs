@@ -3,6 +3,29 @@
 
 use super::*;
 
+/// Sends `text`, the composer's: during an edit that is the edit, which the state keeps out of
+/// the chat's draft. The composer is then empty, or after an edit holds what was being written
+/// before it. Returns whether a command went out.
+pub(in crate::ui) fn send(shared: &Shared, window: &AppWindow, text: &str) -> bool {
+    let sent = shared.act(|chat| chat.compose(text));
+    if sent {
+        window
+            .global::<Composer>()
+            .set_draft(shared.chat.borrow().draft().into());
+        shared.refresh(Update::default());
+    }
+    sent
+}
+
+/// Puts the message at `index` in the composer, to be edited there.
+pub(in crate::ui) fn edit(shared: &Shared, window: &AppWindow, index: usize) {
+    let text = shared.chat.borrow_mut().edit(index);
+    if let Some(text) = text {
+        window.global::<Composer>().set_draft(text.into());
+        shared.refresh(Update::default());
+    }
+}
+
 pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
     window.global::<ChatList>().on_select({
         let shared = shared.clone();
@@ -18,14 +41,8 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let shared = shared.clone();
         let window = window.as_weak();
         move |text| {
-            if shared.act(|chat| chat.compose(&text))
-                && let Some(window) = window.upgrade()
-            {
-                // Empty once sent; after an edit, what was being written before it.
-                window
-                    .global::<Composer>()
-                    .set_draft(shared.chat.borrow().draft().into());
-                shared.refresh(Update::default());
+            if let Some(window) = window.upgrade() {
+                send(&shared, &window, &text);
             }
         }
     });
@@ -166,13 +183,9 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let shared = shared.clone();
         let window = window.as_weak();
         move |key| {
-            let text = {
-                let mut chat = shared.chat.borrow_mut();
-                row(&chat, &key).and_then(|row| chat.edit(row))
-            };
-            if let (Some(text), Some(window)) = (text, window.upgrade()) {
-                window.global::<Composer>().set_draft(text.into());
-                shared.refresh(Update::default());
+            let row = row(&shared.chat.borrow(), &key);
+            if let (Some(row), Some(window)) = (row, window.upgrade()) {
+                edit(&shared, &window, row);
             }
         }
     });

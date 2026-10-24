@@ -1,0 +1,6 @@
+# Typed protocols only (b33p-harness, src/drivers.rs): no JSON trees, no type erasure.
+disallowed-types = [
+    { path = "serde_json::Value", reason = "use the typed protocol (b33p-harness, drivers.rs)" },
+    { path = "serde_json::Map", reason = "use the typed protocol (b33p-harness, drivers.rs)" },
+    { path = "std::any::Any", reason = "no type erasure: use a concrete type or a generic" },
+]

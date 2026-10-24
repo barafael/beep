@@ -3,7 +3,7 @@
 use super::*;
 
 mod app;
-mod chat;
+pub(super) mod chat;
 mod groups;
 mod panels;
 

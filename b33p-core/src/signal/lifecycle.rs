@@ -28,6 +28,7 @@ use crate::{
     Command, Error, Event, Events, Failure, HistoryTransfer, Password, Preferences, QrMatrix,
     attachments,
     local::LocalStore,
+    outbox::{Sending, Sends as _},
     scrub::{scrub, scrubbed},
     transfer,
     vault::{self, KeySource, KeyringKey, NoKeyring},
@@ -630,6 +631,7 @@ async fn session(
     let mut linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) => match Marker::read(paths) {
             None => {
+                test_servers_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
                 let _ = events.send(Event::Linked { account });
                 Some((manager, Vec::new()))
@@ -758,6 +760,8 @@ async fn run_linked(
     device_name: &RefCell<String>,
 ) -> Ended {
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
+    let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
+    let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
     let ctx = Ctx {
         threads: Rc::default(),
         events: events.clone(),
@@ -769,13 +773,14 @@ async fn run_linked(
         trust: Rc::default(),
         group_ids: GroupIds::default(),
         background: Background::default(),
+        outbox,
     };
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
         // The answer arrives through `receive` as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
-        if let Err(error) = manager.request_contacts().await {
+        if let Err(error) = ctx.outbox.request_contacts().await {
             warn!(error = %scrubbed(&error), "failed to request contacts");
         }
     }
@@ -786,7 +791,7 @@ async fn run_linked(
             sync_message::request::Type::Blocked,
             sync_message::request::Type::Keys,
         ] {
-            request_sync(&manager, kind).await;
+            request_sync(&manager, &ctx.outbox, kind).await;
         }
     }
     // Before receiving starts, or what arrives meanwhile would count twice (or not at all).
@@ -816,12 +821,13 @@ async fn run_linked(
     );
     let mut failures = 0u32;
 
-    // What the other side sees, one at a time and in order; see `outgoing`.
-    let (outbox, mut queued) = tokio::sync::mpsc::unbounded_channel::<Command>();
-    let sending = tokio::task::spawn_local({
+    // What the other side sees, one command at a time and in order; see `outgoing`. Their
+    // sends then go through the outbox, with everyone else's.
+    let (in_order, mut ordered) = tokio::sync::mpsc::unbounded_channel::<Command>();
+    let ordering = tokio::task::spawn_local({
         let (mut manager, ctx, downloads) = (manager.clone(), ctx.clone(), downloads.clone());
         async move {
-            while let Some(command) = queued.recv().await {
+            while let Some(command) = ordered.recv().await {
                 handle(&mut manager, &ctx, &downloads, command).await;
             }
         }
@@ -872,18 +878,21 @@ async fn run_linked(
             continue;
         }
         if outgoing(&command) {
-            let _ = outbox.send(command);
+            let _ = in_order.send(command);
             continue;
         }
         handle(&mut manager, &ctx, &downloads, command).await;
     };
     ctx.background.stop();
-    sending.abort();
+    ordering.abort();
     latest.abort();
     sweeping.abort();
     following.abort();
     stories.abort();
     receiving.abort();
+    // Not drained: after an unlink there is nobody to send to, and a session after this one
+    // must not send alongside it.
+    sending.abort();
     ended
 }
 
@@ -1069,6 +1078,46 @@ async fn reset(
     Marker::remove(paths)
 }
 
+// Other servers are a build's choice, not the environment's: `debug_assertions` alone is a
+// profile setting a release can turn on.
+#[cfg(all(feature = "test-servers", not(debug_assertions)))]
+compile_error!("the `test-servers` feature is for test builds: build without `--release`");
+
+/// The servers a new link goes to: Signal's.
+#[cfg(not(feature = "test-servers"))]
+fn link_servers() -> Result<SignalServers, String> {
+    Ok(SignalServers::Production)
+}
+
+/// The servers a new link goes to. `B33P_SIGNAL_SERVERS` names others: `staging`, or a TOML
+/// file describing servers of one's own, such as the testbox's, in the form presage-cli's
+/// `--servers-file` reads.
+#[cfg(feature = "test-servers")]
+fn link_servers() -> Result<SignalServers, String> {
+    let Ok(name) = std::env::var("B33P_SIGNAL_SERVERS") else {
+        return Ok(SignalServers::Production);
+    };
+    if let Ok(servers) = name.parse() {
+        return Ok(servers);
+    }
+    let text = std::fs::read_to_string(&name)
+        .map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+    let configuration: presage::libsignal_service::configuration::ServiceConfiguration =
+        toml::from_str(&text).map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+    Ok(SignalServers::Custom(Box::new(configuration)))
+}
+
+/// A store linked to other servers ([`link_servers`]) stays out of builds without them.
+fn test_servers_unless_production(servers: &SignalServers) -> Result<(), String> {
+    if cfg!(feature = "test-servers") || *servers == SignalServers::Production {
+        Ok(())
+    } else {
+        Err(format!(
+            "This store is linked to the {servers} servers, which only test builds use."
+        ))
+    }
+}
+
 /// Links this device; also returns the one-time key for the history transfer if the user
 /// chose to transfer it.
 async fn link(
@@ -1076,9 +1125,10 @@ async fn link(
     device_name: String,
     events: &Events,
 ) -> Result<(Mgr, Option<[u8; 32]>), Failed> {
+    let servers = link_servers()?;
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
-        Manager::link_secondary_device(store, SignalServers::Production, device_name, url_tx),
+        Manager::link_secondary_device(store, servers, device_name, url_tx),
         async {
             if let Ok(mut url) = url_rx.await {
                 let url = url

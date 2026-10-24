@@ -188,17 +188,23 @@ fn own_removal(
     removed
 }
 
-/// Whether `changes` is `sender` taking themselves out of the group, as a member or an
-/// invitee: the one message a non-member may still send to the group.
-pub(super) fn leaves_group(
+/// Whether `changes` is `sender` changing their own place in the group: leaving it as a member
+/// or an invitee, asking to join through the link or taking that back, or joining through it.
+/// The messages a non-member may still send to the group (Desktop sends its request to the
+/// members, ts/groups.preload.ts `modifyGroupV2`).
+pub(super) fn own_membership_change(
     changes: &presage::libsignal_service::groups_v2::GroupChanges,
     sender: ServiceId,
 ) -> bool {
     use presage::libsignal_service::groups_v2::GroupChange;
     ServiceId::Aci(changes.editor) == sender
         && changes.changes.iter().any(|change| match change {
-            GroupChange::DeleteMember(who) => ServiceId::Aci(*who) == sender,
+            GroupChange::DeleteMember(who) | GroupChange::DeleteRequestingMember(who) => {
+                ServiceId::Aci(*who) == sender
+            }
             GroupChange::DeletePendingMember(who) => *who == sender,
+            GroupChange::NewRequestingMember(member) => ServiceId::Aci(member.aci) == sender,
+            GroupChange::NewMember(member) => ServiceId::Aci(member.aci) == sender,
             _ => false,
         })
 }
@@ -572,34 +578,59 @@ mod tests {
         }
     }
 
-    /// Someone who isn't in a group may still send it one thing: their own leaving (as a
-    /// member or an invitee). Being removed by someone else, or any other change, is not it.
+    /// Someone who isn't in a group may still send it a change of their own place in it: leaving
+    /// (as a member or an invitee), asking to join or taking that back. Being removed by someone
+    /// else, or any other change, is not it.
     #[test]
-    fn a_non_member_may_only_leave() {
-        use presage::libsignal_service::groups_v2::GroupChange;
+    fn a_non_member_may_only_change_their_own_membership() {
+        use presage::libsignal_service::groups_v2::{GroupChange, RequestingMember};
+        use presage::libsignal_service::zkgroup::profiles::ProfileKey;
         let (bob, admin) = (aci(2), aci(3));
         let sender = ServiceId::Aci(bob);
-        assert!(leaves_group(
+        let request = |who| {
+            GroupChange::NewRequestingMember(RequestingMember {
+                aci: who,
+                profile_key: ProfileKey::create([0; 32]),
+                timestamp: 0,
+            })
+        };
+        assert!(own_membership_change(
+            &changes(bob, vec![request(bob)]),
+            sender
+        ));
+        assert!(own_membership_change(
+            &changes(bob, vec![GroupChange::DeleteRequestingMember(bob)]),
+            sender
+        ));
+        assert!(!own_membership_change(
+            &changes(bob, vec![request(admin)]),
+            sender
+        ));
+        assert!(!own_membership_change(
+            &changes(admin, vec![request(bob)]),
+            sender
+        ));
+        assert!(own_membership_change(
             &changes(bob, vec![GroupChange::DeleteMember(bob)]),
             sender
         ));
-        assert!(leaves_group(
+        assert!(own_membership_change(
             &changes(bob, vec![GroupChange::DeletePendingMember(sender)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(admin, vec![GroupChange::DeleteMember(bob)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(bob, vec![GroupChange::DeleteMember(admin)]),
             sender
         ));
-        assert!(!leaves_group(
+        assert!(!own_membership_change(
             &changes(bob, vec![GroupChange::Title("hi".into())]),
             sender
         ));
-        assert!(!leaves_group(&changes(bob, vec![]), sender));
+        assert!(!own_membership_change(&changes(bob, vec![]), sender));
     }
 
     /// A change that takes us out of a group, in whichever role, is recognised, so that the

@@ -1,7 +1,8 @@
 //! Sending: messages, stickers, link previews, edits, and what our other devices are told.
 
-use super::errors::{db, failed, store_failed};
+use super::errors::{db, send_failed, store_failed};
 use crate::Error;
+use crate::outbox::{Outbox, SendFailure, Sends as _};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures::{StreamExt, future};
@@ -33,8 +34,7 @@ use crate::{
 use super::{
     Ctx, Mgr,
     conversations::{
-        Names, e164_of, expire_timer, is_blocked, is_unanswered_request, own_id, sender_name,
-        thread_of,
+        Names, accepted, e164_of, expire_timer, is_blocked, own_id, sender_name, thread_of,
     },
     groups::{group_identifier, member_aci},
     history::start_timers,
@@ -56,7 +56,11 @@ fn list_blocked(blocked: &mut sync_message::Blocked, thread: &Thread, number: Op
 }
 
 /// Asks our primary device to send something it keeps (the blocked list, the storage key).
-pub(super) async fn request_sync(manager: &Mgr, kind: sync_message::request::Type) {
+pub(super) async fn request_sync(
+    manager: &Mgr,
+    outbox: &Outbox,
+    kind: sync_message::request::Type,
+) {
     let sync = SyncMessage {
         content: Some(SyncContent::Request(sync_message::Request {
             r#type: Some(kind.into()),
@@ -64,9 +68,8 @@ pub(super) async fn request_sync(manager: &Mgr, kind: sync_message::request::Typ
         ..SyncMessage::with_padding(&mut rand::rng())
     };
     let own = own_id(manager);
-    if let Err(error) = manager
-        .clone()
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+    if let Err(error) = outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), ?kind, "failed to ask the primary device");
@@ -135,18 +138,20 @@ fn untrusted(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> Op
 
 /// Sends to a contact, or to everyone in a group.
 async fn send_to(
-    manager: &mut Mgr,
+    outbox: &Outbox,
     thread: &Thread,
     body: ContentBody,
     timestamp: u64,
 ) -> Result<(), SendError> {
     let sent = match thread {
-        Thread::Contact(recipient) => manager.send_message(*recipient, body, timestamp).await,
-        Thread::Group(key) => manager.send_message_to_group(key, body, timestamp).await,
+        Thread::Contact(recipient) => outbox.message(*recipient, body, timestamp).await,
+        Thread::Group(key) => outbox.group_message(*key, body, timestamp).await,
     };
-    sent.map_err(|error| match untrusted(&error) {
-        Some(who) => SendError::Untrusted(who),
-        None => SendError::Other(failed("failed to send")(error)),
+    sent.map_err(|failure| match &failure {
+        SendFailure::Presage(error) if let Some(who) = untrusted(error) => {
+            SendError::Untrusted(who)
+        }
+        _ => SendError::Other(send_failed("failed to send")(failure)),
     })
 }
 
@@ -171,7 +176,7 @@ async fn deliver(
             )));
         }
     }
-    match send_to(manager, thread, body, timestamp).await {
+    match send_to(&ctx.outbox, thread, body, timestamp).await {
         Err(SendError::Untrusted(who)) => {
             hold_changed(manager, ctx, who).await;
             Err(SendError::Untrusted(who).into())
@@ -498,10 +503,10 @@ pub(super) async fn link_preview(
 }
 
 /// Tells our other devices about something done here.
-pub(super) async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
+pub(super) async fn send_sync(manager: &Mgr, outbox: &Outbox, sync: SyncMessage) {
     let own = own_id(manager);
-    if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+    if let Err(error) = outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
         warn!(error = %scrubbed(&error), "failed to tell our other devices");
@@ -509,7 +514,7 @@ pub(super) async fn send_sync(manager: &mut Mgr, sync: SyncMessage) {
 }
 
 /// Tells our other devices whom we block now: the whole list, as Signal expects.
-pub(super) async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
+pub(super) async fn send_blocked(manager: &Mgr, ctx: &Ctx) {
     let Ok(all) = ctx.tables.conversations().await else {
         return;
     };
@@ -519,7 +524,7 @@ pub(super) async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
             continue;
         };
         let number = match thread {
-            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(&manager, who).await,
+            Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(manager, who).await,
             _ => None,
         };
         list_blocked(&mut blocked, &thread, number);
@@ -528,7 +533,7 @@ pub(super) async fn send_blocked(mut manager: Mgr, ctx: &Ctx) {
         content: Some(SyncContent::Blocked(blocked)),
         ..Default::default()
     };
-    send_sync(&mut manager, sync).await;
+    send_sync(manager, &ctx.outbox, sync).await;
 }
 
 /// Answers a message request, here and on our other devices.
@@ -570,7 +575,7 @@ pub(super) async fn respond(
                 .update(conversation, |s| s.blocked = true)
                 .await
                 .map_err(db)?;
-            send_blocked(manager.clone(), ctx).await;
+            send_blocked(manager, ctx).await;
             Type::Block
         }
     };
@@ -589,12 +594,13 @@ pub(super) async fn respond(
         content: Some(SyncContent::MessageRequestResponse(answer)),
         ..Default::default()
     };
-    send_sync(manager, sync).await;
+    send_sync(manager, &ctx.outbox, sync).await;
     Ok(())
 }
 
-/// Tells a conversation we started or stopped typing.
-pub(super) async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) {
+/// Tells a conversation we started or stopped typing. Queued, not waited for: it goes out
+/// before whatever is queued after it, such as the message that was being typed.
+pub(super) async fn send_typing(outbox: &Outbox, thread: Thread, typing: bool) {
     use typing_message::Action;
     let timestamp = now_millis();
     let mut message = TypingMessage {
@@ -610,11 +616,10 @@ pub(super) async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) 
         message.group_id = Some(group_identifier(key).to_vec());
     }
     let body = ContentBody::TypingMessage(message);
-    if let Err(error) = send_to(&mut manager, &thread, body, timestamp).await {
-        debug!(
-            error = %Error::from(error),
-            "failed to send a typing indicator"
-        );
+    const WHAT: &str = "a typing indicator";
+    match thread {
+        Thread::Contact(to) => outbox.post_message(to, body, timestamp, WHAT).await,
+        Thread::Group(key) => outbox.post_group_message(key, body, timestamp, WHAT).await,
     }
 }
 
@@ -624,7 +629,7 @@ pub(super) async fn send_typing(mut manager: Mgr, thread: Thread, typing: bool) 
 const STORAGE_WAIT: Duration = Duration::from_secs(2 * 60);
 
 pub(super) async fn send_read(
-    mut manager: Mgr,
+    manager: Mgr,
     ctx: Ctx,
     conversation: ConversationId,
     messages: Vec<MessageRef>,
@@ -642,12 +647,14 @@ pub(super) async fn send_read(
         read,
         ..Default::default()
     };
-    if let Err(error) = manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), now_millis())
-        .await
-    {
-        debug!(error = %scrubbed(&error), "failed to tell our other devices what was read");
-    }
+    ctx.outbox
+        .post_message(
+            own,
+            ContentBody::SynchronizeMessage(sync),
+            now_millis(),
+            "what was read to our other devices",
+        )
+        .await;
     // Whether this is a message request, and who is blocked, comes with the phone's settings.
     // Right after linking they haven't been read yet, so wait: a read receipt would tell a
     // stranger we read their message. Not for ever, though (the phone may never answer): then
@@ -662,17 +669,7 @@ pub(super) async fn send_read(
         return;
     }
     // Not to unanswered message requests, nor to anyone we block.
-    let accepted = if settings_read {
-        !is_unanswered_request(&ctx, &conversation).await
-    } else {
-        ctx.tables
-            .settings(&conversation)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|s| s.accepted)
-    };
-    if !accepted {
+    if !accepted(&ctx, &conversation, settings_read).await {
         return;
     }
     let mut by_author: HashMap<&str, Vec<u64>> = HashMap::new();
@@ -696,12 +693,14 @@ pub(super) async fn send_read(
             r#type: Some(receipt_message::Type::Read as i32),
             timestamp: timestamps,
         };
-        if let Err(error) = manager
-            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
-            .await
-        {
-            debug!(error = %scrubbed(&error), "failed to send a read receipt");
-        }
+        ctx.outbox
+            .post_message(
+                author,
+                ContentBody::ReceiptMessage(receipt),
+                timestamp,
+                "a read receipt",
+            )
+            .await;
     }
 }
 

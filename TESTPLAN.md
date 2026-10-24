@@ -4,6 +4,11 @@ Manual checks against a real Signal account, for what automated tests can't cove
 Signal servers, the phone, and the desktop around b33p. Each check says what to do and what
 should happen. Note anything that differs, with the log (`RUST_LOG=b33p=debug` helps).
 
+Much of what this plan does by hand against Signal-Desktop and Signal-Android, the
+[test box](testbox/README.md) does automatically, against Signal-Server's test mode: a pass there
+doesn't stand in for these checks against Signal's servers and a real phone, but it is the quicker
+first look.
+
 ## Before you start
 
 - Build and run: `cargo run --release -p b33p-slint`.
@@ -64,6 +69,11 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 2. Restart b33p; the ticks of older messages stay.
 3. Send while offline (network off, or right as b33p reconnects): the bubble shows
    **Not sent · Retry**. Once online, click it: "Sending…", then the ticks as in 1.
+4. With your phone off (flight mode), have someone you have a chat with write to you while
+   b33p runs, and again while b33p is closed, then start it.
+   - On **their** phone both messages show as delivered (✓✓) once b33p has them: b33p sends
+     the delivery receipt, not only your phone. Not so for a message request you haven't
+     accepted.
 
 ### 1.3 Typing indicators
 

@@ -10,6 +10,7 @@ use presage::{
 };
 use tracing::{debug, warn};
 
+use crate::outbox::{Outbox, Sends as _};
 use crate::{ConversationId, Event, MessageRef, attachments, now_millis, scrub::scrubbed};
 
 use super::{
@@ -154,7 +155,7 @@ pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) {
 }
 
 /// Tells a story's author we viewed it (with `receipts`), and our other devices.
-pub(super) async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: bool) {
+pub(super) async fn send_viewed(manager: Mgr, outbox: Outbox, story: MessageRef, receipts: bool) {
     let timestamp = now_millis();
     let Some(author) = ServiceId::parse_from_service_id_string(&story.author_id) else {
         return;
@@ -167,12 +168,14 @@ pub(super) async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: b
             r#type: Some(receipt_message::Type::Viewed as i32),
             timestamp: vec![story.timestamp],
         };
-        if let Err(error) = manager
-            .send_message(author, ContentBody::ReceiptMessage(receipt), timestamp)
-            .await
-        {
-            debug!(error = %scrubbed(&error), "failed to send a viewed receipt");
-        }
+        outbox
+            .post_message(
+                author,
+                ContentBody::ReceiptMessage(receipt),
+                timestamp,
+                "a viewed receipt",
+            )
+            .await;
     }
     let sync = SyncMessage {
         viewed: vec![sync_message::Viewed {
@@ -182,7 +185,7 @@ pub(super) async fn send_viewed(mut manager: Mgr, story: MessageRef, receipts: b
         }],
         ..Default::default()
     };
-    send_sync(&mut manager, sync).await;
+    send_sync(&manager, &outbox, sync).await;
 }
 
 /// Takes stories off the list once their day is over, for the rest of the session.

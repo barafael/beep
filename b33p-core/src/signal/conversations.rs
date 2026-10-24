@@ -388,12 +388,16 @@ pub(super) async fn sender_name(manager: &Mgr, names: &mut Names, sender: Servic
     if let Some(name) = names.get(&id) {
         return name.clone();
     }
-    let name = manager
+    let title = manager
         .thread_title(&Thread::Contact(sender))
         .await
         .unwrap_or_default();
-    let name = crate::format::name(&name);
-    names.insert(id, name.clone());
+    let name = crate::format::name(&title);
+    // Without a contact yet, presage titles it with its id (`thread_title`): not kept, so the
+    // name shows once the contact is saved.
+    if !title.is_empty() && title != id {
+        names.insert(id, name.clone());
+    }
     name
 }
 
@@ -404,6 +408,22 @@ pub(super) async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
         .ok()
         .flatten()
         .is_some_and(|s| s.blocked)
+}
+
+/// Whether `id` may be told that its messages arrived or were read: not while it is a message
+/// request. Which chats are comes with the phone's settings (`settings_read`); before those are
+/// read, only a chat accepted here counts, which is known without the phone.
+pub(super) async fn accepted(ctx: &Ctx, id: &ConversationId, settings_read: bool) -> bool {
+    if settings_read {
+        !is_unanswered_request(ctx, id).await
+    } else {
+        ctx.tables
+            .settings(id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.accepted)
+    }
 }
 
 /// Whether `id` is a message request not answered yet. Only known once the phone's settings
@@ -628,6 +648,61 @@ mod tests {
         assert_eq!(parse_number("+49 1", &own), None, "too short to be valid");
     }
 
+    /// Before the phone's settings are read, only a chat accepted here hears that its
+    /// messages arrived; after, every chat but an unanswered message request does.
+    #[test]
+    fn receipts_go_only_to_accepted_chats() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.join("local.db3"))
+                .create_if_missing(true);
+            let (events, _ui) = async_channel::unbounded();
+            let ctx = Ctx {
+                threads: Rc::default(),
+                events: Events(events),
+                tables: LocalStore::open(options).await.unwrap(),
+                preferences: Rc::new(Cell::new(Preferences::default())),
+                expiring: Rc::default(),
+                storage_changed: Rc::default(),
+                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
+                trust: Rc::default(),
+                group_ids: GroupIds::default(),
+                background: Background::default(),
+                outbox: tokio::sync::mpsc::channel(1).0,
+            };
+            let (ann, bob) = (
+                ConversationId::contact("ann"),
+                ConversationId::contact("bob"),
+            );
+            ctx.tables
+                .update(&ann, |s| s.accepted = true)
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &ann, false).await);
+            assert!(!accepted(&ctx, &bob, false).await);
+
+            ctx.tables
+                .take_remote(&HashMap::new(), 1, |_, _, _| Vec::new())
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &ann, true).await);
+            assert!(!accepted(&ctx, &bob, true).await);
+            ctx.tables
+                .update(&bob, |s| s.accepted = true)
+                .await
+                .unwrap();
+            assert!(accepted(&ctx, &bob, true).await);
+            ctx.tables.close().await;
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A conversation new to b33p is read up to what was there when it came, so what arrives
     /// after stays unread; one it has settings for keeps them.
     #[test]
@@ -654,6 +729,7 @@ mod tests {
                 trust: Rc::default(),
                 group_ids: GroupIds::default(),
                 background: Background::default(),
+                outbox: tokio::sync::mpsc::channel(1).0,
             };
             let ann = ConversationId::contact("ann");
             assert_eq!(first_settings(&ctx, &ann, 10).await.last_read, 10);

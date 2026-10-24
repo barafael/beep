@@ -1,0 +1,190 @@
+# Signal-Android's `local` flavor on an emulator, driven by testbox/tools `android`. The image
+# keeps only what runs: the emulator, its system image and AVD, adb, the APK the `app` stage
+# builds for the box's keys (the server image's), the agent's APK and the driver. The build
+# context is the repository, for the patches and the tools.
+
+# The version the libsignal stage's `sed` publishes the patched libsignal under; stages `signal`
+# and `app` take it.
+ARG LIBSIGNAL_VERSION=0.105.0-testbox
+# The SDK as Signal-Android's reproducible build installs it (reproducible-builds/Dockerfile):
+# the same command-line tools, build tools and NDK, on Debian's JDK 21.
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS sdk
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git unzip openjdk-21-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/bin:${ANDROID_HOME}/platform-tools
+ADD --checksum=sha256:04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7 \
+    https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip /tmp/cmdline-tools.zip
+RUN unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME" && rm /tmp/cmdline-tools.zip \
+    && yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null \
+    && sdkmanager --sdk_root="$ANDROID_HOME" \
+        "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;28.0.13004108"
+
+# libsignal with testbox/patches/libsignal-local.patch, for x86_64 only (the emulator's ABI), as
+# java/build_jni.sh builds it, published to ~/.m2 under a version of its own: Maven Central comes
+# first in Signal-Android's repositories and has the unpatched 0.105.0.
+FROM sdk AS libsignal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang cmake make libclang-dev protobuf-compiler libprotobuf-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+# rustup as libsignal's java/Dockerfile pins it; the toolchain its rust-toolchain names.
+ADD --chmod=755 --checksum=sha256:20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c \
+    https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init /tmp/rustup-init
+ENV PATH=/root/.cargo/bin:${PATH}
+RUN /tmp/rustup-init -y --profile minimal --default-toolchain 1.98.1 --target x86_64-linux-android \
+    && rm /tmp/rustup-init
+ARG LIBSIGNAL_REV=4beb029d8a941f81e7d9c6d8af1ed25a677569a8
+WORKDIR /opt/libsignal
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/libsignal "$LIBSIGNAL_REV" \
+    && git checkout -q FETCH_HEAD
+COPY testbox/patches/libsignal-local.patch /tmp/
+RUN git apply /tmp/libsignal-local.patch \
+    && sed -i 's/version = "0.105.0"/version = "0.105.0-testbox"/' java/build.gradle
+# No desktop library: it goes into libsignal-client's jar, which Android doesn't load.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.gradle \
+    --mount=type=cache,target=/opt/libsignal/target \
+    cd java && ./gradlew --no-daemon -PandroidArchs=x86_64 -x makeJniLibrariesDesktop \
+        :client:publishToMavenLocal :android:publishToMavenLocal
+
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
+WORKDIR /src
+COPY testbox/tools testbox/tools
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/testbox/tools/target \
+    cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
+        --features android --bin android --bin with-display \
+    && cp testbox/tools/target/release/android testbox/tools/target/release/with-display \
+        /usr/local/bin/
+
+# The emulator and its system image without Google Play services: Signal then uses its websocket
+# instead of FCM, which the box can't reach.
+FROM sdk AS emulator
+# sdkmanager takes no version for these or for the SDK stage's platform-tools and installs the
+# newest, so the revisions are checked. Here, where the image takes platform-tools from: in the
+# SDK stage, a changed check would rebuild every later stage.
+RUN sdkmanager --sdk_root="$ANDROID_HOME" "emulator" "system-images;android-35;default;x86_64"
+RUN grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properties" \
+    && grep -qx "Pkg.Revision=37.2.12" "$ANDROID_HOME/emulator/source.properties" \
+    && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties" \
+    && echo no | avdmanager create avd -n box -k "system-images;android-35;default;x86_64" -d pixel_5
+# avdmanager writes the image's path relative to /opt, as the command-line tools aren't in the
+# cmdline-tools/latest layout it expects. A hardware keyboard, so the on-screen one doesn't cover
+# what the driver taps.
+RUN sed -i -e 's|^image.sysdir.1=android-sdk/|image.sysdir.1=|' -e 's|^hw.keyboard=no$|hw.keyboard=yes|' \
+        /root/.android/avd/box.avd/config.ini \
+    && grep -q '^image.sysdir.1=system-images/' /root/.android/avd/box.avd/config.ini \
+    && grep -q '^hw.keyboard=yes$' /root/.android/avd/box.avd/config.ini
+
+# Signal-Android at the pin, patched: the app's sources, and the Gradle wrapper the agent builds with.
+FROM sdk AS signal
+ARG SIGNAL_ANDROID_REV=e9b569edd6b64f24d2a782deb60ac88b70471ded
+WORKDIR /opt/signal-android
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/Signal-Android "$SIGNAL_ANDROID_REV" \
+    && git checkout -q FETCH_HEAD
+COPY testbox/patches/signal-android-local.patch /tmp/
+# The libsignal the libsignal stage publishes, under its version of its own (that stage's
+# `sed`; the app stage fails if the two differ).
+ARG LIBSIGNAL_VERSION
+RUN git apply /tmp/signal-android-local.patch \
+    && sed -i "s/^libsignal-client = \"0.105.0\"$/libsignal-client = \"$LIBSIGNAL_VERSION\"/" gradle/libs.versions.toml \
+    && grep -q "^libsignal-client = \"$LIBSIGNAL_VERSION\"$" gradle/libs.versions.toml \
+    && mkdir -p app/src/local/res/raw /opt/testbox
+
+# The local flavor's values (`android config`, the same bytes for the same keys), from the keys
+# alone: a change to the driver's code doesn't rebuild Signal-Android, new keys do.
+FROM sdk AS config
+COPY --from=localhost/b33p-testbox-server /opt/testbox/keys /keys
+COPY --from=tools /usr/local/bin/android /usr/local/bin/android
+RUN android config
+
+# The CA as the BKS trust store BlacklistingTrustManager.java opens (`KeyStore.getInstance("BKS")`),
+# with keytool and Bouncy Castle. A stage of its own that takes only the CA: keytool writes a
+# random salt each time.
+FROM sdk AS truststore
+RUN apt-get update && apt-get install -y --no-install-recommends libbcprov-java \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=localhost/b33p-testbox-server /opt/testbox/keys/tls-ca.pem /tmp/tls-ca.pem
+RUN mkdir /out && keytool -importcert -noprompt -alias box -file /tmp/tls-ca.pem \
+        -keystore /out/whisper.store -storepass whisper -storetype BKS \
+        -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider \
+        -providerpath /usr/share/java/bcprov.jar
+
+# The APK for the box's keys; the image keeps it with the values it was built with, which the
+# driver checks against the box's keys.
+FROM signal AS app
+COPY --from=libsignal /root/.m2 /root/.m2
+# The patched libsignal has no checksums in gradle/verification-metadata.xml: its artifacts'
+# sha256, as the libsignal stage built them, go in, so Gradle checks it by content like every
+# other dependency. POMs are left out: Signal-Android's own entries trust them by name.
+ARG LIBSIGNAL_VERSION
+RUN set -e; entries=""; \
+    for dir in /root/.m2/repository/org/signal/*/"$LIBSIGNAL_VERSION"; do \
+        test -d "$dir"; \
+        name="$(basename "$(dirname "$dir")")"; \
+        entries="$entries<component group=\"org.signal\" name=\"$name\" version=\"$LIBSIGNAL_VERSION\">"; \
+        for file in "$dir"/*; do \
+            case "$file" in *.pom) continue ;; esac; \
+            entries="$entries<artifact name=\"$(basename "$file")\"><sha256 value=\"$(sha256sum "$file" | cut -d' ' -f1)\" origin=\"the libsignal stage\"/></artifact>"; \
+        done; \
+        entries="$entries</component>"; \
+    done; \
+    sed -i "s|</components>|$entries</components>|" gradle/verification-metadata.xml; \
+    grep -q "version=\"$LIBSIGNAL_VERSION\"" gradle/verification-metadata.xml
+COPY --from=truststore /out/whisper.store app/src/local/res/raw/whisper.store
+COPY --from=config /out/local.json /opt/testbox/signal.apk.json
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew --no-daemon assemblePlayLocalDebug -PsignalLocalConfig=/opt/testbox/signal.apk.json \
+    && cp app/build/outputs/apk/playLocal/debug/*x86_64*.apk /opt/testbox/signal.apk
+
+# The agent protocol's Kotlin side, generated from its Rust (testbox/tools/src/agent.rs) by
+# typeshare: only that file goes in, so only a change to it generates again.
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS protocol
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install --locked typeshare-cli@1.13.4
+COPY testbox/tools/src/agent.rs testbox/android/agent/typeshare.toml /src/
+RUN typeshare /src/agent.rs --config-file /src/typeshare.toml --lang=kotlin \
+        --output-file=/out/Protocol.kt
+
+# The driver's on-device agent, with Signal-Android's Gradle wrapper and its Android Gradle
+# plugin, so that the two builds share a Gradle cache.
+FROM signal AS agent
+COPY testbox/android/agent /opt/agent
+COPY --from=protocol /out/Protocol.kt \
+    /opt/agent/src/main/kotlin/org/b33p/testbox/agent/protocol/Protocol.kt
+RUN --mount=type=cache,target=/root/.gradle \
+    /opt/signal-android/gradlew --no-daemon -p /opt/agent assembleDebug \
+    && cp /opt/agent/build/outputs/apk/debug/testbox-agent-debug.apk /opt/testbox/agent.apk
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# What the emulator loads; qrencode for the QR the driver shows the scanner; Xvnc and vncconfig
+# for the emulator's window (testbox/tools `with-display`).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpulse0 libnss3 libxcomposite1 libxcursor1 libxi6 libxtst6 libgl1 libdrm2 libxkbfile1 \
+        libbsd0 libxdamage1 libxrandr2 libgbm1 libasound2t64 libdbus-1-3 qrencode \
+        tigervnc-standalone-server tigervnc-tools \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk
+# The emulator looks for system images under ANDROID_SDK_ROOT ("Cannot find AVD system path"
+# without it).
+ENV ANDROID_SDK_ROOT=${ANDROID_HOME}
+ENV PATH=${PATH}:${ANDROID_HOME}/emulator:${ANDROID_HOME}/platform-tools
+COPY --from=emulator /opt/android-sdk/emulator /opt/android-sdk/emulator
+COPY --from=emulator /opt/android-sdk/system-images /opt/android-sdk/system-images
+COPY --from=emulator /opt/android-sdk/platform-tools /opt/android-sdk/platform-tools
+COPY --from=emulator /root/.android /root/.android
+# The camera's scene with its wall poster moved from behind the camera's starting view (the
+# stock file's position -0.807 0.320 5.316, rotation 0 -150 0) to in front of it, small enough to
+# be whole in the scanner's frame: the camera turns only from the Extended controls window or
+# gRPC. The driver puts the QR on it (`virtualscene-image wall`).
+COPY testbox/android/Toren1BD.posters /opt/android-sdk/emulator/resources/Toren1BD.posters
+COPY --from=app /opt/testbox /opt/testbox
+COPY --from=agent /opt/testbox/agent.apk /opt/testbox/agent.apk
+COPY --from=tools /usr/local/bin/android /usr/local/bin/android
+COPY --from=tools /usr/local/bin/with-display /usr/local/bin/with-display
+# The emulator's window at the device's size, 1080x2340, with room for its toolbar.
+ENTRYPOINT ["with-display", "/run/view/vnc", "1280x2400", "--", "android"]

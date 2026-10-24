@@ -18,6 +18,9 @@ signal = [
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store", "dep:xattr",
     "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:rustls", "dep:aes-gcm", "dep:hmac", "dep:hkdf", "dep:base64", "dep:rand", "dep:serde",
 ]
+# Links to other servers than Signal's, named by `B33P_SIGNAL_SERVERS` (`link_servers`): for the
+# test box. Debug builds only (`compile_error!` in src/signal.rs).
+test-servers = ["signal", "dep:toml"]
 
 [dependencies]
 crossbeam-channel.workspace = true
@@ -27,11 +30,13 @@ tracing = { version = "0.1", optional = true }
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs"], optional = true }
+tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 # The computer's name, for the default device name.
 gethostname = "1"
+# A servers file `B33P_SIGNAL_SERVERS` names (`test-servers`), in presage-cli's TOML form.
+toml = { version = "1", optional = true }
 hex = { version = "0.4", optional = true }
 # Same version and features as presage-store-sqlite, so this only adds the options and error
 # types (`migrate`: why its migrations refuse a database).

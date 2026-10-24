@@ -1,0 +1,20 @@
+[package]
+name = "testbox-web"
+description = "The box's displays as a web page on loopback (`cargo testbox web`)."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own: only `cargo testbox web` builds it.
+[workspace]
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.4.3"
+hex = "0.4"
+testbox-tools = { path = "../tools" }
+testbox-vnc = { path = "../vnc" }

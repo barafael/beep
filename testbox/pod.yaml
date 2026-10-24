@@ -1,0 +1,204 @@
+# The box as one pod for `podman kube play`. KYAML style (Kubernetes 1.34):
+# flow mappings, quoted strings. `cargo testbox up` fills in @REPO@ (hostPath must be
+# absolute), puts the clients it is asked for in place of the @CLIENTS@ line (testbox/desktop/pod.yaml,
+# testbox/android/pod.yaml) and attaches the pod to an `--internal` network: no egress.
+#
+# One pod: every container shares localhost, as libsignal-net's local override needs;
+# the stores' names resolve to it (`hostAliases`), and each listens on a port of its own.
+# So the pod is one trust domain (Redis without a password, adb's server, Garage's
+# `rpc_secret`); nothing outside it is, and no container publishes a port.
+{
+  apiVersion: "v1",
+  kind: "Pod",
+  metadata: {
+    name: "b33p-testbox",
+  },
+  spec: {
+    # Containers start at once: kube play has no readiness or startup probes. One that starts
+    # before what it needs exits and starts again. Where order matters inside a service, one
+    # process starts its parts in turn (testbox/tools `cdn0`, `storage`).
+    restartPolicy: "Always",
+    hostAliases: [
+      {
+        ip: "127.0.0.1",
+        hostnames: [
+          "foundationdb0", "dynamodb", "redis", "redis-0", "redis-1", "redis-2",
+          "s3.box", "prekeys.s3.box",
+        ],
+      },
+    ],
+    # The keys, made in the server image's build, before anything else (testbox/tools `provision`).
+    initContainers: [
+      {
+        name: "keys",
+        image: "localhost/b33p-testbox-server",
+        args: ["keys"],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [{ name: "keys", mountPath: "/keys" }],
+      },
+    ],
+    containers: [
+      # The stores Signal-Server's test factories would start through Testcontainers, at the
+      # versions its pom.xml pins (`dynamodb.image`, `redis.image`, `redis-cluster.image`);
+      # FoundationDB at test.yml's (testbox/foundationdb/Containerfile).
+      {
+        name: "foundationdb0",
+        image: "localhost/b33p-testbox-foundationdb",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+      },
+      {
+        name: "dynamodb",
+        image: "localhost/b33p-testbox-dynamodb",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+      },
+      # S3 for the paged one-time KEM pre-keys (test.yml `pagedSingleUseKEMPreKeyStore`); Signal's
+      # own test of that store runs on LocalStack (S3LocalStackExtension). The SDK addresses the
+      # bucket by host name, hence the alias per bucket.
+      {
+        name: "localstack",
+        image: "docker.io/localstack/localstack:4.14@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [{ name: "SERVICES", value: "s3" }],
+      },
+      # The pub/sub Redis, 7.4.9 as Signal's `redis:7.4-alpine` pin. Signal-Server waits on
+      # keyspace notifications for a newly linked device and a transfer archive
+      # (AccountsManager.java `LINKED_DEVICE_KEYSPACE_PATTERN`), which Redis sends only when told
+      # to, as Signal-Server's tests tell it (AddRemoveDeviceIntegrationTest.java).
+      {
+        name: "redis",
+        image: "docker.io/library/redis:7.4.9-bookworm@sha256:5c30969bb0ecdf1b654e0e4d4124aac99013f0b0fe345e33aa380f6b1dab780b",
+        # As its own user (the image's `redis`, 999): its entrypoint switches to it with `setpriv`
+        # only when it starts as root, which takes capabilities this container hasn't.
+        securityContext: {
+          runAsUser: 999,
+          runAsGroup: 999,
+          allowPrivilegeEscalation: false,
+          capabilities: { drop: ["ALL"] },
+        },
+        args: ["redis-server", "--notify-keyspace-events", "K$"],
+      },
+      # The cluster as RedisClusterExtension's CLUSTER_COMPOSE_FILE_CONTENTS, each node on a port
+      # of its own (one pod, one port space).
+      {
+        name: "redis-0",
+        image: "docker.io/bitnamilegacy/redis-cluster:7.4.3@sha256:a53d023fdfaf8a8d7ddc58da040d3494e4cb45772644618ffa44c42dcd32b9af",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "ALLOW_EMPTY_PASSWORD", value: "yes" },
+          { name: "REDIS_PORT_NUMBER", value: "7000" },
+          { name: "REDIS_NODES", value: "redis-0:7000 redis-1:7001 redis-2:7002" },
+        ],
+      },
+      {
+        name: "redis-1",
+        image: "docker.io/bitnamilegacy/redis-cluster:7.4.3@sha256:a53d023fdfaf8a8d7ddc58da040d3494e4cb45772644618ffa44c42dcd32b9af",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "ALLOW_EMPTY_PASSWORD", value: "yes" },
+          { name: "REDIS_PORT_NUMBER", value: "7001" },
+          { name: "REDIS_NODES", value: "redis-0:7000 redis-1:7001 redis-2:7002" },
+        ],
+      },
+      {
+        name: "redis-2",
+        image: "docker.io/bitnamilegacy/redis-cluster:7.4.3@sha256:a53d023fdfaf8a8d7ddc58da040d3494e4cb45772644618ffa44c42dcd32b9af",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "ALLOW_EMPTY_PASSWORD", value: "yes" },
+          { name: "REDIS_PORT_NUMBER", value: "7002" },
+          { name: "REDIS_NODES", value: "redis-0:7000 redis-1:7001 redis-2:7002" },
+          { name: "REDIS_CLUSTER_REPLICAS", value: "0" },
+          { name: "REDIS_CLUSTER_CREATOR", value: "yes" },
+        ],
+      },
+      # Signal-Server's test mode (testbox/server/Containerfile).
+      {
+        name: "server",
+        image: "localhost/b33p-testbox-server",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [{ name: "keys", mountPath: "/keys" }],
+      },
+      # CDN3: tus-server under `wrangler dev`.
+      {
+        name: "tus",
+        image: "localhost/b33p-testbox-tus",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "tus-data", mountPath: "/data" },
+        ],
+      },
+      # CDN0: Garage, for its POST-object uploads (Garage PR #222), behind a TLS front.
+      {
+        name: "cdn0",
+        image: "localhost/b33p-testbox-cdn0",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "cdn0-data", mountPath: "/data" },
+        ],
+      },
+      # The storage service on the Bigtable emulator.
+      {
+        name: "storage",
+        image: "localhost/b33p-testbox-storage",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [{ name: "keys", mountPath: "/keys", readOnly: true }],
+      },
+      # The primary devices: `cargo testbox` runs presage-cli in here.
+      {
+        name: "presage",
+        image: "localhost/b33p-testbox-presage",
+        command: ["sleep", "infinity"],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "presage", mountPath: "/presage" },
+        ],
+      },
+      # b33p from the working tree (testbox/b33p/Containerfile).
+      {
+        name: "b33p",
+        image: "localhost/b33p-testbox-b33p",
+        env: [
+          # b33p makes its directories under HOME; XDG_RUNTIME_DIR has no default, so the harness
+          # socket's mount, which exists.
+          { name: "HOME", value: "/home/b33p" },
+          { name: "XDG_RUNTIME_DIR", value: "/run/b33p" },
+          # The box's servers (testbox/tools `provision` writes the file).
+          { name: "B33P_SIGNAL_SERVERS", value: "/keys/servers.toml" },
+          { name: "B33P_AGENT_SOCKET", value: "/run/b33p/agent.sock" },
+          { name: "QT_QPA_PLATFORM", value: "xcb" },
+          # A bus of its own that isn't there, as in b33p-slint/tests/harness.rs.
+          { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent" },
+          { name: "RUST_LOG", value: "b33p=debug,presage=info,libsignal_service=info" },
+        ],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "b33p-home", mountPath: "/home/b33p" },
+          { name: "run", mountPath: "/run/b33p" },
+          { name: "files", mountPath: "/files", readOnly: true },
+          { name: "view-b33p", mountPath: "/run/view" },
+        ],
+      },
+      # @CLIENTS@
+    ],
+    volumes: [
+      { name: "keys", persistentVolumeClaim: { claimName: "b33p-testbox-keys" } },
+      { name: "presage", persistentVolumeClaim: { claimName: "b33p-testbox-presage" } },
+      { name: "b33p-home", persistentVolumeClaim: { claimName: "b33p-testbox-b33p-home" } },
+      { name: "desktop-home", persistentVolumeClaim: { claimName: "b33p-testbox-desktop-home" } },
+      { name: "tus-data", persistentVolumeClaim: { claimName: "b33p-testbox-tus-data" } },
+      { name: "cdn0-data", persistentVolumeClaim: { claimName: "b33p-testbox-cdn0-data" } },
+      # The harness's and the drivers' sockets, on the host.
+      { name: "run", hostPath: { path: "@REPO@/target/testbox-run", type: "Directory" } },
+      # The test files, which the xtask writes: read-only to every container.
+      { name: "files", hostPath: { path: "@REPO@/target/testbox-files", type: "Directory" } },
+      # Each client's display socket, in a directory only that client mounts.
+      { name: "view-b33p", hostPath: { path: "@REPO@/target/testbox-view/b33p", type: "Directory" } },
+      { name: "view-desktop", hostPath: { path: "@REPO@/target/testbox-view/desktop", type: "Directory" } },
+      { name: "view-android", hostPath: { path: "@REPO@/target/testbox-view/android", type: "Directory" } },
+    ],
+  },
+}

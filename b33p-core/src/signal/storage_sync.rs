@@ -120,7 +120,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
                     content: Some(SyncContent::FetchLatest(latest)),
                     ..Default::default()
                 };
-                send_sync(manager, sync).await;
+                send_sync(manager, &ctx.outbox, sync).await;
                 return;
             }
             Ok(Written::Nothing | Written::NoKey) => return,

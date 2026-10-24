@@ -1,7 +1,8 @@
 //! Safety numbers: identity keys, verifying them here and elsewhere, how far each is trusted.
 
-use super::errors::{db, failed, store_failed};
+use super::errors::{db, send_failed, store_failed};
 use crate::Error;
+use crate::outbox::Sends as _;
 use presage::{
     libsignal_service::{
         content::{Content, ContentBody},
@@ -242,8 +243,9 @@ pub(super) async fn set_verified(
     remember_verification(manager, ctx, who, &key, state, Verifier::Here).await?;
     let padding = NullMessage::generate(&mut rand::rng()).padding;
     let timestamp = now_millis();
-    if let Err(error) = manager
-        .send_message(
+    if let Err(error) = ctx
+        .outbox
+        .message(
             who,
             ContentBody::NullMessage(NullMessage {
                 padding: padding.clone(),
@@ -256,10 +258,12 @@ pub(super) async fn set_verified(
     }
     let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
-    manager
-        .send_message(own, ContentBody::SynchronizeMessage(sync), timestamp)
+    ctx.outbox
+        .message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
-        .map_err(failed("done here, but your other devices couldn't be told"))?;
+        .map_err(send_failed(
+            "done here, but your other devices couldn't be told",
+        ))?;
     Ok(())
 }
 

@@ -152,8 +152,7 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let shared = shared.clone();
         move || {
             shared.act(|chat| {
-                let id = chat.selected().map(|c| c.id.clone());
-                chat.open_group_draft(id);
+                chat.open_add_members();
                 (None, Update::default())
             });
         }

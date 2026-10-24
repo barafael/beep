@@ -34,12 +34,16 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-
-use b33p_core::settings::{
-    Animations, NotificationContent, Settings, TextSize, Theme, WidgetStyle,
+use b33p_harness::{
+    Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ConversationSnapshot,
+    Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot, MemberSnapshot,
+    MessageSnapshot, Outcome, Pong, Pushed, PushedEvent, QuoteSnapshot, ReactionSnapshot, Reply,
+    Request, Saved, ScreenSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
+    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
+use serde::Serialize;
+
+use b33p_core::settings::Settings;
 use b33p_core::state::{self, ChatState, Update};
 use b33p_core::{AfterFinding, Backend, Command, ConversationId, GroupEdit};
 
@@ -63,8 +67,11 @@ pub fn start(shared: &Rc<Shared>) {
             return;
         }
     };
-    // Connect needs write permission on the file; nobody but the owner gets any.
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    // Connect needs write permission on the file; nobody but the owner gets any, or no harness.
+    if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't make the agent socket the owner's only");
+        return;
+    }
 
     // Requests are carried to the UI thread, which alone may touch the state; answers and
     // pushed updates go back through the connection's own channel (`Job::reply`).
@@ -80,7 +87,7 @@ pub fn start(shared: &Rc<Shared>) {
         tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't start the agent listener");
         return;
     }
-    tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "the agent harness is listening");
+    tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "{}", b33p_harness::LISTENING);
 }
 
 /// What a connection asks, on its way to the UI thread. `request` is `None` once the
@@ -130,16 +137,17 @@ fn read_requests(
         if line.trim().is_empty() {
             continue;
         }
-        let id = serde_json::from_str::<serde_json::Value>(line.trim())
-            .ok()
-            .and_then(|value| value.get("id").and_then(serde_json::Value::as_u64))
-            .unwrap_or(0);
         let request = match serde_json::from_str::<Request>(line.trim()) {
             Ok(request) => request,
             Err(error) => {
-                let _ = out.send_blocking(
-                    json!({ "id": id, "error": format!("not a request: {error}") }).to_string(),
-                );
+                // Its id, if that much parsed.
+                let id = serde_json::from_str::<RequestId>(line.trim()).map_or(0, |r| r.id);
+                let reply = Reply::<()> {
+                    id,
+                    outcome: Outcome::Err(format!("not a request: {error}")),
+                };
+                let line = serde_json::to_string(&reply).expect("replies always serialize");
+                let _ = out.send_blocking(line);
                 continue;
             }
         };
@@ -184,337 +192,70 @@ async fn pump(shared: Weak<Shared>, jobs: async_channel::Receiver<Job>) {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct RequestId {
+    #[serde(default)]
+    id: u64,
+}
+
+/// Writes the window, as drawn, to `path`.
+fn screenshot(shared: &Shared, path: &str) -> Result<Shot, String> {
+    let window = shared.ui().ok_or("there is no window")?;
+    // What is pending is drawn first, as the person would see it.
+    shared.flush();
+    let (width, height) = window.screenshot(std::path::Path::new(path))?;
+    Ok(Shot { width, height })
+}
+
 fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Request) {
-    let result = match request.call {
-        Call::Ping => json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "mock": Backend::mock_requested(),
-        }),
-        Call::Snapshot => serde_json::to_value(snapshot(
-            &shared.chat.borrow(),
-            &shared.settings.borrow(),
-            shared.ui().as_deref(),
-        ))
-        .expect("a snapshot always serializes"),
+    let id = request.id;
+    match request.call {
+        Call::Ping => send(
+            reply,
+            id,
+            Ok(Pong {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                mock: Backend::mock_requested(),
+            }),
+        ),
+        Call::Snapshot => send(
+            reply,
+            id,
+            Ok(snapshot(
+                &shared.chat.borrow(),
+                &shared.settings.borrow(),
+                shared.ui().as_deref(),
+            )),
+        ),
         Call::Subscribe => {
             let seq = shared.agent.subscribe(connection, reply.clone());
-            json!({ "seq": seq })
+            send(reply, id, Ok(Subscribed { seq }));
         }
         Call::Unsubscribe => {
             shared.agent.unsubscribe(connection);
-            json!({ "ok": true })
+            send(reply, id, Ok(Unsubscribed { ok: true }));
         }
-        Call::Act { action } => match perform(shared, action) {
-            Ok(command_sent) => json!({ "command_sent": command_sent }),
-            Err(error) => return send(reply, request.id, Err(error)),
-        },
-        Call::Screenshot { path } => {
-            let Some(window) = shared.ui() else {
-                return send(reply, request.id, Err("there is no window".into()));
-            };
-            // What is pending is drawn first, as the person would see it.
-            shared.flush();
-            match window.screenshot(std::path::Path::new(&path)) {
-                Ok((width, height)) => json!({ "width": width, "height": height }),
-                Err(error) => return send(reply, request.id, Err(error)),
-            }
-        }
+        Call::Act { action } => send(
+            reply,
+            id,
+            perform(shared, action).map(|command_sent| Acted { command_sent }),
+        ),
+        Call::Screenshot { path } => send(reply, id, screenshot(shared, &path)),
+    }
+}
+
+fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, String>) {
+    let reply_line = Reply {
+        id,
+        outcome: result.into(),
     };
-    send(reply, request.id, Ok(result));
+    let line = serde_json::to_string(&reply_line).expect("replies always serialize");
+    let _ = reply.send_blocking(line);
 }
 
-fn send(reply: &Outbound, id: u64, result: Result<serde_json::Value, String>) {
-    let line = match result {
-        Ok(value) => json!({ "id": id, "result": value }),
-        Err(error) => json!({ "id": id, "error": error }),
-    };
-    let _ = reply.send_blocking(line.to_string());
-}
-
-#[derive(Deserialize)]
-struct Request {
-    #[serde(default)]
-    id: u64,
-    #[serde(flatten)]
-    call: Call,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
-enum Call {
-    Ping,
-    Snapshot,
-    Subscribe,
-    Unsubscribe,
-    Act {
-        action: Action,
-    },
-    /// Writes the window, as drawn, to `path` as a PNG.
-    Screenshot {
-        path: String,
-    },
-}
-
-/// Everything the window's own handlers can do, named for what a person does. Every arm takes
-/// the same road as its button or key: the same `ChatState` method, with the same redraw.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Action {
-    Select {
-        conversation: String,
-    },
-    Back,
-    SelectRelative {
-        by: i32,
-    },
-    SelectNextUnread,
-    SelectPinned {
-        n: u32,
-    },
-    /// Puts text in the composer, as typed.
-    Type {
-        text: String,
-    },
-    /// Sends what is in the composer.
-    Send,
-    Edit {
-        index: u32,
-    },
-    CancelEdit,
-    ReplyTo {
-        index: u32,
-    },
-    CancelReply,
-    React {
-        index: u32,
-        emoji: String,
-    },
-    Delete {
-        index: u32,
-        everyone: bool,
-    },
-    ToggleSelect {
-        index: u32,
-    },
-    SelectThrough {
-        index: u32,
-    },
-    ClearSelection,
-    ForwardSelection,
-    DeleteSelection {
-        everyone: bool,
-    },
-    TogglePin {
-        conversation: String,
-    },
-    MovePin {
-        conversation: String,
-        by: i32,
-    },
-    MarkRead {
-        conversation: String,
-        read: bool,
-    },
-    /// 0 unmutes, below 0 mutes for good, otherwise minutes from now.
-    Mute {
-        conversation: String,
-        minutes: i32,
-    },
-    Archive {
-        conversation: String,
-        archived: bool,
-    },
-    Block {
-        conversation: String,
-        blocked: bool,
-    },
-    SetTimer {
-        conversation: String,
-        seconds: u32,
-    },
-    AnswerInvitation {
-        conversation: String,
-        accept: bool,
-    },
-    ConfirmSafetyNumber {
-        conversation: String,
-    },
-    /// Answers the message request of the open chat.
-    Respond {
-        answer: Answer,
-    },
-    /// The group actions work on the open chat, as their buttons do.
-    RenameGroup {
-        title: String,
-    },
-    /// The group's picture from an image file; none takes it away.
-    SetGroupPicture {
-        path: Option<String>,
-    },
-    DescribeGroup {
-        description: String,
-    },
-    SetMemberAdmin {
-        member: String,
-        admin: bool,
-    },
-    RemoveMember {
-        member: String,
-    },
-    LeaveGroup,
-    CreateGroup {
-        title: String,
-        members: Vec<String>,
-    },
-    FindNumber {
-        number: String,
-        open: bool,
-    },
-    OpenDetails,
-    CloseDetails,
-    OpenMedia,
-    CloseMedia,
-    OpenStory {
-        conversation: String,
-    },
-    StepStory {
-        by: i32,
-    },
-    CloseStory,
-    PostStoryText {
-        group: String,
-        text: String,
-    },
-    OpenNewGroup,
-    /// Joining a group through its invite link: with a link, it is looked up at once.
-    OpenJoinGroup {
-        link: Option<String>,
-    },
-    PreviewGroupLink {
-        link: String,
-    },
-    JoinGroup,
-    CloseJoinGroup,
-    /// "off", "anyone" or "approval".
-    SetInviteLink {
-        access: String,
-    },
-    ResetInviteLink,
-    AnswerJoinRequest {
-        member: String,
-        approve: bool,
-    },
-    CancelJoinRequest,
-    CloseGroupDraft,
-    FinishGroupDraft {
-        title: String,
-    },
-    ToggleCandidate {
-        conversation: String,
-    },
-    OpenChatSearch,
-    CloseChatSearch,
-    SearchChat {
-        text: String,
-    },
-    ShowResult {
-        index: u32,
-    },
-    /// Searches the chat list.
-    Search {
-        text: String,
-    },
-    Forward {
-        index: u32,
-    },
-    ForwardTo {
-        conversation: String,
-    },
-    CancelForward,
-    LoadOlder,
-    ShowFolder {
-        index: i32,
-    },
-    ShowArchived {
-        show: bool,
-    },
-    DismissError,
-    /// The error banner's "Try again".
-    RetryError,
-    Unlock {
-        password: String,
-        confirmation: String,
-    },
-    SkipHistory,
-    /// Goes to the chats while catching up, as the start screen's button does.
-    Start,
-    /// On the failure screen.
-    Retry,
-    UsePassword,
-    /// What the confirmation dialog's button does: deletes the data here.
-    StartOver,
-    Unlink,
-    StageFiles {
-        paths: Vec<String>,
-    },
-    Unstage {
-        index: u32,
-    },
-    FetchAttachment {
-        id: String,
-    },
-    OpenAttachment {
-        id: String,
-    },
-    /// Sends the message at `index` in the open chat again, after it failed.
-    RetrySend {
-        index: usize,
-    },
-    /// Pretends the window lost or regained focus, for tests of read receipts.
-    SetWindowFocused {
-        focused: bool,
-    },
-    /// Names this computer for the phone's list of linked devices; empty for the default.
-    RenameDevice {
-        name: String,
-    },
-    /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
-    /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
-    /// "leave_group".
-    Show {
-        what: String,
-        open: bool,
-    },
-    /// Gives the window this size, in logical pixels, as dragging its edge would.
-    Resize {
-        width: f32,
-        height: f32,
-    },
-    /// Changes the given settings and leaves the rest as they are.
-    SetSettings {
-        theme: Option<String>,
-        style: Option<String>,
-        text_size: Option<String>,
-        animations: Option<String>,
-        show_avatars: Option<bool>,
-        notifications: Option<bool>,
-        notification_content: Option<String>,
-        show_activity: Option<bool>,
-        show_calendar: Option<bool>,
-        close_to_tray: Option<bool>,
-        read_receipts: Option<bool>,
-        typing_indicators: Option<bool>,
-        link_previews: Option<bool>,
-        sync_to_phone: Option<bool>,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Answer {
-    Accept,
-    Delete,
-    Block,
+/// The app's window, which exists before the agent starts (main.rs).
+fn window(shared: &Shared) -> Result<Rc<crate::ui::Window>, String> {
+    shared.ui().ok_or_else(|| "the window is gone".to_owned())
 }
 
 /// Carries `action` out the way the window's own handler does, and reports whether it sent a
@@ -545,24 +286,12 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             }
             typed
         }
-        Action::Send => {
-            // The send button sends the composer's text; the harness keeps it in the draft.
-            let sent = shared.act(|chat| {
-                let text = chat.draft().to_string();
-                chat.compose(&text)
-            });
-            // As the button does: the composer is empty once sent.
-            if let Some(window) = shared.ui() {
-                window.set_draft(shared.chat.borrow().draft());
-            }
-            sent
+        // The window's own send and edit: the agent starts once the window exists (main.rs).
+        Action::Send => window(shared)?.send(shared),
+        Action::Edit { index } => {
+            window(shared)?.edit(shared, index as usize);
+            false
         }
-        Action::Edit { index } => shared.act(|chat| {
-            if let Some(text) = chat.edit(index as usize) {
-                chat.draft_changed(&text);
-            }
-            (None, Update::default())
-        }),
         Action::CancelEdit => shared.act(|chat| {
             chat.cancel_edit();
             (None, Update::default())
@@ -709,6 +438,11 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             (None, Update::default())
         }),
         Action::OpenMedia => shared.act(|chat| (chat.open_media(), Update::default())),
+        // As ui.rs `on_open_stickers` and `on_send_sticker`.
+        Action::OpenStickers => shared.act(|chat| (chat.load_stickers(), Update::default())),
+        Action::SendSticker { pack, sticker } => {
+            shared.act(|chat| (chat.send_sticker(&pack, sticker), Update::default()))
+        }
         Action::CloseMedia => shared.act(|chat| {
             chat.close_media();
             (None, Update::default())
@@ -737,6 +471,10 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.open_group_draft(None);
             (None, Update::default())
         }),
+        Action::OpenAddMembers => shared.act(|chat| {
+            chat.open_add_members();
+            (None, Update::default())
+        }),
         Action::OpenJoinGroup { link } => {
             shared.act(|chat| (chat.open_join(link.as_deref()), Update::default()))
         }
@@ -748,16 +486,9 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.close_join();
             (None, Update::default())
         }),
-        Action::SetInviteLink { access } => {
-            let access = match access.as_str() {
-                "anyone" => b33p_core::InviteLinkAccess::Anyone,
-                "approval" => b33p_core::InviteLinkAccess::Approval,
-                _ => b33p_core::InviteLinkAccess::Off,
-            };
-            selected(shared, move |id, chat| {
-                chat.edit_group(id, GroupEdit::InviteLink(access))
-            })
-        }
+        Action::SetInviteLink { access } => selected(shared, move |id, chat| {
+            chat.edit_group(id, GroupEdit::InviteLink(access.into()))
+        }),
         Action::ResetInviteLink => selected(shared, |id, chat| {
             chat.edit_group(id, GroupEdit::ResetInviteLink)
         }),
@@ -880,7 +611,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
         }),
         Action::RetrySend { index } => shared.act(|chat| {
             (
-                chat.retry_send(index),
+                chat.retry_send(index as usize),
                 Update {
                     rows: true,
                     ..Update::default()
@@ -894,6 +625,15 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
                 command,
                 Update {
                     rows,
+                    ..Update::default()
+                },
+            )
+        }),
+        Action::SaveAttachment { id } => shared.act(|chat| {
+            (
+                chat.save_attachment(&b33p_core::AttachmentId(id)),
+                Update {
+                    rows: true,
                     ..Update::default()
                 },
             )
@@ -937,21 +677,20 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             sync_to_phone,
         } => {
             let mut settings = shared.settings.borrow().clone();
-            if let Some(key) = theme {
-                settings.theme = of_key(&key, Theme::from_key, "theme")?;
+            if let Some(value) = theme {
+                settings.theme = value.into();
             }
-            if let Some(key) = style {
-                settings.style = of_key(&key, WidgetStyle::from_key, "style")?;
+            if let Some(value) = style {
+                settings.style = value.into();
             }
-            if let Some(key) = text_size {
-                settings.text_size = of_key(&key, TextSize::from_key, "text_size")?;
+            if let Some(value) = text_size {
+                settings.text_size = value.into();
             }
-            if let Some(key) = animations {
-                settings.animations = of_key(&key, Animations::from_key, "animations")?;
+            if let Some(value) = animations {
+                settings.animations = value.into();
             }
-            if let Some(key) = notification_content {
-                settings.notification_content =
-                    of_key(&key, NotificationContent::from_key, "notification_content")?;
+            if let Some(value) = notification_content {
+                settings.notification_content = value.into();
             }
             if let Some(value) = show_avatars {
                 settings.show_avatars = value;
@@ -1015,175 +754,6 @@ fn selected(
     })
 }
 
-fn of_key<T>(key: &str, parse: fn(&str) -> Option<T>, what: &str) -> Result<T, String> {
-    parse(key).ok_or_else(|| format!("unknown {what}: {key}"))
-}
-
-/// What the window shows, as data. Shaped like what `ui.rs` reads from the state, not like
-/// the Slint tree: the harness reports meaning, not widgets. Messages keep their position as
-/// `index`, since actions on them (`react`, `edit`, …) take it.
-#[derive(Serialize)]
-struct Snapshot {
-    mock: bool,
-    screen: ScreenSnapshot,
-    account: String,
-    synced: bool,
-    error: Option<String>,
-    /// The error offers "Try again" (`retry_error`).
-    can_retry_error: bool,
-    unread_total: u32,
-    /// Only a direct `snapshot` answer has it; pushed updates don't look at the window.
-    window: Option<WindowSnapshot>,
-    conversations: Vec<ConversationSnapshot>,
-    selected: Option<String>,
-    messages: Vec<MessageSnapshot>,
-    draft: String,
-    replying_to: Option<QuoteSnapshot>,
-    editing: bool,
-    staged: Vec<String>,
-    typing: Vec<String>,
-    /// The join-a-group dialog, while open.
-    join: Option<JoinSnapshot>,
-    /// The story shown, while one is.
-    story: Option<StorySnapshot>,
-    settings: SettingsSnapshot,
-}
-
-#[derive(Serialize)]
-struct StorySnapshot {
-    author: String,
-    /// Which of the author's stories it is, counted from 1, and how many there are.
-    position: usize,
-    count: usize,
-    /// A text story's text; a picture story has none.
-    text: Option<String>,
-}
-
-#[derive(Serialize)]
-struct JoinSnapshot {
-    link: String,
-    /// The link is being looked up, or the group joined.
-    busy: bool,
-    /// What the link showed of its group, once looked up.
-    title: Option<String>,
-    members: u32,
-    approval: bool,
-    requested: bool,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "name", rename_all = "snake_case")]
-enum ScreenSnapshot {
-    /// Starting up, with what the screen says it waits for.
-    Syncing {
-        status: String,
-    },
-    Password {
-        new: bool,
-        error: Option<String>,
-    },
-    Link,
-    Chats,
-    /// See [`b33p_core::Event::Failed`].
-    Failed {
-        failure: String,
-        message: String,
-    },
-}
-
-#[derive(Serialize)]
-struct WindowSnapshot {
-    visible: bool,
-    active: bool,
-}
-
-#[derive(Serialize)]
-struct ConversationSnapshot {
-    id: String,
-    title: String,
-    subtitle: String,
-    group: bool,
-    note_to_self: bool,
-    unread: u32,
-    marked_unread: bool,
-    pinned: bool,
-    muted: bool,
-    archived: bool,
-    blocked: bool,
-    accepted: bool,
-    request: bool,
-    invited: bool,
-    left: bool,
-    /// We asked to join through the group's link, and wait for an admin.
-    requested: bool,
-    expire_timer: u32,
-    preview: String,
-    /// How far our last message got; `None` without one of ours.
-    last_delivery: Option<&'static str>,
-    typing: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct MessageSnapshot {
-    index: usize,
-    sender: String,
-    sender_id: String,
-    text: String,
-    outgoing: bool,
-    notice: bool,
-    deleted: bool,
-    edited: bool,
-    timestamp: u64,
-    delivery: Option<&'static str>,
-    day: Option<String>,
-    first_unread: bool,
-    selected: bool,
-    reactions: Vec<ReactionSnapshot>,
-    quote: Option<QuoteSnapshot>,
-    attachments: Vec<AttachmentSnapshot>,
-}
-
-#[derive(Serialize)]
-struct ReactionSnapshot {
-    emoji: String,
-    sender: String,
-    outgoing: bool,
-}
-
-#[derive(Serialize)]
-struct QuoteSnapshot {
-    author: String,
-    text: String,
-}
-
-#[derive(Serialize)]
-struct AttachmentSnapshot {
-    id: String,
-    kind: &'static str,
-    file_name: Option<String>,
-    size: u64,
-    caption: Option<String>,
-}
-
-#[derive(Serialize)]
-struct SettingsSnapshot {
-    theme: &'static str,
-    style: &'static str,
-    text_size: &'static str,
-    animations: &'static str,
-    show_avatars: bool,
-    notifications: bool,
-    notification_content: &'static str,
-    show_activity: bool,
-    show_calendar: bool,
-    close_to_tray: bool,
-    read_receipts: bool,
-    typing_indicators: bool,
-    link_previews: bool,
-    sync_to_phone: bool,
-    device_name: String,
-}
-
 fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) -> Snapshot {
     let conversations = chat
         .conversations()
@@ -1208,11 +778,11 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             preview: view.preview(),
             last_delivery: view.last_message.filter(|m| m.outgoing).map(delivery),
             typing: view.typing.iter().map(|name| name.to_string()).collect(),
+            avatar: view.avatar.is_some(),
         })
         .collect();
-    let messages = chat
-        .messages()
-        .enumerate()
+    let messages = (0u32..)
+        .zip(chat.messages())
         .map(|(index, view)| MessageSnapshot {
             index,
             sender: view.message.sender.clone(),
@@ -1247,11 +817,29 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                 .iter()
                 .map(|attachment| AttachmentSnapshot {
                     id: attachment.id.0.clone(),
-                    kind: kind_name(attachment.kind),
+                    kind: kind(attachment.kind),
                     file_name: attachment.file_name.clone(),
                     size: attachment.size,
                     caption: attachment.caption.clone(),
+                    download: chat.attachment(&attachment.id).map(|state| match state {
+                        state::AttachmentState::Loading => Download::Loading,
+                        state::AttachmentState::Ready(_) => Download::Ready,
+                        state::AttachmentState::Failed(error) => {
+                            Download::Failed(error.message.clone())
+                        }
+                    }),
+                    saved: chat.saved(&attachment.id).map(|state| match state {
+                        state::SaveState::Saving => Saved::Saving,
+                        state::SaveState::Saved(path) => Saved::Saved(path.display().to_string()),
+                        state::SaveState::Failed(error) => Saved::Failed(error.message.clone()),
+                    }),
                 })
+                .collect(),
+            mentions: view
+                .message
+                .mentions
+                .iter()
+                .map(|mention| mention.service_id.clone())
                 .collect(),
         })
         .collect();
@@ -1265,7 +853,9 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                 new: *new,
                 error: error.clone(),
             },
-            state::Screen::Link(_) => ScreenSnapshot::Link,
+            state::Screen::Link(qr) => ScreenSnapshot::Link {
+                url: qr.encoded_text.clone(),
+            },
             state::Screen::Chats => ScreenSnapshot::Chats,
             state::Screen::Failed { failure, message } => ScreenSnapshot::Failed {
                 failure: format!("{failure:?}"),
@@ -1310,6 +900,59 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                     b33p_core::StoryContent::Picture(_) => None,
                 },
             }),
+        stickers: match chat.sticker_packs() {
+            None => StickersSnapshot::NotAsked,
+            Some(None) => StickersSnapshot::Gathering,
+            Some(Some(packs)) => StickersSnapshot::Installed(
+                packs
+                    .iter()
+                    .map(|pack| StickerPackSnapshot {
+                        id: pack.id.clone(),
+                        title: pack.title.clone(),
+                        stickers: pack
+                            .stickers
+                            .iter()
+                            .map(|sticker| StickerSnapshot {
+                                id: sticker.id,
+                                emoji: sticker.emoji.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            ),
+        },
+        details: chat.details().flatten().map(|details| DetailsSnapshot {
+            description: details.description.clone(),
+            members: details
+                .members
+                .iter()
+                .map(|(person, admin)| MemberSnapshot {
+                    service_id: person.service_id.clone(),
+                    name: person.name.clone(),
+                    admin: *admin,
+                })
+                .collect(),
+            invite_link: details.invite_link.clone(),
+            invite_link_access: details.invite_link_access.into(),
+            requests: details
+                .requests
+                .iter()
+                .map(|person| person.service_id.clone())
+                .collect(),
+        }),
+        folders: chat
+            .folders()
+            .iter()
+            .map(|folder| FolderSnapshot {
+                name: folder.name.clone(),
+                only_unread: folder.only_unread,
+                show_muted: folder.show_muted,
+                all_individual: folder.all_individual,
+                all_groups: folder.all_groups,
+                included: folder.included.iter().map(|id| id.0.clone()).collect(),
+                excluded: folder.excluded.iter().map(|id| id.0.clone()).collect(),
+            })
+            .collect(),
         join: chat.join().map(|(link, preview, busy)| JoinSnapshot {
             link: link.to_string(),
             busy,
@@ -1319,13 +962,13 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             requested: preview.is_some_and(|p| p.requested),
         }),
         settings: SettingsSnapshot {
-            theme: settings.theme.key(),
-            style: settings.style.key(),
-            text_size: settings.text_size.key(),
-            animations: settings.animations.key(),
+            theme: settings.theme.into(),
+            style: settings.style.into(),
+            text_size: settings.text_size.into(),
+            animations: settings.animations.into(),
             show_avatars: settings.show_avatars,
             notifications: settings.notifications,
-            notification_content: settings.notification_content.key(),
+            notification_content: settings.notification_content.into(),
             show_activity: settings.show_activity,
             show_calendar: settings.show_calendar,
             close_to_tray: settings.close_to_tray,
@@ -1338,30 +981,30 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
     }
 }
 
-fn delivery(message: &b33p_core::ChatMessage) -> &'static str {
+fn delivery(message: &b33p_core::ChatMessage) -> Delivery {
     match message.unsent {
-        Some(b33p_core::Unsent::Sending) => "sending",
-        Some(b33p_core::Unsent::Failed) => "failed",
-        Some(b33p_core::Unsent::Refused) => "refused",
+        Some(b33p_core::Unsent::Sending) => Delivery::Sending,
+        Some(b33p_core::Unsent::Failed) => Delivery::Failed,
+        Some(b33p_core::Unsent::Refused) => Delivery::Refused,
         None => match message.delivery {
-            b33p_core::Delivery::Sent => "sent",
-            b33p_core::Delivery::Delivered => "delivered",
-            b33p_core::Delivery::Read => "read",
+            b33p_core::Delivery::Sent => Delivery::Sent,
+            b33p_core::Delivery::Delivered => Delivery::Delivered,
+            b33p_core::Delivery::Read => Delivery::Read,
         },
     }
 }
 
-fn kind_name(kind: b33p_core::AttachmentKind) -> &'static str {
+fn kind(kind: b33p_core::AttachmentKind) -> AttachmentKind {
     use b33p_core::AttachmentKind as Kind;
     match kind {
-        Kind::Image => "image",
-        Kind::Video => "video",
-        Kind::Audio => "audio",
-        Kind::VoiceNote => "voice_note",
-        Kind::Sticker => "sticker",
-        Kind::LongText => "long_text",
-        Kind::ViewOnce => "view_once",
-        Kind::File => "file",
+        Kind::Image => AttachmentKind::Image,
+        Kind::Video => AttachmentKind::Video,
+        Kind::Audio => AttachmentKind::Audio,
+        Kind::VoiceNote => AttachmentKind::VoiceNote,
+        Kind::Sticker => AttachmentKind::Sticker,
+        Kind::LongText => AttachmentKind::LongText,
+        Kind::ViewOnce => AttachmentKind::ViewOnce,
+        Kind::File => AttachmentKind::File,
     }
 }
 
@@ -1392,13 +1035,16 @@ impl Handle {
         if inner.subscribers.is_empty() {
             return;
         }
-        let snapshot = serde_json::to_value(snapshot(chat, settings, window))
-            .expect("a snapshot always serializes");
         inner.seq += 1;
-        let line = json!({ "event": "update", "seq": inner.seq, "snapshot": snapshot });
+        let update = Pushed {
+            event: PushedEvent::Update,
+            seq: inner.seq,
+            snapshot: snapshot(chat, settings, window),
+        };
+        let line = serde_json::to_string(&update).expect("updates always serialize");
         inner
             .subscribers
-            .retain(|_, out| out.try_send(line.to_string()).is_ok());
+            .retain(|_, out| out.try_send(line.clone()).is_ok());
     }
 
     fn subscribe(&self, connection: u64, out: Outbound) -> u64 {

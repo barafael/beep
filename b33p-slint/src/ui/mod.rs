@@ -143,6 +143,19 @@ impl Window {
         self.0.global::<Composer>().set_draft(text.into());
     }
 
+    /// The send button, for the harness; returns whether a command went out.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn send(&self, shared: &Shared) -> bool {
+        let text = self.0.global::<Composer>().get_draft();
+        callbacks::chat::send(shared, &self.0, &text)
+    }
+
+    /// A message's Edit, for the harness.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn edit(&self, shared: &Shared, index: usize) {
+        callbacks::chat::edit(shared, &self.0, index);
+    }
+
     /// Writes the window as drawn to `path`, a PNG; its size in pixels.
     #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn screenshot(&self, path: &std::path::Path) -> Result<(u32, u32), String> {

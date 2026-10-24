@@ -119,6 +119,8 @@ struct Ctx {
     trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
     group_ids: GroupIds,
     background: Background,
+    /// Every send goes through here, one at a time ([`outbox`](crate::outbox)).
+    outbox: crate::outbox::Outbox,
 }
 
 /// Commands that read a lot (a chat's whole history, every sticker) and so run beside the

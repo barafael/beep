@@ -18,6 +18,9 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 #[cfg(all(feature = "harness", target_family = "unix"))]
 mod agent;
+// The harness drives the whole app over a socket: test builds only, never a release.
+#[cfg(all(feature = "harness", not(debug_assertions)))]
+compile_error!("the `harness` feature is for test builds: build without `--release`");
 mod audio;
 mod autostart;
 mod clipboard;

@@ -2,6 +2,7 @@
 //! again (no connection, a timeout, the server busy or asking to wait), or not (Signal said no,
 //! or what was asked makes no sense).
 
+use crate::outbox::SendFailure;
 use presage::{
     Error as PresageError,
     libsignal_service::prelude::{MessageSenderError, ServiceError},
@@ -89,6 +90,15 @@ pub(crate) fn failed<S: std::error::Error>(
     context: &str,
 ) -> impl FnOnce(PresageError<S>) -> Error + '_ {
     move |error| Error::new(kind_of(&error), format!("{context}: {error}"))
+}
+
+/// For `map_err` on a send through the outbox: a session that ended first is
+/// [`ErrorKind::Unreachable`], since the next one may send it; presage's errors as [`failed`].
+pub(crate) fn send_failed(context: &str) -> impl FnOnce(SendFailure) -> Error + '_ {
+    move |failure| match failure {
+        SendFailure::Stopped => Error::unreachable(format!("{context}: {failure}")),
+        SendFailure::Presage(error) => failed(context)(*error),
+    }
 }
 
 /// For `map_err` on presage's store (not through the manager): always

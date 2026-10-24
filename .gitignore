@@ -1,1 +1,10 @@
 /target
+__pycache__
+/testbox/tools/target
+/testbox/stickers/target
+/testbox/viewer/target
+/testbox/vnc/target
+/testbox/web/target
+/testbox/desktop/node_modules
+/testbox/android/agent/build
+/testbox/android/agent/.gradle

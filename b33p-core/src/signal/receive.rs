@@ -27,7 +27,8 @@ use presage::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, ChatSettings, ConversationId, Delivery, Event, MessageRef, now_millis,
+    ChatMessage, ConversationId, Delivery, Event, MessageRef, now_millis,
+    outbox::{Outbox, Sends as _},
     scrub::scrubbed,
 };
 
@@ -35,10 +36,12 @@ use super::{
     Ctx, Mgr,
     avatars::{AvatarFetcher, send_group_avatar},
     conversations::{
-        Names, conversation_id, e164_of, ensure_conversation, is_blocked, own_id,
+        Names, accepted, conversation_id, e164_of, ensure_conversation, is_blocked, own_id,
         send_conversations, sender_name, thread_of,
     },
-    groups::{forget_membership, is_member, leaves_group, refresh_group, signed_group_change},
+    groups::{
+        forget_membership, is_member, own_membership_change, refresh_group, signed_group_change,
+    },
     history::{
         author_of, data_of, erase_deleted, is_outgoing, start_timers, stored_at, stored_timers,
         to_chat_message, to_reaction,
@@ -103,6 +106,8 @@ async fn receive(
 ) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut names = Names::new();
+    // Kept across reconnects: what was owed before a drop goes out once the queue drains again.
+    let mut receipts = Receipts::default();
     let mut backoff = Duration::from_secs(1);
     let woke = Rc::new(tokio::sync::Notify::new());
     let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
@@ -116,6 +121,7 @@ async fn receive(
                 if !ctx.events.send(Event::Connected) {
                     return;
                 }
+                receipts.live = false;
                 pin_mut!(messages);
                 loop {
                     // Only between messages, so one is never handled halfway.
@@ -133,9 +139,17 @@ async fn receive(
                     };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    if !handle_received(&manager, &ctx, &avatars, &mut names, &repairs, received)
-                        .await
-                    {
+                    let handled = handle_received(
+                        &manager,
+                        &ctx,
+                        &avatars,
+                        &mut names,
+                        &repairs,
+                        &mut receipts,
+                        received,
+                    )
+                    .await;
+                    if !handled {
                         return;
                     }
                 }
@@ -217,12 +231,15 @@ async fn handle_received(
     avatars: &AvatarFetcher,
     names: &mut Names,
     repairs: &Rc<RefCell<Repairs>>,
+    receipts: &mut Receipts,
     received: Received,
 ) -> bool {
     let events = &ctx.events;
     match received {
         Received::QueueEmpty => {
             info!("synced with Signal");
+            receipts.live = true;
+            receipts.send(&ctx.outbox).await;
             events.send(Event::Synced)
         }
         Received::Contacts => {
@@ -269,11 +286,7 @@ async fn handle_received(
                     .is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
             if reset {
                 repairs.borrow_mut().resets.insert(sender, Instant::now());
-                match manager
-                    .clone()
-                    .send_session_reset(&sender, now_millis())
-                    .await
-                {
+                match ctx.outbox.session_reset(sender, now_millis()).await {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
                     Err(error) => warn!(error = %scrubbed(&error), "failed to reset the session"),
                 }
@@ -306,7 +319,13 @@ async fn handle_received(
             on_retry_receipt(manager, ctx, repairs, sender, sender_device, &message).await;
             true
         }
-        Received::Content(content) => handle_content(manager, ctx, names, &content).await,
+        Received::Content(content) => {
+            let handled = handle_content(manager, ctx, names, receipts, &content).await;
+            if receipts.live {
+                receipts.send(&ctx.outbox).await;
+            }
+            handled
+        }
     }
 }
 
@@ -394,7 +413,7 @@ async fn on_retry_receipt(
     // a change, one version up).
     data.expire_timer = None;
     data.expire_timer_version = None;
-    match manager.clone().send_message(sender, data, timestamp).await {
+    match ctx.outbox.message(sender, data, timestamp).await {
         Ok(()) => {
             info!(sender = %sender.service_id_string(), timestamp, "sent a message again");
             let mut repairs = repairs.borrow_mut();
@@ -433,7 +452,13 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
 }
 
 /// Returns `false` once the UI has gone away.
-async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &Content) -> bool {
+async fn handle_content(
+    manager: &Mgr,
+    ctx: &Ctx,
+    names: &mut Names,
+    receipts: &mut Receipts,
+    content: &Content,
+) -> bool {
     let events = &ctx.events;
     // Sync messages speak for our account: what our other devices sent, read, blocked or
     // accepted. Only our own devices may say so (the sender is authenticated by the session);
@@ -548,9 +573,10 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
         );
         return true;
     }
-    // From someone not in the group (any more), unless it is the change that took them out:
-    // Signal's clients drop those. Only a change the server signed, made by the sender, says
-    // so; anything else that claims to be a change is as good as none.
+    // From someone not in the group (any more, or yet), unless it is the change of their own
+    // place in it (`own_membership_change`): Signal's clients drop those. Only a change the
+    // server signed, made by the sender, says so; anything else that claims to be a change is
+    // as good as none.
     if let Thread::Group(key) = &thread
         && !is_outgoing(manager, content)
         && let Ok(Some(group)) = manager.store().group(*key).await
@@ -559,13 +585,13 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
             .iter()
             .any(|member| ServiceId::Aci(member.aci) == content.metadata.sender)
     {
-        let leaving = match data_of(content).and_then(|(data, _)| data.group_v2.as_ref()) {
+        let own = match data_of(content).and_then(|(data, _)| data.group_v2.as_ref()) {
             Some(context) => signed_group_change(manager, *key, context)
                 .await
-                .is_some_and(|changes| leaves_group(&changes, content.metadata.sender)),
+                .is_some_and(|changes| own_membership_change(&changes, content.metadata.sender)),
             None => false,
         };
-        if !leaving {
+        if !own {
             debug!(
                 sender = %content.metadata.sender.service_id_string(),
                 "dropped a message from someone not in the group"
@@ -597,6 +623,17 @@ async fn handle_content(manager: &Mgr, ctx: &Ctx, names: &mut Names, content: &C
     // Nothing new from blocked chats (what we send from another device still counts).
     if !is_outgoing(manager, content) && is_blocked(ctx, &id).await {
         return true;
+    }
+    // As Signal's clients: a delivery receipt for each message (a reaction, an edit, a delete
+    // too) that came by sealed sender, which is when `needs_receipt` is set. It names the
+    // envelope's timestamp, which for an edit is the edit's own. Not to an unanswered message
+    // request: as with read receipts, a stranger isn't told the message arrived.
+    if content.metadata.needs_receipt
+        && !is_outgoing(manager, content)
+        && data_of(content).is_some()
+        && accepted(ctx, &id, *ctx.storage_read.borrow()).await
+    {
+        receipts.owe(content.metadata.sender, stored_at(content));
     }
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         return events.send(Event::Reaction {
@@ -748,26 +785,23 @@ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::
             }
         }
     }
-    let mut changed = Vec::new();
-    for (id, mut settings) in all {
+    let mut blocking = Vec::new();
+    for (id, settings) in all {
         let blocked = now_blocked.remove(&id);
         if settings.blocked != blocked {
-            settings.blocked = blocked;
-            changed.push((id, settings));
+            blocking.push((id, blocked));
         }
     }
     // Blocked, but nothing remembered about them yet.
-    changed.extend(now_blocked.into_iter().map(|id| {
-        let settings = ChatSettings {
-            blocked: true,
-            ..ChatSettings::default()
-        };
-        (id, settings)
-    }));
-    if let Err(error) = ctx.tables.save_settings(&changed).await {
-        warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
-        return;
-    }
+    blocking.extend(now_blocked.into_iter().map(|id| (id, true)));
+    // Only `blocked`: the rest may have changed here since `all` was read.
+    let changed = match ctx.tables.set_blocked(&blocking).await {
+        Ok(changed) => changed,
+        Err(error) => {
+            warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
+            return;
+        }
+    };
     for (conversation, settings) in changed {
         let _ = ctx.events.send(Event::Settings {
             conversation,
@@ -968,10 +1002,97 @@ fn from_our_account(own: ServiceId, content: &Content) -> bool {
     !matches!(content.body, ContentBody::SynchronizeMessage(_)) || content.metadata.sender == own
 }
 
+/// The delivery receipts we owe, by sender, until they are sent. While the queue drains after
+/// connecting, each sender's are gathered and go out together once it is empty, as
+/// Signal-Desktop holds its own back until then; after that, each goes out at once.
+#[derive(Default)]
+struct Receipts {
+    owed: HashMap<ServiceId, Vec<u64>>,
+    /// The queue has drained since connecting.
+    live: bool,
+}
+
+/// Timestamps per receipt at most, as Signal-Desktop batches them.
+const RECEIPT_TIMESTAMPS: usize = 100;
+
+impl Receipts {
+    fn owe(&mut self, sender: ServiceId, timestamp: u64) {
+        self.owed.entry(sender).or_default().push(timestamp);
+    }
+
+    async fn send(&mut self, outbox: &Outbox) {
+        for (sender, timestamps) in std::mem::take(&mut self.owed) {
+            for timestamps in timestamps.chunks(RECEIPT_TIMESTAMPS) {
+                let receipt = ReceiptMessage {
+                    r#type: Some(receipt_message::Type::Delivery as i32),
+                    timestamp: timestamps.to_vec(),
+                };
+                outbox
+                    .post_message(
+                        sender,
+                        ContentBody::ReceiptMessage(receipt),
+                        now_millis(),
+                        "a delivery receipt",
+                    )
+                    .await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use presage::libsignal_service::content::DataMessage;
+
+    /// Delivery receipts go out one per sender, at most `RECEIPT_TIMESTAMPS` timestamps each,
+    /// and only once.
+    #[test]
+    fn delivery_receipts_are_gathered_by_sender() {
+        use crate::outbox::{Reply, Send};
+        let who = |n: u8| {
+            ServiceId::parse_from_service_id_string(&format!(
+                "00000000-0000-0000-0000-0000000000{n:02}"
+            ))
+            .unwrap()
+        };
+        let (ann, bob) = (who(1), who(2));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (outbox, mut queued) = tokio::sync::mpsc::channel(8);
+            let mut receipts = Receipts::default();
+            for timestamp in 0..RECEIPT_TIMESTAMPS as u64 + 1 {
+                receipts.owe(ann, timestamp);
+            }
+            receipts.owe(bob, 7);
+            receipts.send(&outbox).await;
+            receipts.send(&outbox).await;
+            drop(outbox);
+            let mut sent = Vec::new();
+            while let Some(send) = queued.recv().await {
+                let Send::Message {
+                    to,
+                    body: ContentBody::ReceiptMessage(receipt),
+                    reply: Reply::Log(_),
+                    ..
+                } = send
+                else {
+                    panic!("not a receipt");
+                };
+                assert_eq!(receipt.r#type(), receipt_message::Type::Delivery);
+                sent.push((to, receipt.timestamp));
+            }
+            sent.sort_by_key(|(to, timestamps)| (to.service_id_string(), timestamps.len()));
+            let expected = [
+                (ann, vec![RECEIPT_TIMESTAMPS as u64]),
+                (ann, (0..RECEIPT_TIMESTAMPS as u64).collect()),
+                (bob, vec![7]),
+            ];
+            assert_eq!(sent, expected);
+        });
+    }
 
     /// A sync message says what our account did elsewhere, so only our own devices may send
     /// one; a contact's is dropped before it can clear chats or unblock people.
