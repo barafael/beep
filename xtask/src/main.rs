@@ -164,7 +164,7 @@ fn up(pod: &Pod, clients: &[Client]) -> Result<()> {
 #[cfg(unix)]
 fn test(pod: &Pod, repo: &Path, phase: Phase) -> Result<()> {
     let sockets = Sockets::new(repo);
-    checks::phase(|tally| match phase {
+    checks::phase(pod, |tally| match phase {
         Phase::Core => checks::core(tally, pod, &sockets),
         Phase::Desktop => checks::desktop(tally, pod, &sockets),
         Phase::Android => checks::android(tally, pod, &sockets),
