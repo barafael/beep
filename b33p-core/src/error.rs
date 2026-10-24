@@ -66,6 +66,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Failing to keep something in the database is always [`ErrorKind::Storage`].
+#[cfg(feature = "signal")]
 impl From<sqlx::Error> for Error {
     fn from(error: sqlx::Error) -> Self {
         Self::storage(format!("failed to save: {error}"))
