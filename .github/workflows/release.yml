@@ -140,7 +140,7 @@ jobs:
             --plugin qt \
             --output appimage
           test -f "$LDAI_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: b33p-linux-${{ matrix.arch }}
           path: |
@@ -169,7 +169,7 @@ jobs:
           persist-credentials: false
       - name: Install build dependencies
         run: brew install librsvg
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -200,7 +200,7 @@ jobs:
           codesign --force --deep --sign - "$app"
           ln -s /Applications dmg/Applications
           hdiutil create -volname b33p -srcfolder dmg -ov -format UDZO "$DMG"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: b33p-macos-${{ matrix.arch }}
           path: b33p-*.dmg
@@ -228,7 +228,7 @@ jobs:
       # BoringSSL (contact discovery) assembles GNU-style .S files on arm64, which MSVC can't, and
       # Visual Studio projects then link without them. Ninja and clang-cl build them.
       - if: matrix.arch == 'aarch64'
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: arm64
       - if: matrix.arch == 'aarch64'
@@ -239,7 +239,7 @@ jobs:
           echo "CC_aarch64_pc_windows_msvc=clang-cl" >> "$GITHUB_ENV"
           echo "CXX_aarch64_pc_windows_msvc=clang-cl" >> "$GITHUB_ENV"
           echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
@@ -258,7 +258,7 @@ jobs:
           # Windows line ends, for Notepad.
           sed 's/$/\r/' packaging/windows/README.txt > b33p/README.txt
           7z a "$ZIP" b33p
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: b33p-windows-${{ matrix.arch }}
           path: b33p-*.zip
@@ -275,7 +275,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: b33p-*
