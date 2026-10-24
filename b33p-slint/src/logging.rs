@@ -382,7 +382,9 @@ mod tests {
     #[test]
     fn every_line_is_scrubbed() {
         let sink = Sink::default();
+        // No time: its digits could spell out the ones the number must not leave behind.
         let subscriber = tracing_subscriber::fmt()
+            .without_time()
             .with_writer(super::Scrubbing(sink.clone()))
             .with_env_filter(log_filter(""))
             .finish();
