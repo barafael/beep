@@ -49,7 +49,7 @@ right by construction: what it owns, only it changes, one message at a time.
 | Today | Shares | Becomes |
 |---|---|---|
 | `SENDING` mutex | — | `Sending` (done, #60) |
-| `LocalStore::update` | the settings table | one statement, then a `Settings` actor (step 1) |
+| `LocalStore::update` | the settings table | one transaction (step 1, #61) |
 | `sweep_expired`, `expire_stories` | `ctx.expiring` (`Notify`), the tables | `Expiry` (step 2) |
 | `follow_storage`, `write_storage` | `ctx.storage_changed`, `storage_read`, tables | `Storage` (step 3) |
 | `AvatarFetcher` | `Rc<Cell<AvatarRun>>`, `threads` | `Avatars` (step 4) |
@@ -64,11 +64,10 @@ core`, `groups`, `storage`) run before and after.
 
 0. **`Sending`** — done (#60). Every presage call that sends goes through `Ctx::outbox`.
 
-1. **Settings without lost updates.** First make `LocalStore::update` atomic: the read and the
-   write in one `BEGIN IMMEDIATE` transaction, so the fix lands before any refactor. Then a
-   `Settings` actor owns writes to `b33p_conversation` (`Pin`, `Mute`, `Archive`, `Read`,
-   `Block`, `Accept`, `Merge(remote)`); reads stay direct queries. Test: two queued changes to
-   one chat both land.
+1. **Settings without lost updates** — #61. `LocalStore::update` reads and writes in one
+   `BEGIN IMMEDIATE` transaction, as the table's other writes already did. SQLite then orders
+   the writes itself, so no `Settings` actor: it would only queue what the database already
+   queues. Test: a pin, a mute and a `mark_read` at once all land (it lost the pin before).
 
 2. **`Expiry`.** One actor with a timer queue for disappearing messages and stories. The
    command loop and `receive` send `Started { conversation, timestamp, at }` instead of
@@ -79,8 +78,7 @@ core`, `groups`, `storage`) run before and after.
 3. **`Storage`.** `follow_storage` and `write_storage` become one actor whose messages are
    `Changed` (the phone said so: `handle_content`), `LocalChange` (pin, reorder: debounced, the
    `SETTLE` wait as a timer of its own) and `Retry`. `storage_read` stays a `watch` (many
-   readers, one writer, which is what `watch` is for), owned by the actor. Its writes to the
-   settings go through `Settings`.
+   readers, one writer, which is what `watch` is for), owned by the actor.
 
 4. **`Avatars`.** `Request` messages, coalesced: on each wake it drains the queue
    (`try_recv`) and runs one pass. That is `AvatarRun` without the state machine. It reads
