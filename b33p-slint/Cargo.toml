@@ -18,6 +18,7 @@ signal = ["b33p-core/signal"]
 # the window shows and to act as if it were the input, for tests and demonstrations. Unix
 # only; never part of a release build.
 harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json"]
+test-servers = ["b33p-core/test-servers"]
 
 [dependencies]
 b33p-core.workspace = true
