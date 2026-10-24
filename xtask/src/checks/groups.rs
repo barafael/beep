@@ -292,11 +292,8 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         })
     });
 
-    // b33p's own changes to the group fail at the pins: the libsignal-service fork (710b11f)
-    // sends them with `PATCH /v1/groups/` and decodes a `GroupChangeResponse`, where
-    // storage-service's v1 answers the bare `GroupChange` (GroupsV1Controller.java
-    // `modifyGroup`). The server applies them all the same and no member is told, so the
-    // members' next change conflicts with them: last.
+    // b33p's own changes to the group. Android was left elsewhere (the request it approved), so
+    // it opens the chat again, by the name it has once the change reached it.
     select(&mut b33p, &group)?;
     let renamed = "testbox group, renamed";
     checks.record(
@@ -307,6 +304,9 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
             })?;
             b33p_chat(&mut b33p, &group, "renamed", |chat| chat.title == renamed)?;
             desktop_text(&mut desktop, renamed)?;
+            android.call(drivers::Android::OpenConversation {
+                text: renamed.to_owned(),
+            })?;
             android_containing(&mut android, renamed)
         },
     );
@@ -323,6 +323,9 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                 chat.expire_timer == 60 * 60
             })?;
             desktop_text(&mut desktop, "to 1 hour")?;
+            android.call(drivers::Android::OpenConversation {
+                text: renamed.to_owned(),
+            })?;
             android_containing(&mut android, "to 1 hour")
         },
     );
