@@ -105,6 +105,10 @@ title, and it answers whatever you send.
 | `b33p-core` | The chat state and the backends: the real Signal backend (over [presage](https://github.com/whisperfish/presage)) and the mock. A headless state machine: events in, updates out; actions return commands. |
 | `b33p-slint` | The window: Slint UI wired to the chat state, tray, notifications playback, and the agent harness. |
 | `b33p-notify` | Desktop notifications with click-to-open and inline reply. |
+| `b33p-harness` | The agent harness's protocol, for the window and for whatever drives it. |
+| `xtask` | `cargo testbox`: brings the test box up and down and runs its checks. |
+
+`testbox/` holds the test box's images, pod and drivers ([testbox/README.md](testbox/README.md)).
 
 ## Driving the UI without mouse or keyboard: the agent harness
 
@@ -144,6 +148,16 @@ captured the window at each step.
 ```sh
 cargo test                                # unit tests and the window's own behaviour
 cargo test -p b33p-slint --features harness   # end-to-end: drives the mock over the harness
+```
+
+Against Signal's own server and clients, without reaching Signal: the test box runs Signal-Server,
+Signal-Desktop and Signal-Android in a Podman pod with no egress, and checks b33p against them
+(Linux with rootless Podman; Android needs `/dev/kvm`). See [testbox/README.md](testbox/README.md)
+for what it needs and how to run it; the smallest box is
+
+```sh
+cargo testbox up
+cargo testbox test core
 ```
 
 ## License
