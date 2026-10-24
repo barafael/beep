@@ -700,6 +700,7 @@ async fn session(
     let mut linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) => match Marker::read(paths) {
             None => {
+                debug_only_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
                 let _ = events.send(Event::Linked { account });
                 Some((manager, Vec::new()))
@@ -1161,6 +1162,37 @@ async fn reset(
     Marker::remove(paths)
 }
 
+/// The servers a new link goes to. `B33P_SIGNAL_SERVERS` names others: `staging`, or a TOML
+/// file describing servers of one's own, such as the testbox's, in the form presage-cli's
+/// `--servers-file` reads. A development aid like `B33P_DATA_DIR`, so release builds ignore it.
+fn link_servers() -> Result<SignalServers, String> {
+    let Ok(name) = std::env::var("B33P_SIGNAL_SERVERS") else {
+        return Ok(SignalServers::Production);
+    };
+    if !cfg!(debug_assertions) {
+        return Ok(SignalServers::Production);
+    }
+    if let Ok(servers) = name.parse() {
+        return Ok(servers);
+    }
+    let text = std::fs::read_to_string(&name)
+        .map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+    let configuration: presage::libsignal_service::configuration::ServiceConfiguration =
+        toml::from_str(&text).map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+    Ok(SignalServers::Custom(Box::new(configuration)))
+}
+
+/// A store a debug build linked to other servers ([`link_servers`]) stays out of release builds.
+fn debug_only_unless_production(servers: &SignalServers) -> Result<(), String> {
+    if cfg!(debug_assertions) || *servers == SignalServers::Production {
+        Ok(())
+    } else {
+        Err(format!(
+            "This store is linked to the {servers} servers, which only debug builds use."
+        ))
+    }
+}
+
 /// Links this device; also returns the one-time key for the history transfer if the user
 /// chose to transfer it.
 async fn link(
@@ -1168,9 +1200,10 @@ async fn link(
     device_name: String,
     events: &Events,
 ) -> Result<(Mgr, Option<[u8; 32]>), Failed> {
+    let servers = link_servers()?;
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
-        Manager::link_secondary_device(store, SignalServers::Production, device_name, url_tx),
+        Manager::link_secondary_device(store, servers, device_name, url_tx),
         async {
             if let Ok(mut url) = url_rx.await {
                 let url = url
