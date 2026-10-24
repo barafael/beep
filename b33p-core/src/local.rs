@@ -324,13 +324,7 @@ impl LocalStore {
     pub(crate) async fn conversations(
         &self,
     ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
-        let rows = sqlx::query(concat!("SELECT ", settings!(), " FROM b33p_conversation"))
-            .fetch_all(&self.db)
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|row| (ConversationId(row.get(0)), settings_of(row)))
-            .collect())
+        conversations_in(&self.db).await
     }
 
     /// What b33p remembers about one conversation, if anything.
@@ -412,49 +406,11 @@ impl LocalStore {
         Ok(row.as_ref().map(settings_of))
     }
 
-    /// Stores several conversations' settings at once (but their read positions).
-    pub(crate) async fn save_settings(
-        &self,
-        settings: &[(ConversationId, ChatSettings)],
-    ) -> Result<(), sqlx::Error> {
-        let mut tx = self.begin_write().await?;
-        for (id, s) in settings {
-            sqlx::query(
-                "INSERT INTO b33p_conversation
-                    (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned,
-                    muted_until = excluded.muted_until, archived = excluded.archived,
-                    marked_unread = excluded.marked_unread, blocked = excluded.blocked,
-                    accepted = excluded.accepted",
-            )
-            .bind(&id.0)
-            .bind(s.pinned.map(i64::from))
-            .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
-            .bind(s.archived as i64)
-            .bind(s.marked_unread as i64)
-            .bind(s.blocked as i64)
-            .bind(s.accepted as i64)
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await
-    }
-
     /// What the storage service said last (`last_read` unused), by conversation.
     pub(crate) async fn remote(
         &self,
     ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
-        let rows = sqlx::query(
-            "SELECT id, pinned, muted_until, archived, 0, marked_unread, blocked, accepted
-             FROM b33p_remote",
-        )
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|row| (ConversationId(row.get(0)), settings_of(row)))
-            .collect())
+        remote_in(&self.db).await
     }
 
     /// Replaces what the storage service said last, and its manifest version.
@@ -464,33 +420,56 @@ impl LocalStore {
         version: u64,
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("DELETE FROM b33p_remote")
-            .execute(&mut *tx)
-            .await?;
-        for (id, s) in remote {
-            sqlx::query(
-                "INSERT INTO b33p_remote
-                    (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&id.0)
-            .bind(s.pinned.map(i64::from))
-            .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
-            .bind(s.archived as i64)
-            .bind(s.marked_unread as i64)
-            .bind(s.blocked as i64)
-            .bind(s.accepted as i64)
-            .execute(&mut *tx)
-            .await?;
-        }
-        sqlx::query(
-            "INSERT INTO b33p_meta (key, value) VALUES ('storage_version', ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(version.min(i64::MAX as u64) as i64)
-        .execute(&mut *tx)
-        .await?;
+        set_remote_in(&mut tx, remote, version).await?;
         tx.commit().await
+    }
+
+    /// Takes what the storage service says now (`remote`, at `version`) into the settings:
+    /// `merge` gets them as they are here, as the service said last time, and now, and says
+    /// which to change. One transaction, so that a change made here meanwhile is part of what
+    /// `merge` sees instead of written over. Returns the changed ones.
+    pub(crate) async fn take_remote(
+        &self,
+        remote: &HashMap<ConversationId, ChatSettings>,
+        version: u64,
+        merge: impl FnOnce(
+            &HashMap<ConversationId, ChatSettings>,
+            &HashMap<ConversationId, ChatSettings>,
+            &HashMap<ConversationId, ChatSettings>,
+        ) -> Vec<(ConversationId, ChatSettings)>,
+    ) -> Result<Vec<(ConversationId, ChatSettings)>, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let local = conversations_in(&mut *tx).await?;
+        let before = remote_in(&mut *tx).await?;
+        let changed = merge(&local, &before, remote);
+        save_settings_in(&mut tx, &changed).await?;
+        set_remote_in(&mut tx, remote, version).await?;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    /// Blocks or unblocks conversations, changing nothing else about them; their settings.
+    pub(crate) async fn set_blocked(
+        &self,
+        blocked: &[(ConversationId, bool)],
+    ) -> Result<Vec<(ConversationId, ChatSettings)>, sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        let mut changed = Vec::with_capacity(blocked.len());
+        for (id, blocked) in blocked {
+            let row = sqlx::query(concat!(
+                "INSERT INTO b33p_conversation (id, blocked) VALUES (?, ?)
+                 ON CONFLICT(id) DO UPDATE SET blocked = excluded.blocked
+                 RETURNING ",
+                settings!()
+            ))
+            .bind(&id.0)
+            .bind(*blocked as i64)
+            .fetch_one(&mut *tx)
+            .await?;
+            changed.push((id.clone(), settings_of(&row)));
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// Keeps a story (once).
@@ -965,6 +944,98 @@ impl LocalStore {
     }
 }
 
+/// Every conversation's settings, read through `db`: the pool, or a transaction.
+async fn conversations_in(
+    db: impl sqlx::SqliteExecutor<'_>,
+) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
+    let rows = sqlx::query(concat!("SELECT ", settings!(), " FROM b33p_conversation"))
+        .fetch_all(db)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|row| (ConversationId(row.get(0)), settings_of(row)))
+        .collect())
+}
+
+/// What the storage service said last, read through `db`.
+async fn remote_in(
+    db: impl sqlx::SqliteExecutor<'_>,
+) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, pinned, muted_until, archived, 0, marked_unread, blocked, accepted
+         FROM b33p_remote",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|row| (ConversationId(row.get(0)), settings_of(row)))
+        .collect())
+}
+
+/// Stores several conversations' settings at once (but their read positions), in `tx`.
+async fn save_settings_in(
+    tx: &mut sqlx::SqliteConnection,
+    settings: &[(ConversationId, ChatSettings)],
+) -> Result<(), sqlx::Error> {
+    for (id, s) in settings {
+        sqlx::query(
+            "INSERT INTO b33p_conversation
+                (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned,
+                muted_until = excluded.muted_until, archived = excluded.archived,
+                marked_unread = excluded.marked_unread, blocked = excluded.blocked,
+                accepted = excluded.accepted",
+        )
+        .bind(&id.0)
+        .bind(s.pinned.map(i64::from))
+        .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
+        .bind(s.archived as i64)
+        .bind(s.marked_unread as i64)
+        .bind(s.blocked as i64)
+        .bind(s.accepted as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Replaces what the storage service said last, and its manifest version, in `tx`.
+async fn set_remote_in(
+    tx: &mut sqlx::SqliteConnection,
+    remote: &HashMap<ConversationId, ChatSettings>,
+    version: u64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM b33p_remote")
+        .execute(&mut *tx)
+        .await?;
+    for (id, s) in remote {
+        sqlx::query(
+            "INSERT INTO b33p_remote
+                (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id.0)
+        .bind(s.pinned.map(i64::from))
+        .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
+        .bind(s.archived as i64)
+        .bind(s.marked_unread as i64)
+        .bind(s.blocked as i64)
+        .bind(s.accepted as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO b33p_meta (key, value) VALUES ('storage_version', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(version.min(i64::MAX as u64) as i64)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 /// One conversation's settings, read through `db`: the pool, or a transaction.
 async fn settings_in(
     db: impl sqlx::SqliteExecutor<'_>,
@@ -1021,6 +1092,76 @@ mod tests {
             assert_eq!(settings.pinned, Some(0));
             assert_eq!(settings.muted_until, Some(1_000));
             assert_eq!(settings.last_read, 10);
+        });
+    }
+
+    /// Taking the storage service's settings in sees a change made here in the meantime,
+    /// instead of writing over it with what was read before.
+    #[test]
+    fn taking_remote_settings_keeps_a_change_made_meanwhile() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open(&dir).await;
+            let (ann, bob) = (
+                ConversationId::contact("ann"),
+                ConversationId::contact("bob"),
+            );
+            store.update(&ann, |_| {}).await.unwrap();
+            let mut remote = HashMap::new();
+            remote.insert(
+                bob.clone(),
+                ChatSettings {
+                    archived: true,
+                    ..ChatSettings::default()
+                },
+            );
+            // As `storage::merge` would: what the service says, over what is here.
+            let merge = |local: &HashMap<ConversationId, ChatSettings>,
+                         _: &HashMap<ConversationId, ChatSettings>,
+                         now: &HashMap<ConversationId, ChatSettings>| {
+                now.iter()
+                    .map(|(id, remote)| {
+                        let mut settings = local.get(id).cloned().unwrap_or_default();
+                        settings.archived = remote.archived;
+                        (id.clone(), settings)
+                    })
+                    .chain(local.iter().map(|(id, s)| (id.clone(), s.clone())))
+                    .collect()
+            };
+            let (pinned, taken) = tokio::join!(
+                store.update(&ann, |s| s.pinned = Some(0)),
+                store.take_remote(&remote, 7, merge),
+            );
+            pinned.unwrap();
+            taken.unwrap();
+            assert_eq!(store.settings(&ann).await.unwrap().unwrap().pinned, Some(0));
+            assert!(store.settings(&bob).await.unwrap().unwrap().archived);
+            assert_eq!(store.storage_version().await.unwrap(), 7);
+        });
+    }
+
+    /// Blocking changes only that: a pin made since the list was read stays.
+    #[test]
+    fn blocking_changes_nothing_else() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open(&dir).await;
+            let (ann, bob) = (
+                ConversationId::contact("ann"),
+                ConversationId::contact("bob"),
+            );
+            store.update(&ann, |s| s.pinned = Some(0)).await.unwrap();
+            let changed = store
+                .set_blocked(&[(ann.clone(), true), (bob.clone(), true)])
+                .await
+                .unwrap();
+            assert_eq!(changed.len(), 2);
+            let settings = store.settings(&ann).await.unwrap().unwrap();
+            assert!(settings.blocked);
+            assert_eq!(settings.pinned, Some(0));
+            assert!(store.settings(&bob).await.unwrap().unwrap().blocked);
+            store.set_blocked(&[(ann.clone(), false)]).await.unwrap();
+            assert!(!store.settings(&ann).await.unwrap().unwrap().blocked);
         });
     }
 
