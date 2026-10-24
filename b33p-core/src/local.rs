@@ -338,24 +338,19 @@ impl LocalStore {
         &self,
         id: &ConversationId,
     ) -> Result<Option<ChatSettings>, sqlx::Error> {
-        let row = sqlx::query(concat!(
-            "SELECT ",
-            settings!(),
-            " FROM b33p_conversation WHERE id = ?"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(row.as_ref().map(settings_of))
+        settings_in(&self.db, id).await
     }
 
-    /// Changes what b33p remembers about one conversation.
+    /// Changes what b33p remembers about one conversation. The read and the write are one
+    /// transaction: another change in between (`mark_read` for nearly every message) would be
+    /// written over with what was read before it.
     pub(crate) async fn update(
         &self,
         id: &ConversationId,
         change: impl FnOnce(&mut ChatSettings),
     ) -> Result<ChatSettings, sqlx::Error> {
-        let mut state = self.settings(id).await?.unwrap_or_default();
+        let mut tx = self.begin_write().await?;
+        let mut state = settings_in(&mut *tx, id).await?.unwrap_or_default();
         change(&mut state);
         sqlx::query(
             "INSERT OR REPLACE INTO b33p_conversation
@@ -370,8 +365,9 @@ impl LocalStore {
         .bind(state.marked_unread as i64)
         .bind(state.blocked as i64)
         .bind(state.accepted as i64)
-        .execute(&self.db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(state)
     }
 
@@ -969,6 +965,22 @@ impl LocalStore {
     }
 }
 
+/// One conversation's settings, read through `db`: the pool, or a transaction.
+async fn settings_in(
+    db: impl sqlx::SqliteExecutor<'_>,
+    id: &ConversationId,
+) -> Result<Option<ChatSettings>, sqlx::Error> {
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        settings!(),
+        " FROM b33p_conversation WHERE id = ?"
+    ))
+    .bind(&id.0)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.as_ref().map(settings_of))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,6 +998,30 @@ mod tests {
             .filename(dir.path().join("local.db3"))
             .create_if_missing(true);
         LocalStore::open(options).await.unwrap()
+    }
+
+    /// Changes to one conversation at once all land: each reads the row and writes it back,
+    /// and neither may write over what the other changed in between.
+    #[test]
+    fn concurrent_changes_to_a_conversation_all_land() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open(&dir).await;
+            let id = ConversationId::contact("ann");
+            store.update(&id, |_| {}).await.unwrap();
+            let (pinned, muted, read) = tokio::join!(
+                store.update(&id, |s| s.pinned = Some(0)),
+                store.update(&id, |s| s.muted_until = Some(1_000)),
+                store.mark_read(&id, 10),
+            );
+            pinned.unwrap();
+            muted.unwrap();
+            read.unwrap();
+            let settings = store.settings(&id).await.unwrap().unwrap();
+            assert_eq!(settings.pinned, Some(0));
+            assert_eq!(settings.muted_until, Some(1_000));
+            assert_eq!(settings.last_read, 10);
+        });
     }
 
     fn reference(author: &str, ts: u64) -> MessageRef {
@@ -1070,7 +1106,7 @@ mod tests {
             let a = ConversationId("a".into());
             let b = ConversationId("b".into());
             local
-                .update(&a, |s| s.muted_until = Some(u64::MAX))
+                .update(&a, |s| s.muted_until = Some(1_000))
                 .await
                 .unwrap();
             local.set_pins(&[b.clone(), a.clone()]).await.unwrap();
