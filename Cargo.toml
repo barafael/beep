@@ -54,8 +54,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "30
 #   #454 write transactions take the lock up front
 #   servers of one's own: `SignalServers::Custom` carries its configuration (follows our
 #        libsignal-service branch)
-#   a sender's profile key stored before the message is handed on, not left to the task that
-#        fetches their profile (branch pr/profile-key-first; not proposed upstream yet)
+#   #472 a sender's profile key stored before the message is handed on, not left to the task
+#        that fetches their profile
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length) and #460 (the provisioning link logged at debug instead of
