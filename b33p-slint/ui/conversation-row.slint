@@ -1,0 +1,206 @@
+import { Motion, Theme } from "theme.slint";
+import { ConversationItem, PreviewKind } from "types.slint";
+import { MuteChoices } from "globals.slint";
+import { Avatar, Caption, Icon, Pressable } from "widgets.slint";
+
+// What can be done with a conversation, in its context menu and the chat header's menu.
+export component ConversationMenu inherits ContextMenuArea {
+    in property <ConversationItem> item;
+    // The chat header's menu. It opens against the window's right edge, where a submenu has no
+    // room beside it and would open over the menu itself, so it has none: muting for a while
+    // and the disappearing-messages timer are in the chat's details instead.
+    in property <bool> in-header;
+    callback toggle-pin;
+    // Among the pinned chats: -1 up, 1 down.
+    callback move-pin(int);
+    callback mark-read(bool);
+    // For this many seconds; -1 for good, 0 to unmute.
+    callback mute(int);
+    callback archive(bool);
+    callback block(bool);
+    // With `in-header`: the chat's media, files and links, and its details.
+    callback show-media;
+    callback show-details;
+    property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
+    Menu {
+        MenuItem {
+            title: root.item.pinned ? "Unpin" : "Pin";
+            activated => { root.toggle-pin(); }
+        }
+        if root.item.can-move-up: MenuItem {
+            title: "Move up";
+            activated => { root.move-pin(-1); }
+        }
+        if root.item.can-move-down: MenuItem {
+            title: "Move down";
+            activated => { root.move-pin(1); }
+        }
+        MenuItem {
+            title: root.unread ? "Mark as read" : "Mark as unread";
+            activated => { root.mark-read(root.unread); }
+        }
+        if root.item.muted: MenuItem {
+            title: "Unmute";
+            activated => { root.mute(0); }
+        }
+        if !root.item.muted && !root.in-header: Menu {
+            title: "Mute";
+            for choice in MuteChoices.choices: MenuItem {
+                title: choice.label;
+                activated => { root.mute(choice.seconds); }
+            }
+        }
+        if root.in-header: MenuItem {
+            title: "Details";
+            activated => { root.show-details(); }
+        }
+        if root.in-header: MenuItem {
+            title: "Media, files and links";
+            activated => { root.show-media(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: root.item.blocked ? "Unblock" : "Block";
+            activated => { root.block(!root.item.blocked); }
+        }
+        MenuItem {
+            title: root.item.archived ? "Unarchive" : "Archive";
+            activated => { root.archive(!root.item.archived); }
+        }
+    }
+}
+
+export component ConversationRow inherits Pressable {
+    in property <ConversationItem> item;
+    // See `ConversationMenu`.
+    callback toggle-pin;
+    callback move-pin(int);
+    callback mark-read(bool);
+    callback mute(int);
+    callback archive(bool);
+    callback block(bool);
+
+    height: 64px;
+    hand: false;
+
+    accessible-role: list-item;
+    accessible-label: item.title
+        + (item.unread > 0 ? ", " + item.unread + " unread" : item.marked-unread ? ", unread" : "")
+        + (item.request ? ", message request" : "")
+        + (item.pinned ? ", pinned" : "") + (item.muted ? ", muted" : "")
+        + ", " + (item.typing != "" ? item.typing : item.preview);
+    accessible-item-selected: root.selected;
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: Theme.space-m;
+        Avatar {
+            initials: item.initials;
+            tint: item.avatar-color;
+            picture: item.avatar;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: item.title;
+                    font-weight: item.unread > 0 ? 700 : 600;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    color: Theme.text;
+                }
+                // Centered on the time beside them, which the row's text centers on too.
+                if item.muted: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        source: @image-url("@lucide/bell-off.svg");
+                        width: Theme.icon-small;
+                        tint: Theme.text-tertiary;
+                    }
+                }
+                if item.pinned: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        source: @image-url("@lucide/pin.svg");
+                        width: Theme.icon-small;
+                        tint: Theme.text-tertiary;
+                    }
+                }
+                Caption {
+                    text: item.time;
+                    vertical-alignment: center;
+                    color: item.unread > 0 ? Theme.accent : Theme.text-tertiary;
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                if item.request: Text {
+                    text: "Message request · ";
+                    font-size: 1rem * Theme.body-small;
+                    font-weight: 600;
+                    color: Theme.accent;
+                }
+                if !item.blocked && item.typing == "" && item.preview-kind != PreviewKind.words: Icon {
+                    width: Theme.icon-small;
+                    y: (parent.height - self.height) / 2;
+                    source: item.preview-kind == PreviewKind.photo ? @image-url("@lucide/image.svg")
+                        : item.preview-kind == PreviewKind.sticker ? @image-url("@lucide/sticker.svg")
+                        : item.preview-kind == PreviewKind.video ? @image-url("@lucide/film.svg")
+                        : item.preview-kind == PreviewKind.audio ? @image-url("@lucide/headphones.svg")
+                        : item.preview-kind == PreviewKind.voice ? @image-url("@lucide/mic.svg")
+                        : item.preview-kind == PreviewKind.timer ? @image-url("@lucide/timer.svg")
+                        : @image-url("@lucide/paperclip.svg");
+                    tint: Theme.text-tertiary;
+                }
+                Text {
+                    text: item.blocked ? "Blocked" : item.typing != "" ? item.typing : item.preview;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    color: item.typing != "" ? Theme.accent : Theme.text-secondary;
+                    font-size: 1rem * Theme.body-small;
+                }
+                if item.unread == 0 && item.marked-unread: Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.height / 2;
+                    background: Theme.accent;
+                }
+                // Always there: it grows in with the first unread message and shrinks away once
+                // read (a row drawn with it is simply there).
+                // No `changed` handler here: rows come and go as the list changes, and Slint (1.18)
+                // can run one for a row already dropped, which aborts.
+                Rectangle {
+                    width: item.unread > 0 ? max(18px, badge.preferred-width + 10px) : 0px;
+                    animate width { duration: Motion.normal; easing: ease-out; }
+                    opacity: item.unread > 0 ? 1 : 0;
+                    animate opacity { duration: Motion.normal; easing: ease-out; }
+                    height: 18px;
+                    border-radius: self.height / 2;
+                    // Muted chats count quietly.
+                    background: item.muted ? Theme.text-faint : Theme.accent;
+                    badge := Text {
+                        // Nothing while shrinking away, rather than 0.
+                        text: item.unread > 0 ? item.unread : "";
+                        color: Theme.on-accent;
+                        font-size: 1rem * Theme.caption;
+                        font-weight: 700;
+                    }
+                }
+            }
+        }
+    }
+    // On top: it takes only right clicks, so left clicks still reach the row.
+    ConversationMenu {
+        item: root.item;
+        toggle-pin => { root.toggle-pin(); }
+        move-pin(by) => { root.move-pin(by); }
+        mark-read(read) => { root.mark-read(read); }
+        mute(seconds) => { root.mute(seconds); }
+        archive(archived) => { root.archive(archived); }
+        block(blocked) => { root.block(blocked); }
+    }
+}

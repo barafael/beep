@@ -171,7 +171,12 @@ pub struct Settings {
     /// [`default_device_name`].
     pub device_name: Option<String>,
     pub preferences: crate::Preferences,
+    /// Emoji picked lately, most recent first; at most [`RECENT_EMOJI`].
+    pub recent_emoji: Vec<String>,
 }
+
+/// How many emoji the picker remembers.
+pub const RECENT_EMOJI: usize = 24;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -188,6 +193,7 @@ impl Default for Settings {
             close_to_tray: true,
             device_name: None,
             preferences: crate::Preferences::default(),
+            recent_emoji: Vec::new(),
         }
     }
 }
@@ -218,6 +224,16 @@ impl Settings {
     /// The name this computer links as.
     pub fn device_name(&self) -> String {
         self.device_name.clone().unwrap_or_else(default_device_name)
+    }
+
+    /// Puts `emoji` first among the recent ones.
+    pub fn used_emoji(&mut self, emoji: &str) {
+        if emoji.is_empty() || emoji.contains(char::is_whitespace) {
+            return;
+        }
+        self.recent_emoji.retain(|e| e != emoji);
+        self.recent_emoji.insert(0, emoji.to_owned());
+        self.recent_emoji.truncate(RECENT_EMOJI);
     }
 
     /// The saved settings; defaults for anything missing or unreadable.
@@ -304,6 +320,13 @@ impl Settings {
                     let name = clean_device_name(value);
                     settings.device_name = (!name.is_empty()).then_some(name);
                 }
+                ("recent_emoji", value) => {
+                    settings.recent_emoji = value
+                        .split_whitespace()
+                        .take(RECENT_EMOJI)
+                        .map(str::to_owned)
+                        .collect();
+                }
                 _ => {}
             }
         }
@@ -335,6 +358,11 @@ impl Settings {
             .as_deref()
             .map(|name| format!("device_name = {}\n", clean_device_name(name)))
             .unwrap_or_default()
+            + &(if self.recent_emoji.is_empty() {
+                String::new()
+            } else {
+                format!("recent_emoji = {}\n", self.recent_emoji.join(" "))
+            })
     }
 }
 
@@ -398,11 +426,27 @@ mod tests {
                     link_previews: true,
                     sync_to_phone: true,
                 },
+                recent_emoji: vec!["👍".into(), "👩‍💻".into(), "❤️".into()],
             };
             assert_eq!(Settings::parse(&settings.to_text()), settings);
         }
         let unnamed = Settings::default();
         assert_eq!(Settings::parse(&unnamed.to_text()), unnamed);
+    }
+
+    /// The latest first, each once, and only so many.
+    #[test]
+    fn recent_emoji_keep_their_order() {
+        let mut settings = Settings::default();
+        for emoji in ["👍", "❤️", "👍", "", "a b"] {
+            settings.used_emoji(emoji);
+        }
+        assert_eq!(settings.recent_emoji, ["👍", "❤️"]);
+        for n in 0..RECENT_EMOJI * 2 {
+            settings.used_emoji(&n.to_string());
+        }
+        assert_eq!(settings.recent_emoji.len(), RECENT_EMOJI);
+        assert_eq!(settings.recent_emoji[0], (RECENT_EMOJI * 2 - 1).to_string());
     }
 
     #[test]

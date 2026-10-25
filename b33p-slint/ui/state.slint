@@ -1,0 +1,354 @@
+// What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and
+// takes the callbacks; the components read them where they're shown.
+
+import { ActivityItem, AttachmentItem, CalendarYear, CandidateItem, Confirm, ConversationItem, MemberItem, MessageItem, RequestAnswer, RingItem, Screen, SearchResult, SharedItem, StickerRow, StoryItem } from "types.slint";
+
+// The account and the screens before the chats: unlocking, linking, catching up, failures;
+// asking before what can't be undone.
+export global Account {
+    in property <Screen> screen: Screen.syncing;
+    in property <image> link-qr;
+    in property <bool> password-new;
+    in property <string> password-error;
+    in property <string> account;
+    in property <string> error;
+    // What failed may work when tried again: the banner offers it.
+    in property <bool> can-retry-error;
+    // What the start screen waits for (connecting, the history transfer, catching up).
+    in property <string> sync-status;
+    // The history transfer is waiting for the phone, which can be skipped.
+    in property <bool> history-skippable;
+    // Catching up on what came meanwhile: the chats can be shown already.
+    in property <bool> can-start;
+    callback start-chats;
+    // Says so while not connected to Signal, or still catching up; empty otherwise.
+    in property <string> connection-status;
+    // Not connected (rather than catching up).
+    in property <bool> offline;
+    // The failure screen's message and what it offers.
+    in property <string> failed-message;
+    in property <bool> can-retry;
+    in property <bool> can-start-over;
+    in property <bool> can-use-password;
+    in property <bool> failed-retrying;
+    // Asking before the local data is deleted.
+    // Asking before something that can't be undone (`ConfirmDialog`); for deleting a message
+    // for everyone, its row.
+    in-out property <Confirm> confirm: Confirm.none;
+    in-out property <string> device-name;
+    callback dismiss-error;
+    callback retry-error;
+    callback unlock(string, string);
+    callback skip-history;
+    callback retry;
+    callback start-over;
+    callback use-password;
+    callback unlink;
+    callback open-data-folder;
+    callback open-log-folder;
+    // A web page, in the browser.
+    callback open-url(string);
+    callback rename-device(string);
+    in property <string> version;
+}
+
+// The settings page: indexes into the choices it shows, and what the desktop allows.
+export global Prefs {
+    // Settings: indexes into the choices shown on the settings page.
+    in-out property <int> theme;
+    in-out property <int> widget-style;
+    // Whether Qt draws the window; see `SettingsPage`.
+    in property <bool> qt;
+    // Explains a style change that waits for a restart; empty otherwise.
+    in property <string> style-note;
+    in-out property <int> text-size: 1;
+    in-out property <int> animations;
+    in-out property <bool> show-avatars: true;
+    in-out property <bool> notifications: true;
+    in-out property <bool> close-to-tray: true;
+    in property <bool> tray-available: true;
+    in property <bool> autostart-supported;
+    in property <bool> notifications-supported: true;
+    in property <bool> macos;
+    in-out property <bool> start-with-system;
+    in-out property <int> notification-content;
+    in-out property <bool> read-receipts: true;
+    in-out property <bool> typing-indicators: true;
+    in-out property <bool> link-previews;
+    in-out property <bool> sync-to-phone;
+    in-out property <bool> show-activity;
+    in-out property <bool> show-calendar;
+    in-out property <bool> settings-open;
+    // Factor for the chosen text size, applied to the platform's font size, which is captured
+    // before it is changed.
+    in property <float> font-scale: 1.0;
+    callback settings-changed;
+    callback start-with-system-changed(bool);
+    callback settings-opened;
+}
+
+// The chat list: its chats, the open one, the search, archived chats and folders, and
+// what each chat's menu does.
+export global ChatList {
+    in property <[ConversationItem]> conversations;
+    // The open chat's row in `conversations`; -1 if none, or while a search leaves it out.
+    in property <int> selected: -1;
+    // The open chat's id, empty if none.
+    in property <string> selected-id;
+    // The open chat, also while a search leaves it out of `conversations`.
+    in property <ConversationItem> current;
+    callback select(string);
+    callback search(string);
+    in-out property <string> search-text;
+    // See `ConversationMenu`; each takes the conversation's id first.
+    callback toggle-pin(string);
+    callback move-pin(string, int);
+    callback mark-read(string, bool);
+    callback mute(string, int);
+    callback archive(string, bool);
+    callback set-timer(string, int);
+    callback block(string, bool);
+    callback show-archived(bool);
+    // How many chats are archived, and how many of those have unread messages.
+    in property <int> archived-count;
+    in property <int> archived-unread;
+    in property <bool> showing-archived;
+    // The phone's chat folders as tabs (with their unread counts); `folder` is the one shown,
+    // -1 for all chats.
+    in property <[string]> folders;
+    in property <[int]> folder-unread;
+    in property <int> folder: -1;
+    callback show-folder(int);
+    // What is typed in the chat search, or the group dialog's search, is a phone number to look up.
+    in property <bool> search-is-number;
+    // Looks up who a phone number belongs to; then opens their chat (true) or chooses them for
+    // the group (false).
+    callback find-number(string, bool);
+    // Ctrl+K asks the chat list's search field to take the focus by changing this.
+    in property <int> focus-search-request;
+}
+
+// The open chat's messages: loading them, acting on them, picking them, and where the
+// list scrolls to.
+export global OpenChat {
+    in property <[MessageItem]> messages;
+    // The open chat's activity strip; empty while the strip is off.
+    in property <[ActivityItem]> activity;
+    // The open chat's calendar, filled when it opens.
+    in-out property <bool> calendar-open;
+    in property <[CalendarYear]> calendar;
+    in property <string> calendar-summary;
+    callback open-calendar;
+    callback open-attachment(string);
+    callback open-link(string);
+    // Messages are named by their `key`.
+    callback reply(string);
+    callback react(string, string);
+    callback retry-send(string);
+    callback fetch-attachment(string);
+    callback save-attachment(string);
+    // Answers the open chat's message request: 0 accept, 1 delete, 2 block.
+    callback respond(RequestAnswer);
+    // Scrolled near the top of the open chat: older messages, if there are any.
+    callback load-older;
+    // The open chat has older messages that aren't being fetched already.
+    in property <bool> can-load-older;
+    callback edit(string);
+    callback delete(string, bool);
+    callback reveal(string);
+    // Messages picked for an action on all of them (Ctrl+click, or "Select" in a message's
+    // menu): how many, what they say (to copy; asked for only then, as it may be long), and
+    // what can be done with them. Esc unpicks them (see `shortcut`).
+    in property <int> selected-count;
+    pure callback selection-text() -> string;
+    in property <bool> can-forward-selection;
+    in property <bool> can-delete-selection-for-everyone;
+    callback toggle-select(string);
+    callback select-through(string);
+    callback clear-selection;
+    callback forward-selection;
+    callback delete-selection(bool);
+    // Who is typing in the open chat, e.g. "Ann is typing…"; empty if nobody is.
+    in property <string> typing;
+    // Scroll the open chat to this row once `jump-serial` changes.
+    in property <int> jump-row;
+    in property <int> jump-serial;
+    // Scroll the open chat to its end once this changes, e.g. after the user sent something.
+    in property <int> scroll-to-end-serial;
+    // How many messages were added at the end of chats so far, counting up.
+    in property <int> appended-total;
+}
+
+// Writing: the draft, files going with it, replies and edits, mentions, pasting and
+// stickers.
+export global Composer {
+    in property <bool> can-send;
+    in-out property <string> draft;
+    callback draft-edited(string);
+    callback send(string);
+    callback attach;
+    // From Rust, once the file picker is done.
+    callback stage-files([string]);
+    callback unstage(int);
+    // Names of files waiting to go out with the next message.
+    in property <[string]> staged;
+    callback cancel-reply;
+    // The message the composer answers; both empty when not replying.
+    in property <string> reply-author;
+    in property <string> reply-text;
+    callback cancel-edit;
+    // The composer replaces the text of one of our messages.
+    in property <bool> editing;
+    // Whether text is empty or only spaces, which make no name.
+    pure callback is-blank(string) -> bool;
+    // ↑ in an empty composer: edit our last message.
+    callback edit-last;
+    // The sticker picker: installed packs' titles, the chosen one's stickers by row.
+    in property <[string]> sticker-packs;
+    in property <[StickerRow]> sticker-rows;
+    in property <bool> stickers-busy;
+    in-out property <int> sticker-pack;
+    callback open-stickers;
+    callback sticker-pack-chosen;
+    callback send-sticker(string, int);
+    // Ctrl+V in the composer: attaches a copied picture or files. Rust looks in the clipboard
+    // on a thread of its own (reading it here would hold up the window, which may be what has
+    // to hand it over); if it holds neither, it counts `paste-text` up, and the text is pasted.
+    callback paste;
+    in-out property <int> paste-text;
+    // Files dropped onto the open chat, to attach.
+    callback files-dropped(DropEvent);
+    // Group members matching the "@…" the draft ends with.
+    in property <[string]> mention-candidates;
+    callback pick-mention(int);
+    // Replaces the draft's bytes `from` to `to` with the text; where the caret goes after it.
+    callback splice-draft(string, int, int) -> int;
+}
+
+// The open chat's details page, changing a group, choosing people for one, and joining
+// one by its link.
+export global Groups {
+    // The open chat's details page.
+    in property <bool> details-open;
+    in property <bool> details-busy;
+    in property <string> details-about;
+    in property <string> details-phone;
+    // In lines of four groups; empty if there is none.
+    in property <string> details-safety-number;
+    // We (here or on another device) verified that safety number, for the key it is now.
+    in property <bool> details-verified;
+    // Verified before, but their key changed since.
+    in property <bool> details-safety-changed;
+    in property <string> details-description;
+    in property <[MemberItem]> details-members;
+    callback open-details;
+    callback close-details;
+    // Changing the open group from its details page.
+    callback rename-group(string);
+    // Marks the safety number verified (true) or clears that.
+    callback set-verified(bool);
+    // Accepts the changed safety number of the contact with this id, to write to them again.
+    callback confirm-safety-number(string);
+    // Answers the invitation to the group with this id: join (true) or turn it down.
+    callback answer-invitation(string, bool);
+    callback describe-group(string);
+    // Picks a file for the group's picture (the UI asks), then sets it from that path.
+    callback change-group-picture;
+    callback group-picture-chosen(string);
+    callback remove-group-picture;
+    callback set-member-admin(string, bool);
+    callback remove-member(string);
+    callback leave-group;
+    // Choosing people for a new group, or to add to the open one.
+    in property <bool> group-draft-open;
+    in property <bool> group-draft-new;
+    in-out property <string> group-draft-name;
+    in-out property <string> group-draft-filter;
+    in property <bool> group-filter-is-number;
+    in property <[CandidateItem]> group-candidates;
+    in property <int> group-draft-chosen;
+    callback open-new-group;
+    // Joining a group through its invite link.
+    in property <bool> join-open;
+    in-out property <string> join-link;
+    // The link is being looked up, or the group joined.
+    in property <bool> join-busy;
+    // What the link shows of its group, once looked up; the title is empty until then.
+    in property <string> join-title;
+    in property <int> join-members;
+    // An admin has to let us in; we asked already.
+    in property <bool> join-approval;
+    in property <bool> join-requested;
+    callback open-join-group;
+    callback close-join-group;
+    callback preview-group-link(string);
+    callback join-group;
+    // The open group's invite link (empty while off), who it lets in (0 off, 1 anyone,
+    // 2 after an admin's approval), and who asked to join through it.
+    in property <string> details-invite-link;
+    in property <int> details-invite-access;
+    in property <[MemberItem]> details-requests;
+    callback set-invite-link(int);
+    callback reset-invite-link;
+    // Lets the person with this id in (true), or turns them down.
+    callback answer-join-request(string, bool);
+    // Takes back our own request to join the open group.
+    callback cancel-join-request;
+    callback open-add-members;
+    callback toggle-candidate(string);
+    callback group-draft-edited;
+    callback finish-group-draft;
+    callback close-group-draft;
+}
+
+// What opens over the chat: its media, its search, stories, forwarding.
+export global Panels {
+    // The open chat's media, files and links.
+    in property <bool> media-open;
+    // Gathering them.
+    in property <bool> media-busy;
+    in property <[AttachmentItem]> media-tiles;
+    in property <[SharedItem]> media-files;
+    in property <[SharedItem]> media-links;
+    in-out property <int> media-tab;
+    callback open-media;
+    callback close-media;
+    // Searching the open chat.
+    in property <bool> chat-search-open;
+    in-out property <string> chat-search-text;
+    // Looking, no results yet.
+    in property <bool> chat-search-busy;
+    in property <[SearchResult]> search-results;
+    callback open-chat-search;
+    callback close-chat-search;
+    callback chat-search(string);
+    callback show-result(int);
+    // Stories: the overlay, who has them, the one shown, groups to post to.
+    in-out property <bool> stories-open;
+    in property <[RingItem]> story-rings;
+    in property <StoryItem> story;
+    in property <int> unviewed-stories;
+    in property <[string]> story-groups;
+    // Their ids, in the same order.
+    in property <[string]> story-group-ids;
+    in-out property <int> story-group;
+    in-out property <string> story-text;
+    callback open-stories;
+    callback open-story(string);
+    callback step-story(int);
+    callback close-story;
+    callback post-story-text;
+    callback post-story-photo;
+    // From Rust, once the file picker is done.
+    callback story-photo-chosen(string);
+    // Choosing where to forward a message to.
+    in property <bool> forwarding;
+    in property <[ConversationItem]> forward-targets;
+    // What the message says, to confirm where it goes.
+    in property <string> forward-preview;
+    in-out property <string> forward-filter;
+    callback forward(string);
+    callback forward-to(string);
+    callback cancel-forward;
+    callback forward-filter-edited;
+}

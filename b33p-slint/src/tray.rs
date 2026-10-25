@@ -134,16 +134,102 @@ pub fn open_unless_host_appears(shared: &Rc<Shared>, wait: Duration) {
 /// running where nobody can reach it.
 ///
 /// On Linux that is a StatusNotifierItem host: KDE Plasma, most other desktops, GNOME only with
-/// the AppIndicator extension.
+/// the AppIndicator extension. Asked on the UI thread (closing the window, opening settings),
+/// so it answers from what [`watch_host`] keeps up to date, and asks the bus only until that
+/// runs.
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn host_present() -> bool {
-    watcher_property("IsStatusNotifierHostRegistered")
+    use std::sync::atomic::Ordering;
+    if host::WATCHED.load(Ordering::Acquire) {
+        return host::PRESENT.load(Ordering::Acquire);
+    }
+    query_host(watcher_property)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn query_host(property: impl Fn(&str) -> zbus::Result<zbus::zvariant::OwnedValue>) -> bool {
+    property("IsStatusNotifierHostRegistered")
         .and_then(|value| Ok(bool::try_from(value)?))
         .unwrap_or_else(|error| {
             tracing::debug!(%error, "no tray host");
             false
         })
 }
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod host {
+    use std::sync::atomic::AtomicBool;
+
+    /// What [`super::host_present`] answers once `WATCHED`.
+    pub static PRESENT: AtomicBool = AtomicBool::new(false);
+    pub static WATCHED: AtomicBool = AtomicBool::new(false);
+}
+
+/// Keeps [`host_present`]'s answer up to date on threads of its own: asked once, then again
+/// whenever a tray host comes or goes, or the watcher that knows about them does (a panel
+/// restarting). Without a session bus, `host_present` keeps asking, and finds none.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn watch_host() {
+    use std::sync::atomic::Ordering;
+    let spawned = std::thread::Builder::new()
+        .name("b33p-tray-host".into())
+        .spawn(|| {
+            let Ok(connection) = zbus::blocking::Connection::session() else {
+                return;
+            };
+            let ask = {
+                let connection = connection.clone();
+                move || {
+                    let present = query_host(|name| property_on(&connection, name));
+                    host::PRESENT.store(present, Ordering::Release);
+                }
+            };
+            let hosts = zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .interface("org.kde.StatusNotifierWatcher")
+                .map(|rule| rule.build());
+            let watcher = zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender("org.freedesktop.DBus")
+                .and_then(|rule| rule.interface("org.freedesktop.DBus"))
+                .and_then(|rule| rule.member("NameOwnerChanged"))
+                .and_then(|rule| rule.add_arg("org.kde.StatusNotifierWatcher"))
+                .map(|rule| rule.build());
+            let (Ok(hosts), Ok(watcher)) = (hosts, watcher) else {
+                return;
+            };
+            let iterators = [hosts, watcher].map(|rule| {
+                zbus::blocking::MessageIterator::for_match_rule(rule, &connection, Some(8))
+            });
+            let [Ok(hosts), Ok(watcher)] = iterators else {
+                return;
+            };
+            // Subscribed first, so nothing between asking and listening goes unnoticed.
+            ask();
+            host::WATCHED.store(true, Ordering::Release);
+            let on_watcher = {
+                let ask = ask.clone();
+                move || {
+                    for _ in watcher {
+                        ask();
+                    }
+                }
+            };
+            let _ = std::thread::Builder::new()
+                .name("b33p-tray-watcher".into())
+                .spawn(on_watcher);
+            for _ in hosts {
+                ask();
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "can't watch for the tray");
+    }
+}
+
+/// Windows and macOS always have one.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+pub fn watch_host() {}
 
 /// Whether b33p's icon is registered with the StatusNotifierWatcher, which tray hosts take
 /// their icons from. Its service is named `org.kde.StatusNotifierItem-<pid>-<n>`.
@@ -157,7 +243,14 @@ fn icon_registered() -> bool {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn watcher_property(name: &str) -> zbus::Result<zbus::zvariant::OwnedValue> {
-    let connection = zbus::blocking::Connection::session()?;
+    property_on(&zbus::blocking::Connection::session()?, name)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn property_on(
+    connection: &zbus::blocking::Connection,
+    name: &str,
+) -> zbus::Result<zbus::zvariant::OwnedValue> {
     let reply = connection.call_method(
         Some("org.kde.StatusNotifierWatcher"),
         "/StatusNotifierWatcher",

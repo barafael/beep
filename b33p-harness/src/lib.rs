@@ -32,6 +32,8 @@ pub enum Call {
     Unsubscribe,
     /// Answered with [`Acted`].
     Act { action: Action },
+    /// Writes the window, as drawn, to `path` as a PNG. Answered with [`Shot`].
+    Screenshot { path: String },
 }
 
 /// The answer to request `id`: `{"id": …, "result": …}` or `{"id": …, "error": "…"}`.
@@ -91,6 +93,13 @@ pub struct Unsubscribed {
 pub struct Acted {
     /// Whether a command went to the backend.
     pub command_sent: bool,
+}
+
+/// A screenshot's size in pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shot {
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Pushed to a subscriber after every redraw.
@@ -186,7 +195,10 @@ mod core_enums {
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
     Sending,
+    /// Failed, and may go out if sent again.
     Failed,
+    /// Signal refused it: sending it again wouldn't help.
+    Refused,
     Sent,
     Delivered,
     Read,
@@ -417,11 +429,15 @@ pub enum Action {
         show: bool,
     },
     DismissError,
+    /// The error banner's "Try again".
+    RetryError,
     Unlock {
         password: String,
         confirmation: String,
     },
     SkipHistory,
+    /// Goes to the chats while catching up, as the start screen's button does.
+    Start,
     /// On the failure screen.
     Retry,
     UsePassword,
@@ -455,6 +471,18 @@ pub enum Action {
     /// Names this computer for the phone's list of linked devices; empty for the default.
     RenameDevice {
         name: String,
+    },
+    /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
+    /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
+    /// "leave_group".
+    Show {
+        what: String,
+        open: bool,
+    },
+    /// Gives the window this size, in logical pixels, as dragging its edge would.
+    Resize {
+        width: f32,
+        height: f32,
     },
     /// Changes the given settings and leaves the rest as they are.
     SetSettings {
@@ -493,6 +521,8 @@ pub struct Snapshot {
     pub account: String,
     pub synced: bool,
     pub error: Option<String>,
+    /// The error offers "Try again" (`retry_error`).
+    pub can_retry_error: bool,
     pub unread_total: u32,
     /// Only a direct `snapshot` answer has it; pushed updates don't look at the window.
     pub window: Option<WindowSnapshot>,

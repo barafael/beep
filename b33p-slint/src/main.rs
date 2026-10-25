@@ -24,10 +24,12 @@ compile_error!("the `harness` feature is for test builds: build without `--relea
 mod audio;
 mod autostart;
 mod clipboard;
+mod emoji;
 mod instance;
 mod logging;
 mod markdown;
 mod motion;
+mod rows;
 mod shutdown;
 mod tray;
 #[cfg(test)]
@@ -75,8 +77,16 @@ pub struct Shared {
     /// What changed since the window was last brought in line with the state; drawn once
     /// per turn of the event loop, however many actions and events a turn brings.
     pending: RefCell<Option<Update>>,
+    /// Whether something other than events (an action, a timer) changed the chat list since
+    /// it was last drawn: then every row is drawn, since only events name the chats they
+    /// change (`ChatState::take_changed_chats`).
+    whole_list: Cell<bool>,
     /// Redraws when someone typing next counts as stopped, since no event says so.
     typing_timer: slint::Timer,
+    /// Redraws the chat list at midnight, when its times change ("14:05" becomes "Mon").
+    midnight_timer: slint::Timer,
+    /// Redraws the open chat's messages once a minute while some of them disappear.
+    expiry_timer: slint::Timer,
     /// Audio and voice messages playing here.
     player: RefCell<audio::Player>,
     /// Asked to play once downloaded.
@@ -144,6 +154,14 @@ impl Shared {
     /// being made asks for a picture, a key is typed, a batch of events comes, and each
     /// alone redrew before.
     fn refresh(&self, update: Update) {
+        if update.conversations {
+            self.whole_list.set(true);
+        }
+        self.refresh_after_events(update);
+    }
+
+    /// [`Shared::refresh`] for what events changed, which name the chats they change.
+    fn refresh_after_events(&self, update: Update) {
         let mut pending = self.pending.borrow_mut();
         match pending.take() {
             Some(earlier) => {
@@ -167,7 +185,7 @@ impl Shared {
         };
         let Some(ui) = self.ui() else { return };
         let mut chat = self.chat.borrow_mut();
-        ui.render(&chat, &self.images, update);
+        ui.render(&chat, &self.images, update, self.whole_list.take());
         #[cfg(all(feature = "harness", target_family = "unix"))]
         self.agent
             .publish(&chat, &self.settings.borrow(), self.ui().as_deref());
@@ -211,6 +229,46 @@ impl Shared {
                 );
             }
             None => self.typing_timer.stop(),
+        }
+        // The times in the list just drawn hold until midnight (a second more, to be past it),
+        // and so do the days over the messages ("Today"). Counted anew whenever the list is
+        // drawn: the timer's clock stops while the computer sleeps.
+        if update.conversations {
+            let me = self.me.clone();
+            self.midnight_timer.start(
+                slint::TimerMode::SingleShot,
+                b33p_core::state::until_midnight() + Duration::from_secs(1),
+                move || {
+                    if let Some(shared) = me.upgrade() {
+                        shared.refresh(Update {
+                            conversations: true,
+                            rows: true,
+                            ..Update::default()
+                        });
+                    }
+                },
+            );
+        }
+        // What disappears says how long it has left ("5m"): counted down once a minute, while
+        // the open chat has any.
+        if chat.shows_expiring() {
+            if !self.expiry_timer.running() {
+                let me = self.me.clone();
+                self.expiry_timer.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_secs(60),
+                    move || {
+                        if let Some(shared) = me.upgrade() {
+                            shared.refresh(Update {
+                                rows: true,
+                                ..Update::default()
+                            });
+                        }
+                    },
+                );
+            }
+        } else {
+            self.expiry_timer.stop();
         }
         // A download asked to play has arrived.
         let pending = self.pending_play.borrow().clone();
@@ -262,10 +320,32 @@ impl Shared {
         }
     }
 
+    /// Goes to `fraction` of the audio playing, if `id` is what plays; otherwise starts it
+    /// there.
+    fn seek_playback(&self, id: AttachmentId, fraction: f32) {
+        let playing = self
+            .player
+            .borrow_mut()
+            .state()
+            .is_some_and(|state| state.id == &id);
+        if !playing {
+            self.toggle_playback(id.clone());
+        }
+        let result = self.player.borrow_mut().seek(&id, fraction);
+        if let Err(error) = result {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't seek in audio");
+        }
+        self.show_playback();
+    }
+
     fn start_playing(&self, id: AttachmentId, audio: Arc<[u8]>) {
         if let Err(error) = self.player.borrow_mut().play(id, audio) {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't play audio");
-            let update = self.chat.borrow_mut().apply(Event::Error(error));
+            // The audio itself, which playing again won't change.
+            let update = self
+                .chat
+                .borrow_mut()
+                .apply(Event::Error(b33p_core::Error::refused(error)));
             self.refresh(update);
             return;
         }
@@ -528,7 +608,10 @@ fn main() -> Result<(), slint::PlatformError> {
         start_hidden: Cell::new(false),
         system_reduces_motion: Cell::new(false),
         pending: RefCell::default(),
+        whole_list: Cell::new(false),
         typing_timer: slint::Timer::default(),
+        midnight_timer: slint::Timer::default(),
+        expiry_timer: slint::Timer::default(),
         player: RefCell::default(),
         pending_play: RefCell::default(),
         playback_timer: slint::Timer::default(),
@@ -553,6 +636,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     })
     .expect("the event loop is set up");
+    tray::watch_host();
     shared.tray.replace(Some(tray::create(&shared)?));
     let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;
     shared.start_hidden.set(hidden);
@@ -618,26 +702,41 @@ fn main() -> Result<(), slint::PlatformError> {
     .expect("the event loop is set up");
 
     // Await backend events on the UI thread and apply each burst (e.g. the initial sync) as
-    // one batch, so the UI refreshes once per batch. Nothing polls: idle means idle.
+    // one batch, so the UI refreshes once per batch. Nothing polls: idle means idle. A long
+    // burst (catching up after days away) is cut into batches of a few milliseconds, with the
+    // window drawn between them, so it doesn't freeze meanwhile.
     let events = backend.events();
     slint::spawn_local({
         let shared = shared.clone();
         async move {
+            const BATCH_TIME: Duration = Duration::from_millis(8);
             while let Ok(first) = events.recv().await {
-                let batch =
-                    std::iter::once(first).chain(std::iter::from_fn(|| events.try_recv().ok()));
+                let started = std::time::Instant::now();
+                let batch = std::iter::once(first).chain(std::iter::from_fn(|| {
+                    (started.elapsed() < BATCH_TIME)
+                        .then(|| events.try_recv().ok())
+                        .flatten()
+                }));
                 // Hidden, the window may still count as active to the toolkit.
                 let focused = shared.ui().is_some_and(|ui| ui.visible() && ui.active());
                 let update = {
                     let mut chat = shared.chat.borrow_mut();
                     chat.set_window_focused(focused);
                     chat.apply_all(batch.inspect(|event| {
+                        // Commands log their own failures in the backend.
                         if let Event::Error(error) = event {
-                            tracing::error!("{}", b33p_core::scrub::scrub(error));
+                            let message = b33p_core::scrub::scrub(&error.message);
+                            match error.kind {
+                                b33p_core::ErrorKind::Unreachable => tracing::warn!("{message}"),
+                                _ => tracing::error!("{message}"),
+                            }
                         }
                     }))
                 };
-                shared.refresh(update);
+                shared.refresh_after_events(update);
+                if !events.is_empty() {
+                    next_turn().await;
+                }
             }
             // The channel only closes early if the backend thread died without reporting why
             // (a panic); say so instead of leaving a frozen window. Not over a failure it did
@@ -671,6 +770,16 @@ fn main() -> Result<(), slint::PlatformError> {
     result
 }
 
+/// Waits for the event loop to come round once more: what it has queued meanwhile (the redraw
+/// that `Shared::refresh` asked for) runs first.
+async fn next_turn() {
+    let (done, turned) = async_channel::bounded::<()>(1);
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let _ = done.try_send(());
+    });
+    let _ = turned.recv().await;
+}
+
 fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
     for notice in chat.take_notices() {
         match notice {
@@ -698,6 +807,11 @@ pub struct Images {
     blurs: RefCell<HashMap<String, Image>>,
     /// The "Profile pictures" setting.
     avatars_enabled: Cell<bool>,
+    /// Message text as styled text, by what it says and how: making it means writing and
+    /// parsing Markdown, and rows are made again whenever they are redrawn.
+    texts: RefCell<HashMap<u64, slint::StyledText>>,
+    /// [`ChatState::downloads_forgotten`] when `attachments` last let go of what it forgot.
+    forgotten: Cell<u64>,
 }
 
 impl Images {
@@ -725,6 +839,49 @@ impl Images {
             .borrow_mut()
             .insert(hash.to_owned(), image.clone());
         image
+    }
+
+    /// Lets go of the pictures the state let go of (to keep memory in bounds), which would
+    /// otherwise stay here.
+    fn forget_gone(&self, chat: &ChatState) {
+        if self.forgotten.replace(chat.downloads_forgotten()) == chat.downloads_forgotten() {
+            return;
+        }
+        self.attachments.0.borrow_mut().retain(|id, (picture, _)| {
+            matches!(
+                chat.attachment(id),
+                Some(AttachmentState::Ready(AttachmentContent::Picture(kept))) if Arc::ptr_eq(kept, picture)
+            )
+        });
+    }
+
+    /// `body` as styled text; see [`markdown::rich_text`].
+    fn text(
+        &self,
+        body: &str,
+        styles: &[b33p_core::StyleRange],
+        revealed: bool,
+    ) -> slint::StyledText {
+        /// About a long chat's worth; beyond it, the cache starts again.
+        const KEPT: usize = 4096;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        body.hash(&mut hasher);
+        revealed.hash(&mut hasher);
+        for style in styles {
+            (style.start, style.end, style.style).hash(&mut hasher);
+        }
+        let key = hasher.finish();
+        if let Some(text) = self.texts.borrow().get(&key) {
+            return text.clone();
+        }
+        let text = rich_text(body, styles, revealed);
+        let mut texts = self.texts.borrow_mut();
+        if texts.len() >= KEPT {
+            texts.clear();
+        }
+        texts.insert(key, text.clone());
+        text
     }
 
     /// Empty when pictures are turned off. Round: cheaper than clipping it at every draw.

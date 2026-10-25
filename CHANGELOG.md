@@ -2,6 +2,64 @@
 
 The release workflow takes a version's notes from here (the section headed with its number).
 
+## Unreleased
+
+### Faster
+
+- Starting and reading are faster on large accounts: b33p indexes the stored messages by chat
+  (once, on the first start), so unread counts, the newest message of each chat and history
+  pages no longer read through every chat's messages.
+- Typing, reactions, receipts and downloads redraw only what they change, not every message
+  of the open chat; long selections, catching up with a chat open and loading older pages no
+  longer slow down with the size of the chat.
+- Searching a chat, gathering its media and loading sticker packs no longer hold up
+  everything else, and a new search stops the one before it.
+- Sending a message with a large attachment no longer holds up everything else: messages,
+  edits, reactions and deletions still go out in order, one after another, while read receipts,
+  typing and older pages carry on.
+- A new message, someone typing or a reaction redraws its chat's row in the list, not the whole
+  list; a page of older messages goes in above in one go.
+- Pictures take less memory (stickers and link previews are decoded at the size they show),
+  and downloaded pictures beyond about 160 MB are let go of, oldest first, and downloaded
+  again if they show again. The window no longer redraws all the time while offline.
+
+### New
+
+- **Start** on the start-up screen while catching up: the chats show at once, and the rest
+  comes in as they do.
+- A chat with many unread messages opens at the first of them; a ↓ button goes back to the
+  newest message, with how many came since.
+- Tooltips on icon buttons, and the time of a message inside a run when pointed at.
+- A **⋯** button beside each message opens its menu; **+** in the reaction bar reacts with any
+  emoji.
+- A full emoji picker, with search and the ones used lately; emoji go where the caret is.
+- Seeking in audio and voice messages.
+- ↑, ↓ and Enter in the chat list's search.
+- Leaving a group, blocking or deleting a message request and deleting for everyone ask
+  first, in the same dialog as unlinking.
+- Failures say whether trying again may help: the error offers **Try again** when it may;
+  messages Signal refused and attachments gone from the server aren't offered again.
+
+### Looks
+
+- One look throughout: the same colours, text sizes, corners, spacing, shadows and motion
+  everywhere, from one place (`ui/theme.slint`), following the desktop's colours as before.
+- Icons instead of text symbols (play, pause, timer, verified, files), panels with a back
+  arrow, banners with an icon, a b33p mark on the start-up screens.
+- Chat previews of a photo, video, voice message, file or sticker, and changes of the
+  disappearing-message timer, have an icon instead of an emoji (notifications keep theirs).
+- The chat list's title row is as tall as the chat's header beside it.
+
+### Fixed
+
+- A message added to a run no longer leaves the one before it showing a time and ticks.
+- Link-preview pictures show as soon as they have downloaded.
+- The sender pictures in a group's messages appear when they arrive.
+- Actions on a message can no longer hit a neighbouring one when messages come in meanwhile.
+- Changing a chat's settings no longer goes back on another change made at the same moment.
+- Esc also closes the join dialog, the calendar and the dialogs that ask first.
+- Two messages sent within the same millisecond no longer take each other's place.
+
 ## 0.2.0
 
 The first release for others to try. Downloads for Linux (AppImage, .deb, tarball), macOS

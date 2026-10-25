@@ -20,7 +20,11 @@ use presage::{
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::{Attachment, AttachmentContent, AttachmentId, AttachmentKind, Event, Events, Picture};
+use crate::signal::errors::{failed, upload_kind};
+use crate::{
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, Error, Event, Events, Picture,
+};
+use presage::libsignal_service::sender::AttachmentUploadError;
 
 /// Content type Signal uses for the full text of long messages.
 pub(crate) const LONG_TEXT: &str = "text/x-signal-plain";
@@ -31,6 +35,14 @@ const LONG_TEXT_SHOWN: usize = 64 * 1024;
 
 /// Longest edge of pictures sent to the UI: a 320 px bubble at 2x.
 const PICTURE_EDGE: u32 = 640;
+/// Longest edge of stickers sent to the UI: they show at 128 px.
+const STICKER_EDGE: u32 = 256;
+/// Height of link previews' pictures sent to the UI: they show at most 150 px tall, and as
+/// wide as other pictures.
+const PREVIEW_HEIGHT: u32 = 300;
+
+/// Starts the ids of link previews' pictures; see [`describe_preview`].
+const PREVIEW_ID: &str = "preview:";
 
 /// At most this many downloads at once, so opening a chat full of photos doesn't flood the
 /// connection.
@@ -93,6 +105,26 @@ pub(crate) fn describe(pointer: &AttachmentPointer, view_once: bool) -> Attachme
     }
 }
 
+/// A link preview's picture: as [`describe`], but with an id of its own. That says what it is
+/// when it is fetched (by the attachment alone), so it is decoded smaller, and keeps it apart
+/// from the same file attached to a message, which shows larger.
+pub(crate) fn describe_preview(pointer: &AttachmentPointer) -> Attachment {
+    let mut attachment = describe(pointer, false);
+    attachment.id = AttachmentId(format!("{PREVIEW_ID}{}", attachment.id.0));
+    attachment
+}
+
+/// What a picture is scaled to fit for the UI, width and height: twice what it is shown at.
+fn picture_bounds(attachment: &Attachment) -> (u32, u32) {
+    if attachment.kind == AttachmentKind::Sticker {
+        (STICKER_EDGE, STICKER_EDGE)
+    } else if attachment.id.0.starts_with(PREVIEW_ID) {
+        (PICTURE_EDGE, PREVIEW_HEIGHT)
+    } else {
+        (PICTURE_EDGE, PICTURE_EDGE)
+    }
+}
+
 /// The CDN location identifies an upload; the digest or, failing both, the pointer itself
 /// stands in.
 fn id(pointer: &AttachmentPointer) -> AttachmentId {
@@ -108,28 +140,51 @@ pub(crate) fn pointer(attachment: &Attachment) -> Option<AttachmentPointer> {
     AttachmentPointer::decode(&*attachment.pointer).ok()
 }
 
+/// What a session's downloads share: one client for Signal's CDNs, which keeps its connections
+/// to use again (one per download would pay a TLS handshake for every picture), and the limit
+/// on how many run at once.
+pub(crate) struct Downloads {
+    cdn: PushService,
+    limit: Semaphore,
+}
+
+impl Downloads {
+    pub(crate) fn new(servers: SignalServers) -> Rc<Self> {
+        Rc::new(Self {
+            cdn: PushService::new(servers, None, "b33p"),
+            limit: Semaphore::new(PARALLEL_DOWNLOADS),
+        })
+    }
+}
+
 /// Downloads and decrypts an attachment; see [`decrypt`].
-async fn download(servers: SignalServers, attachment: &Attachment) -> Result<Vec<u8>, String> {
+async fn download(cdn: &PushService, attachment: &Attachment) -> Result<Vec<u8>, Error> {
     let pointer = AttachmentPointer::decode(&*attachment.pointer)
-        .map_err(|e| format!("invalid attachment: {e}"))?;
-    let mut download = PushService::new(servers, None, "b33p")
+        .map_err(|e| Error::refused(format!("invalid attachment: {e}")))?;
+    // A copy shares the client, and with it the connections.
+    let mut download = cdn
+        .clone()
         .get_attachment(&pointer)
         .await
         .map_err(|e| match e {
             presage::libsignal_service::push_service::ServiceError::NotFoundError => {
-                "This attachment is no longer available on Signal's servers.".to_string()
+                Error::refused("This attachment is no longer available on Signal's servers.")
             }
-            e => format!("failed to download the attachment: {e}"),
+            e => Error::new(
+                crate::signal::errors::service_kind(&e),
+                format!("failed to download the attachment: {e}"),
+            ),
         })?;
     let mut data = Vec::with_capacity(download.content_length.unwrap_or_default() as usize);
     download
         .stream
         .read_to_end(&mut data)
         .await
-        .map_err(|e| format!("failed to download the attachment: {e}"))?;
+        .map_err(|e| Error::unreachable(format!("failed to download the attachment: {e}")))?;
     tokio::task::spawn_blocking(move || decrypt(&pointer, data))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| Error::refused(e.to_string()))?
+        .map_err(Error::refused)
 }
 
 /// Checks and decrypts a downloaded attachment. The HMAC under the attachment's own key always
@@ -160,28 +215,26 @@ fn decrypt(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, St
 }
 
 /// Downloads a picture or long text for display and reports it as [`Event::Attachment`].
-pub(crate) async fn fetch(
-    servers: SignalServers,
-    attachment: Attachment,
-    events: Events,
-    limit: Rc<Semaphore>,
-) {
+pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     let content = async {
         if attachment.kind == AttachmentKind::LongText && attachment.size > LONG_TEXT_FETCHED {
-            return Err("This message is too long to show.".to_string());
+            return Err(Error::refused("This message is too long to show."));
         }
-        let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
-        let data = download(servers, &attachment).await?;
+        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+        let data = download(&downloads.cdn, &attachment).await?;
         match attachment.kind {
             AttachmentKind::LongText => Ok(AttachmentContent::Text(shown_text(&data))),
             AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                 Ok(AttachmentContent::Audio(data.into()))
             }
-            _ => tokio::task::spawn_blocking(move || decode_picture(&data))
-                .await
-                .map_err(|e| e.to_string())?
-                .map(|picture| AttachmentContent::Picture(Arc::new(picture)))
-                .ok_or_else(|| "This image can't be shown.".to_string()),
+            _ => {
+                let bounds = picture_bounds(&attachment);
+                tokio::task::spawn_blocking(move || decode_picture(&data, bounds))
+                    .await
+                    .map_err(|e| Error::refused(e.to_string()))?
+                    .map(|picture| AttachmentContent::Picture(Arc::new(picture)))
+                    .ok_or_else(|| Error::refused("This image can't be shown."))
+            }
         }
     }
     .await;
@@ -211,19 +264,14 @@ fn shown_text(data: &[u8]) -> String {
 
 /// Downloads an attachment into the downloads folder and reports where as
 /// [`Event::AttachmentSaved`].
-pub(crate) async fn save(
-    servers: SignalServers,
-    attachment: Attachment,
-    events: Events,
-    limit: Rc<Semaphore>,
-) {
+pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     let path = async {
-        let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
-        let data = download(servers, &attachment).await?;
-        let path = free_path(&attachment)?;
+        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+        let data = download(&downloads.cdn, &attachment).await?;
+        let path = free_path(&attachment).map_err(Error::storage)?;
         tokio::fs::write(&path, data)
             .await
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            .map_err(|e| Error::storage(format!("failed to write {}: {e}", path.display())))?;
         mark_downloaded(&path);
         Ok(path)
     }
@@ -273,20 +321,30 @@ pub(crate) async fn upload_bytes(
     name: &str,
     content_type: &str,
     data: Vec<u8>,
-) -> Result<AttachmentPointer, String> {
+) -> Result<AttachmentPointer, Error> {
     let spec = spec(name.to_owned(), content_type.to_owned(), &data);
     manager
         .upload_attachment(spec, data)
         .await
-        .map_err(|e| format!("failed to upload: {e}"))?
-        .map_err(|e| format!("failed to upload: {e}"))
+        .map_err(failed("failed to upload"))?
+        .map_err(upload_failed)
+}
+
+/// A failed upload, of its kind.
+fn upload_failed(error: AttachmentUploadError) -> Error {
+    Error::new(upload_kind(&error), format!("failed to upload: {error}"))
+}
+
+/// The download limit's semaphore closed: the session is ending.
+fn stopped(error: tokio::sync::AcquireError) -> Error {
+    Error::unreachable(error.to_string())
 }
 
 /// Uploads `files` for sending, as the pointers to put in the message.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
     files: &[PathBuf],
-) -> Result<Vec<AttachmentPointer>, String> {
+) -> Result<Vec<AttachmentPointer>, Error> {
     let mut uploads = Vec::new();
     for path in files {
         let name = path
@@ -296,14 +354,16 @@ pub(crate) async fn upload(
             .to_owned();
         let size = tokio::fs::metadata(path)
             .await
-            .map_err(|e| format!("can't read “{name}”: {e}"))?
+            .map_err(|e| Error::storage(format!("can't read “{name}”: {e}")))?
             .len();
         if size > MAX_UPLOAD_BYTES {
-            return Err(format!("“{name}” is larger than Signal's limit of 100 MB."));
+            return Err(Error::refused(format!(
+                "“{name}” is larger than Signal's limit of 100 MB."
+            )));
         }
         let data = tokio::fs::read(path)
             .await
-            .map_err(|e| format!("can't read “{name}”: {e}"))?;
+            .map_err(|e| Error::storage(format!("can't read “{name}”: {e}")))?;
         let content_type = mime_guess::from_path(path)
             .first_or_octet_stream()
             .essence_str()
@@ -312,7 +372,7 @@ pub(crate) async fn upload(
             let content_type = content_type.clone();
             tokio::task::spawn_blocking(move || without_metadata(&content_type, data))
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| Error::refused(e.to_string()))?
         };
         let spec = spec(name, content_type, &data);
         uploads.push((spec, data));
@@ -320,10 +380,10 @@ pub(crate) async fn upload(
     let results = manager
         .upload_attachments(uploads)
         .await
-        .map_err(|e| format!("failed to upload: {e}"))?;
+        .map_err(failed("failed to upload"))?;
     results
         .into_iter()
-        .map(|result| result.map_err(|e| format!("failed to upload: {e}")))
+        .map(|result| result.map_err(upload_failed))
         .collect()
 }
 
@@ -476,34 +536,36 @@ pub(crate) fn is_dangerous(name: &str) -> bool {
 
 /// Downloads an attachment and opens it with the desktop's default app. Errors are reported
 /// as [`Event::Error`].
-pub(crate) async fn open(
-    servers: SignalServers,
-    attachment: Attachment,
-    events: Events,
-    limit: Rc<Semaphore>,
-) {
+pub(crate) async fn open(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     let opened = async {
         let name = safe_name(&attachment);
         if is_dangerous(&name) {
-            return Err(format!(
+            return Err(Error::refused(format!(
                 "{name} is a kind of file the desktop would run rather than show, so it isn't \
                  opened from here. Save it if you trust the sender, and open it from there."
-            ));
+            )));
         }
-        let _permit = limit.acquire().await.map_err(|e| e.to_string())?;
-        let data = download(servers, &attachment).await?;
+        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+        let data = download(&downloads.cdn, &attachment).await?;
         // One directory per attachment, so two files with the same name don't collide.
-        let dir = crate::scratch::dir(OPENED)
-            .map_err(|e| format!("couldn't make a private directory: {e}"))?
-            .join(hex::encode(
-                &Sha256::digest(attachment.id.0.as_bytes())[..8],
-            ));
-        crate::vault::restrict_dir(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(name);
-        crate::vault::write_private(&path, &data)
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-        mark_downloaded(&path);
-        open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
+        let subdir = hex::encode(&Sha256::digest(attachment.id.0.as_bytes())[..8]);
+        // Writing up to 100 MB takes a while: not on this thread.
+        tokio::task::spawn_blocking(move || {
+            let dir = crate::scratch::dir(OPENED)
+                .map_err(|e| format!("couldn't make a private directory: {e}"))?
+                .join(subdir);
+            crate::vault::restrict_dir(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join(name);
+            crate::vault::write_private(&path, &data)
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            mark_downloaded(&path);
+            open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .flatten()
+        // Writing the file, or the desktop opening it.
+        .map_err(Error::storage)
     }
     .await;
     if let Err(error) = opened {
@@ -511,20 +573,12 @@ pub(crate) async fn open(
     }
 }
 
-pub(crate) fn download_limit() -> Rc<Semaphore> {
-    Rc::new(Semaphore::new(PARALLEL_DOWNLOADS))
-}
-
-/// Scales to at most [`PICTURE_EDGE`]; animated images show their first frame.
-fn decode_picture(data: &[u8]) -> Option<Picture> {
-    thumbnail(data, PICTURE_EDGE)
-}
-
-/// Decodes a picture scaled to at most `edge` pixels a side.
-pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
+/// Decodes a picture scaled to fit `width` by `height`, keeping its shape (see
+/// [`picture_bounds`]); animated images show their first frame.
+fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
     let image = decode_limited(data)?;
-    let image = if image.width().max(image.height()) > edge {
-        image.resize(edge, edge, image::imageops::FilterType::Triangle)
+    let image = if image.width() > width || image.height() > height {
+        image.resize(width, height, image::imageops::FilterType::Triangle)
     } else {
         image
     };
@@ -534,6 +588,11 @@ pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
         height: rgba.height(),
         rgba: rgba.into_raw(),
     })
+}
+
+/// Decodes a picture scaled to at most `edge` pixels a side.
+pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
+    decode_picture(data, (edge, edge))
 }
 
 /// A photo drawn again from its pixels, as Signal's apps send them: without what its file
@@ -831,9 +890,44 @@ mod tests {
         image::RgbaImage::new(1280, 640)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let picture = decode_picture(&png).unwrap();
+        let bounds = (PICTURE_EDGE, PICTURE_EDGE);
+        let picture = decode_picture(&png, bounds).unwrap();
         assert_eq!((picture.width, picture.height), (640, 320));
-        assert!(decode_picture(b"not an image").is_none());
+        assert!(decode_picture(b"not an image", bounds).is_none());
+    }
+
+    /// Stickers and link previews' pictures show smaller than photos, so they are decoded
+    /// smaller; never smaller than shown, in either direction.
+    #[test]
+    fn pictures_are_as_large_as_they_show() {
+        let photo = describe(&pointer("image/png", 0), false);
+        let sticker = Attachment {
+            kind: AttachmentKind::Sticker,
+            ..photo.clone()
+        };
+        let preview = describe_preview(&pointer("image/png", 0));
+        assert_eq!(preview.kind, AttachmentKind::Image);
+        assert_ne!(preview.id, photo.id, "cached apart");
+        assert_eq!(picture_bounds(&photo), (640, 640));
+        assert_eq!(picture_bounds(&sticker), (256, 256));
+        assert_eq!(picture_bounds(&preview), (640, 300));
+
+        let png = |width, height| {
+            let mut png = Vec::new();
+            image::RgbaImage::new(width, height)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .unwrap();
+            png
+        };
+        let size = |data: &[u8], of: &Attachment| {
+            let picture = decode_picture(data, picture_bounds(of)).unwrap();
+            (picture.width, picture.height)
+        };
+        assert_eq!(size(&png(512, 512), &sticker), (256, 256));
+        // As wide as the bubble at 2x, as tall as the card allows.
+        assert_eq!(size(&png(1200, 630), &preview), (571, 300));
+        assert_eq!(size(&png(600, 1200), &preview), (150, 300));
+        assert_eq!(size(&png(200, 100), &preview), (200, 100));
     }
 
     #[test]

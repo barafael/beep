@@ -5,14 +5,17 @@
 //! It uses its own connection pool, opened with the same options (key, close guard) as the
 //! store's, so closing waits for both and nothing is ever written unencrypted.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    ops::{Bound, RangeBounds},
+};
 
 use sqlx::{
     Row as _, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
 
-use presage::proto::verified::State;
+use presage::{proto::verified::State, store::Thread};
 
 use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
 
@@ -61,6 +64,26 @@ fn key(conversation: &ConversationId, message: &MessageRef) -> (String, String, 
         message.author_id.clone(),
         message.timestamp as i64,
     )
+}
+
+/// The timestamps in `range` as the first and last the tables keep (as `i64`), for `BETWEEN`.
+fn between(range: &impl RangeBounds<u64>) -> (i64, i64) {
+    let first = match range.start_bound() {
+        Bound::Included(&ts) => ts,
+        Bound::Excluded(&ts) => ts.saturating_add(1),
+        Bound::Unbounded => 0,
+    };
+    let last = match range.end_bound() {
+        Bound::Included(&ts) => Some(ts),
+        Bound::Excluded(&ts) => ts.checked_sub(1),
+        Bound::Unbounded => Some(u64::MAX),
+    };
+    let stored = |ts: u64| ts.min(i64::MAX as u64) as i64;
+    match last {
+        Some(last) => (stored(first), stored(last)),
+        // Nothing is before 0.
+        None => (1, 0),
+    }
 }
 
 /// The message whose author and time are in the columns from `first` on.
@@ -303,6 +326,21 @@ impl LocalStore {
         Ok(Self { db })
     }
 
+    /// Makes an index on presage's table of messages, which presage doesn't make yet: its key
+    /// starts with the time, so reading one chat's newest messages walks the messages of every
+    /// chat back to them, and a quiet chat's walks nearly all. Not in [`SCHEMA`]: the table is
+    /// presage's, made by its store. Older b33p builds don't mind an index more, so it keeps
+    /// [`SCHEMA_VERSION`]. Drop this once presage's migrations make one.
+    pub(crate) async fn index_messages(&self) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS b33p_thread_messages_thread_ts
+             ON thread_messages (thread_id, ts)",
+        )
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
     /// Forgets everything b33p keeps here, for a database whose contents are wiped too.
     pub(crate) async fn clear(&self) -> Result<(), sqlx::Error> {
         let mut tx = self.begin_write().await?;
@@ -335,9 +373,9 @@ impl LocalStore {
         settings_in(&self.db, id).await
     }
 
-    /// Changes what b33p remembers about one conversation. The read and the write are one
-    /// transaction: another change in between (`mark_read` for nearly every message) would be
-    /// written over with what was read before it.
+    /// Changes what b33p remembers about one conversation. Read and written back in one
+    /// transaction that holds the write lock from the start: the receive task marks chats read
+    /// meanwhile, and writing back a read position from before that would move it backwards.
     pub(crate) async fn update(
         &self,
         id: &ConversationId,
@@ -746,15 +784,22 @@ impl LocalStore {
         tx.commit().await
     }
 
-    /// Delivery states of our messages in a conversation, by timestamp.
+    /// Delivery states of our messages in a conversation sent in `range`, by timestamp.
     pub(crate) async fn deliveries(
         &self,
         conversation: &ConversationId,
+        range: impl RangeBounds<u64>,
     ) -> Result<HashMap<u64, Delivery>, sqlx::Error> {
-        let rows = sqlx::query("SELECT ts, state FROM b33p_delivery WHERE conversation = ?")
-            .bind(&conversation.0)
-            .fetch_all(&self.db)
-            .await?;
+        let (first, last) = between(&range);
+        let rows = sqlx::query(
+            "SELECT ts, state FROM b33p_delivery
+             WHERE conversation = ? AND ts BETWEEN ? AND ?",
+        )
+        .bind(&conversation.0)
+        .bind(first)
+        .bind(last)
+        .fetch_all(&self.db)
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -767,23 +812,30 @@ impl LocalStore {
     }
 
     /// Our messages (anywhere) sent at one of `timestamps`, with their conversation: receipts
-    /// name only the timestamps.
+    /// name only the timestamps. One query for all, however many a receipt names: they go in
+    /// as a JSON array.
     pub(crate) async fn conversations_of(
         &self,
         timestamps: &[u64],
     ) -> Result<Vec<(ConversationId, u64)>, sqlx::Error> {
-        let mut found = Vec::new();
-        for ts in timestamps {
-            let rows = sqlx::query("SELECT conversation FROM b33p_delivery WHERE ts = ?")
-                .bind(*ts as i64)
-                .fetch_all(&self.db)
-                .await?;
-            found.extend(
-                rows.into_iter()
-                    .map(|row| (ConversationId(row.get(0)), *ts)),
-            );
+        if timestamps.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(found)
+        let list: Vec<String> = timestamps
+            .iter()
+            .map(|ts| (*ts as i64).to_string())
+            .collect();
+        let rows = sqlx::query(
+            "SELECT conversation, ts FROM b33p_delivery
+             WHERE ts IN (SELECT value FROM json_each(?))",
+        )
+        .bind(format!("[{}]", list.join(",")))
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| (ConversationId(row.get(0)), row.get::<i64, _>(1) as u64))
+            .collect())
     }
 
     /// Keeps the text a message had before an edit.
@@ -806,15 +858,22 @@ impl LocalStore {
             .map(drop)
     }
 
-    /// Earlier versions of edited messages in a conversation, oldest first.
+    /// Earlier versions of edited messages in a conversation sent in `range`, oldest first.
     pub(crate) async fn edits(
         &self,
         conversation: &ConversationId,
+        range: impl RangeBounds<u64>,
     ) -> Result<HashMap<MessageRef, Vec<(u64, String)>>, sqlx::Error> {
-        let rows = sqlx::query("SELECT author, ts, edited_at, previous_body FROM b33p_edit WHERE conversation = ? ORDER BY edited_at")
-            .bind(&conversation.0)
-            .fetch_all(&self.db)
-            .await?;
+        let (first, last) = between(&range);
+        let rows = sqlx::query(
+            "SELECT author, ts, edited_at, previous_body FROM b33p_edit
+             WHERE conversation = ? AND ts BETWEEN ? AND ? ORDER BY edited_at",
+        )
+        .bind(&conversation.0)
+        .bind(first)
+        .bind(last)
+        .fetch_all(&self.db)
+        .await?;
         let mut edits: HashMap<MessageRef, Vec<(u64, String)>> = HashMap::new();
         for row in rows {
             edits
@@ -850,14 +909,22 @@ impl LocalStore {
         tx.commit().await
     }
 
+    /// Messages of a conversation sent in `range` that were deleted for everyone.
     pub(crate) async fn deleted(
         &self,
         conversation: &ConversationId,
+        range: impl RangeBounds<u64>,
     ) -> Result<Vec<MessageRef>, sqlx::Error> {
-        let rows = sqlx::query("SELECT author, ts FROM b33p_deleted WHERE conversation = ?")
-            .bind(&conversation.0)
-            .fetch_all(&self.db)
-            .await?;
+        let (first, last) = between(&range);
+        let rows = sqlx::query(
+            "SELECT author, ts FROM b33p_deleted
+             WHERE conversation = ? AND ts BETWEEN ? AND ?",
+        )
+        .bind(&conversation.0)
+        .bind(first)
+        .bind(last)
+        .fetch_all(&self.db)
+        .await?;
         Ok(rows.iter().map(|row| message_at(row, 0)).collect())
     }
 
@@ -881,16 +948,22 @@ impl LocalStore {
         tx.commit().await
     }
 
-    /// Expiry times in a conversation.
+    /// Expiry times of messages in a conversation sent in `range`.
     pub(crate) async fn expiries(
         &self,
         conversation: &ConversationId,
+        range: impl RangeBounds<u64>,
     ) -> Result<HashMap<MessageRef, u64>, sqlx::Error> {
-        let rows =
-            sqlx::query("SELECT author, ts, expires_at FROM b33p_expiry WHERE conversation = ?")
-                .bind(&conversation.0)
-                .fetch_all(&self.db)
-                .await?;
+        let (first, last) = between(&range);
+        let rows = sqlx::query(
+            "SELECT author, ts, expires_at FROM b33p_expiry
+             WHERE conversation = ? AND ts BETWEEN ? AND ?",
+        )
+        .bind(&conversation.0)
+        .bind(first)
+        .bind(last)
+        .fetch_all(&self.db)
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| (message_at(&row, 0), row.get::<i64, _>(2) as u64))
@@ -925,6 +998,45 @@ impl LocalStore {
         messages: &[(ConversationId, MessageRef)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.begin_write().await?;
+        Self::forget_in(&mut tx, messages.iter().map(|(c, m)| (c, m))).await?;
+        tx.commit().await
+    }
+
+    /// Deletes messages from presage's store, each from its thread (if it has one), and
+    /// forgets them here, all in one transaction: presage's `delete_message` writes, and syncs
+    /// to disk, once per message. Its statement, on its table, as presage has them; see
+    /// [`Self::index_messages`].
+    pub(crate) async fn delete_messages(
+        &self,
+        messages: &[(ConversationId, MessageRef, Option<Thread>)],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        for (_, message, thread) in messages {
+            // presage finds a thread by its group's master key or the contact's UUID.
+            let (group, contact) = match thread {
+                None => continue,
+                Some(Thread::Group(key)) => (Some(key.to_vec()), None),
+                Some(Thread::Contact(who)) => (None, Some(who.raw_uuid().as_bytes().to_vec())),
+            };
+            sqlx::query(
+                "DELETE FROM thread_messages
+                 WHERE ts = ? AND thread_id = (
+                    SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)",
+            )
+            .bind(message.timestamp as i64)
+            .bind(group)
+            .bind(contact)
+            .execute(&mut *tx)
+            .await?;
+        }
+        Self::forget_in(&mut tx, messages.iter().map(|(c, m, _)| (c, m))).await?;
+        tx.commit().await
+    }
+
+    async fn forget_in(
+        tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        messages: impl Iterator<Item = (&ConversationId, &MessageRef)>,
+    ) -> Result<(), sqlx::Error> {
         for (conversation, message) in messages {
             let (conversation, author, ts) = key(conversation, message);
             for statement in [
@@ -936,11 +1048,11 @@ impl LocalStore {
                     .bind(&conversation)
                     .bind(&author)
                     .bind(ts)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
             }
         }
-        tx.commit().await
+        Ok(())
     }
 }
 
@@ -1279,6 +1391,52 @@ mod tests {
         });
     }
 
+    /// A conversation marked read while something else about it changes keeps both: the
+    /// change reads and writes back in one go, and marking it read waits for that.
+    #[test]
+    fn a_change_keeps_what_was_read_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(dir.path().join("local.db3"))
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        block_on(async {
+            let local = LocalStore::open(options.clone()).await.unwrap();
+            let a = ConversationId("a".into());
+            local.mark_read(&a, 40).await.unwrap();
+            let (done, finished) = std::sync::mpsc::channel();
+            let mut reading = None;
+            let changed = local
+                .update(&a, |s| {
+                    // Between the change's read and its write, as the receive task can, on a
+                    // connection of its own.
+                    let (options, a) = (options.clone(), a.clone());
+                    reading = Some(std::thread::spawn(move || {
+                        block_on(async {
+                            let db = SqlitePoolOptions::new()
+                                .max_connections(1)
+                                .connect_with(options)
+                                .await
+                                .unwrap();
+                            let other = LocalStore { db };
+                            other.mark_read(&a, 50).await.unwrap();
+                            other.close().await;
+                        });
+                        let _ = done.send(());
+                    }));
+                    // Done by now if nothing held it back.
+                    let _ = finished.recv_timeout(std::time::Duration::from_millis(500));
+                    s.set_archived(true);
+                })
+                .await
+                .unwrap();
+            assert!(changed.archived);
+            reading.unwrap().join().unwrap();
+            let now = local.settings(&a).await.unwrap().unwrap();
+            assert_eq!((now.last_read, now.archived), (50, true));
+        });
+    }
+
     #[test]
     fn delivery_never_goes_backwards() {
         let dir = tempfile::tempdir().unwrap();
@@ -1291,8 +1449,70 @@ mod tests {
                 .set_delivery(&a, 5, Delivery::Delivered)
                 .await
                 .unwrap();
-            assert_eq!(local.deliveries(&a).await.unwrap()[&5], Delivery::Read);
+            assert_eq!(local.deliveries(&a, ..).await.unwrap()[&5], Delivery::Read);
             assert_eq!(local.conversations_of(&[5, 6]).await.unwrap(), [(a, 5)]);
+        });
+    }
+
+    /// A receipt's timestamps are looked up at once, in every conversation.
+    #[test]
+    fn receipts_find_their_messages_anywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let (a, b) = (ConversationId("a".into()), ConversationId("b".into()));
+            let sent = [
+                (a.clone(), 5),
+                (b.clone(), 5),
+                (a.clone(), 7),
+                (b.clone(), 9),
+            ];
+            local.set_deliveries(&sent, Delivery::Sent).await.unwrap();
+            let mut found = local.conversations_of(&[5, 7, 8, 7]).await.unwrap();
+            found.sort_by(|x, y| (x.1, &x.0.0).cmp(&(y.1, &y.0.0)));
+            assert_eq!(found, [(a.clone(), 5), (b, 5), (a, 7)]);
+            assert!(local.conversations_of(&[]).await.unwrap().is_empty());
+        });
+    }
+
+    /// What is kept beside a page of history is read for that page's time only.
+    #[test]
+    fn reads_stay_within_the_page() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let a = ConversationId("a".into());
+            let b = ConversationId("b".into());
+            for ts in [10, 20, 30] {
+                let m = reference("ann", ts);
+                local.set_delivery(&a, ts, Delivery::Sent).await.unwrap();
+                local.record_edit(&a, &m, ts + 1, "before").await.unwrap();
+                local
+                    .set_expiries(&a, &[(m.clone(), ts + 100)])
+                    .await
+                    .unwrap();
+                local.record_deleted(&b, &m).await.unwrap();
+            }
+            let times = |mut found: Vec<u64>| {
+                found.sort_unstable();
+                found
+            };
+            let delivered = local.deliveries(&a, 15..=30).await.unwrap();
+            assert_eq!(times(delivered.into_keys().collect()), [20, 30]);
+            let edited = local.edits(&a, 10..30).await.unwrap();
+            assert_eq!(
+                times(edited.keys().map(|m| m.timestamp).collect()),
+                [10, 20]
+            );
+            let expiring = local.expiries(&a, 20..=20).await.unwrap();
+            assert_eq!(times(expiring.keys().map(|m| m.timestamp).collect()), [20]);
+            let deleted = local.deleted(&b, 11..u64::MAX).await.unwrap();
+            assert_eq!(
+                times(deleted.iter().map(|m| m.timestamp).collect()),
+                [20, 30]
+            );
+            assert!(local.deleted(&b, 0..0).await.unwrap().is_empty());
+            assert!(local.deliveries(&b, ..).await.unwrap().is_empty());
         });
     }
 
@@ -1306,12 +1526,15 @@ mod tests {
             local.record_edit(&a, &m, 20, "first").await.unwrap();
             local.record_edit(&a, &m, 30, "second").await.unwrap();
             assert_eq!(
-                local.edits(&a).await.unwrap()[&m],
+                local.edits(&a, ..).await.unwrap()[&m],
                 [(20, "first".to_string()), (30, "second".to_string())]
             );
             local.record_deleted(&a, &m).await.unwrap();
-            assert_eq!(local.deleted(&a).await.unwrap(), std::slice::from_ref(&m));
-            assert!(local.edits(&a).await.unwrap().is_empty());
+            assert_eq!(
+                local.deleted(&a, ..).await.unwrap(),
+                std::slice::from_ref(&m)
+            );
+            assert!(local.edits(&a, ..).await.unwrap().is_empty());
 
             local.record_edit(&a, &m, 40, "third").await.unwrap();
             local.set_expiries(&a, &[(m.clone(), 100)]).await.unwrap();
@@ -1325,8 +1548,8 @@ mod tests {
             assert_eq!(due, [(a.clone(), m.clone())]);
             assert_eq!(next, Some(200));
             local.forget(&due).await.unwrap();
-            assert!(local.edits(&a).await.unwrap().is_empty());
-            assert!(local.deleted(&a).await.unwrap().is_empty());
+            assert!(local.edits(&a, ..).await.unwrap().is_empty());
+            assert!(local.deleted(&a, ..).await.unwrap().is_empty());
             assert_eq!(local.due(150).await.unwrap().0, []);
         });
     }

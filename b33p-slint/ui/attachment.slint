@@ -1,0 +1,243 @@
+import { Spinner } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { AttachmentItem } from "types.slint";
+import { Playback } from "globals.slint";
+import { Icon } from "widgets.slint";
+
+// A link-like action under an attachment ("Open", "Save").
+component AttachmentAction inherits TouchArea {
+    in property <string> text;
+    in property <color> ink;
+    accessible-role: button;
+    accessible-action-default => { self.clicked(); }
+    width: label.preferred-width;
+    mouse-cursor: pointer;
+    label := Text {
+        text: root.text;
+        font-size: 1rem * Theme.body-small;
+        font-weight: 600;
+        vertical-alignment: center;
+        color: root.has-hover ? root.ink : root.ink.with-alpha(Theme.secondary);
+    }
+}
+
+export component AttachmentView inherits VerticalLayout {
+    in property <AttachmentItem> item;
+    in property <bool> outgoing;
+    callback fetch(string);
+    callback save(string);
+    callback open(string);
+
+    // Outgoing bubbles use the accent colour, so their text is white for contrast with any.
+    property <color> ink: outgoing ? Theme.bubble-outgoing-text : Theme.bubble-incoming-text;
+    spacing: Theme.space-xs;
+    // The list only creates rows that are on screen, so this downloads only what is seen.
+    // (A view kept for another attachment, like the next story, is told by its owner.)
+    init => {
+        if root.item.fetch { root.fetch(root.item.id); }
+    }
+
+    if root.item.inline: Rectangle {
+        width: root.item.width;
+        height: root.item.height;
+        border-radius: Theme.radius-m;
+        clip: true;
+        background: root.ink.with-alpha(Theme.fill);
+        // The blurred stand-in gives way to the picture as it fades in. Both are always there:
+        // a change of opacity animates, a row drawn with its picture loaded doesn't.
+        if root.item.placeholder.width > 0: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.item.placeholder;
+            image-fit: cover;
+            opacity: 1 - picture.opacity;
+        }
+        picture := Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.item.picture;
+            image-fit: contain;
+            opacity: root.item.picture.width > 0 ? 1 : 0;
+            animate opacity { duration: Motion.slow; easing: ease-out; }
+        }
+        // Videos play in the desktop's player.
+        if root.item.video: Rectangle {
+            width: 48px;
+            height: 48px;
+            border-radius: self.height / 2;
+            background: Theme.scrim;
+            if root.item.gif: Text {
+                text: "GIF";
+                font-size: 1rem * Theme.body-small;
+                font-weight: 700;
+                color: Theme.on-stage;
+            }
+            if !root.item.gif: Icon {
+                source: @image-url("@lucide/play.svg");
+                tint: Theme.on-stage;
+                width: 22px;
+                // A triangle's weight is left of its box's centre.
+                x: (parent.width - self.width) / 2 + 2px;
+            }
+        }
+        if root.item.video: TouchArea {
+            accessible-role: button;
+            accessible-label: "Play video";
+            accessible-action-default => { self.clicked(); }
+            mouse-cursor: pointer;
+            clicked => { root.open(root.item.id); }
+        }
+        // Full size in the desktop's image viewer.
+        if root.item.picture.width > 0: TouchArea {
+            accessible-role: button;
+            accessible-label: "Open picture";
+            accessible-action-default => { self.clicked(); }
+            mouse-cursor: pointer;
+            clicked => { root.open(root.item.id); }
+        }
+        if root.item.picture.width == 0 && root.item.status == "" && !root.item.video: Spinner {
+            indeterminate: true;
+            width: 24px;
+            height: 24px;
+        }
+        if root.item.picture.width == 0 && root.item.can-retry: TouchArea {
+            accessible-role: button;
+            accessible-label: "Download again";
+            accessible-action-default => { self.clicked(); }
+            mouse-cursor: pointer;
+            clicked => { root.fetch(root.item.id); }
+        }
+        if root.item.picture.width == 0 && root.item.status != "": Text {
+            text: root.item.status;
+            wrap: word-wrap;
+            width: parent.width - 2 * Theme.space-s;
+            horizontal-alignment: center;
+            font-size: 1rem * Theme.small;
+            color: root.ink.with-alpha(Theme.secondary);
+        }
+    }
+    if root.item.audio: audio-row := HorizontalLayout {
+        property <bool> current: Playback.id == root.item.id;
+        property <bool> playing: self.current && !Playback.paused;
+        spacing: Theme.space-s;
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: self.height / 2;
+            background: root.ink.with-alpha(play-touch.has-hover ? Theme.fill-strong : Theme.fill);
+            animate background { duration: Motion.fast; easing: ease-out; }
+            play-touch := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: audio-row.playing ? "Pause" : "Play";
+                accessible-action-default => { self.clicked(); }
+                clicked => { Playback.toggle(root.item.id); }
+            }
+            Icon {
+                source: audio-row.playing ? @image-url("@lucide/pause.svg") : @image-url("@lucide/play.svg");
+                tint: root.ink;
+                width: 16px;
+                x: (parent.width - self.width) / 2 + (audio-row.playing ? 0 : 1px);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.space-xs;
+            min-width: 160px;
+            // Clicked or dragged along, it goes there.
+            track := Rectangle {
+                height: 12px;
+                property <float> progress: audio-row.current ? Playback.progress : 0;
+                accessible-role: slider;
+                accessible-label: "Position";
+                accessible-value: round(self.progress * 100) + "%";
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    height: 4px;
+                    border-radius: self.height / 2;
+                    background: root.ink.with-alpha(Theme.fill-strong);
+                }
+                Rectangle {
+                    x: 0;
+                    y: (parent.height - self.height) / 2;
+                    width: parent.width * track.progress;
+                    // The progress comes every 200ms: glide between, unless dragged.
+                    animate width { duration: seek.pressed ? 0ms : Motion.playback-tick; easing: linear; }
+                    height: 4px;
+                    border-radius: self.height / 2;
+                    background: root.ink;
+                }
+                if audio-row.current || seek.has-hover: Rectangle {
+                    x: clamp(parent.width * track.progress - self.width / 2, 0px, parent.width - self.width);
+                    y: (parent.height - self.height) / 2;
+                    width: 10px;
+                    height: self.width;
+                    border-radius: self.height / 2;
+                    background: root.ink;
+                }
+                seek := TouchArea {
+                    mouse-cursor: pointer;
+                    function go() {
+                        Playback.seek(root.item.id, clamp(self.mouse-x / self.width, 0, 1));
+                    }
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            self.go();
+                        }
+                    }
+                    moved => {
+                        if self.pressed { self.go(); }
+                    }
+                }
+            }
+            Text {
+                text: audio-row.current ? Playback.time : root.item.label;
+                font-size: 1rem * Theme.small;
+                color: root.ink.with-alpha(Theme.secondary);
+            }
+        }
+    }
+    if root.item.caption != "": Text {
+        text: root.item.caption;
+        wrap: word-wrap;
+        color: root.ink;
+    }
+    if (!root.item.inline && !root.item.audio) || root.item.can-save: HorizontalLayout {
+        spacing: Theme.space-s;
+        if !root.item.inline && !root.item.audio: VerticalLayout {
+            alignment: center;
+            Icon {
+                source: @image-url("@lucide/file.svg");
+                width: Theme.icon-small;
+                tint: root.ink;
+            }
+        }
+        if !root.item.inline && !root.item.audio: Text {
+            text: root.item.label;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: root.ink;
+        }
+        if !root.item.inline && root.item.can-save: AttachmentAction {
+            text: "Open";
+            ink: root.ink;
+            accessible-label: "Open " + root.item.label;
+            clicked => { root.open(root.item.id); }
+        }
+        if root.item.inline || root.item.status != "": Text {
+            text: root.item.inline && root.item.picture.width == 0 ? "" : root.item.status;
+            vertical-alignment: center;
+            font-size: 1rem * Theme.small;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: root.ink.with-alpha(Theme.secondary);
+        }
+        if root.item.can-save: AttachmentAction {
+            text: "Save";
+            ink: root.ink;
+            accessible-label: "Save " + root.item.label;
+            clicked => { root.save(root.item.id); }
+        }
+    }
+}

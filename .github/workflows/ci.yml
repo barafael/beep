@@ -37,6 +37,9 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p b33p-core --all-targets --locked --features test-servers -- -D warnings
+      # Without the real backend, as the mock-only UI and xtask (`cargo testbox`) build it: the
+      # workspace-wide runs turn `signal` on by unifying features, which hides a missing cfg.
+      - run: cargo clippy -p b33p-core --all-targets --locked --no-default-features -- -D warnings
       - run: cargo test --workspace --locked
       # BoringSSL (contact discovery) can't be linked next to OpenSSL's libcrypto, so SQLCipher must
       # build with the crypto provider in pure Rust (Cargo.toml); without that feature, libsqlite3-sys

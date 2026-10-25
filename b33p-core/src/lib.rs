@@ -7,6 +7,7 @@
 
 #[cfg(feature = "signal")]
 mod attachments;
+mod error;
 pub mod format;
 #[cfg(feature = "signal")]
 mod import;
@@ -34,6 +35,7 @@ mod vault;
 #[cfg(feature = "signal")]
 mod wire;
 
+pub use error::{Error, ErrorKind};
 pub use qr::QrMatrix;
 
 use std::sync::Arc;
@@ -431,11 +433,12 @@ pub fn format_timer(seconds: u32) -> String {
 }
 
 /// What a message changing the disappearing-message timer says, `who` being "You" or a name.
+/// Windows draw a timer beside it ([`ChatMessage::timer_change`] says it is one).
 pub fn timer_notice(who: &str, seconds: u32) -> String {
     match seconds {
-        0 => format!("⏱ {who} turned off disappearing messages."),
+        0 => format!("{who} turned off disappearing messages."),
         seconds => format!(
-            "⏱ {who} set disappearing messages to {}.",
+            "{who} set disappearing messages to {}.",
             format_timer(seconds)
         ),
     }
@@ -490,7 +493,11 @@ pub struct ChatMessage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsent {
     Sending,
+    /// It didn't go out; sending it again may work.
     Failed,
+    /// Signal refused it (the recipient left Signal, it is too large, …): sending it again as
+    /// it is won't work.
+    Refused,
 }
 
 impl ChatMessage {
@@ -789,12 +796,12 @@ pub enum Event {
     /// Answer to [`Command::FetchAttachment`].
     Attachment {
         id: AttachmentId,
-        content: Result<AttachmentContent, String>,
+        content: Result<AttachmentContent, Error>,
     },
     /// Answer to [`Command::SaveAttachment`]: where the file was written.
     AttachmentSaved {
         id: AttachmentId,
-        path: Result<std::path::PathBuf, String>,
+        path: Result<std::path::PathBuf, Error>,
     },
     /// Our messages sent at `timestamps` in `conversation` got this far.
     Delivered {
@@ -898,12 +905,22 @@ pub enum Event {
     /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
     Latest(ChatMessage),
     Message(ChatMessage),
-    /// Sending the message the UI showed at `timestamp` failed; [`Event::Error`] says why.
+    /// Sending the message the UI showed at `timestamp` failed; [`Event::CommandFailed`]
+    /// says why. `retryable`: sending it again may work (see [`Error::retryable`]); if not,
+    /// Signal refused it as it is.
     SendFailed {
         conversation: ConversationId,
         timestamp: u64,
+        retryable: bool,
     },
-    Error(String),
+    /// Something failed that no command asked for, e.g. receiving.
+    Error(Error),
+    /// Carrying out `command` failed; the UI may offer to try it again if the error says that
+    /// may work.
+    CommandFailed {
+        error: Error,
+        command: Command,
+    },
 }
 
 #[derive(Clone, Debug)]

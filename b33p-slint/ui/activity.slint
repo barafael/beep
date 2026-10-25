@@ -1,0 +1,257 @@
+import { ListView } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { ActivityItem, CalendarYear, DayCell } from "types.slint";
+import { FadeIn, PanelHeader, Popover } from "widgets.slint";
+
+// When a chat was active, from its first message at the top to now at the bottom: others'
+// messages left of the centre line, ours right of it, a dot where photos or videos were shared.
+export component ActivityStrip inherits Rectangle {
+    in property <[ActivityItem]> items;
+    // The messages in view, marked on the strip.
+    in property <int> top;
+    in property <int> bottom;
+    callback jump(int);
+    property <int> hovered: -1;
+    property <length> centre: 38px;
+    property <length> reach: 11px;
+    width: 56px;
+    background: Theme.surface-raised;
+
+    for item[i] in root.items: Rectangle {
+        y: item.y * root.height;
+        height: item.height * root.height;
+        // Thin rows touch; thicker ones keep a hairline apart.
+        property <length> bar-height: max(1px, self.height - (self.height >= 3px ? 1px : 0px));
+        Rectangle {
+            visible: item.first <= root.bottom && item.end > root.top;
+            x: root.centre - root.reach - 3px;
+            width: 2 * root.reach + 6px;
+            background: Theme.accent.with-alpha(Theme.fill-strong);
+        }
+        if item.quiet: Text {
+            x: root.centre - self.width / 2;
+            text: "⋯";
+            font-size: 1rem * Theme.caption;
+            vertical-alignment: center;
+            color: Theme.text-faint;
+        }
+        if !item.quiet: Rectangle {
+            x: root.centre - item.others * root.reach;
+            y: 0;
+            width: item.others * root.reach;
+            height: parent.bar-height;
+            background: Theme.text-faint;
+        }
+        if !item.quiet: Rectangle {
+            x: root.centre;
+            y: 0;
+            width: item.mine * root.reach;
+            height: parent.bar-height;
+            background: Theme.accent;
+        }
+        if item.media: Rectangle {
+            x: root.width - 6px;
+            y: (parent.height - self.height) / 2;
+            width: 4px;
+            height: 4px;
+            border-radius: Theme.radius-xs;
+            background: Theme.text-tertiary;
+        }
+        if item.year != "": Text {
+            x: 3px;
+            y: 0;
+            text: item.year;
+            font-size: 1rem * Theme.caption;
+            color: Theme.text-tertiary;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.jump(item.first); }
+            changed has-hover => {
+                if self.has-hover {
+                    root.hovered = i;
+                } else if root.hovered == i {
+                    root.hovered = -1;
+                }
+            }
+        }
+    }
+    Rectangle { width: 1px; x: 0; background: Theme.divider; }
+
+    // What the hovered entry holds, over the messages to the left.
+    if root.hovered >= 0 && root.hovered < root.items.length: Popover {
+        x: -self.width - 6px;
+        y: clamp(root.items[root.hovered].y * root.height - 6px, 0px, root.height - self.height);
+        width: tip.preferred-width;
+        height: tip.preferred-height;
+        border-radius: Theme.radius-s;
+        tip := VerticalLayout {
+            padding: 6px;
+            padding-left: 10px;
+            padding-right: 10px;
+            Text {
+                text: root.items[root.hovered].label;
+                font-size: 1rem * Theme.body-small;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Text {
+                text: root.items[root.hovered].summary;
+                font-size: 1rem * Theme.small;
+                color: Theme.text-secondary;
+            }
+        }
+    }
+}
+
+// A chat year by year, a cell per day, coloured by how much was written.
+export component ActivityCalendar inherits FadeIn {
+    in property <[CalendarYear]> years;
+    in property <string> summary;
+    callback jump(int);
+    callback close;
+    background: Theme.surface;
+    property <length> gap: 2px;
+    property <length> labels: 30px;
+    // As large as fits 53 weeks beside the padding and the list's scroll bar, within reason.
+    property <length> cell: clamp((root.width - 2 * Theme.space-l - 20px - root.labels) / 53 - root.gap, 5px, 13px);
+    property <string> tip-label;
+    property <string> tip-summary;
+    property <length> tip-x;
+    property <length> tip-y;
+
+    // Placed by hand, so the grid's size (from `cell`, from the width) doesn't feed back into
+    // the calendar's own size.
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        PanelHeader {
+            title: "Activity";
+            subtitle: root.summary;
+            back => { root.close(); }
+        }
+        // A year at a time: only the years in view are made, each a few hundred cells.
+        ListView {
+            vertical-stretch: 1;
+                for year in root.years: VerticalLayout {
+                    padding-left: Theme.space-l;
+                    padding-right: Theme.space-l;
+                    padding-top: Theme.space-l;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        Text {
+                            text: year.year;
+                            font-weight: 700;
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: year.summary;
+                            font-size: 1rem * Theme.body-small;
+                            vertical-alignment: center;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                    if !year.quiet: Rectangle {
+                        height: 16px + 7 * (root.cell + root.gap);
+                        width: root.labels + 53 * (root.cell + root.gap);
+                        for column[m] in year.months: Text {
+                            x: root.labels + column * (root.cell + root.gap);
+                            y: 0;
+                            text: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m];
+                            font-size: 1rem * Theme.caption;
+                            color: Theme.text-tertiary;
+                        }
+                        for name[row] in ["Mon", "", "Wed", "", "Fri", "", ""]: Text {
+                            x: 0;
+                            y: 16px + row * (root.cell + root.gap) + (root.cell - self.height) / 2;
+                            text: name;
+                            font-size: 1rem * Theme.caption;
+                            color: Theme.text-tertiary;
+                        }
+                        for day in year.days: Rectangle {
+                            x: root.labels + day.column * (root.cell + root.gap);
+                            y: 16px + day.row * (root.cell + root.gap);
+                            width: root.cell;
+                            height: root.cell;
+                            border-radius: Theme.radius-xs;
+                            background: day.outside ? Theme.subtle
+                                : day.level <= 0 ? Theme.hover
+                                : Theme.accent.with-alpha(0.3 + 0.7 * day.level);
+                            border-width: touch.has-hover && day.active ? 1px : 0px;
+                            border-color: Theme.text;
+                            touch := TouchArea {
+                                enabled: day.active;
+                                mouse-cursor: pointer;
+                                clicked => { root.jump(day.first); }
+                                changed has-hover => {
+                                    if self.has-hover {
+                                        root.tip-label = day.label;
+                                        root.tip-summary = day.summary;
+                                        root.tip-x = parent.absolute-position.x - root.absolute-position.x;
+                                        root.tip-y = parent.absolute-position.y - root.absolute-position.y;
+                                    } else if root.tip-label == day.label {
+                                        root.tip-label = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+        // Legend.
+                HorizontalLayout {
+                    padding: Theme.space-l;
+                    padding-top: Theme.space-s;
+                    spacing: Theme.space-xs;
+                    alignment: start;
+                    Text {
+                        text: "Less";
+                        font-size: 1rem * Theme.caption;
+                        vertical-alignment: center;
+                        color: Theme.text-tertiary;
+                    }
+                    for level in [0, 0.25, 0.5, 0.75, 1]: Rectangle {
+                        width: 11px;
+                        height: 11px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: Theme.radius-xs;
+                        background: level <= 0 ? Theme.hover
+                            : Theme.accent.with-alpha(0.3 + 0.7 * level);
+                    }
+                    Text {
+                        text: "More";
+                        font-size: 1rem * Theme.caption;
+                        vertical-alignment: center;
+                        color: Theme.text-tertiary;
+                    }
+                }
+    }
+
+    if root.tip-label != "": Popover {
+        x: clamp(root.tip-x - self.width / 2, 4px, root.width - self.width - 4px);
+        y: root.tip-y - self.height - 6px;
+        width: tip.preferred-width;
+        height: tip.preferred-height;
+        border-radius: Theme.radius-s;
+        tip := VerticalLayout {
+            padding: 6px;
+            padding-left: 10px;
+            padding-right: 10px;
+            Text {
+                text: root.tip-label;
+                font-size: 1rem * Theme.body-small;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Text {
+                text: root.tip-summary;
+                font-size: 1rem * Theme.small;
+                color: Theme.text-secondary;
+            }
+        }
+    }
+}

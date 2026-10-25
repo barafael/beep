@@ -16,6 +16,8 @@
 //! → `{"id":4,"method":"subscribe"}`
 //! ← `{"id":4,"result":{"seq":0}}`
 //! ← `{"event":"update","seq":1,"snapshot":{…}}` — pushed after every redraw
+//! → `{"id":5,"method":"screenshot","path":"/somewhere/shot.png"}`
+//! ← `{"id":5,"result":{"width":1000,"height":680}}` — the window as drawn, as a PNG
 //!
 //! Errors come as `{"id":…,"error":"…"}`, including for requests that didn't parse; `id` is
 //! then 0 or missing, and the connection stays open.
@@ -36,7 +38,7 @@ use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ConversationSnapshot,
     Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot, MemberSnapshot,
     MessageSnapshot, Outcome, Pong, Pushed, PushedEvent, QuoteSnapshot, ReactionSnapshot, Reply,
-    Request, Saved, ScreenSnapshot, SettingsSnapshot, Snapshot, StickerPackSnapshot,
+    Request, Saved, ScreenSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
     StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
@@ -196,6 +198,15 @@ struct RequestId {
     id: u64,
 }
 
+/// Writes the window, as drawn, to `path`.
+fn screenshot(shared: &Shared, path: &str) -> Result<Shot, String> {
+    let window = shared.ui().ok_or("there is no window")?;
+    // What is pending is drawn first, as the person would see it.
+    shared.flush();
+    let (width, height) = window.screenshot(std::path::Path::new(path))?;
+    Ok(Shot { width, height })
+}
+
 fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Request) {
     let id = request.id;
     match request.call {
@@ -229,6 +240,7 @@ fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Reque
             id,
             perform(shared, action).map(|command_sent| Acted { command_sent }),
         ),
+        Call::Screenshot { path } => send(reply, id, screenshot(shared, &path)),
     }
 }
 
@@ -538,6 +550,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.dismiss_error();
             (None, Update::default())
         }),
+        Action::RetryError => shared.act(|chat| (chat.retry_error(), Update::default())),
         Action::Unlock {
             password,
             confirmation,
@@ -551,6 +564,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             )
         }),
         Action::SkipHistory => shared.act(|chat| (chat.skip_history(), Update::default())),
+        Action::Start => shared.act(|chat| (None, chat.start())),
         Action::Retry => shared.act(|chat| {
             (
                 chat.retry(),
@@ -635,6 +649,17 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             (None, Update::default())
         }),
         Action::RenameDevice { name } => shared.rename_device(&name),
+        Action::Show { what, open } => {
+            let window = shared.ui().ok_or("there is no window")?;
+            window.show_part(&what, open, &shared.chat.borrow())?;
+            shared.refresh(Update::default());
+            false
+        }
+        Action::Resize { width, height } => {
+            let window = shared.ui().ok_or("there is no window")?;
+            window.resize(width, height);
+            false
+        }
         Action::SetSettings {
             theme,
             style,
@@ -799,12 +824,14 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                     download: chat.attachment(&attachment.id).map(|state| match state {
                         state::AttachmentState::Loading => Download::Loading,
                         state::AttachmentState::Ready(_) => Download::Ready,
-                        state::AttachmentState::Failed(error) => Download::Failed(error.clone()),
+                        state::AttachmentState::Failed(error) => {
+                            Download::Failed(error.message.clone())
+                        }
                     }),
                     saved: chat.saved(&attachment.id).map(|state| match state {
                         state::SaveState::Saving => Saved::Saving,
                         state::SaveState::Saved(path) => Saved::Saved(path.display().to_string()),
-                        state::SaveState::Failed(error) => Saved::Failed(error.clone()),
+                        state::SaveState::Failed(error) => Saved::Failed(error.message.clone()),
                     }),
                 })
                 .collect(),
@@ -838,6 +865,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
         account: chat.account().to_string(),
         synced: chat.synced(),
         error: chat.error().map(str::to_string),
+        can_retry_error: chat.can_retry_error(),
         unread_total: chat.unread_total(),
         window: window.map(|window| WindowSnapshot {
             visible: window.visible(),
@@ -957,6 +985,7 @@ fn delivery(message: &b33p_core::ChatMessage) -> Delivery {
     match message.unsent {
         Some(b33p_core::Unsent::Sending) => Delivery::Sending,
         Some(b33p_core::Unsent::Failed) => Delivery::Failed,
+        Some(b33p_core::Unsent::Refused) => Delivery::Refused,
         None => match message.delivery {
             b33p_core::Delivery::Sent => Delivery::Sent,
             b33p_core::Delivery::Delivered => Delivery::Delivered,

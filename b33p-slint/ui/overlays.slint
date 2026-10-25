@@ -1,0 +1,596 @@
+// What opens over the whole window: they read and change the globals in state.slint.
+
+import { Button, ComboBox, LineEdit, ListView, Spinner } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { RequestAnswer, Confirm } from "types.slint";
+import { Avatar, ConfirmDialog, Dialog, DialogButtons, DialogLayout, FadeIn, Hint, Icon, IconButton, Small } from "widgets.slint";
+import { AttachmentView } from "attachment.slint";
+import { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels } from "state.slint";
+
+// Stories, over everything.
+export component StoriesOverlay inherits FadeIn {
+    in property <bool> narrow;
+    background: Theme.stage;
+    TouchArea {}
+    HorizontalLayout {
+        // Placed by hand, so the page's size doesn't feed back into the window's, whose width
+        // the column below reads.
+        x: 0;
+        y: 0;
+        // Who has stories, and posting one.
+        Rectangle {
+            width: root.narrow && Panels.story.shown ? 0px : min(280px, root.width);
+            visible: !(root.narrow && Panels.story.shown);
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+                HorizontalLayout {
+                    Text {
+                        text: "Stories";
+                        font-size: 1rem * Theme.heading;
+                        font-weight: 700;
+                        color: Theme.on-stage;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: @image-url("@lucide/x.svg");
+                            label: "Close stories";
+                            tint: Theme.on-stage;
+                            clicked => {
+                                Panels.close-story();
+                                Panels.stories-open = false;
+                            }
+                        }
+                    }
+                }
+                if Panels.story-rings.length == 0: Text {
+                    text: "No stories from the last day.";
+                    color: Theme.on-stage-secondary;
+                    wrap: word-wrap;
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for ring in Panels.story-rings: Rectangle {
+                        height: 56px;
+                        border-radius: Theme.radius-m;
+                        background: ring-touch.has-hover ? Theme.stage-hover : transparent;
+                        animate background { duration: Motion.fast; easing: ease-out; }
+                        ring-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: ring.title + (ring.unviewed ? ", new" : "") + ", " + ring.time;
+                            accessible-action-default => { self.clicked(); }
+                            clicked => { Panels.open-story(ring.id); }
+                        }
+                        HorizontalLayout {
+                            padding: 6px;
+                            spacing: 10px;
+                            // Ringed while there is something new.
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                border-radius: self.height / 2;
+                                border-width: 2px;
+                                border-color: ring.unviewed ? Theme.accent.brighter(0.3) : Theme.on-stage-faint;
+                                Avatar {
+                                    width: 36px;
+                                    initials: ring.initials;
+                                    tint: ring.color;
+                                    picture: ring.avatar;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: ring.title;
+                                    color: Theme.on-stage;
+                                    font-weight: ring.unviewed ? 700 : 400;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: ring.time;
+                                    color: Theme.on-stage-secondary;
+                                    font-size: 1rem * Theme.small;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Posting, to a group.
+                if Panels.story-groups.length > 0: VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "New story";
+                        color: Theme.on-stage;
+                        font-weight: 600;
+                    }
+                    ComboBox {
+                        model: Panels.story-groups;
+                        current-index <=> Panels.story-group;
+                    }
+                    LineEdit {
+                        placeholder-text: "Text";
+                        text <=> Panels.story-text;
+                        accepted => { Panels.post-story-text(); }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: "Photo…";
+                            clicked => { Panels.post-story-photo(); }
+                        }
+                        Button {
+                            text: "Post";
+                            primary: true;
+                            enabled: Panels.story-text != "";
+                            clicked => { Panels.post-story-text(); }
+                        }
+                    }
+                }
+            }
+        }
+        // The story shown.
+        Rectangle {
+            horizontal-stretch: 1;
+            if !Panels.story.shown: Text {
+                text: Panels.story-rings.length > 0 ? "Pick someone's story." : "";
+                color: Theme.on-stage-secondary;
+            }
+            if Panels.story.shown: VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text {
+                            text: Panels.story.author;
+                            color: Theme.on-stage;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: Panels.story.time + " · " + Panels.story.position;
+                            color: Theme.on-stage-secondary;
+                            font-size: 1rem * Theme.small;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: @image-url("@lucide/x.svg");
+                            label: "Close story";
+                            tint: Theme.on-stage;
+                            clicked => { Panels.close-story(); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 8px;
+                    TouchArea {
+                        width: 40px;
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: "Previous story";
+                        accessible-action-default => { self.clicked(); }
+                        clicked => { Panels.step-story(-1); }
+                        Icon {
+                            source: @image-url("@lucide/chevron-left.svg");
+                            width: 28px;
+                            tint: Theme.on-stage;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        // Placed by hand (x, y), so that the box and its text stay out of the
+                        // layout's size: the text's height depends on its width, which depends
+                        // on the box's height, which the layout would take from the text.
+                        if Panels.story.text-story: Rectangle {
+                            width: min(parent.width, parent.height * 9 / 16);
+                            height: min(parent.height, parent.width * 16 / 9);
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: Theme.radius-l;
+                            background: Panels.story.background;
+                            Text {
+                                x: 16px;
+                                y: (parent.height - self.height) / 2;
+                                width: parent.width - 32px;
+                                text: Panels.story.text;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                                font-size: 1rem * Theme.display;
+                                font-weight: 600;
+                                color: Panels.story.foreground;
+                                accessible-role: text;
+                                accessible-label: self.text;
+                            }
+                        }
+                        if !Panels.story.text-story: AttachmentView {
+                            item: Panels.story.picture;
+                            outgoing: false;
+                            fetch(id) => { OpenChat.fetch-attachment(id); }
+                            open(id) => { OpenChat.open-attachment(id); }
+                        }
+                        // The view stays from one picture story to the next: it fetches only
+                        // when made, so the next is asked for here. Not from the change
+                        // handler itself: fetching redraws, which mustn't happen while Slint
+                        // runs its change handlers.
+                        property <string> picture: Panels.story.text-story ? "" : Panels.story.picture.id;
+                        changed picture => { next-picture.running = true; }
+                        next-picture := Timer {
+                            interval: 1ms;
+                            running: false;
+                            triggered => {
+                                self.running = false;
+                                if !Panels.story.text-story && Panels.story.picture.fetch {
+                                    OpenChat.fetch-attachment(Panels.story.picture.id);
+                                }
+                            }
+                        }
+                    }
+                    TouchArea {
+                        width: 40px;
+                        mouse-cursor: pointer;
+                        accessible-role: button;
+                        accessible-label: "Next story";
+                        accessible-action-default => { self.clicked(); }
+                        clicked => { Panels.step-story(1); }
+                        Icon {
+                            source: @image-url("@lucide/chevron-right.svg");
+                            width: 28px;
+                            tint: Theme.on-stage;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Choosing people for a new group, or to add to the open one.
+export component GroupDraftDialog inherits Dialog {
+    card-width: 420px;
+    card-height: 560px;
+    dismissed => { Groups.close-group-draft(); }
+    DialogLayout {
+        title: Groups.group-draft-new ? "New group" : "Add members";
+        if Groups.group-draft-new: LineEdit {
+            placeholder-text: "Group name";
+            text <=> Groups.group-draft-name;
+            init => { self.focus(); }
+            edited => { Groups.group-draft-edited(); }
+        }
+        LineEdit {
+            placeholder-text: "Search contacts, or type a phone number";
+            text <=> Groups.group-draft-filter;
+            edited => { Groups.group-draft-edited(); }
+        }
+        if Groups.group-filter-is-number: Button {
+            text: "Find " + Groups.group-draft-filter + " on Signal";
+            clicked => { ChatList.find-number(Groups.group-draft-filter, false); }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for candidate in Groups.group-candidates: Rectangle {
+                height: 48px;
+                border-radius: Theme.radius-s;
+                background: candidate-touch.has-hover ? Theme.hover : transparent;
+                animate background { duration: Motion.fast; easing: ease-out; }
+                candidate-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    accessible-role: checkbox;
+                    accessible-label: candidate.title;
+                    accessible-checked: candidate.chosen;
+                    accessible-action-default => { self.clicked(); }
+                    clicked => { Groups.toggle-candidate(candidate.id); }
+                }
+                HorizontalLayout {
+                    padding: 6px;
+                    spacing: Theme.space-m;
+                    Avatar {
+                        width: 36px;
+                        initials: candidate.initials;
+                        tint: candidate.color;
+                        picture: candidate.avatar;
+                    }
+                    Text {
+                        text: candidate.title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        color: Theme.text;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 22px;
+                            height: 22px;
+                            border-radius: self.height / 2;
+                            border-width: 2px;
+                            border-color: candidate.chosen ? Theme.accent : Theme.divider;
+                            background: candidate.chosen ? Theme.accent : transparent;
+                            animate background, border-color { duration: Motion.fast; easing: ease-out; }
+                            if candidate.chosen: Icon {
+                                source: @image-url("@lucide/check.svg");
+                                width: 14px;
+                                tint: Theme.on-accent;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        DialogButtons {
+            Button {
+                text: "Cancel";
+                clicked => { Groups.close-group-draft(); }
+            }
+            Button {
+                text: Groups.group-draft-new ? "Create" : "Add";
+                primary: true;
+                enabled: Groups.group-draft-new ? !Composer.is-blank(Groups.group-draft-name) : Groups.group-draft-chosen > 0;
+                clicked => { Groups.finish-group-draft(); }
+            }
+        }
+    }
+}
+
+// Before what can't be undone: deleting the data here, leaving a group, blocking or
+// deleting a message request, deleting for everyone.
+export component ConfirmPrompt inherits ConfirmDialog {
+    in property <string> confirm-message;
+    title: Account.confirm == Confirm.unlink ? "Unlink this device?"
+        : Account.confirm == Confirm.start-over ? "Start over?"
+        : Account.confirm == Confirm.leave-group ? "Leave " + ChatList.current.title + "?"
+        : Account.confirm == Confirm.block-request ? "Block " + ChatList.current.title + "?"
+        : Account.confirm == Confirm.delete-request ? "Delete this chat?"
+        : Account.confirm == Confirm.delete-selection-for-everyone && OpenChat.selected-count > 1 ? "Delete " + OpenChat.selected-count + " messages for everyone?"
+        : "Delete for everyone?";
+    text: Account.confirm == Confirm.unlink ? "This computer is removed from your Signal account, and the messages stored here are deleted. Your phone keeps its messages. To use b33p again, link it anew."
+        : Account.confirm == Confirm.start-over ? "The messages stored on this computer are deleted, and b33p is linked to your phone anew. Your phone keeps its messages; you can transfer them again while linking."
+        : Account.confirm == Confirm.leave-group ? "You won't get its messages or be able to write to it, unless someone adds you again."
+        : Account.confirm == Confirm.block-request ? "They won't be able to message or call you."
+        : Account.confirm == Confirm.delete-request ? "The chat and its messages are deleted here."
+        : "Everyone in this chat sees that it was deleted.";
+    action: Account.confirm == Confirm.unlink ? "Unlink and delete"
+        : Account.confirm == Confirm.start-over ? "Delete and start over"
+        : Account.confirm == Confirm.leave-group ? "Leave group"
+        : Account.confirm == Confirm.block-request ? "Block"
+        : Account.confirm == Confirm.delete-request ? "Delete"
+        : "Delete for everyone";
+    dismissed => { Account.confirm = Confirm.none; }
+    confirmed => {
+        if Account.confirm == Confirm.unlink {
+            Prefs.settings-open = false;
+            Account.unlink();
+        } else if Account.confirm == Confirm.start-over {
+            Account.start-over();
+        } else if Account.confirm == Confirm.leave-group {
+            Groups.leave-group();
+        } else if Account.confirm == Confirm.block-request {
+            OpenChat.respond(RequestAnswer.block);
+        } else if Account.confirm == Confirm.delete-request {
+            OpenChat.respond(RequestAnswer.delete);
+        } else if Account.confirm == Confirm.delete-for-everyone {
+            OpenChat.delete(root.confirm-message, true);
+        } else if Account.confirm == Confirm.delete-selection-for-everyone {
+            OpenChat.delete-selection(true);
+        }
+        Account.confirm = Confirm.none;
+    }
+}
+
+// Joining a group through its invite link: paste it, see what the group shows of itself,
+// then join or ask to.
+export component JoinDialog inherits Dialog {
+    card-width: 440px;
+    card-height: join-content.preferred-height;
+    card-clip: true;
+    dismissed => { Groups.close-join-group(); }
+    join-content := DialogLayout {
+        title: "Join a group";
+        HorizontalLayout {
+            spacing: Theme.space-s;
+            join-link-field := LineEdit {
+                placeholder-text: "https://signal.group/#…";
+                text <=> Groups.join-link;
+                enabled: !Groups.join-busy;
+                init => { self.focus(); }
+                accepted => { Groups.preview-group-link(self.text); }
+            }
+            Button {
+                text: "Look up";
+                enabled: !Groups.join-busy && !Composer.is-blank(Groups.join-link);
+                clicked => { Groups.preview-group-link(join-link-field.text); }
+            }
+        }
+        if Groups.join-busy: HorizontalLayout {
+            spacing: Theme.space-s;
+            Spinner {
+                indeterminate: true;
+                width: Theme.icon-small;
+                height: Theme.icon-small;
+            }
+            Hint { text: "Looking it up…"; }
+        }
+        if Groups.join-title != "" && !Groups.join-busy: HorizontalLayout {
+            spacing: Theme.space-m;
+            VerticalLayout {
+                alignment: start;
+                Rectangle {
+                    width: 40px;
+                    height: self.width;
+                    border-radius: self.height / 2;
+                    background: Theme.accent;
+                    Icon {
+                        source: @image-url("@lucide/users.svg");
+                        tint: Theme.on-accent;
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: Theme.space-xs;
+                horizontal-stretch: 1;
+                Text {
+                    text: Groups.join-title;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Small {
+                    text: Groups.join-members == 1 ? "1 member" : Groups.join-members + " members";
+                }
+                Hint {
+                    text: Groups.join-requested ? "You asked to join already. An admin has to let you in."
+                        : Groups.join-approval ? "An admin has to let you in. Asking shows them your name and picture."
+                        : "Its members see your name and picture once you join.";
+                }
+            }
+        }
+        DialogButtons {
+            Button {
+                text: "Cancel";
+                clicked => { Groups.close-join-group(); }
+            }
+            Button {
+                text: Groups.join-approval ? "Ask to join" : "Join";
+                primary: true;
+                enabled: Groups.join-title != "" && !Groups.join-busy && !Groups.join-requested;
+                clicked => { Groups.join-group(); }
+            }
+        }
+    }
+}
+
+// Choosing where to forward a message to, over everything else; then confirming it, since
+// it goes out at once.
+export component ForwardDialog inherits Dialog {
+    property <string> picked-id;
+    property <string> picked-title;
+    property <bool> confirming: self.picked-id != "";
+    function pick(id: string, title: string) {
+        self.picked-id = id;
+        self.picked-title = title;
+        confirm-keys.focus();
+    }
+    card-width: 420px;
+    card-height: self.confirming ? confirm-layout.preferred-height : 520px;
+    animate card-height { duration: Motion.normal; easing: ease-out; }
+    card-clip: true;
+    dismissed => { Panels.cancel-forward(); }
+    DialogLayout {
+        visible: !root.confirming;
+        title: "Forward to…";
+        forward-search := LineEdit {
+            placeholder-text: "Search";
+            text <=> Panels.forward-filter;
+            init => { self.focus(); }
+            edited => { Panels.forward-filter-edited(); }
+            // Enter picks the first chat found.
+            accepted => {
+                if Panels.forward-targets.length > 0 {
+                    root.pick(Panels.forward-targets[0].id, Panels.forward-targets[0].title);
+                }
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for target in Panels.forward-targets: Rectangle {
+                height: 48px;
+                border-radius: Theme.radius-s;
+                background: target-touch.has-hover ? Theme.hover : transparent;
+                animate background { duration: Motion.fast; easing: ease-out; }
+                target-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "Forward to " + target.title;
+                    accessible-action-default => { self.clicked(); }
+                    mouse-cursor: pointer;
+                    clicked => { root.pick(target.id, target.title); }
+                }
+                HorizontalLayout {
+                    padding: 6px;
+                    spacing: 10px;
+                    Avatar {
+                        width: 36px;
+                        initials: target.initials;
+                        tint: target.avatar-color;
+                        picture: target.avatar;
+                    }
+                    Text {
+                        text: target.title;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        color: Theme.text;
+                    }
+                }
+            }
+        }
+        DialogButtons {
+            Button {
+                text: "Cancel";
+                clicked => { Panels.cancel-forward(); }
+            }
+        }
+    }
+    // Enter forwards, as the primary button does.
+    confirm-keys := FocusScope {
+        enabled: root.confirming;
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                Panels.forward-to(root.picked-id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    confirm-layout := DialogLayout {
+        visible: root.confirming;
+        y: 0;
+        height: self.preferred-height;
+        alignment: start;
+        title: "Forward to " + root.picked-title + "?";
+        // The message, as a quote.
+        Rectangle {
+            border-radius: Theme.radius-s;
+            background: Theme.hover;
+            clip: true;
+            Rectangle {
+                x: 0;
+                width: 3px;
+                background: Theme.accent;
+            }
+            HorizontalLayout {
+                padding: 10px;
+                padding-left: 13px;
+                Text {
+                    text: Panels.forward-preview;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    max-height: 7rem;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+        DialogButtons {
+            Button {
+                text: "Back";
+                clicked => {
+                    root.picked-id = "";
+                    root.picked-title = "";
+                    forward-search.focus();
+                }
+            }
+            Button {
+                text: "Forward";
+                primary: true;
+                clicked => { Panels.forward-to(root.picked-id); }
+            }
+        }
+    }
+}

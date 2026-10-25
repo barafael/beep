@@ -19,6 +19,7 @@ use b33p_harness::{
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde_json::json;
 
 /// How long any single wait may take: the mock needs a couple of seconds to link, its echo a
 /// few more to come back.
@@ -333,7 +334,7 @@ fn an_agent_sees_the_chats() {
     let ping: Pong = agent.result(Call::Ping);
     assert!(ping.mock);
     // Not a request at all, so by hand.
-    agent.send_line("{\"id\":7,\"method\":\"teleport\"}");
+    agent.send_line(&json!({"id": 7, "method": "teleport"}).to_string());
     assert!(matches!(agent.answer::<Pong>(7).outcome, Outcome::Err(_)));
     let chats = wait_for_chats(&mut agent);
     assert!(chats.conversations.len() > 3);
@@ -425,6 +426,47 @@ fn attachments_are_fetched_and_saved() {
         unreachable!("waited for it")
     };
     assert!(path.ends_with("route-notes.pdf"));
+}
+
+/// What fails for a reason that may pass can be tried again; what Signal refused can't. The
+/// mock fails `/fail` as if offline and `/refuse` as if the recipient left Signal, and looks a
+/// link ending in "offline" up as if Signal were out of reach.
+#[test]
+fn failures_offer_to_try_again_when_that_may_work() {
+    let (_app, mut agent) = app("errors");
+    let chats = wait_for_chats(&mut agent);
+    let alice = id_of(&chats, "Alice");
+    agent.select(&alice);
+    agent.wait_for("Alice selected", |s| selected_is(s, &alice));
+    for text in ["/fail", "/refuse"] {
+        agent.type_text(text);
+        agent.act(Action::Send);
+    }
+    let failed = agent.wait_for("both sends failed", |s| {
+        message(s, "/fail").and_then(|m| m.delivery) == Some(Delivery::Failed)
+            && message(s, "/refuse").and_then(|m| m.delivery) == Some(Delivery::Refused)
+    });
+    assert!(failed.error.is_some());
+    assert!(!failed.can_retry_error, "bubbles offer sends again");
+    agent.act(Action::DismissError);
+
+    agent.act(Action::OpenJoinGroup {
+        link: Some("https://signal.group/#offline".to_owned()),
+    });
+    let offered = agent.wait_for("the lookup failed", |s| s.can_retry_error);
+    assert!(
+        offered
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("couldn't look the group up")),
+        "{:?}",
+        offered.error
+    );
+    // The mock fails the lookup at once, so a snapshot taken now may already show the next
+    // failure: whether the lookup went out again is what the answer says.
+    assert!(agent.act(Action::RetryError), "tried again");
+    // The mock fails it again, and offers it again.
+    agent.wait_for("failed again", |s| s.can_retry_error);
 }
 
 /// A group joined through its invite link: looked up, asked to join, then taken back.
@@ -536,7 +578,12 @@ fn settings_can_be_changed() {
     assert!(settings.show_avatars);
     // No such theme, so no such `Theme`: by hand.
     agent.send_line(
-        "{\"id\":8,\"method\":\"act\",\"action\":{\"type\":\"set_settings\",\"theme\":\"taupe\"}}",
+        &json!({
+            "id": 8,
+            "method": "act",
+            "action": {"type": "set_settings", "theme": "taupe"},
+        })
+        .to_string(),
     );
     assert!(matches!(agent.answer::<Acted>(8).outcome, Outcome::Err(_)));
     assert_eq!(agent.snapshot().settings.theme, Theme::Dark);
