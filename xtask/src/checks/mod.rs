@@ -12,6 +12,7 @@ mod attachments;
 mod b33p;
 mod clients;
 mod core;
+mod crashed;
 mod desktop;
 mod groups;
 mod lost;
@@ -42,8 +43,8 @@ const PATIENCE: Duration = Duration::from_millis(PATIENCE_MS);
 const HISTORY_PATIENCE: Duration = Duration::from_secs(600);
 
 /// Runs a phase's checks on a fresh tally, then fails if any of them failed. Last, also after
-/// a check the rest depend on failed: that no client lost a message ([`lost`]); then the logs
-/// go into the phase's [`Record`].
+/// a check the rest depend on failed: that no client lost a message ([`lost`]) or crashed
+/// ([`crashed`]); then the logs go into the phase's [`Record`].
 pub(crate) fn phase(
     containers: &Pod,
     record: Record,
@@ -55,6 +56,7 @@ pub(crate) fn phase(
     };
     let ran = run(&mut checks);
     checks.record("no client lost a message", || lost::none(containers));
+    checks.record("no client crashed", || crashed::none(containers));
     checks.kept.keep_logs(containers);
     ran?;
     checks.finish()
