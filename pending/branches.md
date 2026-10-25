@@ -24,7 +24,7 @@ branches with the session lock). Its commits, oldest first:
 | `testbox: each run keeps its records in a directory of its own` | `run` deleted the last run's records | |
 | `testbox: the failed-send check waits for the keepalive to give up` | A send on a silent connection fails after ~2 min (keepalive), then presage's retry | In the box |
 | `b33p-core: a new contact's chat takes their name once presage has it` | presage saves a new sender's contact in a background task and says nothing; the chat kept the UUID as its title when b33p was first | In the box |
-| (uncommitted) Slint pin at `fix/qt-color-bitmap-glyphs` | b33p aborted ("double free or corruption") drawing 📎 with Noto Color Emoji on Debian 12's Qt 6.4 | Mock repro, then the box |
+| `Take the Slint fork's Qt backend drawing emoji itself` | b33p aborted ("double free or corruption") drawing 📎 with Noto Color Emoji on Debian 12's Qt 6.4 | Mock: no abort, valgrind 0 errors (5 invalid writes before); in the box |
 
 ## presage (barafael/presage)
 
