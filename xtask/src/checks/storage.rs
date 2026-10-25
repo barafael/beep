@@ -168,6 +168,11 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             let index = outgoing_index(&mut b33p, row)?;
             edit(&mut b33p, index, edited)?;
             desktop_shows(&mut desktop, edited)?;
+            // Desktop reads an edit with the conversation's next read (markConversationRead's
+            // `unreadEditedMessages`), not as it comes: here, with the message after it.
+            let after = "testbox storage: after the edit";
+            type_and_send(&mut b33p, after)?;
+            desktop_shows(&mut desktop, after)?;
             read(&mut b33p, edited)
         },
     );

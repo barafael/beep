@@ -464,7 +464,8 @@ pub enum Action {
     RetrySend {
         index: u32,
     },
-    /// Pretends the window lost or regained focus, for tests of read receipts.
+    /// Pretends the window lost or regained focus, for tests of read receipts; from then on
+    /// it counts as that, whatever the window's own focus.
     SetWindowFocused {
         focused: bool,
     },

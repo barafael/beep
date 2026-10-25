@@ -81,6 +81,9 @@ pub struct Shared {
     /// it was last drawn: then every row is drawn, since only events name the chats they
     /// change (`ChatState::take_changed_chats`).
     whole_list: Cell<bool>,
+    /// Whether the window counts as focused, as the harness says (`SetWindowFocused`), in
+    /// place of the window's own: in the test box no window manager ever activates it.
+    focus_override: Cell<Option<bool>>,
     /// Redraws when someone typing next counts as stopped, since no event says so.
     typing_timer: slint::Timer,
     /// Redraws the chat list at midnight, when its times change ("14:05" becomes "Mon").
@@ -609,6 +612,7 @@ fn main() -> Result<(), slint::PlatformError> {
         system_reduces_motion: Cell::new(false),
         pending: RefCell::default(),
         whole_list: Cell::new(false),
+        focus_override: Cell::new(None),
         typing_timer: slint::Timer::default(),
         midnight_timer: slint::Timer::default(),
         expiry_timer: slint::Timer::default(),
@@ -718,7 +722,10 @@ fn main() -> Result<(), slint::PlatformError> {
                         .flatten()
                 }));
                 // Hidden, the window may still count as active to the toolkit.
-                let focused = shared.ui().is_some_and(|ui| ui.visible() && ui.active());
+                let focused = shared
+                    .focus_override
+                    .get()
+                    .unwrap_or_else(|| shared.ui().is_some_and(|ui| ui.visible() && ui.active()));
                 let update = {
                     let mut chat = shared.chat.borrow_mut();
                     chat.set_window_focused(focused);
