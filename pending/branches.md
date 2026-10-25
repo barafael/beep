@@ -31,6 +31,7 @@ the session lock). Its commits, oldest first:
 | `testbox: b33p reads in the box, and Desktop reads an edit with what follows` | The harness's window focus held only until the next message; Desktop reads an edit with the next read | Box: storage |
 | `b33p-core: a new contact's chat takes their name, however quick presage is` | Chats with someone new kept their id as title when presage's profile fetch beat b33p's look; desktop checks the title | Box: desktop |
 | `testbox: Desktop reads b33p's edit once someone is at it` | Desktop reads only for 15 s after a click or key (`ActiveWindowService`) | Box: storage |
+| `testbox agent: a swipe that changes nothing is looked past, not waited out` | Android's setup timed out scrolling to a row already shown: a swipe at a list's end sends no event | Box: android |
 
 ## presage (barafael/presage)
 
@@ -63,7 +64,7 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `testbox-green` 46ea502 (the lock only) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 28dc6bc | 1 | 0/1 (the failed-send check stopped the server; fixed since) | 0/1 (reactions and quotes of edited messages; fixed since) | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 06061f7 (all fixes) | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
-| `testbox-green` 3261c5e…7182af0 (banner, edited receipts, chat names, #71) | 1 | 1/1 | 1/1 | – | – | 1/1 (at 7182af0; at 3261c5e the edit check clicked nothing in Desktop) | – |
+| `testbox-green` 3261c5e…c0e2391 (banner, edited receipts, chat names, #71) | 1 | 1/1 (3261c5e) | 1/1 (3261c5e) | 1/1 (7182af0) | 1/1 (c0e2391; at 7182af0 the agent waited out a swipe at a list's end) | 1/1 (7182af0; at 3261c5e the edit check clicked nothing in Desktop) | 1/1 (7182af0) |
 
 ## Open
 
