@@ -49,9 +49,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "30
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
-#   #461 why a message failed to decrypt, and retry receipts as their own event
+#   #461 why a message failed to decrypt, and from which device and when, and retry receipts as
+#        their own event
 #   #453 only a message's sender deletes or edits it
 #   #454 write transactions take the lock up front
+#   #464 a send retried once when the websocket closed under it
 #   servers of one's own: `SignalServers::Custom` carries its configuration (follows our
 #        libsignal-service branch)
 #   #472 a sender's profile key stored before the message is handed on, not left to the task
