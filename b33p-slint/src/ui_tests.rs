@@ -550,6 +550,77 @@ fn clicking_a_search_result_shows_it() {
     assert_eq!(shown.get(), Some(1));
 }
 
+/// A message's text is selected by dragging across it and copied with Ctrl+C; selecting in
+/// another message drops the first one's selection, so Ctrl+C copies only the newer one.
+#[test]
+fn ctrl_c_copies_the_text_selected_in_one_message() {
+    use slint::platform::{Key, WindowEvent};
+    let (window, _messages) = window_with_messages(3);
+    let drag_across = |label: &str| {
+        let text = find(&window, label).expect("shown");
+        let (at, size) = (text.absolute_position(), text.size());
+        let y = at.y + size.height / 2.;
+        let button = PointerEventButton::Left;
+        let position = slint::LogicalPosition::new(at.x + 1., y);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        let position = slint::LogicalPosition::new(at.x + size.width - 1., y);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+        settle(&window);
+    };
+    let with_control = |text: &str| {
+        let control = SharedString::from(char::from(Key::Control));
+        window.window().dispatch_event(WindowEvent::KeyPressed {
+            text: control.clone(),
+        });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text: control });
+        settle(&window);
+    };
+    // As Rust does when the clipboard holds text, not files.
+    window.global::<Composer>().on_paste({
+        let window = window.as_weak();
+        move || {
+            let window = window.unwrap();
+            let composer = window.global::<Composer>();
+            composer.set_paste_text(composer.get_paste_text() + 1);
+        }
+    });
+    // Pastes the clipboard into an empty composer, to read it.
+    let pasted = || {
+        window.global::<Composer>().set_draft("".into());
+        ElementHandle::find_by_element_id(&window, "AppWindow::composer")
+            .next()
+            .expect("composer")
+            .mock_single_click(PointerEventButton::Left);
+        settle(&window);
+        with_control("v");
+        window.global::<Composer>().get_draft()
+    };
+
+    drag_across("Message 1");
+    with_control("c");
+    assert_eq!(pasted(), "Message 1");
+
+    drag_across("Message 1");
+    drag_across("Message 2");
+    with_control("c");
+    assert_eq!(pasted(), "Message 2");
+}
+
 #[test]
 fn shortcuts_reach_rust_from_the_composer() {
     use slint::platform::{Key, WindowEvent};
