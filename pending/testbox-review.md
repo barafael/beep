@@ -80,9 +80,10 @@ Still missing, roughly by how often people do them:
 - b33p killed while receiving (SIGKILL), and nothing lost after it starts again.
 - A network that drops during an attachment's upload (CDN paused).
 
-## Seen on the way, not changed
+## Seen on the way, since changed
 
-- After a send fails and Retry sends it, the error banner stays up, and reads as the library's
-  error: "failed to send: libsignal-service error: websocket request failed: error sending
-  request for url (https://…/v1/websocket/)". The bubble's "Not sent · Retry" already says it;
-  the banner could go once the retry goes out, and say it in words.
+- After a send failed and Retry sent it, the error banner stayed up, reading as the library's
+  error. It now says it in words and goes with the retry (core checks it).
+- Receipts and read syncs for edited messages named the first time only; Signal's apps name
+  the latest edit. b33p now takes and sends them as Signal-Desktop does (storage checks both
+  ways).

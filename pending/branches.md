@@ -5,8 +5,8 @@ request is opened for these yet; each line says what the branch is for and where
 
 ## b33p (barafael/beep)
 
-`testbox-green`, pushed, on `integration-rebase` (#69, which pins the forks' rebased integration
-branches with the session lock). Its commits, oldest first:
+`testbox-green`, pushed, on `main` (since #69 merged: the forks' rebased integration branches with
+the session lock). Its commits, oldest first:
 
 | Commit | What | State |
 |---|---|---|
@@ -25,13 +25,17 @@ branches with the session lock). Its commits, oldest first:
 | `testbox: the failed-send check waits for the keepalive to give up` | A send on a silent connection fails after ~2 min (keepalive), then presage's retry | In the box |
 | `b33p-core: a new contact's chat takes their name once presage has it` | presage saves a new sender's contact in a background task and says nothing; the chat kept the UUID as its title when b33p was first | In the box |
 | `Take the Slint fork's Qt backend drawing emoji itself` | b33p aborted ("double free or corruption") drawing 📎 with Noto Color Emoji on Debian 12's Qt 6.4 | Mock: no abort, valgrind 0 errors (5 invalid writes before); in the box |
+| `A failed send's banner says it in words, and goes with the retry` | The banner showed the library's error and stayed after Retry | Unit test; core checks it |
+| `Receipts and read syncs for edited messages, as Signal's apps send and take them` | Receipts for our edits found nothing, others' edits were never read; Signal-Desktop's behaviour at the box's revision | Unit tests; storage checks both ways |
+| `TESTPLAN: as b33p is now, and what the test box checks` | §1.2 item 3 as b33p behaves; edited-message items; *(box: phase)* marks | |
 
 ## presage (barafael/presage)
 
 | Branch | What | State |
 |---|---|---|
 | `langis/integration-next` (`7e868e4`) | Upstream main with the fork's PRs and the session lock (whisperfish/presage#473); b33p #69 pins it | Base of the next |
-| `fix/edited-targets` (`ce28171`), pushed | `integration-next` plus one commit: edits and deletes for everyone find an edited message by its latest edit's time (`ContentsStore::message_sent_or_edited_at`), and a stored edit names its original's time; a store test. For a PR, rebase the one commit on upstream main | Pinned by `testbox-green` (b33p and presage-cli) |
+| `fix/edited-targets` (`ce28171`), pushed | `integration-next` plus one commit: edits and deletes for everyone find an edited message by its latest edit's time (`ContentsStore::message_sent_or_edited_at`), and a stored edit names its original's time; a store test | Pinned by `testbox-green` (b33p and presage-cli) |
+| `pr/edited-targets` (`6c6594a`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs); store and manager tests pass | For the upstream PR (not opened yet) |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
@@ -43,7 +47,8 @@ branches with the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `fix/qt-color-bitmap-glyphs` (`6b8eef3`), pushed | `langis/integration-new` (`e38356d`, what b33p pins) plus one commit: the Qt backend renders glyphs of colour bitmap fonts (CBDT, sbix) with swash and draws them as images. Qt 6.4.2's `QFontEngineFT::loadGlyph` writes past a glyph buffer for them from `drawGlyphRun` (valgrind, b33p's mock on Debian 12); Qt 6.8.2 doesn't. For a PR, rebase the one commit on upstream master | Built into b33p's image |
+| `fix/qt-color-bitmap-glyphs` (`6b8eef3`), pushed | `langis/integration-new` (`e38356d`, what b33p pins) plus one commit: the Qt backend renders glyphs of colour bitmap fonts (CBDT, sbix) with swash and draws them as images. Qt 6.4.2's `QFontEngineFT::loadGlyph` writes past a glyph buffer for them from `drawGlyphRun` (valgrind, b33p's mock on Debian 12); Qt 6.8.2 doesn't | Built into b33p's image |
+| `pr/qt-color-bitmap-glyphs` (`89a52ac`), pushed | The same commit on upstream master (applies cleanly; `i-slint-backend-qt` builds) | For the upstream PR (not opened yet) |
 
 ## Testbox runs
 
@@ -60,5 +65,5 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 
 - (Explained) The peer titled by its UUID: presage's background contact save racing b33p;
   fixed in b33p-core.
-- Receipts and read syncs for an edited message name its edit's time too (Signal-Desktop
-  `MessageReceipts`); b33p keeps deliveries by the first time. Not checked yet.
+- (Fixed) Receipts and read syncs for an edited message name its edit's time (Signal-Desktop
+  `MessageReceipts`); b33p kept deliveries by the first time. Now as Desktop, and checked.
