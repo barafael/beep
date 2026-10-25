@@ -283,8 +283,12 @@ impl Pod {
         state.is_ok_and(|running| running.trim() == "true")
     }
 
-    /// `--force` also removes the persistentVolumeClaims' volumes.
+    /// `--force` also removes the persistentVolumeClaims' volumes. Nothing to do if no pod was
+    /// ever played from here: kube down needs the YAML it was played from.
     pub fn down(&self, wipe: bool) -> Result<()> {
+        if !self.rendered.exists() {
+            return Ok(());
+        }
         let mut down = podman(&["kube", "down"]);
         if wipe {
             down.arg("--force");

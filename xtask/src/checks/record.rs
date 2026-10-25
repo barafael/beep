@@ -32,10 +32,10 @@ struct Shots {
 }
 
 impl Record {
-    /// The record of `phase`, emptied of a former run's; with `screenshots`, testbox/shot built
-    /// and the running clients' displays found.
-    pub(crate) fn new(pod: &Pod, repo: &Path, phase: &str, screenshots: bool) -> Result<Self> {
-        let directory = repo.join(RECORD).join(phase);
+    /// The record in target/testbox-record/`name`, emptied of a former run's; with
+    /// `screenshots`, testbox/shot built and the running clients' displays found.
+    pub(crate) fn new(pod: &Pod, repo: &Path, name: &str, screenshots: bool) -> Result<Self> {
+        let directory = repo.join(RECORD).join(name);
         if directory.exists() {
             std::fs::remove_dir_all(&directory).context(directory.display().to_string())?;
         }

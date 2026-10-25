@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use error::Result;
+use error::{Context, Result};
 use pod::{Client, Pod};
 
 /// Checks b33p against Signal's own server and clients: Signal-Server with its stores and CDNs,
@@ -57,6 +57,18 @@ enum Command {
         phase: Phase,
         /// Also takes each client's display after each check, into the phase's record
         /// (target/testbox-record/<phase>/) beside the containers' logs.
+        #[arg(long)]
+        screenshots: bool,
+    },
+    /// Runs phases each on a fresh box with the clients it drives (`down --wipe`, `up`, `test`),
+    /// in rounds, and sums up; each run's record is in target/testbox-record/run/.
+    Run {
+        /// The phases, in order; all of them if none.
+        phases: Vec<Phase>,
+        /// How many times each.
+        #[arg(long, default_value_t = 1)]
+        rounds: u32,
+        /// As for `test`.
         #[arg(long)]
         screenshots: bool,
     },
@@ -100,6 +112,32 @@ enum Phase {
     Groups,
 }
 
+impl Phase {
+    const ALL: [Phase; 6] = [
+        Phase::Core,
+        Phase::Desktop,
+        Phase::Attachments,
+        Phase::Android,
+        Phase::Storage,
+        Phase::Groups,
+    ];
+
+    fn name(self) -> String {
+        clap::ValueEnum::to_possible_value(&self)
+            .map(|value| value.get_name().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// The clients the phase drives, which `up` brings.
+    fn clients(self) -> &'static [Client] {
+        match self {
+            Phase::Core => &[],
+            Phase::Desktop | Phase::Attachments => &[Client::Desktop],
+            Phase::Android | Phase::Storage | Phase::Groups => &[Client::Desktop, Client::Android],
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let repo = repo_root();
     let pod = Pod::new(&repo);
@@ -112,7 +150,14 @@ fn main() -> ExitCode {
                 .collect();
             up(&pod, &clients)
         }
-        Command::Test { phase, screenshots } => test(&pod, &repo, phase, screenshots),
+        Command::Test { phase, screenshots } => {
+            test(&pod, &repo, phase, &phase.name(), screenshots)
+        }
+        Command::Run {
+            phases,
+            rounds,
+            screenshots,
+        } => run(&pod, &repo, &phases, rounds, screenshots),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -168,14 +213,65 @@ fn up(pod: &Pod, clients: &[Client]) -> Result<()> {
     pod.up(clients)
 }
 
+/// Each of `phases`, or all, `rounds` times, each on a fresh box; then how each went. Fails if
+/// any did.
+fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool) -> Result<()> {
+    let phases = if phases.is_empty() {
+        &Phase::ALL[..]
+    } else {
+        phases
+    };
+    let runs = repo.join(RUNS);
+    if runs.exists() {
+        std::fs::remove_dir_all(&runs).context(runs.display().to_string())?;
+    }
+    let mut outcomes = Vec::new();
+    for round in 1..=rounds {
+        for &phase in phases {
+            let name = phase.name();
+            println!("== round {round}: {name}");
+            let outcome = pod
+                .down(true)
+                .and_then(|()| up(pod, phase.clients()))
+                .and_then(|()| {
+                    test(
+                        pod,
+                        repo,
+                        phase,
+                        &format!("run/{round}-{name}"),
+                        screenshots,
+                    )
+                });
+            if let Err(reason) = &outcome {
+                println!("== round {round}: {name}: {reason}");
+            }
+            outcomes.push((round, name, outcome.is_ok()));
+        }
+    }
+    println!("== summary (records in {})", runs.display());
+    for (round, name, passed) in &outcomes {
+        let outcome = if *passed { "passed" } else { "FAILED" };
+        println!("round {round} {name}: {outcome}");
+    }
+    let failed = outcomes.iter().filter(|(_, _, passed)| !passed).count();
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(error::Error::Failed(format!(
+            "{failed} of {} failed",
+            outcomes.len()
+        )))
+    }
+}
+
+/// Where `run` keeps its records, one directory per round and phase.
+const RUNS: &str = "target/testbox-record/run";
+
+/// A phase's checks, recorded in target/testbox-record/`record`.
 #[cfg(unix)]
-fn test(pod: &Pod, repo: &Path, phase: Phase, screenshots: bool) -> Result<()> {
+fn test(pod: &Pod, repo: &Path, phase: Phase, record: &str, screenshots: bool) -> Result<()> {
     let sockets = Sockets::new(repo);
-    let name = clap::ValueEnum::to_possible_value(&phase)
-        .ok_or("a phase without a name")?
-        .get_name()
-        .to_owned();
-    let record = checks::Record::new(pod, repo, &name, screenshots)?;
+    let record = checks::Record::new(pod, repo, record, screenshots)?;
     checks::phase(pod, record, |tally| match phase {
         Phase::Core => checks::core(tally, pod, &sockets),
         Phase::Desktop => checks::desktop(tally, pod, &sockets),
@@ -224,6 +320,6 @@ fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn test(_pod: &Pod, _repo: &Path, _phase: Phase, _screenshots: bool) -> Result<()> {
+fn test(_pod: &Pod, _repo: &Path, _phase: Phase, _record: &str, _screenshots: bool) -> Result<()> {
     Err("the harness is Unix only (b33p-slint `harness` feature)".into())
 }
