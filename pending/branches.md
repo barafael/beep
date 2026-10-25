@@ -5,7 +5,7 @@ request is opened for these yet; each line says what the branch is for and where
 
 ## b33p (barafael/beep)
 
-`testbox-green`, local, on `integration-rebase` (#69, which pins the forks' rebased integration
+`testbox-green`, pushed, on `integration-rebase` (#69, which pins the forks' rebased integration
 branches with the session lock). Its commits, oldest first:
 
 | Commit | What | State |
