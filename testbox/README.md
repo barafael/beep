@@ -127,8 +127,9 @@ included, and sums up at the end: `cargo testbox run --rounds 2` runs every phas
   shows them in a window. Without `--interactive` they only show: your keys and clicks would race
   the drivers'.
 - Every phase leaves a record in `target/testbox-record/<phase>/` (`run`'s in
-  `target/testbox-record/run/<round>-<phase>/`): each container's log, Desktop's own logs and
-  Android's logcat as they were at the phase's end, so they outlast the next `down --wipe`.
+  `target/testbox-record/run/<when it started>/<round>-<phase>/`): each container's log,
+  Desktop's own logs and Android's logcat as they were at the phase's end, so they outlast the
+  next `down --wipe`.
 - `test --screenshots` (and `run --screenshots`) also takes each client's display after each
   check into the record, numbered in the order of the checks and named after them
   (`07-text-from-b33p-reaches-desktop-b33p.png`); `testbox/shot` takes them over the displays'

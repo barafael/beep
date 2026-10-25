@@ -18,6 +18,9 @@ const NETWORK: &str = "b33p-testbox";
 pub const RUN: &str = "target/testbox-run";
 /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
 pub const FILES: &str = "target/testbox-files";
+/// What each phase leaves for looking into it ([`crate::checks::Record`]), and `run`'s under
+/// `run/<when it started>/<round>-<phase>`.
+pub const RECORD: &str = "target/testbox-record";
 /// A directory per client for its display's socket, which only that client mounts
 /// (testbox/pod.yaml volumes `view-<client>`): no client reaches another's display.
 pub const VIEW: &str = "target/testbox-view";

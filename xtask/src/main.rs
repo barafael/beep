@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use error::{Context, Result};
+use error::Result;
 use pod::{Client, Pod};
 
 /// Checks b33p against Signal's own server and clients: Signal-Server with its stores and CDNs,
@@ -61,7 +61,7 @@ enum Command {
         screenshots: bool,
     },
     /// Runs phases each on a fresh box with the clients it drives (`down --wipe`, `up`, `test`),
-    /// in rounds, and sums up; each run's record is in target/testbox-record/run/.
+    /// in rounds, and sums up; each run's records are in target/testbox-record/run/<when it started>/.
     Run {
         /// The phases, in order; all of them if none.
         phases: Vec<Phase>,
@@ -221,10 +221,10 @@ fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool)
     } else {
         phases
     };
-    let runs = repo.join(RUNS);
-    if runs.exists() {
-        std::fs::remove_dir_all(&runs).context(runs.display().to_string())?;
-    }
+    // A directory of its own, by when it started: an earlier run's records stay.
+    let started = process::now()?;
+    let run = format!("run/{started}");
+    let runs = repo.join(pod::RECORD).join(&run);
     let mut outcomes = Vec::new();
     for round in 1..=rounds {
         for &phase in phases {
@@ -238,7 +238,7 @@ fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool)
                         pod,
                         repo,
                         phase,
-                        &format!("run/{round}-{name}"),
+                        &format!("{run}/{round}-{name}"),
                         screenshots,
                     )
                 });
@@ -263,9 +263,6 @@ fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool)
         )))
     }
 }
-
-/// Where `run` keeps its records, one directory per round and phase.
-const RUNS: &str = "target/testbox-record/run";
 
 /// A phase's checks, recorded in target/testbox-record/`record`.
 #[cfg(unix)]

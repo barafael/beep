@@ -7,13 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Context, Result};
-use crate::pod::{Pod, SCREENS, Service};
+use crate::pod::{Pod, RECORD, SCREENS, Service};
 use crate::process;
 
 use super::lost::{DESKTOP_LOGS, LOGCAT};
 
-/// Where the phases' records go, one directory each.
-pub(crate) const RECORD: &str = "target/testbox-record";
 /// How long a check's name may be in a screenshot's file name.
 const LABEL: usize = 60;
 
