@@ -79,3 +79,10 @@ Still missing, roughly by how often people do them:
   (TESTPLAN.md §5 item 8).
 - b33p killed while receiving (SIGKILL), and nothing lost after it starts again.
 - A network that drops during an attachment's upload (CDN paused).
+
+## Seen on the way, not changed
+
+- After a send fails and Retry sends it, the error banner stays up, and reads as the library's
+  error: "failed to send: libsignal-service error: websocket request failed: error sending
+  request for url (https://…/v1/websocket/)". The bubble's "Not sent · Retry" already says it;
+  the banner could go once the retry goes out, and say it in words.
