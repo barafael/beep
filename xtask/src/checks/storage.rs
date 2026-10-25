@@ -169,10 +169,12 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             edit(&mut b33p, index, edited)?;
             desktop_shows(&mut desktop, edited)?;
             // Desktop reads an edit with the conversation's next read (markConversationRead's
-            // `unreadEditedMessages`), not as it comes: here, with the message after it.
-            let after = "testbox storage: after the edit";
-            type_and_send(&mut b33p, after)?;
-            desktop_shows(&mut desktop, after)?;
+            // `unreadEditedMessages`), and reads only while someone is at it: for 15 s after a
+            // click or key (ActiveWindowService.std.ts `ACTIVE_TIMEOUT`), and again at the next
+            // one (Timeline.dom.tsx `registerForActive`). A click on the chat is that.
+            desktop.call(drivers::Desktop::OpenConversation {
+                aci: android_aci.clone(),
+            })?;
             read(&mut b33p, edited)
         },
     );
