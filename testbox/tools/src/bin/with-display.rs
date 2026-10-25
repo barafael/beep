@@ -2,6 +2,10 @@
 //! TigerVNC's Xvnc, served on a Unix socket only, with the viewer's input and the clipboard off.
 //! `with-display input on|off`, run beside it, turns the viewer's input on or off (`vncconfig`);
 //! the clipboard stays off (`vncconfig -set AcceptCutText=1` fails).
+//!
+//! As the container's entrypoint it is PID 1, which ignores a signal it has no handler for:
+//! it hands SIGTERM, SIGINT and SIGHUP on to the command, so that `podman stop` and `restart`
+//! let the client end cleanly (b33p closes its database) instead of killing it 10 s later.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
@@ -115,11 +119,13 @@ fn serve(socket: &str, geometry: &str, program: &str, program_arguments: &[Strin
             "Xvnc exited before it served a display: {status}"
         )));
     }
-    let status = Command::new(program)
+    let mut command = Command::new(program)
         .args(program_arguments)
         .env("DISPLAY", DISPLAY)
-        .status()
+        .spawn()
         .context(program)?;
+    hand_on_signals(command.id())?;
+    let status = command.wait().context(program)?;
     xvnc.kill().context("Xvnc")?;
     xvnc.wait().context("Xvnc")?;
     if status.success() {
@@ -127,4 +133,28 @@ fn serve(socket: &str, geometry: &str, program: &str, program_arguments: &[Strin
     } else {
         Err(Error::Failed(format!("{program} exited: {status}")))
     }
+}
+
+/// Hands the stop signals this process gets on to `pid`, from a thread of its own, for as long as
+/// this process runs.
+fn hand_on_signals(pid: u32) -> Result<()> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP])
+        .context("the stop signals' handler")?;
+    let pid = libc::pid_t::try_from(pid).map_err(|_| Error::Failed(format!("pid {pid}")))?;
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            for signal in signals.forever() {
+                // SAFETY: kill(2) takes plain integers and touches no memory of ours.
+                if unsafe { libc::kill(pid, signal) } != 0 {
+                    eprintln!(
+                        "with-display: signal {signal} to {pid}: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+        })
+        .context("the stop signals' thread")?;
+    Ok(())
 }

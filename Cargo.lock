@@ -8407,8 +8407,10 @@ name = "testbox-tools"
 version = "0.0.0"
 dependencies = [
  "derive_more",
+ "libc",
  "serde",
  "serde_json",
+ "signal-hook",
  "strum 0.27.2",
  "typeshare",
 ]
