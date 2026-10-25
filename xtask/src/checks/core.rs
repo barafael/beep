@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use b33p_harness::{Action, Delivery};
 
 use super::b33p::{
@@ -9,6 +11,11 @@ use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::pod::{Pod, Ready, Service};
 use crate::process;
+
+/// How long a send to a server that doesn't answer takes to fail: until libsignal-service's
+/// keepalive gives the connection up (55 s unanswered, found at its next tick), then presage's
+/// one retry on a new connection.
+const SILENT_SERVER: Duration = Duration::from_secs(5 * 60);
 
 /// b33p linked to a presage-cli primary, with a presage-cli peer.
 pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
@@ -82,7 +89,7 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
                 if !b33p.act(Action::Send)? {
                     return Err(Error::Failed("b33p didn't send it".to_owned()));
                 }
-                b33p.wait_for("b33p's message marked failed", PATIENCE, |snapshot| {
+                b33p.wait_for("b33p's message marked failed", SILENT_SERVER, |snapshot| {
                     snapshot
                         .messages
                         .iter()
