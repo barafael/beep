@@ -372,6 +372,16 @@ impl Pod {
             .with_context(|| format!("podman exec {}", argv.join(" ")))
     }
 
+    /// Stops `service` until [`Self::start`]: the pod's restart policy leaves a stopped container
+    /// stopped.
+    pub fn stop(&self, service: Service) -> Result<()> {
+        process::run(podman(&["stop", &container(service)]))
+    }
+
+    pub fn start(&self, service: Service) -> Result<()> {
+        process::run(podman(&["start", &container(service)]))
+    }
+
     pub fn restart(&self, service: Service) -> Result<()> {
         process::run(podman(&["restart", &container(service)]))
     }

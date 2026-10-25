@@ -1,4 +1,8 @@
-use super::b33p::{REQUEST_ACCEPTED, accept_request, peer_text_reaches, select, type_and_send};
+use b33p_harness::{Action, Delivery};
+
+use super::b33p::{
+    REQUEST_ACCEPTED, accept_request, outgoing_index, peer_text_reaches, select, type_and_send,
+};
 use super::setup::{LinkedBox, linked_box};
 use super::{Checks, PATIENCE};
 use crate::Sockets;
@@ -61,6 +65,36 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
         )
         .map(drop)
     });
+
+    // TESTPLAN.md §1.2 item 3: a message that can't go out says so, and goes out when sent again.
+    checks.record(
+        "a message sent while the server is down fails, and goes out when sent again",
+        || {
+            let text = "testbox core: while the server is down";
+            containers.stop(Service::Server)?;
+            let failed = (|| {
+                b33p.act(Action::Type {
+                    text: text.to_owned(),
+                })?;
+                b33p.act(Action::Send)?;
+                b33p.wait_for("b33p's message marked failed", PATIENCE, |snapshot| {
+                    snapshot
+                        .messages
+                        .iter()
+                        .find(|message| message.outgoing && message.text == text)
+                        .filter(|message| message.delivery == Some(Delivery::Failed))
+                        .map(drop)
+                })
+            })();
+            let since = process::now()?;
+            containers.start(Service::Server)?;
+            containers.await_ready(Ready::Server, Some(since), PATIENCE)?;
+            failed?;
+            let index = outgoing_index(&mut b33p, text)?;
+            b33p.act(Action::RetrySend { index })?;
+            peer.sync_printing(text)
+        },
+    );
 
     Ok(())
 }
