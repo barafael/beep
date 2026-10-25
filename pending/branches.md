@@ -28,6 +28,9 @@ the session lock). Its commits, oldest first:
 | `A failed send's banner says it in words, and goes with the retry` | The banner showed the library's error and stayed after Retry | Unit test; core checks it |
 | `Receipts and read syncs for edited messages, as Signal's apps send and take them` | Receipts for our edits found nothing, others' edits were never read; Signal-Desktop's behaviour at the box's revision | Unit tests; storage checks both ways |
 | `TESTPLAN: as b33p is now, and what the test box checks` | §1.2 item 3 as b33p behaves; edited-message items; *(box: phase)* marks | |
+| `testbox: b33p reads in the box, and Desktop reads an edit with what follows` | The harness's window focus held only until the next message; Desktop reads an edit with the next read | Box: storage |
+| `b33p-core: a new contact's chat takes their name, however quick presage is` | Chats with someone new kept their id as title when presage's profile fetch beat b33p's look; desktop checks the title | Box: desktop |
+| `testbox: Desktop reads b33p's edit once someone is at it` | Desktop reads only for 15 s after a click or key (`ActiveWindowService`) | Box: storage |
 
 ## presage (barafael/presage)
 
@@ -60,6 +63,7 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `testbox-green` 46ea502 (the lock only) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 28dc6bc | 1 | 0/1 (the failed-send check stopped the server; fixed since) | 0/1 (reactions and quotes of edited messages; fixed since) | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 06061f7 (all fixes) | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
+| `testbox-green` 3261c5e…7182af0 (banner, edited receipts, chat names, #71) | 1 | 1/1 | 1/1 | – | – | 1/1 (at 7182af0; at 3261c5e the edit check clicked nothing in Desktop) | – |
 
 ## Open
 
