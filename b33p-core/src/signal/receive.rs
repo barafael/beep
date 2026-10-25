@@ -661,12 +661,6 @@ async fn handle_content(
     };
     let outgoing = is_outgoing(manager, content);
     let author = author_of(manager, content);
-    if !outgoing
-        && matches!(author, ServiceId::Aci(_))
-        && matches!(manager.store().contact_by_id(&author).await, Ok(None))
-    {
-        retitle_once_saved(manager, ctx, author);
-    }
     if let Some(Delete {
         target_sent_timestamp: Some(timestamp),
     }) = data.delete
@@ -756,26 +750,6 @@ async fn handle_content(
         }
     }
     events.send(Event::Message(message))
-}
-
-/// Titles `who`'s chat once presage has saved them as a contact. presage fetches a new
-/// sender's profile, with their name, in a task of its own when their message comes, and says
-/// nothing when it is done: until then their chat is titled by their id.
-fn retitle_once_saved(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
-    let (manager, ctx) = (manager.clone(), ctx.clone());
-    tokio::task::spawn_local(async move {
-        // About a minute in all: the fetch is a request to the server.
-        let mut wait = Duration::from_millis(250);
-        for _ in 0..8 {
-            tokio::time::sleep(wait).await;
-            if matches!(manager.store().contact_by_id(&who).await, Ok(Some(_))) {
-                send_conversations(&manager, &ctx).await;
-                return;
-            }
-            wait *= 2;
-        }
-        debug!("a new sender wasn't saved as a contact");
-    });
 }
 
 /// Removes what presage stored of `content`, if it is still there as its sender's.

@@ -1,10 +1,11 @@
 use b33p_harness::Action;
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_shows, chat_previewing, delivered, edit, incoming_index,
-    outgoing_index, peer_text_reaches, select, type_and_send,
+    REQUEST_ACCEPTED, accept_request, b33p_chat, b33p_shows, chat_previewing, delivered, edit,
+    incoming_index, outgoing_index, peer_text_reaches, select, type_and_send,
 };
 use super::clients::desktop_shows;
+use super::presage::Account;
 use super::setup::{LinkedBox, linked_box, linked_desktop};
 use super::{Checks, PATIENCE_MS};
 use crate::Sockets;
@@ -38,6 +39,17 @@ pub(crate) fn desktop(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
     checks.require(REQUEST_ACCEPTED, || {
         accept_request(&mut b33p, &conversation)
     })?;
+    // presage saves a new sender as a contact, with their profile's name, in a task of its own;
+    // the chat takes the name once it is there.
+    checks.record("b33p titles the peer's chat with their name", || {
+        let name = Account::Peer.name();
+        b33p_chat(
+            &mut b33p,
+            &conversation,
+            &format!("titled {name:?}"),
+            |chat| chat.title == name,
+        )
+    });
 
     // Desktop opens the conversation (the peer's own message reached it as a sync), reads b33p's
     // text, and answers.
