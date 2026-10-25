@@ -54,7 +54,7 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `main` 954e604 | 2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 1/2 |
 | `testbox-green` 46ea502 (the lock only) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 28dc6bc | 1 | 0/1 (the failed-send check stopped the server; fixed since) | 0/1 (reactions and quotes of edited messages; fixed since) | 1/1 | 1/1 | 1/1 | 1/1 |
-| `testbox-green` 06061f7 (all fixes) | 1 of 2 so far | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| `testbox-green` 06061f7 (all fixes) | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
 
 ## Open
 
