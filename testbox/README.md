@@ -101,7 +101,7 @@ flowchart LR
 | Phase | `up` with | What it checks |
 |---|---|---|
 | `core` | | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, a message request, delivery receipts, reconnecting after the server drops, a send it leaves unanswered and its retry |
-| `desktop` | `--desktop` | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes each way |
+| `desktop` | `--desktop` | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes and emoji each way |
 | `attachments` | `--desktop` | pictures, files and audio through CDN3 between b33p and Desktop; a profile picture and a sticker pack through CDN0 |
 | `android` | `--desktop --android` | Signal-Android registers as the primary and b33p links to it; Desktop links to the peer; text and receipts between the two accounts, each one's linked device in step |
 | `storage` | `--desktop --android` | chat settings through the storage service, between b33p, Android (the primary) and Desktop |

@@ -182,5 +182,23 @@ pub(crate) fn desktop(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
         })
     });
 
+    // Emoji in a message each way: drawn from a colour bitmap font, which Qt 6.4's QRawFont
+    // overran the heap on (the Slint fork's Qt backend draws them itself now).
+    checks.record("emoji from b33p reach Desktop", || {
+        let text = "testbox desktop: emoji 🦀🎉";
+        type_and_send(&mut b33p, text)?;
+        desktop_shows(&mut desktop, text)
+    });
+
+    checks.record("emoji from Desktop reach b33p", || {
+        let text = "testbox desktop: emoji 👍📎";
+        desktop.call(drivers::Desktop::Send {
+            text: text.to_owned(),
+        })?;
+        b33p_shows(&mut b33p, "Desktop's emoji", |message| {
+            !message.outgoing && message.text == text
+        })
+    });
+
     Ok(())
 }
