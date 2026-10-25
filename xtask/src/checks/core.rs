@@ -100,13 +100,24 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
             })();
             containers.unpause(Service::Server)?;
             failed?;
+            // The banner says it in words, not as the library's error (another error, about
+            // receiving, may stand in its place by now).
+            if let Some(error) = b33p.snapshot()?.error
+                && error.contains("failed to send")
+            {
+                return Err(Error::Failed(format!("the banner reads {error:?}")));
+            }
             // Once b33p has caught up again, which it lets nobody write before.
             let index = outgoing_index(&mut b33p, text)?;
             b33p.wait_for("b33p caught up", PATIENCE, |snapshot| {
                 snapshot.synced.then_some(())
             })?;
             b33p.act(Action::RetrySend { index })?;
-            peer.sync_printing(text)
+            peer.sync_printing(text)?;
+            b33p.wait_for("the banner about it gone", PATIENCE, |snapshot| {
+                let error = snapshot.error.as_deref().unwrap_or_default();
+                (!error.contains("couldn't be sent")).then_some(())
+            })
         },
     );
 

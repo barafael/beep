@@ -295,6 +295,9 @@ pub struct ChatState {
     error: Option<crate::Error>,
     /// What failed, to try again from the error banner; see [`ChatState::retry_error`].
     error_retry: Option<Command>,
+    /// The message whose failed send the error is about: sending it again takes the error
+    /// away. See [`ChatState::show_error`].
+    error_send: Option<(ConversationId, u64)>,
     /// What was sent for each message shown as sending or failed, to send it again.
     pending_sends: HashMap<(ConversationId, u64), Command>,
     /// When the last message was sent; see [`ChatState::send_timestamp`].

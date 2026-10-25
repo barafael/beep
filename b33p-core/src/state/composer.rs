@@ -373,6 +373,7 @@ impl ChatState {
             .pending_sends
             .get(&(conversation.clone(), timestamp))?
             .clone();
+        self.retrying_send(&conversation, timestamp);
         let history = self.history.get_mut(&conversation)?;
         let sent = at_time(history, timestamp);
         let changed = self.changed_rows.get_mut();

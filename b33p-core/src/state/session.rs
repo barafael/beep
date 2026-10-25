@@ -29,16 +29,41 @@ impl ChatState {
     pub fn dismiss_error(&mut self) {
         self.error = None;
         self.error_retry = None;
+        self.error_send = None;
     }
 
     /// Shows `error`, offering to try `command` again if that may work and is worth offering
-    /// (see [`offers_retry`]).
-    pub(super) fn show_error(&mut self, error: crate::Error, command: Option<Command>) {
+    /// (see [`offers_retry`]). A message that may go later is said in words, not as the
+    /// library's error: its bubble has the way to send it again.
+    pub(super) fn show_error(&mut self, mut error: crate::Error, command: Option<Command>) {
         if let Some(join) = &mut self.join {
             join.busy = false;
         }
+        self.error_send = None;
+        if let Some(Command::Send {
+            conversation,
+            timestamp,
+            ..
+        }) = &command
+            && error.retryable()
+        {
+            error = crate::Error::unreachable(UNSENT);
+            self.error_send = Some((conversation.clone(), *timestamp));
+        }
         self.error_retry = command.filter(|command| error.retryable() && offers_retry(command));
         self.error = Some(error);
+    }
+
+    /// The message at `timestamp` in `conversation` is sent again: the error about it no
+    /// longer holds.
+    pub(super) fn retrying_send(&mut self, conversation: &ConversationId, timestamp: u64) {
+        if self
+            .error_send
+            .as_ref()
+            .is_some_and(|(c, t)| c == conversation && *t == timestamp)
+        {
+            self.dismiss_error();
+        }
     }
 
     /// Whether the error shown comes with a way to try again; see [`ChatState::retry_error`].
@@ -190,6 +215,10 @@ impl ChatState {
         self.error.as_ref().map(|error| error.message.as_str())
     }
 }
+
+/// What the error banner says when a message couldn't be sent for a reason that may pass.
+pub(super) const UNSENT: &str =
+    "A message couldn't be sent: Signal can't be reached. Retry on the message sends it.";
 
 /// Whether the error banner offers to try `command` again when it failed for a reason that
 /// may pass: what the user asked for and waits on. Not sending a message (its bubble has its

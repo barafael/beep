@@ -1441,6 +1441,57 @@ fn a_failed_send_can_be_sent_again() {
     assert!(state.retry_send(1).is_none());
 }
 
+/// The banner says in words that a message couldn't go, not the library's error, and goes
+/// once the message is sent again; another error stays.
+#[test]
+fn a_failed_sends_error_goes_with_its_retry() {
+    let mut state = state();
+    let a = ConversationId("a".into());
+    state.select(&a);
+    let (command, _) = state.compose("hi");
+    let command = command.unwrap();
+    let timestamp = sent_at(Some(command.clone()));
+    state.apply(Event::SendFailed {
+        conversation: a.clone(),
+        timestamp,
+        retryable: true,
+    });
+    let raw = "failed to send: libsignal-service error: websocket request failed";
+    state.apply(Event::CommandFailed {
+        error: crate::Error::unreachable(raw),
+        command: command.clone(),
+    });
+    assert_eq!(state.error(), Some(super::session::UNSENT));
+    assert!(!state.can_retry_error(), "the bubble has the retry");
+    assert!(state.retry_send(0).is_some());
+    assert_eq!(state.error(), None);
+
+    // What Signal refused says why, and another error isn't taken away by a retry.
+    let (refused, _) = state.compose("ho");
+    let refused = refused.unwrap();
+    state.apply(Event::CommandFailed {
+        error: crate::Error::refused("failed to send: recipient is not registered"),
+        command: refused,
+    });
+    assert_eq!(
+        state.error(),
+        Some("failed to send: recipient is not registered")
+    );
+    state.apply(Event::SendFailed {
+        conversation: a.clone(),
+        timestamp,
+        retryable: true,
+    });
+    state.apply(Event::Error(crate::Error::unreachable(
+        "Receiving messages failed; trying again.",
+    )));
+    assert!(state.retry_send(0).is_some());
+    assert_eq!(
+        state.error(),
+        Some("Receiving messages failed; trying again.")
+    );
+}
+
 /// A message Signal refused (the recipient left Signal, say) shows as not sent, without a way
 /// to send it again: as it is, it won't go.
 #[test]

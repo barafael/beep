@@ -59,6 +59,8 @@ The release workflow takes a version's notes from here (the section headed with 
 - Changing a chat's settings no longer goes back on another change made at the same moment.
 - Esc also closes the join dialog, the calendar and the dialogs that ask first.
 - Two messages sent within the same millisecond no longer take each other's place.
+- A message that couldn't be sent for want of a connection says so in words, and the banner
+  goes once Retry sends it.
 
 ## 0.2.0
 
