@@ -7,8 +7,9 @@
 //!   envelope that hadn't been decrypted before. Each line names the envelope as
 //!   `[timestamp] sender:device |`, and each decrypted one is logged as such, so one delivered
 //!   again is told from one whose sender used a counter twice.
-//! - Signal-Desktop: `handleDecryptionError` (ts/textsecure/MessageReceiver.preload.ts). Desktop
-//!   drops a duplicate without a word, so a counter used twice towards Desktop doesn't show.
+//! - Signal-Desktop: `handleDecryptionError` (ts/textsecure/MessageReceiver.preload.ts), and a
+//!   `DuplicatedMessage` it dropped for an envelope it hadn't decrypted before; it logs each it
+//!   does, as `queueing decrypted envelope <sender>.<device> > <us> <timestamp>`.
 //! - presage-cli: "failed to decrypt a message", as its syncs printed it ([`Pod::lost`]).
 
 use std::collections::HashSet;
@@ -25,8 +26,11 @@ const B33P: [&str; 2] = [
 const ANDROID_FAILED: &str = "| Decryption error";
 const ANDROID_DUPLICATE: &str = "| Duplicate message!";
 const ANDROID_DECRYPTED: &str = "| Successfully decrypted the envelope";
-/// Signal-Desktop's (MessageReceiver.preload.ts `handleDecryptionError`).
-const DESKTOP: [&str; 1] = ["handleDecryptionError"];
+/// Signal-Desktop's (MessageReceiver.preload.ts).
+const DESKTOP_FAILED: &str = "handleDecryptionError";
+const DESKTOP_DUPLICATE: &str = "DuplicatedMessage";
+const DESKTOP_DROPPED: &str = "queueEncryptedEnvelope error handling envelope ";
+const DESKTOP_DECRYPTED: &str = "queueing decrypted envelope ";
 /// Where Signal-Android's logcat goes in its container (testbox/tools `android`).
 const LOGCAT: &str = "/tmp/logcat.txt";
 /// Signal-Desktop's logs, app.log and main.log, in its user data (testbox/desktop/driver.ts).
@@ -51,11 +55,7 @@ pub(super) fn none(containers: &Pod) -> Result<()> {
     }
     if containers.running(Service::Desktop) {
         let logs = containers.exec(Service::Desktop, &["sh", "-c", DESKTOP_LOGS], "")?;
-        lost.extend(
-            logs.lines()
-                .filter(|line| DESKTOP.iter().any(|needle| line.contains(needle)))
-                .map(|line| format!("Desktop: {}", line.trim())),
-        );
+        lost.extend(desktop(&logs));
     }
     lost.extend(containers.lost());
     if lost.is_empty() {
@@ -99,6 +99,37 @@ fn android(logcat: &str) -> Vec<String> {
     lost
 }
 
+/// The lines of Signal-Desktop's logs that tell of a lost message.
+fn desktop(logs: &str) -> Vec<String> {
+    let mut decrypted = HashSet::new();
+    let mut lost = Vec::new();
+    for line in logs.lines() {
+        if let Some(envelope) = desktop_envelope(line, DESKTOP_DECRYPTED) {
+            decrypted.insert(envelope);
+        } else if line.contains(DESKTOP_FAILED)
+            || line.contains(DESKTOP_DUPLICATE)
+                && desktop_envelope(line, DESKTOP_DROPPED)
+                    .is_some_and(|envelope| !decrypted.contains(envelope))
+        {
+            lost.push(format!("Desktop: {}", desktop_message(line)));
+        }
+    }
+    lost
+}
+
+/// The `<sender>.<device> > <us> <timestamp>` after `marker` (an envelope's id, without the
+/// server's GUID in parentheses after it).
+fn desktop_envelope<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = &line[line.find(marker)? + marker.len()..];
+    Some(rest[..rest.find(" (")?].trim())
+}
+
+/// The `msg` of a line of Desktop's JSON log, up to its first escaped newline (a stack follows).
+fn desktop_message(line: &str) -> &str {
+    let message = line.find("\"msg\":\"").map_or(line, |at| &line[at + 7..]);
+    message.split("\\n").next().unwrap_or(message).trim()
+}
+
 /// The `[timestamp] sender:device` a MessageDecryptor line names its envelope by.
 fn envelope(line: &str) -> Option<&str> {
     let start = line.find("MessageDecryptor")?;
@@ -116,6 +147,22 @@ mod tests {
     fn colours_are_left_out() {
         let line = "\u{1b}[33m WARN\u{1b}[0m \u{1b}[2mb33p_core::signal\u{1b}[0m: lost a message";
         assert_eq!(plain(line), " WARN b33p_core::signal: lost a message");
+    }
+
+    /// As for Android: a duplicate counts only if Desktop never decrypted that envelope.
+    #[test]
+    fn desktop_loses_what_failed_and_duplicates_of_what_never_decrypted() {
+        let logs = r#"{"level":30,"msg":"[MessageReceiver] queueing decrypted envelope [REDACTED]b44.1 > [REDACTED]b44 100 (01a1.aa)"}
+{"level":50,"msg":"[MessageReceiver] queueEncryptedEnvelope error handling envelope [REDACTED]b44.1 > [REDACTED]b44 100 (01a1.bb) : DuplicatedMessage: message with old counter 1 / 0
+    at new LibSignalErrorBase"}
+{"level":50,"msg":"[MessageReceiver] queueEncryptedEnvelope error handling envelope [REDACTED]b44.1 > [REDACTED]b44 101 (01a1.cc) : DuplicatedMessage: message with old counter 2 / 0
+    at new LibSignalErrorBase"}
+{"level":30,"msg":"handleDecryptionError: 102"}
+"#;
+        let lost = desktop(logs);
+        assert_eq!(lost.len(), 2, "{lost:?}");
+        assert!(lost[0].contains(" 101 ") && lost[0].ends_with("old counter 2 / 0"));
+        assert!(lost[1].contains("handleDecryptionError: 102"));
     }
 
     /// A duplicate of an envelope decrypted before was delivered again; any other duplicate,
