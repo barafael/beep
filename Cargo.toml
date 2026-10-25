@@ -25,20 +25,18 @@ b33p-harness = { path = "b33p-harness" }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-20) plus selecting
-# text in a `StyledText` (`text-selectable`, `has-selection`, `copy()`; slint-ui/slint#13985),
-# which the messages need, and the Qt backend drawing variable fonts at their default instance
-# rather than their first named one (Qt 6.7+ loads a `QRawFont` from bytes as "named instance
-# 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). A git dependency rather
-# than a patch, because the selection change is in the `slint` facade too (its `compat-1-18`
-# feature). Rebuild the branch when master moves; drop it once both have landed upstream and a
-# release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "3064b750dec8a89ebefc1aa058bf11722dbf7dac", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "3064b750dec8a89ebefc1aa058bf11722dbf7dac" }
+# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-25) plus selecting
+# text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
+# reviewed), which the messages need, and the Qt backend drawing variable fonts at their default
+# instance rather than their first named one (Qt 6.7+ loads a `QRawFont` from bytes as "named
+# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Rebuild the
+# branch when master moves; drop it once both have landed upstream and a release carries them.
+slint = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "3064b750dec8a89ebefc1aa058bf11722dbf7dac" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "3064b750dec8a89ebefc1aa058bf11722dbf7dac" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "3064b750dec8a89ebefc1aa058bf11722dbf7dac" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:

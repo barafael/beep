@@ -1208,6 +1208,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calloop-wayland-source"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
+dependencies = [
+ "calloop 0.14.5",
+ "rustix 1.1.5",
+ "wayland-backend",
+ "wayland-client",
+]
+
+[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1486,7 +1498,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1495,7 +1507,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3304,7 +3316,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "calloop 0.14.5",
  "cfg_aliases",
@@ -3319,6 +3331,7 @@ dependencies = [
  "libseat",
  "libudev-sys",
  "nix",
+ "pkg-config",
  "raw-window-handle",
  "xkbcommon",
 ]
@@ -3326,7 +3339,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-qt"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "const-field-offset",
  "cpp",
@@ -3344,7 +3357,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "cfg_aliases",
  "i-slint-backend-linuxkms",
@@ -3359,7 +3372,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -3370,7 +3383,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3396,6 +3409,7 @@ dependencies = [
  "raw-window-handle",
  "scoped-tls-hkt",
  "scopeguard",
+ "smithay-clipboard",
  "softbuffer",
  "strum 0.28.0",
  "vtable",
@@ -3410,7 +3424,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "derive_more",
  "fontique",
@@ -3427,7 +3441,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "annotate-snippets",
  "by_address",
@@ -3463,7 +3477,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "accesskit",
  "async-channel",
@@ -3517,7 +3531,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "quote",
  "serde_json",
@@ -3527,7 +3541,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "const-field-offset",
  "femtovg",
@@ -3546,7 +3560,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "bytemuck",
  "cfg_aliases",
@@ -3583,7 +3597,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "bytemuck",
  "clru",
@@ -5807,7 +5821,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -7229,7 +7243,7 @@ dependencies = [
  "ab_glyph",
  "log",
  "memmap2",
- "smithay-client-toolkit",
+ "smithay-client-toolkit 0.19.2",
  "tiny-skia 0.11.4",
 ]
 
@@ -7578,7 +7592,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
@@ -7598,7 +7612,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "derive_more",
  "fontique",
@@ -7610,7 +7624,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -7644,7 +7658,7 @@ checksum = "3457dea1f0eb631b4034d61d4d8c32074caa6cd1ab2d59f2327bd8461e2c0016"
 dependencies = [
  "bitflags 2.13.2",
  "calloop 0.13.0",
- "calloop-wayland-source",
+ "calloop-wayland-source 0.3.0",
  "cursor-icon",
  "libc",
  "log",
@@ -7659,6 +7673,44 @@ dependencies = [
  "wayland-protocols-wlr",
  "wayland-scanner",
  "xkeysym",
+]
+
+[[package]]
+name = "smithay-client-toolkit"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0512da38f5e2b31201a93524adb8d3136276fa4fe4aafab4e1f727a82b534cc0"
+dependencies = [
+ "bitflags 2.13.2",
+ "calloop 0.14.5",
+ "calloop-wayland-source 0.4.1",
+ "cursor-icon",
+ "libc",
+ "log",
+ "memmap2",
+ "rustix 1.1.5",
+ "thiserror 2.0.21",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-csd-frame",
+ "wayland-cursor",
+ "wayland-protocols",
+ "wayland-protocols-experimental",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "wayland-scanner",
+ "xkeysym",
+]
+
+[[package]]
+name = "smithay-clipboard"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71704c03f739f7745053bde45fa203a46c58d25bc5c4efba1d9a60e9dba81226"
+dependencies = [
+ "libc",
+ "smithay-client-toolkit 0.20.0",
+ "wayland-backend",
 ]
 
 [[package]]
@@ -8344,7 +8396,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -9193,8 +9245,8 @@ dependencies = [
 
 [[package]]
 name = "vtable"
-version = "0.5.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+version = "0.5.1"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -9205,7 +9257,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.5.0"
-source = "git+https://github.com/barafael/slint?rev=3064b750dec8a89ebefc1aa058bf11722dbf7dac#3064b750dec8a89ebefc1aa058bf11722dbf7dac"
+source = "git+https://github.com/barafael/slint?rev=e38356d27a1ddd460e5b96dfffa515db224560ec#e38356d27a1ddd460e5b96dfffa515db224560ec"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9381,6 +9433,32 @@ dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
  "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "wayland-protocols-experimental"
+version = "20250721.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40a1f863128dcaaec790d7b4b396cc9b9a7a079e878e18c47e6c2d2c5a8dcbb1"
+dependencies = [
+ "bitflags 2.13.2",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+]
+
+[[package]]
+name = "wayland-protocols-misc"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e9567599ef23e09b8dad6e429e5738d4509dfc46b3b21f32841a304d16b29c8"
+dependencies = [
+ "bitflags 2.13.2",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "wayland-scanner",
 ]
 
@@ -10079,7 +10157,7 @@ dependencies = [
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
  "sctk-adwaita",
- "smithay-client-toolkit",
+ "smithay-client-toolkit 0.19.2",
  "smol_str 0.2.2",
  "tracing",
  "unicode-segmentation",

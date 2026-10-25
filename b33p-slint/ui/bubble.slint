@@ -419,7 +419,7 @@ export component Bubble inherits Rectangle {
                                     }
                                 }
                                 // Text can be selected and copied; one message's at a time.
-                                text-selectable: !item.deleted;
+                                selectable: !item.deleted;
                                 selection-background-color: root.ink.with-alpha(Theme.faint);
                                 selection-foreground-color: root.ink;
                                 property <int> owner: TextSelection.owner;

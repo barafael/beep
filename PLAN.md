@@ -119,14 +119,13 @@ By how much they matter, most first:
   (presage overwrites the stored message first); a group counts as read once any member read a
   message; pinned chats move by menu, not by dragging.
 - **Selecting text in messages:** done through our Slint fork (barafael/slint, branch
-  `styled-text-selection`: master (1.19) plus a `text-selectable` `StyledText` with selection
-  colours, `has-selection`, `set-selection-offsets`, `select-all`, `clear-selection` and
-  `copy()`, the read-only subset of what `TextEdit` exposes; a click that doesn't drag still
-  follows a link), pinned as a git dependency in the workspace, since the change is in the
-  `slint` facade too. An input laid over the styled text to fake it was tried first and
-  dropped: a second copy of the text, drifting along bold and code, in the way of links. Sent
-  upstream as draft slint-ui/slint#13985. Left: see the review through and drop the fork once
-  a release carries it.
+  `langis/integration`: master plus slint-ui/slint#13985, a `selectable` `StyledText` with
+  selection colours, `has-selection`, `set-selection-offsets`, `select-all`, `clear-selection`
+  and `copy()`, the read-only subset of what `TextEdit` exposes; a click that doesn't drag still
+  follows a link, and a selecting press takes the focus, as in a `TextInput`), pinned as a git
+  dependency in the workspace. An input laid over the styled text to fake it was tried first and
+  dropped: a second copy of the text, drifting along bold and code, in the way of links. Left:
+  see the review of slint-ui/slint#13985 through and drop the fork once a release carries it.
 - **Tests:** a sticker picker test that sees the stickers (the testing backend doesn't lay
   out popups).
 - **Device name:** renaming a device that is already linked (presage has no call for it yet;
