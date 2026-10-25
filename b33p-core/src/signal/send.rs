@@ -34,7 +34,8 @@ use crate::{
 use super::{
     Ctx, Mgr,
     conversations::{
-        Names, accepted, e164_of, expire_timer, is_blocked, own_id, sender_name, thread_of,
+        Names, accepted, e164_of, expire_timer, is_blocked, or_logged, own_id, sender_name,
+        thread_of,
     },
     groups::{group_identifier, member_aci},
     history::start_timers,
@@ -309,6 +310,22 @@ pub(super) async fn send_new(
         .cloned()
         .ok_or_else(|| Error::refused("unknown conversation"))?;
     let (text, ranges) = format::encode(&body, &styles, &mentions);
+    // A quote names the version it shows, as Signal's apps do: an edited message's by its
+    // latest edit's time (Signal-Desktop `makeQuote`), else they show the text first sent.
+    let quoted_version = match &quote {
+        Some(quote) => {
+            let quoted = MessageRef {
+                author_id: quote.author_id.clone(),
+                timestamp: quote.timestamp,
+            };
+            or_logged(
+                ctx.tables.latest_edit(&conversation, &quoted).await,
+                "edit times",
+            )
+            .unwrap_or(quote.timestamp)
+        }
+        None => 0,
+    };
     // presage fills in the data message's timestamp from the one passed here.
     let message = DataMessage {
         body: (!text.is_empty()).then_some(text),
@@ -319,7 +336,7 @@ pub(super) async fn send_new(
         quote: quote
             .as_ref()
             .map(|quote| presage::proto::data_message::Quote {
-                id: Some(quote.timestamp),
+                id: Some(quoted_version),
                 author_aci: Some(quote.author_id.clone()),
                 author_aci_binary: aci_binary(&quote.author_id),
                 text: Some(quote.text.clone()),

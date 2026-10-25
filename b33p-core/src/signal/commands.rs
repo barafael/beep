@@ -37,7 +37,7 @@ use super::{
         parse_group_link, refresh_group, show_stored,
     },
     history::{
-        data_of, decorate, erase_deleted, history_page, media, search, start_timers,
+        data_of, decorate, erase_deleted, history_page, media, original, search, start_timers,
         to_chat_message, to_reaction,
     },
     send::{
@@ -181,6 +181,7 @@ async fn handle_command(
                 if let Some((target, reaction, remove)) =
                     to_reaction(manager, &mut names, content).await
                 {
+                    let target = original(ctx, &id, target).await;
                     if messages.iter().any(|m: &ChatMessage| m.is(&target)) {
                         apply_reaction(&mut messages, &target, reaction, remove);
                     } else {

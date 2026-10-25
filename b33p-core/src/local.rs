@@ -166,6 +166,15 @@ const SCHEMA: &[&str] = &[
         previous_body TEXT NOT NULL,
         PRIMARY KEY (conversation, author, ts, edited_at)
     )",
+    // When others' edits were sent, and the message each edits: Signal's apps name an edited
+    // message by its latest edit's time. Ours are in `b33p_edit`.
+    "CREATE TABLE IF NOT EXISTS b33p_edit_time (
+        conversation TEXT NOT NULL,
+        author TEXT NOT NULL,
+        edited_at INTEGER NOT NULL,
+        ts INTEGER NOT NULL,
+        PRIMARY KEY (conversation, author, edited_at)
+    )",
     "CREATE TABLE IF NOT EXISTS b33p_deleted (
         conversation TEXT NOT NULL,
         author TEXT NOT NULL,
@@ -858,6 +867,72 @@ impl LocalStore {
             .map(drop)
     }
 
+    /// Notes that `message` was edited at `edited_at`, for [`Self::edited`].
+    pub(crate) async fn record_edit_time(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+        edited_at: u64,
+    ) -> Result<(), sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        sqlx::query(
+            "INSERT OR REPLACE INTO b33p_edit_time (conversation, author, edited_at, ts)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(conversation)
+        .bind(author)
+        .bind(edited_at as i64)
+        .bind(ts)
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
+    /// The time of the message `edit` names by one of its edits, if it does: others' edits as
+    /// [`Self::record_edit_time`] noted them, ours as [`Self::record_edit`] kept them.
+    pub(crate) async fn edited(
+        &self,
+        conversation: &ConversationId,
+        edit: &MessageRef,
+    ) -> Result<Option<u64>, sqlx::Error> {
+        let (conversation, author, edited_at) = key(conversation, edit);
+        let ts: Option<i64> = sqlx::query_scalar(
+            "SELECT ts FROM b33p_edit_time WHERE conversation = ?1 AND author = ?2 AND edited_at = ?3
+             UNION ALL
+             SELECT ts FROM b33p_edit WHERE conversation = ?1 AND author = ?2 AND edited_at = ?3
+             LIMIT 1",
+        )
+        .bind(conversation)
+        .bind(author)
+        .bind(edited_at)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(ts.map(|ts| ts as u64))
+    }
+
+    /// When `message` was last edited, if it was: by others as [`Self::record_edit_time`] noted,
+    /// by us as [`Self::record_edit`] kept.
+    pub(crate) async fn latest_edit(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+    ) -> Result<Option<u64>, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        let edited_at: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(edited_at) FROM (
+                 SELECT edited_at FROM b33p_edit_time WHERE conversation = ?1 AND author = ?2 AND ts = ?3
+                 UNION ALL
+                 SELECT edited_at FROM b33p_edit WHERE conversation = ?1 AND author = ?2 AND ts = ?3
+             )",
+        )
+        .bind(conversation)
+        .bind(author)
+        .bind(ts)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(edited_at.map(|at| at as u64))
+    }
+
     /// Earlier versions of edited messages in a conversation sent in `range`, oldest first.
     pub(crate) async fn edits(
         &self,
@@ -1513,6 +1588,46 @@ mod tests {
             );
             assert!(local.deleted(&b, 0..0).await.unwrap().is_empty());
             assert!(local.deliveries(&b, ..).await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_message_is_found_by_its_edits_times() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let a = ConversationId("a".into());
+            // Alice's edits, as received, and ours, as kept with their earlier text.
+            let alice = reference("alice", 10);
+            local.record_edit_time(&a, &alice, 20).await.unwrap();
+            local.record_edit_time(&a, &alice, 30).await.unwrap();
+            let ours = reference("me", 11);
+            local.record_edit(&a, &ours, 40, "before").await.unwrap();
+            let edited = |author, ts| {
+                let local = &local;
+                let a = &a;
+                async move { local.edited(a, &reference(author, ts)).await.unwrap() }
+            };
+            assert_eq!(edited("alice", 20).await, Some(10));
+            assert_eq!(edited("alice", 30).await, Some(10));
+            assert_eq!(edited("me", 40).await, Some(11));
+            // Not an edit, someone else's, or another conversation's.
+            assert_eq!(edited("alice", 10).await, None);
+            assert_eq!(edited("bob", 20).await, None);
+            let b = ConversationId("b".into());
+            assert_eq!(
+                local.edited(&b, &reference("alice", 20)).await.unwrap(),
+                None
+            );
+            // The latest, as a reply names the version it quotes.
+            let latest = |m| {
+                let local = &local;
+                let a = &a;
+                async move { local.latest_edit(a, &m).await.unwrap() }
+            };
+            assert_eq!(latest(alice).await, Some(30));
+            assert_eq!(latest(ours).await, Some(40));
+            assert_eq!(latest(reference("bob", 12)).await, None);
         });
     }
 
