@@ -3,10 +3,9 @@
 A plan to move b33p-core's signal backend from tasks that share state to actors that own it,
 after [More actors with tokio](https://barafael.github.io/posts/more-actors-with-tokio/). The
 first one, `Sending` (b33p-core/src/outbox.rs, #60), is done; the steps below take the rest one
-pull request at a time. The changes this needs in presage and libsignal-service are proposed in
-[presage-sessions.md](presage-sessions.md) and
-[libsignal-service-sessions.md](libsignal-service-sessions.md); they are those projects' to take
-or not, and nothing here waits for them.
+pull request at a time. Sessions are serialized in presage and libsignal-service by a session
+lock (whisperfish/presage#473, whisperfish/libsignal-service-rs#488); nothing here waits for
+them.
 
 ## Why
 
@@ -103,7 +102,7 @@ core`, `groups`, `storage`) run before and after.
 7. **Split signal.rs.** One module per actor (outbox.rs already), so that signal.rs keeps the
    session's start and end, and the handlers.
 
-8. **When presage serializes sessions** (presage-sessions.md): `Sending` stays, for ordering
+8. **When presage serializes sessions** (whisperfish/presage#473): `Sending` stays, for ordering
    (a typing indicator before its message) and as the one place sends happen, but its comment
    about sessions goes, and #51 closes.
 
