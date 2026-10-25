@@ -6,7 +6,7 @@ use super::b33p::{
 use super::setup::{LinkedBox, linked_box};
 use super::{Checks, PATIENCE};
 use crate::Sockets;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pod::{Pod, Ready, Service};
 use crate::process;
 
@@ -67,16 +67,21 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
     });
 
     // TESTPLAN.md §1.2 item 3: a message that can't go out says so, and goes out when sent again.
+    // With the server paused, not stopped: a stopped one closes b33p's connection, and b33p lets
+    // nobody write until it has caught up again (b33p-core `can_write_to`). A paused one keeps
+    // the connection and answers nothing, as a network that goes away without a word does.
     checks.record(
-        "a message sent while the server is down fails, and goes out when sent again",
+        "a message sent while the server doesn't answer fails, and goes out when sent again",
         || {
-            let text = "testbox core: while the server is down";
-            containers.stop(Service::Server)?;
+            let text = "testbox core: while the server doesn't answer";
+            containers.pause(Service::Server)?;
             let failed = (|| {
                 b33p.act(Action::Type {
                     text: text.to_owned(),
                 })?;
-                b33p.act(Action::Send)?;
+                if !b33p.act(Action::Send)? {
+                    return Err(Error::Failed("b33p didn't send it".to_owned()));
+                }
                 b33p.wait_for("b33p's message marked failed", PATIENCE, |snapshot| {
                     snapshot
                         .messages
@@ -86,11 +91,13 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
                         .map(drop)
                 })
             })();
-            let since = process::now()?;
-            containers.start(Service::Server)?;
-            containers.await_ready(Ready::Server, Some(since), PATIENCE)?;
+            containers.unpause(Service::Server)?;
             failed?;
+            // Once b33p has caught up again, which it lets nobody write before.
             let index = outgoing_index(&mut b33p, text)?;
+            b33p.wait_for("b33p caught up", PATIENCE, |snapshot| {
+                snapshot.synced.then_some(())
+            })?;
             b33p.act(Action::RetrySend { index })?;
             peer.sync_printing(text)
         },

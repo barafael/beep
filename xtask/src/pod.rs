@@ -376,14 +376,14 @@ impl Pod {
             .with_context(|| format!("podman exec {}", argv.join(" ")))
     }
 
-    /// Stops `service` until [`Self::start`]: the pod's restart policy leaves a stopped container
-    /// stopped.
-    pub fn stop(&self, service: Service) -> Result<()> {
-        process::run(podman(&["stop", &container(service)]))
+    /// Freezes `service` until [`Self::unpause`]: its connections stay open, and nothing answers
+    /// on them, as when a network goes away without a word.
+    pub fn pause(&self, service: Service) -> Result<()> {
+        process::run(podman(&["pause", &container(service)]))
     }
 
-    pub fn start(&self, service: Service) -> Result<()> {
-        process::run(podman(&["start", &container(service)]))
+    pub fn unpause(&self, service: Service) -> Result<()> {
+        process::run(podman(&["unpause", &container(service)]))
     }
 
     pub fn restart(&self, service: Service) -> Result<()> {
