@@ -14,6 +14,7 @@ mod clients;
 mod core;
 mod desktop;
 mod groups;
+mod lost;
 mod presage;
 mod setup;
 mod storage;
@@ -21,6 +22,7 @@ mod storage;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::pod::Pod;
 
 pub(crate) use self::android::android;
 pub(crate) use self::attachments::attachments;
@@ -37,10 +39,13 @@ const PATIENCE: Duration = Duration::from_millis(PATIENCE_MS);
 /// Exporting, uploading, downloading and importing a message history.
 const HISTORY_PATIENCE: Duration = Duration::from_secs(600);
 
-/// Runs a phase's checks on a fresh tally, then fails if any of them failed.
-pub(crate) fn phase(run: impl FnOnce(&mut Checks) -> Result<()>) -> Result<()> {
+/// Runs a phase's checks on a fresh tally, then fails if any of them failed. Last, also after
+/// a check the rest depend on failed: that no client lost a message ([`lost`]).
+pub(crate) fn phase(containers: &Pod, run: impl FnOnce(&mut Checks) -> Result<()>) -> Result<()> {
     let mut checks = Checks::default();
-    run(&mut checks)?;
+    let ran = run(&mut checks);
+    checks.record("no client lost a message", || lost::none(containers));
+    ran?;
     checks.finish()
 }
 

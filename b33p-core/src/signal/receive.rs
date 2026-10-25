@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -105,9 +105,7 @@ async fn receive(
     removed: Rc<tokio::sync::Notify>,
 ) {
     const MAX_BACKOFF: Duration = Duration::from_secs(60);
-    let mut names = Names::new();
-    // Kept across reconnects: what was owed before a drop goes out once the queue drains again.
-    let mut receipts = Receipts::default();
+    let mut kept = Kept::default();
     let mut backoff = Duration::from_secs(1);
     let woke = Rc::new(tokio::sync::Notify::new());
     let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
@@ -121,7 +119,7 @@ async fn receive(
                 if !ctx.events.send(Event::Connected) {
                     return;
                 }
-                receipts.live = false;
+                kept.receipts.live = false;
                 pin_mut!(messages);
                 loop {
                     // Only between messages, so one is never handled halfway.
@@ -139,16 +137,9 @@ async fn receive(
                     };
                     // Something came through, so the connection works again.
                     backoff = Duration::from_secs(1);
-                    let handled = handle_received(
-                        &manager,
-                        &ctx,
-                        &avatars,
-                        &mut names,
-                        &repairs,
-                        &mut receipts,
-                        received,
-                    )
-                    .await;
+                    let handled =
+                        handle_received(&manager, &ctx, &avatars, &mut kept, &repairs, received)
+                            .await;
                     if !handled {
                         return;
                     }
@@ -229,11 +220,15 @@ async fn handle_received(
     manager: &Mgr,
     ctx: &Ctx,
     avatars: &AvatarFetcher,
-    names: &mut Names,
+    kept: &mut Kept,
     repairs: &Rc<RefCell<Repairs>>,
-    receipts: &mut Receipts,
     received: Received,
 ) -> bool {
+    let Kept {
+        names,
+        receipts,
+        decrypted,
+    } = kept;
     let events = &ctx.events;
     match received {
         Received::QueueEmpty => {
@@ -249,11 +244,26 @@ async fn handle_received(
             avatars.request();
             true
         }
-        Received::DecryptionError { sender, error } => {
+        Received::DecryptionError {
+            sender,
+            sender_device,
+            timestamp,
+            error,
+        } => {
             // The server delivers a message again now and then (after a reconnect, say); one
             // already read is turned away by the session. Nothing to mend, nothing to say.
             if matches!(error, SignalProtocolError::DuplicatedMessage(..)) {
-                debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
+                if decrypted.contains(&(sender, sender_device, timestamp)) {
+                    debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
+                } else {
+                    // The session is sound; only this message is gone.
+                    warn!(
+                        sender = %sender.service_id_string(),
+                        device = %sender_device,
+                        timestamp,
+                        "lost a message: its sender had used its counter for another one"
+                    );
+                }
                 return true;
             }
             warn!(sender = %sender.service_id_string(), error = %scrubbed(&error), "failed to decrypt a message");
@@ -320,6 +330,8 @@ async fn handle_received(
             true
         }
         Received::Content(content) => {
+            let metadata = &content.metadata;
+            decrypted.note((metadata.sender, metadata.sender_device, stored_at(&content)));
             let handled = handle_content(manager, ctx, names, receipts, &content).await;
             if receipts.live {
                 receipts.send(&ctx.outbox).await;
@@ -1002,6 +1014,49 @@ fn from_our_account(own: ServiceId, content: &Content) -> bool {
     !matches!(content.body, ContentBody::SynchronizeMessage(_)) || content.metadata.sender == own
 }
 
+/// What receiving keeps from one message to the next, across reconnects: what was owed before
+/// a drop goes out once the queue drains again.
+#[derive(Default)]
+struct Kept {
+    names: Names,
+    receipts: Receipts,
+    decrypted: Decrypted,
+}
+
+/// An envelope, as a retry receipt names it: by sender, device and the envelope's timestamp.
+type EnvelopeRef = (ServiceId, DeviceId, u64);
+
+/// The envelopes decrypted lately. A message that fails as one already decrypted
+/// (`DuplicatedMessage`) but isn't among them was never read here: its sender encrypted it with
+/// a counter it had used for another message, two sends at once, and it is lost. Only what
+/// presage hands on as content is noted, so a retry receipt or the contacts sync delivered again
+/// reads as lost too.
+#[derive(Default)]
+struct Decrypted {
+    order: VecDeque<EnvelopeRef>,
+    seen: HashSet<EnvelopeRef>,
+}
+
+/// Envelopes [`Decrypted`] remembers: one is delivered again soon after it first came, if at all.
+const DECRYPTED_REMEMBERED: usize = 4096;
+
+impl Decrypted {
+    fn note(&mut self, envelope: EnvelopeRef) {
+        if self.seen.insert(envelope) {
+            self.order.push_back(envelope);
+        }
+        if self.order.len() > DECRYPTED_REMEMBERED
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.seen.remove(&oldest);
+        }
+    }
+
+    fn contains(&self, envelope: &EnvelopeRef) -> bool {
+        self.seen.contains(envelope)
+    }
+}
+
 /// The delivery receipts we owe, by sender, until they are sent. While the queue drains after
 /// connecting, each sender's are gathered and go out together once it is empty, as
 /// Signal-Desktop holds its own back until then; after that, each goes out at once.
@@ -1044,6 +1099,28 @@ impl Receipts {
 mod tests {
     use super::*;
     use presage::libsignal_service::content::DataMessage;
+
+    /// An envelope decrypted here is known again by sender, device and timestamp, until
+    /// `DECRYPTED_REMEMBERED` newer ones have pushed it out.
+    #[test]
+    fn decrypted_envelopes_are_remembered_for_a_while() {
+        let ann = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000001")
+            .unwrap();
+        let (one, two) = (DeviceId::new(1).unwrap(), DeviceId::new(2).unwrap());
+        let mut decrypted = Decrypted::default();
+        decrypted.note((ann, one, 5));
+        decrypted.note((ann, one, 5));
+        assert!(decrypted.contains(&(ann, one, 5)));
+        assert!(!decrypted.contains(&(ann, two, 5)));
+        assert!(!decrypted.contains(&(ann, one, 6)));
+        for timestamp in 100..100 + DECRYPTED_REMEMBERED as u64 {
+            decrypted.note((ann, two, timestamp));
+        }
+        assert!(!decrypted.contains(&(ann, one, 5)));
+        assert!(decrypted.contains(&(ann, two, 100)));
+        assert_eq!(decrypted.order.len(), DECRYPTED_REMEMBERED);
+        assert_eq!(decrypted.seen.len(), DECRYPTED_REMEMBERED);
+    }
 
     /// Delivery receipts go out one per sender, at most `RECEIPT_TIMESTAMPS` timestamps each,
     /// and only once.

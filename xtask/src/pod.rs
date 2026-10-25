@@ -4,6 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::error::{Context, Error, Result, WithContext};
@@ -172,6 +173,8 @@ pub struct Pod {
     repo: PathBuf,
     /// pod.yaml with its paths and clients filled in: hostPath must be absolute.
     rendered: PathBuf,
+    /// What tells of a lost message, from outside the containers' logs ([`Self::note_lost`]).
+    lost: Mutex<Vec<String>>,
 }
 
 impl Pod {
@@ -179,6 +182,7 @@ impl Pod {
         Self {
             repo: repo.to_owned(),
             rendered: repo.join("target/testbox-pod.yaml"),
+            lost: Mutex::default(),
         }
     }
 
@@ -287,6 +291,40 @@ impl Pod {
         }
         down.arg(&self.rendered);
         process::run(down)
+    }
+
+    /// `service`'s log so far, what it wrote to stdout and stderr alike.
+    pub fn log(&self, service: Service) -> Result<String> {
+        let name = container(service);
+        let logs = podman(&["logs", &name])
+            .output()
+            .with_context(|| format!("podman logs {name}"))?;
+        if !logs.status.success() {
+            return Err(Error::Failed(format!(
+                "podman logs {name}: {}",
+                String::from_utf8_lossy(&logs.stderr)
+            )));
+        }
+        let mut log = String::from_utf8_lossy(&logs.stdout).into_owned();
+        log.push_str(&String::from_utf8_lossy(&logs.stderr));
+        Ok(log)
+    }
+
+    /// Notes `line` as telling of a lost message: for what only a command's output says, such
+    /// as presage-cli's.
+    pub fn note_lost(&self, line: String) {
+        self.lost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(line);
+    }
+
+    /// What [`Self::note_lost`] noted.
+    pub fn lost(&self) -> Vec<String> {
+        self.lost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn logs(&self, services: &[&str]) -> Result<()> {

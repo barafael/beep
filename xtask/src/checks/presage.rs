@@ -2,6 +2,9 @@ use crate::error::{Error, Result};
 use crate::pod::{Pod, Service};
 use testbox_tools::keys::KeyFile;
 
+/// What presage-cli prints for a message it failed to decrypt (presage-cli/src/main.rs).
+const LOST: &str = "failed to decrypt a message";
+
 /// A presage-cli account of the box's.
 #[derive(Clone, Copy)]
 pub(super) enum Account {
@@ -115,7 +118,14 @@ impl<'pod> Presage<'pod> {
 
     /// Receives what is queued, answering what asks for an answer; what presage-cli printed.
     pub(super) fn sync(&self) -> Result<String> {
-        self.cli(&["sync", "--stop-after-empty-queue"], "")
+        let received = self.cli(&["sync", "--stop-after-empty-queue"], "")?;
+        // presage-cli's `Received::DecryptionError`, for the check every phase ends with.
+        for line in received.lines().filter(|line| line.contains(LOST)) {
+            let account = self.account.name();
+            self.containers
+                .note_lost(format!("presage-cli ({account}): {}", line.trim()));
+        }
+        Ok(received)
     }
 
     /// Receives what is queued; fails unless presage-cli printed `expected`.
