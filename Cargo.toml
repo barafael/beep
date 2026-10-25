@@ -56,16 +56,18 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e3
 #        libsignal-service branch)
 #   #472 a sender's profile key stored before the message is handed on, not left to the task
 #        that fetches their profile
+#   #473 the manager's ciphers and senders share one session lock (needs
+#        libsignal-service-rs#488)
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length) and #460 (the provisioning link logged at debug instead of
 # info); #445 (drop sync messages from other accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "e080304e669846cd6161db3ee11193864db2b875" }
+presage = { git = "https://github.com/barafael/presage", rev = "7e868e4a6444d4954bfe49def5a39fd0c1a62d87" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "e080304e669846cd6161db3ee11193864db2b875", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "7e868e4a6444d4954bfe49def5a39fd0c1a62d87", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -83,19 +85,18 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Go back to whisperfish's once both have landed.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
-# Branch langis/integration of our libsignal-service fork: the revision presage pins plus
-# #473 (group changes through /v2/groups, with the avatar upload, which presage #448 needs),
-# #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy socket
-# after a stall),
-# #482 (websocket errors that name their cause, the string reasons in `ServiceError` as
-# enums, the task's outcome handed to the pipes) and servers of one's own
-# (`SignalServers::Custom`, which presage's integration branch follows). Landed upstream and
-# dropped from the branch: #474 (drop sync messages from other accounts on the PNI path too),
-# #478 (a read timeout instead of one for the whole request, so the history download isn't
-# cut off).
+# Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group
+# changes through /v2/groups, with the avatar upload, which presage #448 needs), #476 (send a
+# sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
+# #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
+# the task's outcome handed to the pipes), #488 (one session step at a time, through a
+# `SessionLock`) and servers of one's own (`SignalServers::Custom`, which presage's integration
+# branch follows). Landed upstream and dropped from the branch: #474 (drop sync messages from
+# other accounts on the PNI path too), #478 (a read timeout instead of one for the whole
+# request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "ea38d91a12aad14e945542e9cf970c3d0a5b0be2" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "3b76dca287b251160a03c955739d25466d59819d" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
