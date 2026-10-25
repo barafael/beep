@@ -20,7 +20,11 @@ branches with the session lock). Its commits, oldest first:
 | `testbox/README: run, the records, screenshots and the new checks` | | |
 | `testbox: the failed-send check pauses the server instead of stopping it` | A stopped server closes b33p's connection, and b33p lets nobody write until caught up; TESTPLAN.md §1.2 item 3 ("send while offline … Not sent · Retry") describes what b33p prevents | In the box |
 | `b33p-core: reactions, deletes, edits and quotes find an edited message` | Signal's apps name an edited message by its latest edit's time; b33p dropped reactions, deletes and second edits to edited messages, and its replies quoted the first text. Pins presage `fix/edited-targets` | Unit tests pass; in the box |
-| `testbox: an emoji font in b33p's image` | Reactions showed as empty boxes in screenshots | In the box |
+| `testbox: an emoji font in b33p's image` | Reactions showed as empty boxes in screenshots; it then exposed the Qt crash below | In the box |
+| `testbox: each run keeps its records in a directory of its own` | `run` deleted the last run's records | |
+| `testbox: the failed-send check waits for the keepalive to give up` | A send on a silent connection fails after ~2 min (keepalive), then presage's retry | In the box |
+| `b33p-core: a new contact's chat takes their name once presage has it` | presage saves a new sender's contact in a background task and says nothing; the chat kept the UUID as its title when b33p was first | In the box |
+| (uncommitted) Slint pin at `fix/qt-color-bitmap-glyphs` | b33p aborted ("double free or corruption") drawing 📎 with Noto Color Emoji on Debian 12's Qt 6.4 | Mock repro, then the box |
 
 ## presage (barafael/presage)
 
@@ -35,6 +39,12 @@ branches with the session lock). Its commits, oldest first:
 |---|---|---|
 | `langis/integration-next` (`3b76dca`) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488) | Pinned by `testbox-green` for presage-cli too; no change needed |
 
+## Slint (barafael/slint)
+
+| Branch | What | State |
+|---|---|---|
+| `fix/qt-color-bitmap-glyphs` (`6b8eef3`), pushed | `langis/integration-new` (`e38356d`, what b33p pins) plus one commit: the Qt backend renders glyphs of colour bitmap fonts (CBDT, sbix) with swash and draws them as images. Qt 6.4.2's `QFontEngineFT::loadGlyph` writes past a glyph buffer for them from `drawGlyphRun` (valgrind, b33p's mock on Debian 12); Qt 6.8.2 doesn't. For a PR, rebase the one commit on upstream master | Built into b33p's image |
+
 ## Testbox runs
 
 Each phase on a fresh box (`down --wipe`, `up`, `test`).
@@ -47,7 +57,7 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 
 ## Open
 
-- In `desktop` and `attachments`, b33p titles the peer by its UUID; in `core`, "Peer". Desktop
-  writes no profile. Not explained yet.
+- (Explained) The peer titled by its UUID: presage's background contact save racing b33p;
+  fixed in b33p-core.
 - Receipts and read syncs for an edited message name its edit's time too (Signal-Desktop
   `MessageReceipts`); b33p keeps deliveries by the first time. Not checked yet.
