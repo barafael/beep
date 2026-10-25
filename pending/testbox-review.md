@@ -58,14 +58,14 @@ doesn't check yet. The branches themselves are in [branches.md](branches.md).
 
 ## User flows the phases don't check yet
 
-Added in this round: reactions and replies each way and a delete for everyone from Desktop
-(`desktop`); a send to a server that doesn't answer, and its retry (`core`); that no client
-crashed (every phase).
+Added in this round: reactions, replies and emoji each way and a delete for everyone from
+Desktop (`desktop`); a send to a server that doesn't answer, and its retry (`core`); that no
+client crashed (every phase).
 
 Still missing, roughly by how often people do them:
 
-- An emoji, a long text (over 2 KB: sent as a long-text attachment), and right-to-left text,
-  each way with Desktop.
+- A long text (over 2 KB: sent as a long-text attachment) and right-to-left text, each way
+  with Desktop.
 - Typing indicators each way.
 - Read receipts from b33p (window focus) to Desktop; b33p marking read what Android read.
 - Disappearing messages in a one-to-one chat: a timer set on Desktop, the messages gone on
