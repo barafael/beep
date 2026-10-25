@@ -62,6 +62,19 @@ pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>)> {
 /// already open; no abstract socket or signal beyond itself. Best effort on an older kernel: the
 /// status says what holds.
 pub fn sandbox(readable: impl IntoIterator<Item = PathBuf>) -> Result<RestrictionStatus> {
+    restrict(readable, [])
+}
+
+/// [`sandbox`], and files beneath `writable` also written and made: for testbox/shot's
+/// screenshots.
+pub fn sandbox_writing(writable: PathBuf) -> Result<RestrictionStatus> {
+    restrict([], [writable])
+}
+
+fn restrict(
+    readable: impl IntoIterator<Item = PathBuf>,
+    writable: impl IntoIterator<Item = PathBuf>,
+) -> Result<RestrictionStatus> {
     let abi = ABI::V9;
     Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
@@ -70,6 +83,9 @@ pub fn sandbox(readable: impl IntoIterator<Item = PathBuf>) -> Result<Restrictio
         .and_then(|ruleset| ruleset.create())
         .and_then(|ruleset| {
             ruleset.add_rules(path_beneath_rules(readable, AccessFs::from_read(abi)))
+        })
+        .and_then(|ruleset| {
+            ruleset.add_rules(path_beneath_rules(writable, AccessFs::from_all(abi)))
         })
         .and_then(|ruleset| ruleset.restrict_self())
         .describe("Landlock")
@@ -142,6 +158,42 @@ pub async fn follow(
         eprintln!("testbox-vnc: closing a display: {error}");
     }
     ended
+}
+
+/// How long a display stays quiet before [`snapshot`] takes its frame as whole: vnc-rs marks no
+/// update's end, so the frame is whole once all of it came and nothing more has for this long.
+const SETTLED: Duration = Duration::from_millis(200);
+
+/// The whole display once, from a client just connected ([`connect`]), for a screenshot; fails
+/// if it isn't whole within `patience`. Closes the connection.
+pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
+    let mut frame = Frame::default();
+    let taken = tokio::time::timeout(patience, async {
+        let mut quiet = Duration::ZERO;
+        loop {
+            let mut came = false;
+            while let Some(event) = client.poll_event().await.describe("the display")? {
+                frame.apply(event)?;
+                came = true;
+            }
+            quiet = if came { Duration::ZERO } else { quiet + FRAME };
+            if frame.width > 0 && frame.changed == Some(frame.whole()) && quiet >= SETTLED {
+                return Ok(());
+            }
+            tokio::time::sleep(FRAME).await;
+        }
+    })
+    .await;
+    if let Err(error) = client.close().await {
+        eprintln!("testbox-vnc: closing a display: {error}");
+    }
+    match taken {
+        Ok(Ok(())) => Ok(frame),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(Error::Failed(format!(
+            "not all of the display came within {patience:?}"
+        ))),
+    }
 }
 
 /// What the display sent since the last time, into `frame`; then the next incremental update

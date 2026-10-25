@@ -8,3 +8,4 @@ __pycache__
 /testbox/desktop/node_modules
 /testbox/android/agent/build
 /testbox/android/agent/.gradle
+/testbox/shot/target

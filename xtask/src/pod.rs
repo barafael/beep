@@ -295,8 +295,30 @@ impl Pod {
 
     /// `service`'s log so far, what it wrote to stdout and stderr alike.
     pub fn log(&self, service: Service) -> Result<String> {
-        let name = container(service);
-        let logs = podman(&["logs", &name])
+        self.log_named(&container(service))
+    }
+
+    /// The pod's containers by name, stopped ones too; none if podman can't say.
+    pub fn containers(&self) -> Vec<String> {
+        let listed = process::output(
+            podman(&[
+                "ps",
+                "--all",
+                "--filter",
+                &format!("pod={POD}"),
+                "--format",
+                "{{.Names}}",
+            ]),
+            "",
+        );
+        listed
+            .map(|names| names.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::log`] of the container `name`.
+    pub fn log_named(&self, name: &str) -> Result<String> {
+        let logs = podman(&["logs", name])
             .output()
             .with_context(|| format!("podman logs {name}"))?;
         if !logs.status.success() {

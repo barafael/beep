@@ -16,6 +16,7 @@ mod desktop;
 mod groups;
 mod lost;
 mod presage;
+mod record;
 mod setup;
 mod storage;
 
@@ -29,6 +30,7 @@ pub(crate) use self::attachments::attachments;
 pub(crate) use self::core::core;
 pub(crate) use self::desktop::desktop;
 pub(crate) use self::groups::groups;
+pub(crate) use self::record::Record;
 pub(crate) use self::storage::storage;
 
 /// How long a client may take to say it listens: the emulator's first boot is the slowest.
@@ -40,18 +42,27 @@ const PATIENCE: Duration = Duration::from_millis(PATIENCE_MS);
 const HISTORY_PATIENCE: Duration = Duration::from_secs(600);
 
 /// Runs a phase's checks on a fresh tally, then fails if any of them failed. Last, also after
-/// a check the rest depend on failed: that no client lost a message ([`lost`]).
-pub(crate) fn phase(containers: &Pod, run: impl FnOnce(&mut Checks) -> Result<()>) -> Result<()> {
-    let mut checks = Checks::default();
+/// a check the rest depend on failed: that no client lost a message ([`lost`]); then the logs
+/// go into the phase's [`Record`].
+pub(crate) fn phase(
+    containers: &Pod,
+    record: Record,
+    run: impl FnOnce(&mut Checks) -> Result<()>,
+) -> Result<()> {
+    let mut checks = Checks {
+        failed: Vec::new(),
+        kept: record,
+    };
     let ran = run(&mut checks);
     checks.record("no client lost a message", || lost::none(containers));
+    checks.kept.keep_logs(containers);
     ran?;
     checks.finish()
 }
 
-#[derive(Default)]
 pub(crate) struct Checks {
     failed: Vec<String>,
+    kept: Record,
 }
 
 impl Checks {
@@ -72,6 +83,7 @@ impl Checks {
 
     /// Prints the outcome; a failure is tallied and yields `None`.
     fn report<Found>(&mut self, name: &str, outcome: Result<Found>) -> Option<Found> {
+        self.kept.shoot(name);
         match outcome {
             Ok(found) => {
                 println!("check {name}: passed");

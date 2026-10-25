@@ -52,7 +52,13 @@ enum Command {
     ///
     /// `up --desktop --android` brings up every client a phase drives. A pass shows agreement
     /// with Signal-Server's test mode at its pin, not with Signal's servers.
-    Test { phase: Phase },
+    Test {
+        phase: Phase,
+        /// Also takes each client's display after each check, into the phase's record
+        /// (target/testbox-record/<phase>/) beside the containers' logs.
+        #[arg(long)]
+        screenshots: bool,
+    },
     /// Shows the clients' displays in a window.
     Vnc {
         /// Lets the window's keys and pointer through to the clients, where they race a
@@ -105,7 +111,7 @@ fn main() -> ExitCode {
                 .collect();
             up(&pod, &clients)
         }
-        Command::Test { phase } => test(&pod, &repo, phase),
+        Command::Test { phase, screenshots } => test(&pod, &repo, phase, screenshots),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -162,9 +168,14 @@ fn up(pod: &Pod, clients: &[Client]) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn test(pod: &Pod, repo: &Path, phase: Phase) -> Result<()> {
+fn test(pod: &Pod, repo: &Path, phase: Phase, screenshots: bool) -> Result<()> {
     let sockets = Sockets::new(repo);
-    checks::phase(pod, |tally| match phase {
+    let name = clap::ValueEnum::to_possible_value(&phase)
+        .ok_or("a phase without a name")?
+        .get_name()
+        .to_owned();
+    let record = checks::Record::new(pod, repo, &name, screenshots)?;
+    checks::phase(pod, record, |tally| match phase {
         Phase::Core => checks::core(tally, pod, &sockets),
         Phase::Desktop => checks::desktop(tally, pod, &sockets),
         Phase::Android => checks::android(tally, pod, &sockets),
@@ -212,6 +223,6 @@ fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn test(_pod: &Pod, _repo: &Path, _phase: Phase) -> Result<()> {
+fn test(_pod: &Pod, _repo: &Path, _phase: Phase, _screenshots: bool) -> Result<()> {
     Err("the harness is Unix only (b33p-slint `harness` feature)".into())
 }
