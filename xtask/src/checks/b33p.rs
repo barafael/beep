@@ -188,6 +188,19 @@ pub(super) fn outgoing_index(b33p: &mut Harness, text: &str) -> Result<u32> {
     })
 }
 
+/// The harness index of the newest message from someone else with `text` in the open
+/// conversation.
+pub(super) fn incoming_index(b33p: &mut Harness, text: &str) -> Result<u32> {
+    b33p.wait_for(&format!("the incoming {text:?}"), PATIENCE, |snapshot| {
+        snapshot
+            .messages
+            .iter()
+            .rev()
+            .find(|message| !message.outgoing && !message.notice && message.text == text)
+            .map(|message| message.index)
+    })
+}
+
 /// A first message from someone the account hasn't accepted is a message request, which b33p
 /// knows once it has read the storage service (b33p-core/src/state.rs `requests_known`), and
 /// won't let anyone write to before it is accepted.

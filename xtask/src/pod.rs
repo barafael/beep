@@ -18,6 +18,9 @@ const NETWORK: &str = "b33p-testbox";
 pub const RUN: &str = "target/testbox-run";
 /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
 pub const FILES: &str = "target/testbox-files";
+/// What each phase leaves for looking into it ([`crate::checks::Record`]), and `run`'s under
+/// `run/<when it started>/<round>-<phase>`.
+pub const RECORD: &str = "target/testbox-record";
 /// A directory per client for its display's socket, which only that client mounts
 /// (testbox/pod.yaml volumes `view-<client>`): no client reaches another's display.
 pub const VIEW: &str = "target/testbox-view";
@@ -283,8 +286,12 @@ impl Pod {
         state.is_ok_and(|running| running.trim() == "true")
     }
 
-    /// `--force` also removes the persistentVolumeClaims' volumes.
+    /// `--force` also removes the persistentVolumeClaims' volumes. Nothing to do if no pod was
+    /// ever played from here: kube down needs the YAML it was played from.
     pub fn down(&self, wipe: bool) -> Result<()> {
+        if !self.rendered.exists() {
+            return Ok(());
+        }
         let mut down = podman(&["kube", "down"]);
         if wipe {
             down.arg("--force");
@@ -295,8 +302,30 @@ impl Pod {
 
     /// `service`'s log so far, what it wrote to stdout and stderr alike.
     pub fn log(&self, service: Service) -> Result<String> {
-        let name = container(service);
-        let logs = podman(&["logs", &name])
+        self.log_named(&container(service))
+    }
+
+    /// The pod's containers by name, stopped ones too; none if podman can't say.
+    pub fn containers(&self) -> Vec<String> {
+        let listed = process::output(
+            podman(&[
+                "ps",
+                "--all",
+                "--filter",
+                &format!("pod={POD}"),
+                "--format",
+                "{{.Names}}",
+            ]),
+            "",
+        );
+        listed
+            .map(|names| names.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::log`] of the container `name`.
+    pub fn log_named(&self, name: &str) -> Result<String> {
+        let logs = podman(&["logs", name])
             .output()
             .with_context(|| format!("podman logs {name}"))?;
         if !logs.status.success() {
@@ -348,6 +377,16 @@ impl Pod {
         exec.args(argv);
         exec.output()
             .with_context(|| format!("podman exec {}", argv.join(" ")))
+    }
+
+    /// Freezes `service` until [`Self::unpause`]: its connections stay open, and nothing answers
+    /// on them, as when a network goes away without a word.
+    pub fn pause(&self, service: Service) -> Result<()> {
+        process::run(podman(&["pause", &container(service)]))
+    }
+
+    pub fn unpause(&self, service: Service) -> Result<()> {
+        process::run(podman(&["unpause", &container(service)]))
     }
 
     pub fn restart(&self, service: Service) -> Result<()> {

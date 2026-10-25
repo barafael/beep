@@ -62,6 +62,19 @@ pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>)> {
 /// already open; no abstract socket or signal beyond itself. Best effort on an older kernel: the
 /// status says what holds.
 pub fn sandbox(readable: impl IntoIterator<Item = PathBuf>) -> Result<RestrictionStatus> {
+    restrict(readable, [])
+}
+
+/// [`sandbox`], and files beneath `writable` also written and made: for testbox/shot's
+/// screenshots.
+pub fn sandbox_writing(writable: PathBuf) -> Result<RestrictionStatus> {
+    restrict([], [writable])
+}
+
+fn restrict(
+    readable: impl IntoIterator<Item = PathBuf>,
+    writable: impl IntoIterator<Item = PathBuf>,
+) -> Result<RestrictionStatus> {
     let abi = ABI::V9;
     Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
@@ -70,6 +83,9 @@ pub fn sandbox(readable: impl IntoIterator<Item = PathBuf>) -> Result<Restrictio
         .and_then(|ruleset| ruleset.create())
         .and_then(|ruleset| {
             ruleset.add_rules(path_beneath_rules(readable, AccessFs::from_read(abi)))
+        })
+        .and_then(|ruleset| {
+            ruleset.add_rules(path_beneath_rules(writable, AccessFs::from_all(abi)))
         })
         .and_then(|ruleset| ruleset.restrict_self())
         .describe("Landlock")
@@ -81,24 +97,31 @@ pub async fn connect(socket: &Path) -> Result<VncClient> {
     let stream = UnixStream::connect(socket)
         .await
         .context(socket.display().to_string())?;
+    start(stream).await
+}
+
+/// [`connect`]'s handshake, on any stream.
+async fn start<S>(stream: S) -> Result<VncClient>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
+{
     // The server has no authentication (`with-display`), so no credentials are asked for.
-    let client =
-        VncConnector::<UnixStream, std::future::Ready<Result<String, VncError>>>::new(stream)
-            .add_encoding(VncEncoding::CopyRect)
-            .add_encoding(VncEncoding::Raw)
-            // The cursor's shape apart from the frame: without it Xvnc draws the cursor into the
-            // frame, and where it was stays drawn (vnc-rs `X11Event::FullRefresh`'s "cursor
-            // ghosts").
-            .add_encoding(VncEncoding::CursorPseudo)
-            .allow_shared(true)
-            .set_pixel_format(PixelFormat::rgba())
-            .build()
-            .describe("a VNC connection")?
-            .try_start()
-            .await
-            .describe("a VNC handshake")?
-            .finish()
-            .describe("a VNC connection")?;
+    let client = VncConnector::<S, std::future::Ready<Result<String, VncError>>>::new(stream)
+        .add_encoding(VncEncoding::CopyRect)
+        .add_encoding(VncEncoding::Raw)
+        // The cursor's shape apart from the frame: without it Xvnc draws the cursor into the
+        // frame, and where it was stays drawn (vnc-rs `X11Event::FullRefresh`'s "cursor
+        // ghosts").
+        .add_encoding(VncEncoding::CursorPseudo)
+        .allow_shared(true)
+        .set_pixel_format(PixelFormat::rgba())
+        .build()
+        .describe("a VNC connection")?
+        .try_start()
+        .await
+        .describe("a VNC handshake")?
+        .finish()
+        .describe("a VNC connection")?;
     // The whole screen once: incremental updates bring only what changed since the last update,
     // so what never changes would never show.
     client
@@ -142,6 +165,54 @@ pub async fn follow(
         eprintln!("testbox-vnc: closing a display: {error}");
     }
     ended
+}
+
+/// How long a display stays quiet before [`snapshot`] takes its frame as whole: vnc-rs marks no
+/// update's end, so the frame is whole once all of it came and nothing more has for this long.
+const SETTLED: Duration = Duration::from_millis(200);
+
+/// The whole display once, from a client just connected ([`connect`]), for a screenshot; fails
+/// if it isn't whole within `patience`. Closes the connection.
+pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
+    let mut frame = Frame::default();
+    let taken = tokio::time::timeout(patience, async {
+        let mut quiet = Duration::ZERO;
+        // Pixels drawn since the size came. Not `frame.changed`: the size marks all of the
+        // frame changed before any of it is drawn, and a display slower than `SETTLED` to send
+        // its pixels was taken black.
+        let mut drawn: u64 = 0;
+        loop {
+            let mut came = false;
+            while let Some(event) = client.poll_event().await.describe("the display")? {
+                drawn = match &event {
+                    VncEvent::SetResolution(_) => 0,
+                    VncEvent::RawImage(rect, _) | VncEvent::Copy(rect, _) => {
+                        drawn + u64::from(rect.width) * u64::from(rect.height)
+                    }
+                    _ => drawn,
+                };
+                frame.apply(event)?;
+                came = true;
+            }
+            quiet = if came { Duration::ZERO } else { quiet + FRAME };
+            let whole = u64::from(frame.width) * u64::from(frame.height);
+            if whole > 0 && drawn >= whole && quiet >= SETTLED {
+                return Ok(());
+            }
+            tokio::time::sleep(FRAME).await;
+        }
+    })
+    .await;
+    if let Err(error) = client.close().await {
+        eprintln!("testbox-vnc: closing a display: {error}");
+    }
+    match taken {
+        Ok(Ok(())) => Ok(frame),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(Error::Failed(format!(
+            "not all of the display came within {patience:?}"
+        ))),
+    }
 }
 
 /// What the display sent since the last time, into `frame`; then the next incremental update
@@ -445,4 +516,55 @@ impl Frame {
 /// The row `line` rows below `y`, which may be past `u16`.
 fn below(y: u16, line: u16) -> usize {
     usize::from(y) + usize::from(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use vnc::PixelFormat;
+
+    use super::{snapshot, start};
+
+    /// A display 2x1 pixels big that sends its pixels `late`, after its size.
+    async fn display(mut server: DuplexStream, late: Duration) {
+        let mut version = [0; 12];
+        server.write_all(b"RFB 003.008\n").await.unwrap();
+        server.read_exact(&mut version).await.unwrap();
+        // One security type, None; its result, OK; the client's init.
+        server.write_all(&[1, 1]).await.unwrap();
+        server.read_u8().await.unwrap();
+        server.write_u32(0).await.unwrap();
+        server.read_u8().await.unwrap();
+        server.write_u16(2).await.unwrap();
+        server.write_u16(1).await.unwrap();
+        server
+            .write_all(&Vec::<u8>::from(PixelFormat::rgba()))
+            .await
+            .unwrap();
+        server.write_u32(0).await.unwrap();
+        let (mut requests, mut updates) = tokio::io::split(server);
+        tokio::spawn(async move {
+            let mut ignored = [0; 64];
+            while requests.read(&mut ignored).await.is_ok_and(|read| read > 0) {}
+        });
+        tokio::time::sleep(late).await;
+        // One update of one raw rectangle, all of it white.
+        let mut update = vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 1, 0, 0, 0, 0];
+        update.extend([u8::MAX; 8]);
+        updates.write_all(&update).await.unwrap();
+        // Open until the client closes.
+        std::future::pending::<()>().await;
+    }
+
+    #[tokio::test]
+    async fn a_slow_display_is_waited_for() {
+        let (client, server) = tokio::io::duplex(1024);
+        tokio::spawn(display(server, Duration::from_millis(500)));
+        let frame = snapshot(start(client).await.unwrap(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(frame.rgba(), [u8::MAX; 8]);
+    }
 }

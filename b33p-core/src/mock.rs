@@ -758,7 +758,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 quote,
                 files,
                 styles,
-                mentions: _,
+                mentions,
             }) => {
                 let attachments = files
                     .iter()
@@ -783,11 +783,20 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         Error::refused("failed to send: recipient is not registered")
                     };
                     let _ = events.send(Event::SendFailed {
-                        conversation,
+                        conversation: conversation.clone(),
                         timestamp,
                         retryable: error.retryable(),
                     });
-                    let _ = events.send(Event::Error(error));
+                    let command = Command::Send {
+                        conversation,
+                        timestamp,
+                        body,
+                        quote,
+                        files,
+                        styles,
+                        mentions,
+                    };
+                    let _ = events.send(Event::CommandFailed { error, command });
                     continue;
                 }
                 let echo = format!("You said: {body}");

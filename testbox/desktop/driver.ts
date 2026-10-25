@@ -152,6 +152,18 @@ async function typeAndSend(text: string): Promise<void> {
   await composer.press('Enter');
 }
 
+/** The newest message with `text`, hovered: what shows its buttons ("React to Message",
+ * "Reply to Message", "More actions"; TimelineMessage.dom.tsx). */
+async function hovered(text: string): Promise<Locator> {
+  const found = timeline()
+    .locator('[data-testid]')
+    .filter({ hasText: text })
+    .filter({ has: page().getByRole('button', { name: 'More actions' }) })
+    .last();
+  await found.hover();
+  return found;
+}
+
 /** Resolves to null, the methods' answer, once `locator` shows; rejects after `timeoutMs`. */
 /** `text` as Desktop renders it: the names it inserts are wrapped in Unicode isolation marks
  * (U+2068 FIRST STRONG ISOLATE, U+2069 POP DIRECTIONAL ISOLATE), which may stand between any two
@@ -306,6 +318,15 @@ const methods = {
       ),
       timeout_ms,
     ),
+  /** Waits for the open conversation's own message `text` to show `status` exactly
+   * (`.module-message__metadata__status-icon--{status}`, MessageMetadata.dom.tsx): after an edit,
+   * Desktop shows only what the receipts for the edit say (MessageReceipts.preload.ts
+   * `updateMessageSendStateWithReceipt`). */
+  wait_for_status: ({ text, status, timeout_ms }: Text & Timeout & { status: string }) =>
+    appears(
+      message(text).locator(`.module-message__metadata__status-icon--${status}`),
+      timeout_ms,
+    ),
   /** Waits for `text` in bold (`<strong>`, MessageTextRenderer.scss) in the open conversation. */
   wait_for_bold: ({ text, timeout_ms }: Text & Timeout) =>
     appears(
@@ -315,15 +336,44 @@ const methods = {
   /** Edits the message reading `old_text` to `text`, as edit_test.node.ts `sendEditedMessage`
    * does: the message's "More actions" menu, then "Edit", then the composer. */
   edit_message: async ({ old_text, text }: Text & { old_text: string }) => {
-    const edited = timeline()
-      .locator('[data-testid]')
-      .filter({ hasText: old_text })
-      .filter({ has: page().getByRole('button', { name: 'More actions' }) })
-      .last();
-    await edited.hover();
+    const edited = await hovered(old_text);
     await edited.getByRole('button', { name: 'More actions' }).click();
     await page().getByRole('menuitem', { name: 'Edit' }).click();
     await typeAndSend(text);
+    return null;
+  },
+  /** Reacts to the message with `text` with the first of the picker's emoji (ReactionPicker.dom.tsx,
+   * the account's preferred reactions; their buttons have no name). */
+  react_to_message: async ({ text }: Text) => {
+    const reacted = await hovered(text);
+    await reacted.getByRole('button', { name: 'React to Message' }).click();
+    await page().locator('.module-ReactionPickerPicker__button--emoji').first().click();
+    return null;
+  },
+  /** Waits for a reaction on the message with `text` (Message.dom.tsx
+   * `module-message__reactions__reaction`). */
+  wait_for_reaction: ({ text, timeout_ms }: Text & Timeout) =>
+    appears(message(text).locator('.module-message__reactions__reaction'), timeout_ms),
+  /** Sends `text` as a reply to the message with `quoted`, from its "Reply to Message" button. */
+  reply_to_message: async ({ quoted, text }: Text & { quoted: string }) => {
+    const replied = await hovered(quoted);
+    await replied.getByRole('button', { name: 'Reply to Message' }).click();
+    await typeAndSend(text);
+    return null;
+  },
+  /** Waits for the message with `text` to quote one with `quoted` (Quote.dom.tsx
+   * `module-quote__primary__text`). */
+  wait_for_quote: ({ text, quoted, timeout_ms }: Text & Timeout & { quoted: string }) =>
+    appears(
+      message(text).locator('.module-quote__primary__text').filter({ hasText: quoted }),
+      timeout_ms,
+    ),
+  /** Deletes the message with `text` for everyone, as attachments_test.node.ts deletes one for
+   * itself: its context menu's "Delete", then DeleteMessagesModal.dom.tsx's button. */
+  delete_for_everyone: async ({ text }: Text) => {
+    await message(text).last().click({ button: 'right' });
+    await page().getByRole('menuitem', { name: 'Delete' }).click();
+    await page().getByRole('button', { name: 'Delete for everyone' }).click();
     return null;
   },
   /** Sets the account's profile picture to Desktop's first preset avatar (Settings, Edit photo,

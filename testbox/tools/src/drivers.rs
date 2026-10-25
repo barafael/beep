@@ -64,6 +64,30 @@ pub enum Desktop {
         old_text: String,
         text: String,
     },
+    /// Reacts to the newest message with `text` with the first emoji of Desktop's picker.
+    ReactToMessage {
+        text: String,
+    },
+    /// Waits for a reaction on a message with `text` in the open conversation.
+    WaitForReaction {
+        text: String,
+        timeout_ms: u64,
+    },
+    /// Sends `text` as a reply to the newest message with `quoted`.
+    ReplyToMessage {
+        quoted: String,
+        text: String,
+    },
+    /// Waits for a message with `text` that quotes one with `quoted`.
+    WaitForQuote {
+        text: String,
+        quoted: String,
+        timeout_ms: u64,
+    },
+    /// Deletes the newest message with `text` for everyone.
+    DeleteForEveryone {
+        text: String,
+    },
     SetProfileAvatar,
     /// Records a voice message from the fake microphone and sends it in the open conversation.
     SendVoiceMessage,
@@ -92,6 +116,13 @@ pub enum Desktop {
     },
     WaitForDelivered {
         text: String,
+        timeout_ms: u64,
+    },
+    /// Waits for Desktop's own `text` in the open conversation to show `status`: "sent",
+    /// "delivered" or "read", and nothing further.
+    WaitForStatus {
+        text: String,
+        status: String,
         timeout_ms: u64,
     },
     /// Opens the conversation the left pane lists as `title` (a group's), accepting it if it is a

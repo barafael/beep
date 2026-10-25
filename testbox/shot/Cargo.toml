@@ -1,0 +1,17 @@
+[package]
+name = "testbox-shot"
+description = "A screenshot of each of the box's displays (`cargo testbox test --screenshots`)."
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+# A workspace of its own, as testbox/viewer and testbox/web are: only `test --screenshots`
+# builds it.
+[workspace]
+
+[dependencies]
+png = "0.18"
+tokio = { version = "1", features = ["rt", "time"] }
+testbox-vnc = { path = "../vnc" }
+testbox-tools = { path = "../tools" }

@@ -100,8 +100,8 @@ flowchart LR
 
 | Phase | `up` with | What it checks |
 |---|---|---|
-| `core` | | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, a message request, delivery receipts, reconnecting after the server drops |
-| `desktop` | `--desktop` | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, deletes |
+| `core` | | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, a message request, delivery receipts, reconnecting after the server drops, a send it leaves unanswered and its retry |
+| `desktop` | `--desktop` | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes and emoji each way |
 | `attachments` | `--desktop` | pictures, files and audio through CDN3 between b33p and Desktop; a profile picture and a sticker pack through CDN0 |
 | `android` | `--desktop --android` | Signal-Android registers as the primary and b33p links to it; Desktop links to the peer; text and receipts between the two accounts, each one's linked device in step |
 | `storage` | `--desktop --android` | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
@@ -117,11 +117,23 @@ cargo testbox test core
 Each check prints `check <what>: passed` or `failed: <why>`; `test` fails if any did. The
 phases' checks are in `xtask/src/checks/`, one file per phase.
 
+`cargo testbox run` does the three steps for each phase in turn, the clients each needs
+included, and sums up at the end: `cargo testbox run --rounds 2` runs every phase twice,
+`cargo testbox run desktop groups` only those.
+
 ## Watching and looking into a failure
 
 - `cargo testbox web` prints the address of a page with each client's display; `cargo testbox vnc`
   shows them in a window. Without `--interactive` they only show: your keys and clicks would race
   the drivers'.
+- Every phase leaves a record in `target/testbox-record/<phase>/` (`run`'s in
+  `target/testbox-record/run/<when it started>/<round>-<phase>/`): each container's log,
+  Desktop's own logs and Android's logcat as they were at the phase's end, so they outlast the
+  next `down --wipe`.
+- `test --screenshots` (and `run --screenshots`) also takes each client's display after each
+  check into the record, numbered in the order of the checks and named after them
+  (`07-text-from-b33p-reaches-desktop-b33p.png`); `testbox/shot` takes them over the displays'
+  sockets.
 - `cargo testbox logs b33p server` prints those containers' logs; the names are those in
   `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The box stays up
   after `test`, so a failed phase can be looked at as it was.
@@ -139,6 +151,6 @@ phases' checks are in `xtask/src/checks/`, one file per phase.
 | `patches/` | What libsignal and Signal-Android need to run against a local server |
 | `tools/` | The containers' entrypoints (`provision` makes the box's keys and servers file), the Android driver, and the drivers' protocol |
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |
-| `vnc/`, `viewer/`, `web/` | The displays: the VNC client, the window, the page |
+| `vnc/`, `viewer/`, `web/`, `shot/` | The displays: the VNC client, the window, the page, the screenshots |
 | `presage/`, `stickers/` | presage-cli at b33p's pin, and the tool that seeds a sticker pack |
 | `../xtask` | `cargo testbox` itself: bringing the pod up and down, and the phases' checks |

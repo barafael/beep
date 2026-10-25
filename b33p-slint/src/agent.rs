@@ -645,6 +645,7 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             )
         }),
         Action::SetWindowFocused { focused } => shared.act(|chat| {
+            shared.focus_override.set(Some(focused));
             chat.set_window_focused(focused);
             (None, Update::default())
         }),

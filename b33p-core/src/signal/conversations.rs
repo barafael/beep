@@ -2,7 +2,7 @@
 
 use super::errors::failed;
 use crate::Error;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use presage::{
     libsignal_service::{content::ContentBody, protocol::ServiceId},
@@ -471,6 +471,12 @@ pub(super) async fn ensure_conversation(
                     Thread::Contact(who) => Some(who),
                     Thread::Group(_) => None,
                 };
+                // Titled by their id: presage hasn't saved them as a contact yet.
+                if let Some(who @ ServiceId::Aci(_)) = contact
+                    && title == who.service_id_string()
+                {
+                    retitle_once_saved(manager, ctx, who);
+                }
                 let mut conversation = register(&ctx.threads, thread, title, subtitle, timer);
                 if let Some(who) = contact {
                     conversation.trust = trust_of(manager, &ctx.tables, who).await;
@@ -484,6 +490,26 @@ pub(super) async fn ensure_conversation(
         ctx.events.send(Event::Conversations(vec![conversation]));
     }
     id
+}
+
+/// Titles `who`'s chat once presage has saved them as a contact. presage fetches a new
+/// sender's profile, with their name, in a task of its own when their message comes, and says
+/// nothing when it is done: until then their chat is titled by their id.
+fn retitle_once_saved(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
+    let (manager, ctx) = (manager.clone(), ctx.clone());
+    tokio::task::spawn_local(async move {
+        // About a minute in all: the fetch is a request to the server.
+        let mut wait = Duration::from_millis(250);
+        for _ in 0..8 {
+            tokio::time::sleep(wait).await;
+            if matches!(manager.store().contact_by_id(&who).await, Ok(Some(_))) {
+                send_conversations(&manager, &ctx).await;
+                return;
+            }
+            wait *= 2;
+        }
+        debug!("a new sender wasn't saved as a contact");
+    });
 }
 
 /// How the UI names someone: "You" for us.

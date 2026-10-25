@@ -8,6 +8,16 @@ use testbox_tools::drivers;
 pub(super) type Desktop = Driver<drivers::Desktop>;
 pub(super) type Android = Driver<drivers::Android>;
 
+/// Waits for Desktop's own `text` in its open conversation to show `status` ("sent",
+/// "delivered" or "read"), and nothing further.
+pub(super) fn desktop_status(desktop: &mut Desktop, text: &str, status: &str) -> Result<()> {
+    desktop.call(drivers::Desktop::WaitForStatus {
+        text: text.to_owned(),
+        status: status.to_owned(),
+        timeout_ms: PATIENCE_MS,
+    })
+}
+
 /// Waits for `text` in Desktop's open conversation.
 pub(super) fn desktop_text(desktop: &mut Desktop, text: &str) -> Result<()> {
     desktop.call(drivers::Desktop::WaitForText {

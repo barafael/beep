@@ -32,9 +32,9 @@ const DESKTOP_DUPLICATE: &str = "DuplicatedMessage";
 const DESKTOP_DROPPED: &str = "queueEncryptedEnvelope error handling envelope ";
 const DESKTOP_DECRYPTED: &str = "queueing decrypted envelope ";
 /// Where Signal-Android's logcat goes in its container (testbox/tools `android`).
-const LOGCAT: &str = "/tmp/logcat.txt";
+pub(super) const LOGCAT: &str = "/tmp/logcat.txt";
 /// Signal-Desktop's logs, app.log and main.log, in its user data (testbox/desktop/driver.ts).
-const DESKTOP_LOGS: &str = "cat /home/desktop/data/logs/*.log";
+pub(super) const DESKTOP_LOGS: &str = "cat /home/desktop/data/logs/*.log";
 /// How many lost messages a failure lists.
 const LISTED: usize = 10;
 

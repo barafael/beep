@@ -295,6 +295,9 @@ pub struct ChatState {
     error: Option<crate::Error>,
     /// What failed, to try again from the error banner; see [`ChatState::retry_error`].
     error_retry: Option<Command>,
+    /// The message whose failed send the error is about: sending it again takes the error
+    /// away. See [`ChatState::show_error`].
+    error_send: Option<(ConversationId, u64)>,
     /// What was sent for each message shown as sending or failed, to send it again.
     pending_sends: HashMap<(ConversationId, u64), Command>,
     /// When the last message was sent; see [`ChatState::send_timestamp`].
@@ -313,6 +316,9 @@ pub struct ChatState {
     /// Incoming messages that came while their chat wasn't looked at, dated before what was
     /// read already (late, e.g. from a group): unread although `last_read` says otherwise.
     late: HashMap<ConversationId, Vec<MessageRef>>,
+    /// Others' messages edited since they came, by their first time: as Signal's apps do, an
+    /// edit is read anew, and its sender told.
+    unread_edits: HashMap<ConversationId, Vec<MessageRef>>,
     /// Chats opened before their stored history was here: read once it is.
     opened_unloaded: HashSet<ConversationId>,
     /// Messages counted as read this session, so none is again (one dated in the future stays

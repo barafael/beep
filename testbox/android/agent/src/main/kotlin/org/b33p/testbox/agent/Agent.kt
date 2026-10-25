@@ -58,6 +58,9 @@ private const val ROOT_UID = 0
  * ViewConfiguration `DEFAULT_LONG_PRESS_TIMEOUT`). */
 private const val LONG_PRESS_MS = 1000
 
+/** How long a swipe may bring no change before the screen is looked at again. */
+private const val SWIPE_STILL_MS = 2_000L
+
 /** What a list offers while it can scroll on: forward, or down as Compose's lists also say. */
 private val SCROLLS = listOf(AccessibilityAction.ACTION_SCROLL_FORWARD, AccessibilityAction.ACTION_SCROLL_DOWN)
 
@@ -314,7 +317,12 @@ private class Screen(private val device: Device, private val owner: Long) {
         is ScrollStep.Swipe -> {
           val seen = device.events()
           shell(swipeUp(step.list))
-          nextChange(seen, deadline) ?: throw TimeoutException("no \"$label\" within $timeoutMs ms")
+          // A list at its end doesn't move, and says nothing: it may have got there after the
+          // look before (a fling the app's stalls made look settled), so look again.
+          nextChange(seen, minOf(deadline, SystemClock.uptimeMillis() + SWIPE_STILL_MS))
+          if (SystemClock.uptimeMillis() >= deadline) {
+            throw TimeoutException("no \"$label\" within $timeoutMs ms")
+          }
         }
       }
     }

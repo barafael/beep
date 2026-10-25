@@ -29,14 +29,16 @@ qrcode = { version = "0.14", default-features = false }
 # text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
 # reviewed), which the messages need, and the Qt backend drawing variable fonts at their default
 # instance rather than their first named one (Qt 6.7+ loads a `QRawFont` from bytes as "named
-# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Rebuild the
-# branch when master moves; drop it once both have landed upstream and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Pinned at
+# branch fix/qt-color-bitmap-glyphs, which adds to it the Qt backend drawing emoji (colour bitmap
+# glyphs) itself: Qt 6.4's QRawFont overruns the heap on them (not proposed upstream yet). Rebuild
+# the branch when master moves; drop it once these have landed upstream and a release carries them.
+slint = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
@@ -58,16 +60,18 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e3
 #        that fetches their profile
 #   #473 the manager's ciphers and senders share one session lock (needs
 #        libsignal-service-rs#488)
+#   (branch fix/edited-targets, no PR yet) an edited message is found by its latest edit's
+#        time, which Signal's apps name it by; pinned at that branch, on langis/integration
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length) and #460 (the provisioning link logged at debug instead of
 # info); #445 (drop sync messages from other accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "7e868e4a6444d4954bfe49def5a39fd0c1a62d87" }
+presage = { git = "https://github.com/barafael/presage", rev = "ce281711e8660a2b171dcfdd3d68c47c8c70f3eb" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "7e868e4a6444d4954bfe49def5a39fd0c1a62d87", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ce281711e8660a2b171dcfdd3d68c47c8c70f3eb", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.

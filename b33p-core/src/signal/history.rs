@@ -42,6 +42,22 @@ fn reaction_target(reaction: &presage::proto::data_message::Reaction) -> Option<
     })
 }
 
+/// The message `target` names, by the time it was first sent: Signal's apps name an edited
+/// message by its latest edit's (Signal-Desktop `getMessageSentTimestamp`).
+pub(super) async fn original(
+    ctx: &Ctx,
+    conversation: &ConversationId,
+    target: MessageRef,
+) -> MessageRef {
+    match or_logged(ctx.tables.edited(conversation, &target).await, "edit times") {
+        Some(timestamp) => MessageRef {
+            timestamp,
+            ..target
+        },
+        None => target,
+    }
+}
+
 /// When a content was stored: what the store orders and pages by.
 pub(super) fn stored_at(content: &Content) -> u64 {
     content.metadata.client_timestamp.timestamp_millis() as u64
@@ -486,10 +502,14 @@ pub(super) async fn to_chat_message(
                 Some(author) => display_name(manager, names, author).await,
                 None => String::new(),
             };
+            // By the time of the version it quotes, which for an edited message is an edit's.
             let stored = match (thread_of(&conversation), quote.id) {
-                (Some(thread), Some(id)) => {
-                    manager.store().message(&thread, id).await.ok().flatten()
-                }
+                (Some(thread), Some(id)) => manager
+                    .store()
+                    .message_sent_or_edited_at(&thread, id)
+                    .await
+                    .ok()
+                    .flatten(),
                 _ => None,
             };
             // The quote's copy of the text is written by the quoting sender.
@@ -514,7 +534,12 @@ pub(super) async fn to_chat_message(
                 author_id: author_id
                     .map(|id| id.service_id_string())
                     .unwrap_or_default(),
-                timestamp: quote.id.unwrap_or_default(),
+                // The message's own time, which it is found by here.
+                timestamp: stored
+                    .as_ref()
+                    .map(|stored| stored.timestamp())
+                    .or(quote.id)
+                    .unwrap_or_default(),
             })
         }
         None => None,

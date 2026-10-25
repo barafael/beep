@@ -30,10 +30,11 @@ RUN --network=none \
 
 FROM docker.io/library/debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 # What b33p links against, and the Qt platform plugins (xcb in the box: QT_QPA_PLATFORM); Xvnc
-# and vncconfig for its display.
+# and vncconfig for its display. An emoji font, as a desktop has, for reactions in screenshots.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libqt6core6 libqt6gui6 libqt6widgets6 libqt6dbus6 qt6-qpa-plugins \
         libasound2 libfontconfig1 libwayland-client0 libxkbcommon0 fonts-dejavu-core \
+        fonts-noto-color-emoji \
         tigervnc-standalone-server tigervnc-tools \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/b33p /usr/local/bin/b33p

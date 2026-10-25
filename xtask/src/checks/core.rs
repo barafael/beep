@@ -1,10 +1,21 @@
-use super::b33p::{REQUEST_ACCEPTED, accept_request, peer_text_reaches, select, type_and_send};
+use std::time::Duration;
+
+use b33p_harness::{Action, Delivery};
+
+use super::b33p::{
+    REQUEST_ACCEPTED, accept_request, outgoing_index, peer_text_reaches, select, type_and_send,
+};
 use super::setup::{LinkedBox, linked_box};
 use super::{Checks, PATIENCE};
 use crate::Sockets;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pod::{Pod, Ready, Service};
 use crate::process;
+
+/// How long a send to a server that doesn't answer takes to fail: until libsignal-service's
+/// keepalive gives the connection up (55 s unanswered, found at its next tick), then presage's
+/// one retry on a new connection.
+const SILENT_SERVER: Duration = Duration::from_secs(5 * 60);
 
 /// b33p linked to a presage-cli primary, with a presage-cli peer.
 pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
@@ -61,6 +72,54 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
         )
         .map(drop)
     });
+
+    // TESTPLAN.md §1.2 item 3: a message that can't go out says so, and goes out when sent again.
+    // With the server paused, not stopped: a stopped one closes b33p's connection, and b33p lets
+    // nobody write until it has caught up again (b33p-core `can_write_to`). A paused one keeps
+    // the connection and answers nothing, as a network that goes away without a word does.
+    checks.record(
+        "a message sent while the server doesn't answer fails, and goes out when sent again",
+        || {
+            let text = "testbox core: while the server doesn't answer";
+            containers.pause(Service::Server)?;
+            let failed = (|| {
+                b33p.act(Action::Type {
+                    text: text.to_owned(),
+                })?;
+                if !b33p.act(Action::Send)? {
+                    return Err(Error::Failed("b33p didn't send it".to_owned()));
+                }
+                b33p.wait_for("b33p's message marked failed", SILENT_SERVER, |snapshot| {
+                    snapshot
+                        .messages
+                        .iter()
+                        .find(|message| message.outgoing && message.text == text)
+                        .filter(|message| message.delivery == Some(Delivery::Failed))
+                        .map(drop)
+                })
+            })();
+            containers.unpause(Service::Server)?;
+            failed?;
+            // The banner says it in words, not as the library's error (another error, about
+            // receiving, may stand in its place by now).
+            if let Some(error) = b33p.snapshot()?.error
+                && error.contains("failed to send")
+            {
+                return Err(Error::Failed(format!("the banner reads {error:?}")));
+            }
+            // Once b33p has caught up again, which it lets nobody write before.
+            let index = outgoing_index(&mut b33p, text)?;
+            b33p.wait_for("b33p caught up", PATIENCE, |snapshot| {
+                snapshot.synced.then_some(())
+            })?;
+            b33p.act(Action::RetrySend { index })?;
+            peer.sync_printing(text)?;
+            b33p.wait_for("the banner about it gone", PATIENCE, |snapshot| {
+                let error = snapshot.error.as_deref().unwrap_or_default();
+                (!error.contains("couldn't be sent")).then_some(())
+            })
+        },
+    );
 
     Ok(())
 }

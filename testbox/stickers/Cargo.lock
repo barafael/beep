@@ -1779,7 +1779,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=ea38d91a12aad14e945542e9cf970c3d0a5b0be2#ea38d91a12aad14e945542e9cf970c3d0a5b0be2"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=3b76dca287b251160a03c955739d25466d59819d#3b76dca287b251160a03c955739d25466d59819d"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",
@@ -2253,7 +2253,7 @@ dependencies = [
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=e080304e669846cd6161db3ee11193864db2b875#e080304e669846cd6161db3ee11193864db2b875"
+source = "git+https://github.com/barafael/presage?rev=ce281711e8660a2b171dcfdd3d68c47c8c70f3eb#ce281711e8660a2b171dcfdd3d68c47c8c70f3eb"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2276,7 +2276,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=e080304e669846cd6161db3ee11193864db2b875#e080304e669846cd6161db3ee11193864db2b875"
+source = "git+https://github.com/barafael/presage?rev=ce281711e8660a2b171dcfdd3d68c47c8c70f3eb#ce281711e8660a2b171dcfdd3d68c47c8c70f3eb"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2977,6 +2977,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3362,8 +3382,10 @@ name = "testbox-tools"
 version = "0.0.0"
 dependencies = [
  "derive_more",
+ "libc",
  "serde",
  "serde_json",
+ "signal-hook",
  "strum",
  "typeshare",
 ]

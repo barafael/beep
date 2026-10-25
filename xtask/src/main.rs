@@ -13,6 +13,7 @@ mod checks;
 mod error;
 #[cfg(unix)]
 mod harness;
+mod pins;
 mod pod;
 mod process;
 #[cfg(unix)]
@@ -52,7 +53,25 @@ enum Command {
     ///
     /// `up --desktop --android` brings up every client a phase drives. A pass shows agreement
     /// with Signal-Server's test mode at its pin, not with Signal's servers.
-    Test { phase: Phase },
+    Test {
+        phase: Phase,
+        /// Also takes each client's display after each check, into the phase's record
+        /// (target/testbox-record/<phase>/) beside the containers' logs.
+        #[arg(long)]
+        screenshots: bool,
+    },
+    /// Runs phases each on a fresh box with the clients it drives (`down --wipe`, `up`, `test`),
+    /// in rounds, and sums up; each run's records are in target/testbox-record/run/<when it started>/.
+    Run {
+        /// The phases, in order; all of them if none.
+        phases: Vec<Phase>,
+        /// How many times each.
+        #[arg(long, default_value_t = 1)]
+        rounds: u32,
+        /// As for `test`.
+        #[arg(long)]
+        screenshots: bool,
+    },
     /// Shows the clients' displays in a window.
     Vnc {
         /// Lets the window's keys and pointer through to the clients, where they race a
@@ -93,6 +112,32 @@ enum Phase {
     Groups,
 }
 
+impl Phase {
+    const ALL: [Phase; 6] = [
+        Phase::Core,
+        Phase::Desktop,
+        Phase::Attachments,
+        Phase::Android,
+        Phase::Storage,
+        Phase::Groups,
+    ];
+
+    fn name(self) -> String {
+        clap::ValueEnum::to_possible_value(&self)
+            .map(|value| value.get_name().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// The clients the phase drives, which `up` brings.
+    fn clients(self) -> &'static [Client] {
+        match self {
+            Phase::Core => &[],
+            Phase::Desktop | Phase::Attachments => &[Client::Desktop],
+            Phase::Android | Phase::Storage | Phase::Groups => &[Client::Desktop, Client::Android],
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let repo = repo_root();
     let pod = Pod::new(&repo);
@@ -105,7 +150,14 @@ fn main() -> ExitCode {
                 .collect();
             up(&pod, &clients)
         }
-        Command::Test { phase } => test(&pod, &repo, phase),
+        Command::Test { phase, screenshots } => {
+            test(&pod, &repo, phase, &phase.name(), screenshots)
+        }
+        Command::Run {
+            phases,
+            rounds,
+            screenshots,
+        } => run(&pod, &repo, &phases, rounds, screenshots),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -161,10 +213,63 @@ fn up(pod: &Pod, clients: &[Client]) -> Result<()> {
     pod.up(clients)
 }
 
+/// Each of `phases`, or all, `rounds` times, each on a fresh box; then how each went. Fails if
+/// any did.
+fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool) -> Result<()> {
+    let phases = if phases.is_empty() {
+        &Phase::ALL[..]
+    } else {
+        phases
+    };
+    // A directory of its own, by when it started: an earlier run's records stay.
+    let started = process::now()?;
+    let run = format!("run/{started}");
+    let runs = repo.join(pod::RECORD).join(&run);
+    let mut outcomes = Vec::new();
+    for round in 1..=rounds {
+        for &phase in phases {
+            let name = phase.name();
+            println!("== round {round}: {name}");
+            let outcome = pod
+                .down(true)
+                .and_then(|()| up(pod, phase.clients()))
+                .and_then(|()| {
+                    test(
+                        pod,
+                        repo,
+                        phase,
+                        &format!("{run}/{round}-{name}"),
+                        screenshots,
+                    )
+                });
+            if let Err(reason) = &outcome {
+                println!("== round {round}: {name}: {reason}");
+            }
+            outcomes.push((round, name, outcome.is_ok()));
+        }
+    }
+    println!("== summary (records in {})", runs.display());
+    for (round, name, passed) in &outcomes {
+        let outcome = if *passed { "passed" } else { "FAILED" };
+        println!("round {round} {name}: {outcome}");
+    }
+    let failed = outcomes.iter().filter(|(_, _, passed)| !passed).count();
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(error::Error::Failed(format!(
+            "{failed} of {} failed",
+            outcomes.len()
+        )))
+    }
+}
+
+/// A phase's checks, recorded in target/testbox-record/`record`.
 #[cfg(unix)]
-fn test(pod: &Pod, repo: &Path, phase: Phase) -> Result<()> {
+fn test(pod: &Pod, repo: &Path, phase: Phase, record: &str, screenshots: bool) -> Result<()> {
     let sockets = Sockets::new(repo);
-    checks::phase(pod, |tally| match phase {
+    let record = checks::Record::new(pod, repo, record, screenshots)?;
+    checks::phase(pod, record, |tally| match phase {
         Phase::Core => checks::core(tally, pod, &sockets),
         Phase::Desktop => checks::desktop(tally, pod, &sockets),
         Phase::Android => checks::android(tally, pod, &sockets),
@@ -212,6 +317,6 @@ fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn test(_pod: &Pod, _repo: &Path, _phase: Phase) -> Result<()> {
+fn test(_pod: &Pod, _repo: &Path, _phase: Phase, _record: &str, _screenshots: bool) -> Result<()> {
     Err("the harness is Unix only (b33p-slint `harness` feature)".into())
 }

@@ -43,8 +43,8 @@ use super::{
         forget_membership, is_member, own_membership_change, refresh_group, signed_group_change,
     },
     history::{
-        author_of, data_of, erase_deleted, is_outgoing, start_timers, stored_at, stored_timers,
-        to_chat_message, to_reaction,
+        author_of, data_of, erase_deleted, is_outgoing, original, start_timers, stored_at,
+        stored_timers, to_chat_message, to_reaction,
     },
     stories::on_story,
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
@@ -648,6 +648,7 @@ async fn handle_content(
         receipts.owe(content.metadata.sender, stored_at(content));
     }
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
+        let target = original(ctx, &id, target).await;
         return events.send(Event::Reaction {
             conversation: id,
             target,
@@ -674,6 +675,7 @@ async fn handle_content(
             author_id: author.service_id_string(),
             timestamp,
         };
+        let target = original(ctx, &id, target).await;
         // Only a message that was there, and by that author (presage checks too): a delete
         // of anything else would leave a "deleted" marker where nothing was.
         match erase_deleted(manager, ctx, &id, &thread, &target).await {
@@ -692,7 +694,8 @@ async fn handle_content(
     let Some(message) = to_chat_message(manager, names, id.clone(), content).await else {
         return true;
     };
-    if outgoing {
+    // An edit's time names the message it edits, not one of its own.
+    if outgoing && !edit {
         // Sent from another device: receipts name only the time, so remember where it went.
         if let Err(error) = ctx
             .tables
@@ -716,7 +719,17 @@ async fn handle_content(
     }
     // The store holds only the new text now; the state still knows the one before.
     if edit {
-        let target = message.reference();
+        // An edit of an edit names the one before; what it edits is the message first sent.
+        let target = original(ctx, &id, message.reference()).await;
+        if let Some(edited_at) = message.edited_at
+            && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
+        {
+            warn!(error = %scrubbed(&error), "failed to note when a message was edited");
+        }
+        // Edited from another device of ours: sent again, until a receipt names the edit.
+        if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
+            warn!(error = %scrubbed(&error), "failed to note an edited message as sent");
+        }
         return events.send(Event::Edited {
             conversation: id,
             target,
@@ -973,19 +986,28 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
         ) else {
             continue;
         };
-        let Ok(Some(thread)) = manager
-            .store()
-            .thread_for_sender_and_timestamp(&sender, timestamp)
-            .await
-        else {
-            continue;
+        let mut message = MessageRef {
+            author_id: sender.service_id_string(),
+            timestamp,
         };
-        read.entry(conversation_id(&thread))
-            .or_default()
-            .push(MessageRef {
-                author_id: sender.service_id_string(),
-                timestamp,
-            });
+        // As Signal's apps read an edited message: by its latest edit's time.
+        let conversation = match ctx.tables.edited_anywhere(&message).await {
+            Ok(Some((conversation, original))) => {
+                message.timestamp = original;
+                conversation
+            }
+            _ => {
+                let Ok(Some(thread)) = manager
+                    .store()
+                    .thread_for_sender_and_timestamp(&sender, timestamp)
+                    .await
+                else {
+                    continue;
+                };
+                conversation_id(&thread)
+            }
+        };
+        read.entry(conversation).or_default().push(message);
     }
     let now = now_millis();
     for (conversation, messages) in read {

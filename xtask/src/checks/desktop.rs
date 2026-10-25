@@ -1,10 +1,11 @@
 use b33p_harness::Action;
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_shows, chat_previewing, delivered, edit, outgoing_index,
-    peer_text_reaches, select, type_and_send,
+    REQUEST_ACCEPTED, accept_request, b33p_chat, b33p_shows, chat_previewing, delivered, edit,
+    incoming_index, outgoing_index, peer_text_reaches, select, type_and_send,
 };
 use super::clients::desktop_shows;
+use super::presage::Account;
 use super::setup::{LinkedBox, linked_box, linked_desktop};
 use super::{Checks, PATIENCE_MS};
 use crate::Sockets;
@@ -38,6 +39,17 @@ pub(crate) fn desktop(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
     checks.require(REQUEST_ACCEPTED, || {
         accept_request(&mut b33p, &conversation)
     })?;
+    // presage saves a new sender as a contact, with their profile's name, in a task of its own;
+    // the chat takes the name once it is there.
+    checks.record("b33p titles the peer's chat with their name", || {
+        let name = Account::Peer.name();
+        b33p_chat(
+            &mut b33p,
+            &conversation,
+            &format!("titled {name:?}"),
+            |chat| chat.title == name,
+        )
+    });
 
     // Desktop opens the conversation (the peer's own message reached it as a sync), reads b33p's
     // text, and answers.
@@ -108,6 +120,95 @@ pub(crate) fn desktop(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
         })?;
         b33p_shows(&mut b33p, &format!("{text:?} marked edited"), |message| {
             message.text == text && message.edited
+        })
+    });
+
+    // Reactions and replies each way, and TESTPLAN.md §1.4 item 6, a delete for everyone from the
+    // other side. On the messages above: Desktop's edited one and b33p's.
+    let from_desktop = "testbox desktop: from Desktop, edited";
+    checks.record("a reaction from b33p reaches Desktop", || {
+        let index = incoming_index(&mut b33p, from_desktop)?;
+        b33p.act(Action::React {
+            index,
+            emoji: "👍".to_owned(),
+        })?;
+        desktop.call(drivers::Desktop::WaitForReaction {
+            text: from_desktop.to_owned(),
+            timeout_ms: PATIENCE_MS,
+        })
+    });
+
+    checks.record("a reaction from Desktop reaches b33p", || {
+        desktop.call(drivers::Desktop::ReactToMessage {
+            text: edited_text.to_owned(),
+        })?;
+        b33p_shows(&mut b33p, "Desktop's reaction", |message| {
+            message.outgoing
+                && message.text == edited_text
+                && message.reactions.iter().any(|reaction| !reaction.outgoing)
+        })
+    });
+
+    checks.record("a reply from b33p quotes Desktop's message there", || {
+        let reply = "testbox desktop: a reply from b33p";
+        let index = incoming_index(&mut b33p, from_desktop)?;
+        b33p.act(Action::ReplyTo { index })?;
+        type_and_send(&mut b33p, reply)?;
+        desktop.call(drivers::Desktop::WaitForQuote {
+            text: reply.to_owned(),
+            quoted: from_desktop.to_owned(),
+            timeout_ms: PATIENCE_MS,
+        })
+    });
+
+    let reply_from_desktop = "testbox desktop: a reply from Desktop";
+    checks.record("a reply from Desktop quotes b33p's message in b33p", || {
+        desktop.call(drivers::Desktop::ReplyToMessage {
+            quoted: edited_text.to_owned(),
+            text: reply_from_desktop.to_owned(),
+        })?;
+        b33p_shows(&mut b33p, "Desktop's reply", |message| {
+            !message.outgoing
+                && message.text == reply_from_desktop
+                && message
+                    .quote
+                    .as_ref()
+                    .is_some_and(|quote| quote.text == edited_text)
+        })
+    });
+
+    checks.record("a delete for everyone from Desktop reaches b33p", || {
+        let index = incoming_index(&mut b33p, reply_from_desktop)?;
+        let timestamp = b33p
+            .snapshot()?
+            .messages
+            .iter()
+            .find(|message| message.index == index)
+            .map(|message| message.timestamp)
+            .ok_or("Desktop's reply went from b33p's view")?;
+        desktop.call(drivers::Desktop::DeleteForEveryone {
+            text: reply_from_desktop.to_owned(),
+        })?;
+        b33p_shows(&mut b33p, "Desktop's reply deleted", |message| {
+            message.timestamp == timestamp && message.deleted
+        })
+    });
+
+    // Emoji in a message each way: drawn from a colour bitmap font, which Qt 6.4's QRawFont
+    // overran the heap on (the Slint fork's Qt backend draws them itself now).
+    checks.record("emoji from b33p reach Desktop", || {
+        let text = "testbox desktop: emoji 🦀🎉";
+        type_and_send(&mut b33p, text)?;
+        desktop_shows(&mut desktop, text)
+    });
+
+    checks.record("emoji from Desktop reach b33p", || {
+        let text = "testbox desktop: emoji 👍📎";
+        desktop.call(drivers::Desktop::Send {
+            text: text.to_owned(),
+        })?;
+        b33p_shows(&mut b33p, "Desktop's emoji", |message| {
+            !message.outgoing && message.text == text
         })
     });
 
