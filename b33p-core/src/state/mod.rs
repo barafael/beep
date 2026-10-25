@@ -316,6 +316,9 @@ pub struct ChatState {
     /// Incoming messages that came while their chat wasn't looked at, dated before what was
     /// read already (late, e.g. from a group): unread although `last_read` says otherwise.
     late: HashMap<ConversationId, Vec<MessageRef>>,
+    /// Others' messages edited since they came, by their first time: as Signal's apps do, an
+    /// edit is read anew, and its sender told.
+    unread_edits: HashMap<ConversationId, Vec<MessageRef>>,
     /// Chats opened before their stored history was here: read once it is.
     opened_unloaded: HashSet<ConversationId>,
     /// Messages counted as read this session, so none is again (one dated in the future stays

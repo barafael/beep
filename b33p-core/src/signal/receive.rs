@@ -700,7 +700,8 @@ async fn handle_content(
     let Some(message) = to_chat_message(manager, names, id.clone(), content).await else {
         return true;
     };
-    if outgoing {
+    // An edit's time names the message it edits, not one of its own.
+    if outgoing && !edit {
         // Sent from another device: receipts name only the time, so remember where it went.
         if let Err(error) = ctx
             .tables
@@ -730,6 +731,10 @@ async fn handle_content(
             && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
         {
             warn!(error = %scrubbed(&error), "failed to note when a message was edited");
+        }
+        // Edited from another device of ours: sent again, until a receipt names the edit.
+        if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
+            warn!(error = %scrubbed(&error), "failed to note an edited message as sent");
         }
         return events.send(Event::Edited {
             conversation: id,
@@ -1007,19 +1012,28 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
         ) else {
             continue;
         };
-        let Ok(Some(thread)) = manager
-            .store()
-            .thread_for_sender_and_timestamp(&sender, timestamp)
-            .await
-        else {
-            continue;
+        let mut message = MessageRef {
+            author_id: sender.service_id_string(),
+            timestamp,
         };
-        read.entry(conversation_id(&thread))
-            .or_default()
-            .push(MessageRef {
-                author_id: sender.service_id_string(),
-                timestamp,
-            });
+        // As Signal's apps read an edited message: by its latest edit's time.
+        let conversation = match ctx.tables.edited_anywhere(&message).await {
+            Ok(Some((conversation, original))) => {
+                message.timestamp = original;
+                conversation
+            }
+            _ => {
+                let Ok(Some(thread)) = manager
+                    .store()
+                    .thread_for_sender_and_timestamp(&sender, timestamp)
+                    .await
+                else {
+                    continue;
+                };
+                conversation_id(&thread)
+            }
+        };
+        read.entry(conversation).or_default().push(message);
     }
     let now = now_millis();
     for (conversation, messages) in read {

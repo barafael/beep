@@ -820,9 +820,11 @@ impl LocalStore {
             .collect())
     }
 
-    /// Our messages (anywhere) sent at one of `timestamps`, with their conversation: receipts
-    /// name only the timestamps. One query for all, however many a receipt names: they go in
-    /// as a JSON array.
+    /// Our messages (anywhere) named by one of `timestamps`, with their conversation and the
+    /// time they were first sent: receipts name only the timestamps. As in Signal's apps, an
+    /// edited message is named by its latest edit's time, and only that receipt counts for it:
+    /// one for an earlier version says nothing about what is shown now. One query for all,
+    /// however many a receipt names: they go in as a JSON array.
     pub(crate) async fn conversations_of(
         &self,
         timestamps: &[u64],
@@ -835,8 +837,21 @@ impl LocalStore {
             .map(|ts| (*ts as i64).to_string())
             .collect();
         let rows = sqlx::query(
-            "SELECT conversation, ts FROM b33p_delivery
-             WHERE ts IN (SELECT value FROM json_each(?))",
+            "WITH asked(ts) AS (SELECT value FROM json_each(?1)),
+             edits(conversation, ts, edited_at) AS (
+                 SELECT conversation, ts, edited_at FROM b33p_edit
+                 UNION ALL
+                 SELECT conversation, ts, edited_at FROM b33p_edit_time
+             )
+             SELECT d.conversation, d.ts FROM b33p_delivery d
+             WHERE d.ts IN (SELECT ts FROM asked)
+               AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.conversation = d.conversation AND e.ts = d.ts)
+             UNION
+             SELECT d.conversation, d.ts FROM edits e
+             JOIN b33p_delivery d ON d.conversation = e.conversation AND d.ts = e.ts
+             WHERE e.edited_at IN (SELECT ts FROM asked)
+               AND e.edited_at = (SELECT MAX(edited_at) FROM edits l
+                                  WHERE l.conversation = e.conversation AND l.ts = e.ts)",
         )
         .bind(format!("[{}]", list.join(",")))
         .fetch_all(&self.db)
@@ -845,6 +860,22 @@ impl LocalStore {
             .iter()
             .map(|row| (ConversationId(row.get(0)), row.get::<i64, _>(1) as u64))
             .collect())
+    }
+
+    /// One of our messages was edited: as in Signal's apps, it counts as sent again until a
+    /// receipt names the edit.
+    pub(crate) async fn sent_again(
+        &self,
+        conversation: &ConversationId,
+        ts: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE b33p_delivery SET state = ? WHERE conversation = ? AND ts = ?")
+            .bind(Delivery::Sent as i64)
+            .bind(&conversation.0)
+            .bind(ts as i64)
+            .execute(&self.db)
+            .await
+            .map(drop)
     }
 
     /// Keeps the text a message had before an edit.
@@ -908,6 +939,25 @@ impl LocalStore {
         .fetch_optional(&self.db)
         .await?;
         Ok(ts.map(|ts| ts as u64))
+    }
+
+    /// The message `edit` names by one of its edits, in whichever conversation, if it does:
+    /// a read sync names only the author and the time.
+    pub(crate) async fn edited_anywhere(
+        &self,
+        edit: &MessageRef,
+    ) -> Result<Option<(ConversationId, u64)>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT conversation, ts FROM b33p_edit_time WHERE author = ?1 AND edited_at = ?2
+             UNION ALL
+             SELECT conversation, ts FROM b33p_edit WHERE author = ?1 AND edited_at = ?2
+             LIMIT 1",
+        )
+        .bind(&edit.author_id)
+        .bind(edit.timestamp as i64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|row| (ConversationId(row.get(0)), row.get::<i64, _>(1) as u64)))
     }
 
     /// When `message` was last edited, if it was: by others as [`Self::record_edit_time`] noted,
@@ -1628,6 +1678,71 @@ mod tests {
             assert_eq!(latest(alice).await, Some(30));
             assert_eq!(latest(ours).await, Some(40));
             assert_eq!(latest(reference("bob", 12)).await, None);
+        });
+    }
+
+    /// As Signal-Desktop takes receipts: an edited message by its latest edit's time only, and
+    /// sent again by the edit.
+    #[test]
+    fn receipts_name_an_edited_message_by_its_latest_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let a = ConversationId("a".into());
+            let b = ConversationId("b".into());
+            local.set_delivery(&a, 10, Delivery::Read).await.unwrap();
+            local.set_delivery(&b, 11, Delivery::Sent).await.unwrap();
+            // Edited here twice, and once from another device of ours.
+            local
+                .record_edit(&a, &reference("me", 10), 20, "first")
+                .await
+                .unwrap();
+            local
+                .record_edit(&a, &reference("me", 10), 30, "second")
+                .await
+                .unwrap();
+            local
+                .record_edit_time(&b, &reference("me", 11), 40)
+                .await
+                .unwrap();
+            local.sent_again(&a, 10).await.unwrap();
+            assert_eq!(
+                local.deliveries(&a, ..).await.unwrap()[&10],
+                Delivery::Sent,
+                "the edit isn't read yet"
+            );
+
+            for older in [10, 20, 11] {
+                assert!(
+                    local.conversations_of(&[older]).await.unwrap().is_empty(),
+                    "{older} names an earlier version"
+                );
+            }
+            assert_eq!(
+                local.conversations_of(&[30]).await.unwrap(),
+                [(a.clone(), 10)]
+            );
+            let mut found = local.conversations_of(&[30, 40, 20]).await.unwrap();
+            found.sort_by_key(|(_, ts)| *ts);
+            assert_eq!(found, [(a.clone(), 10), (b.clone(), 11)]);
+
+            // A read sync names an edit by its author and time, in no conversation.
+            assert_eq!(
+                local.edited_anywhere(&reference("me", 20)).await.unwrap(),
+                Some((a.clone(), 10))
+            );
+            assert_eq!(
+                local.edited_anywhere(&reference("me", 40)).await.unwrap(),
+                Some((b, 11))
+            );
+            assert_eq!(
+                local.edited_anywhere(&reference("me", 10)).await.unwrap(),
+                None
+            );
+            assert_eq!(
+                local.edited_anywhere(&reference("bob", 30)).await.unwrap(),
+                None
+            );
         });
     }
 

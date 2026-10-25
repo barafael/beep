@@ -667,6 +667,10 @@ async fn handle_command(
                 .record_edit(&conversation, &target, timestamp, &previous)
                 .await
                 .map_err(db)?;
+            ctx.tables
+                .sent_again(&conversation, target.timestamp)
+                .await
+                .map_err(db)?;
             // Shown as it will be read back: the edit in the message's place.
             let edited = stored.map(|mut content| {
                 content.body = ContentBody::EditMessage(EditMessage {

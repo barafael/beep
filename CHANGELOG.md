@@ -61,6 +61,9 @@ The release workflow takes a version's notes from here (the section headed with 
 - Two messages sent within the same millisecond no longer take each other's place.
 - A message that couldn't be sent for want of a connection says so in words, and the banner
   goes once Retry sends it.
+- Receipts for edited messages work as in Signal's apps: an edit of yours shows its own ticks,
+  delivered and read, and an edit someone else makes is read, and they're told so, like a new
+  message.
 
 ## 0.2.0
 

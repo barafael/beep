@@ -652,6 +652,19 @@ pub(super) async fn send_read(
     messages: Vec<MessageRef>,
 ) {
     let own = own_id(&manager);
+    // As Signal-Desktop reads an edited message: by its latest edit's time, and by its own
+    // too, as it was unread; the other side knows it by either.
+    let mut messages = messages;
+    for message in messages.clone() {
+        match ctx.tables.latest_edit(&conversation, &message).await {
+            Ok(Some(edited_at)) => messages.push(MessageRef {
+                timestamp: edited_at,
+                ..message
+            }),
+            Ok(None) => {}
+            Err(error) => warn!(error = %scrubbed(&error), "failed to look up an edit"),
+        }
+    }
     let read = messages
         .iter()
         .map(|message| sync_message::Read {

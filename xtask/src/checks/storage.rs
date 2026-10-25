@@ -1,9 +1,10 @@
 use b33p_harness::Action;
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_chat, peer_text_reaches, read, select, type_and_send,
+    REQUEST_ACCEPTED, accept_request, b33p_chat, b33p_shows, edit, outgoing_index,
+    peer_text_reaches, read, select, type_and_send,
 };
-use super::clients::{Android, desktop_shows};
+use super::clients::{Android, desktop_shows, desktop_status};
 use super::setup::{AndroidBox, android_box};
 use super::{Checks, PATIENCE, PATIENCE_MS};
 use crate::Sockets;
@@ -153,6 +154,46 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             b33p_chat(&mut b33p, &conversation, "as on Android", |chat| {
                 chat.marked_unread && !chat.muted && chat.pinned
             })
+        },
+    );
+
+    // Signal's apps name an edited message by its latest edit's time, and show only what the
+    // receipts for the edit say (Signal-Desktop MessageReceipts.preload.ts
+    // `updateMessageSendStateWithReceipt`, markConversationRead.preload.ts).
+    checks.record(
+        "Desktop's read receipt for b33p's edit shows on b33p",
+        || {
+            select(&mut b33p, &conversation)?;
+            let edited = "testbox storage: read on Desktop, edited";
+            let index = outgoing_index(&mut b33p, row)?;
+            edit(&mut b33p, index, edited)?;
+            desktop_shows(&mut desktop, edited)?;
+            read(&mut b33p, edited)
+        },
+    );
+    checks.record(
+        "b33p's receipts for Desktop's edit show on Desktop: delivered, then read",
+        || {
+            let text = "testbox storage: from Desktop";
+            let edited = "testbox storage: from Desktop, edited";
+            select(&mut b33p, &conversation)?;
+            b33p.act(Action::SetWindowFocused { focused: true })?;
+            desktop.call(drivers::Desktop::Send {
+                text: text.to_owned(),
+            })?;
+            desktop_status(&mut desktop, text, "read")?;
+            // Away from the window: the edit is delivered, not read.
+            b33p.act(Action::SetWindowFocused { focused: false })?;
+            desktop.call(drivers::Desktop::EditMessage {
+                old_text: text.to_owned(),
+                text: edited.to_owned(),
+            })?;
+            b33p_shows(&mut b33p, &format!("{edited:?}"), |message| {
+                message.text == edited
+            })?;
+            desktop_status(&mut desktop, edited, "delivered")?;
+            b33p.act(Action::SetWindowFocused { focused: true })?;
+            desktop_status(&mut desktop, edited, "read")
         },
     );
 

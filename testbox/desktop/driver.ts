@@ -318,6 +318,15 @@ const methods = {
       ),
       timeout_ms,
     ),
+  /** Waits for the open conversation's own message `text` to show `status` exactly
+   * (`.module-message__metadata__status-icon--{status}`, MessageMetadata.dom.tsx): after an edit,
+   * Desktop shows only what the receipts for the edit say (MessageReceipts.preload.ts
+   * `updateMessageSendStateWithReceipt`). */
+  wait_for_status: ({ text, status, timeout_ms }: Text & Timeout & { status: string }) =>
+    appears(
+      message(text).locator(`.module-message__metadata__status-icon--${status}`),
+      timeout_ms,
+    ),
   /** Waits for `text` in bold (`<strong>`, MessageTextRenderer.scss) in the open conversation. */
   wait_for_bold: ({ text, timeout_ms }: Text & Timeout) =>
     appears(

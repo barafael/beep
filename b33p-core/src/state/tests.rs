@@ -2077,6 +2077,65 @@ fn viewing_a_chat_reads_it_and_queues_receipts_once() {
     assert_eq!(state.unread_total(), 0);
 }
 
+/// As in Signal's apps, an edit of a message read before is read anew, so its sender hears
+/// of it; its disappearing timer runs already.
+#[test]
+fn an_edit_is_read_anew() {
+    let mut state = state();
+    state.set_window_focused(true);
+    state.select(&id("a"));
+    history_arrives(&mut state, "a");
+    state.apply(Event::Message(ChatMessage {
+        expire_timer: Some(60),
+        ..message("a", "Ann", 10, false)
+    }));
+    assert_eq!(state.take_commands().len(), 1);
+    let target = state.messages().next().unwrap().message.reference();
+    let edit = |state: &mut ChatState, at| {
+        state.apply(Event::Edited {
+            conversation: id("a"),
+            target: target.clone(),
+            message: ChatMessage {
+                edited_at: Some(at),
+                ..message("a", "Ann", 10, false)
+            },
+        })
+    };
+    edit(&mut state, 20);
+    let commands = state.take_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::MarkRead { messages, expiring, .. }]
+                if *messages == [target.clone()] && expiring.is_empty()
+        ),
+        "{commands:?}"
+    );
+    // Not while the chat isn't looked at; then once.
+    state.set_window_focused(false);
+    edit(&mut state, 30);
+    edit(&mut state, 40);
+    assert!(state.take_commands().is_empty());
+    state.set_window_focused(true);
+    let commands = state.take_commands();
+    assert!(
+        matches!(&commands[..], [Command::MarkRead { messages, .. }] if *messages == [target.clone()]),
+        "{commands:?}"
+    );
+    // Our own edits aren't read.
+    state.apply(Event::Message(message("a", "You", 50, true)));
+    let ours = state.last_messages(1).next().unwrap().message.reference();
+    state.apply(Event::Edited {
+        conversation: id("a"),
+        target: ours,
+        message: ChatMessage {
+            edited_at: Some(60),
+            ..message("a", "You", 50, true)
+        },
+    });
+    assert!(state.take_commands().is_empty());
+}
+
 /// Catching up with the chat open: what arrives in one batch is read with one receipt, in
 /// order, a late one (dated before what was read) too. What was seen is read even if
 /// another chat opens, or the message goes, before the batch ends.
@@ -2348,8 +2407,19 @@ fn receipts_edits_and_deletions_change_messages_in_place() {
     });
     let edited = state.messages().next().unwrap().message;
     assert_eq!(edited.body, "better");
-    assert_eq!(edited.delivery, Delivery::Read);
+    // As in Signal's apps: the edit hasn't been read yet, until a receipt for it comes (the
+    // backend tells it by the message's own time).
+    assert_eq!(edited.delivery, Delivery::Sent);
     assert_eq!(edited.edits, [(50, "You at 10\nsecond line".to_string())]);
+    state.apply(Event::Delivered {
+        conversation: id("a"),
+        timestamps: vec![10],
+        delivery: Delivery::Read,
+    });
+    assert_eq!(
+        state.messages().next().unwrap().message.delivery,
+        Delivery::Read
+    );
     state.apply(Event::Deleted {
         conversation: id("a"),
         target: target.clone(),

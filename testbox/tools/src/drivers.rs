@@ -118,6 +118,13 @@ pub enum Desktop {
         text: String,
         timeout_ms: u64,
     },
+    /// Waits for Desktop's own `text` in the open conversation to show `status`: "sent",
+    /// "delivered" or "read", and nothing further.
+    WaitForStatus {
+        text: String,
+        status: String,
+        timeout_ms: u64,
+    },
     /// Opens the conversation the left pane lists as `title` (a group's), accepting it if it is a
     /// request.
     OpenTitled {

@@ -65,7 +65,16 @@ impl ChatState {
             .filter(|m| !m.outgoing && !m.notice)
             .filter(|m| !self.read.contains(message_key(m)))
             .collect();
-        if unread.is_empty() && !settings.marked_unread {
+        // Edits of messages read before; their disappearing timers run already.
+        let edits: Vec<MessageRef> = self
+            .unread_edits
+            .remove(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|target| find(history, ref_key(target)).is_some())
+            .filter(|target| !unread.iter().any(|m| m.reference() == *target))
+            .collect();
+        if unread.is_empty() && edits.is_empty() && !settings.marked_unread {
             return None;
         }
         settings.marked_unread = false;
@@ -81,7 +90,12 @@ impl ChatState {
             .iter()
             .filter_map(|m| Some((m.reference(), m.expire_timer?)))
             .collect();
-        let messages = unread.iter().map(|m| m.reference()).collect();
+        let mut messages: Vec<MessageRef> = unread.iter().map(|m| m.reference()).collect();
+        for edit in edits {
+            if !messages.contains(&edit) {
+                messages.push(edit);
+            }
+        }
         Some(Command::MarkRead {
             conversation: id,
             messages,

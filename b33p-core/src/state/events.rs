@@ -466,7 +466,13 @@ impl ChatState {
                     // Known by its original time; what reacted to it still applies.
                     message.timestamp = old.timestamp;
                     message.reactions = std::mem::take(&mut old.reactions);
-                    message.delivery = old.delivery;
+                    // Ours counts as sent again until a receipt names the edit, as in
+                    // Signal's apps.
+                    message.delivery = if message.outgoing {
+                        crate::Delivery::Sent
+                    } else {
+                        old.delivery
+                    };
                     message.expires_at = message.expires_at.or(old.expires_at);
                     // An edit changes the text; Signal's clients can't take attachments or
                     // a quote away with one, so a backend that reports only the text keeps
@@ -482,7 +488,19 @@ impl ChatState {
                     {
                         message.preview = Some(preview);
                     }
+                    let incoming = !message.outgoing;
                     *old = message;
+                    if incoming {
+                        self.unread_edits
+                            .entry(conversation.clone())
+                            .or_default()
+                            .push(target.clone());
+                        if self.selected.as_ref() == Some(&conversation)
+                            && self.notifications.window_focused
+                        {
+                            self.mark_seen_later();
+                        }
+                    }
                     update.rows = self.rows_changed(&conversation, [target]);
                     update.conversations = true;
                 }
