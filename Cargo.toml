@@ -29,14 +29,16 @@ qrcode = { version = "0.14", default-features = false }
 # text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
 # reviewed), which the messages need, and the Qt backend drawing variable fonts at their default
 # instance rather than their first named one (Qt 6.7+ loads a `QRawFont` from bytes as "named
-# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Rebuild the
-# branch when master moves; drop it once both have landed upstream and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Pinned at
+# branch fix/qt-color-bitmap-glyphs, which adds to it the Qt backend drawing emoji (colour bitmap
+# glyphs) itself: Qt 6.4's QRawFont overruns the heap on them (not proposed upstream yet). Rebuild
+# the branch when master moves; drop it once these have landed upstream and a release carries them.
+slint = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e38356d27a1ddd460e5b96dfffa515db224560ec" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
