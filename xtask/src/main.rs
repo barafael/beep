@@ -13,6 +13,7 @@ mod checks;
 mod error;
 #[cfg(unix)]
 mod harness;
+mod pins;
 mod pod;
 mod process;
 #[cfg(unix)]
