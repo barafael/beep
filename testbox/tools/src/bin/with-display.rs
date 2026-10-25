@@ -1,133 +1,170 @@
-//! Runs a command on a display of its own, which `cargo testbox vnc` shows:
-//! TigerVNC's Xvnc, served on a Unix socket only, with the viewer's input and the clipboard off.
-//! `with-display input on|off`, run beside it, turns the viewer's input on or off (`vncconfig`);
-//! the clipboard stays off (`vncconfig -set AcceptCutText=1` fails).
-//!
-//! As the container's entrypoint it is PID 1, which ignores a signal it has no handler for:
-//! it hands SIGTERM, SIGINT and SIGHUP on to the command, so that `podman stop` and `restart`
-//! let the client end cleanly (b33p closes its database) instead of killing it 10 s later.
+//! Runs a command on a display of its own, which `cargo testbox vnc` shows: cage, a Wayland kiosk
+//! compositor whose one application fills the display, without a screen, served by wayvnc on a
+//! Unix socket per [`View`] in a directory. Nothing of the clipboard reaches a viewer or comes
+//! from one: wayvnc reaches it only through a data-control protocol, and the session refuses a
+//! compositor that offers one.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
-use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command};
 
+use rustix::fs::Mode;
+use rustix::process::{Pid, Signal};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 use strum::VariantArray;
-use testbox_tools::{Context, Error, Input, Result};
+use testbox_tools::{Context, Describe, Error, Result, View};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::{Connection, Dispatch, QueueHandle};
 
-const USAGE: &str = "with-display <socket> <width>x<height> -- <command> [argument...] \
-    | with-display input on|off";
-/// The container's one X display.
-const DISPLAY: &str = ":1";
-/// The viewer's input, off at the start and turned on at run time: the only parameters
-/// `-AllowOverride` lets `vncconfig` change.
-#[derive(Clone, Copy, strum::IntoStaticStr, strum::VariantArray)]
-enum InputParameter {
-    AcceptKeyEvents,
-    AcceptPointerEvents,
-}
+const USAGE: &str = "with-display <directory> <width>x<height> -- <command> [argument...]";
+/// The runtime directory of cage, wayvnc and the application, the container's alone.
+const RUNTIME: &str = "/tmp/with-display";
+/// The application's pid, in [`RUNTIME`]: for the stop signals.
+const APPLICATION: &str = "application.pid";
+/// wlroots' one headless output.
+const OUTPUT: &str = "HEADLESS-1";
+/// What a client reads and sets the clipboard through without a window of its own, as wayvnc
+/// does.
+const DATA_CONTROL: [&str; 2] = [
+    "zwlr_data_control_manager_v1",
+    "ext_data_control_manager_v1",
+];
 
 fn main() -> std::process::ExitCode {
     testbox_tools::exit("with-display", run())
 }
 
+/// `with-display session …`, with the same arguments, is what cage runs.
 fn run() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.as_slice() {
-        [input, state] if input == "input" => set_input(
-            state
-                .parse()
-                .map_err(|_| Error::Failed(format!("input {state}: on or off")))?,
-        ),
-        [socket, geometry, separator, program, program_arguments @ ..] if separator == "--" => {
-            serve(socket, geometry, program, program_arguments)
+    let (in_cage, arguments) = match arguments.split_first() {
+        Some((first, rest)) if first == "session" => (true, rest),
+        _ => (false, arguments.as_slice()),
+    };
+    match arguments {
+        [
+            directory,
+            geometry,
+            separator,
+            program,
+            program_arguments @ ..,
+        ] if separator == "--" => {
+            let directory = Path::new(directory);
+            if in_cage {
+                session(directory, geometry, program, program_arguments)
+            } else {
+                serve(directory, geometry, program, program_arguments)
+            }
         }
         _ => Err(Error::Failed(format!("usage: {USAGE}"))),
     }
 }
 
-/// Turns the viewer's input on the running display on or off.
-fn set_input(state: Input) -> Result<()> {
-    let value = match state {
-        Input::On => "1",
-        Input::Off => "0",
-    };
-    for &parameter in InputParameter::VARIANTS {
-        let parameter: &'static str = parameter.into();
-        let mut vncconfig = Command::new("vncconfig");
-        vncconfig.args(["-display", DISPLAY, "-set", &format!("{parameter}={value}")]);
-        testbox_tools::process::run(vncconfig)?;
+fn serve(
+    directory: &Path,
+    geometry: &str,
+    program: &str,
+    program_arguments: &[String],
+) -> Result<()> {
+    // The sockets, the runtime directory and the application's files are the owner's only.
+    rustix::process::umask(Mode::from_raw_mode(0o077));
+    // Left by this container before it restarted (`restartPolicy: Always`): wayvnc doesn't bind
+    // over one.
+    for &view in View::VARIANTS {
+        let name: &'static str = view.into();
+        testbox_tools::remove_if_present(&directory.join(name))?;
     }
+    std::fs::create_dir_all(RUNTIME).context(RUNTIME)?;
+    let this = std::env::current_exe().context("with-display's path")?;
+    let mut cage = Command::new("cage")
+        .arg("-d")
+        .arg("--")
+        .arg(this)
+        .arg("session")
+        .arg(directory)
+        .arg(geometry)
+        .arg("--")
+        .arg(program)
+        .args(program_arguments)
+        .env("XDG_RUNTIME_DIR", RUNTIME)
+        // No screen and no GPU in the container.
+        .env("WLR_BACKENDS", "headless")
+        .env("WLR_RENDERER", "pixman")
+        .env("WLR_LIBINPUT_NO_DEVICES", "1")
+        .process_group(0)
+        .spawn()
+        .context("cage")?;
+    stop_with_container(&cage)?;
+    let status = cage.wait().context("cage")?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Failed(format!("cage exited: {status}")))
+    }
+}
+
+/// Passes the stop signals the container gets (SIGTERM, SIGINT, SIGHUP) on to the application,
+/// so that `podman stop` and `restart` let it end cleanly (b33p closes its database); the
+/// session then ends, and cage with it. Before the application runs, there is nothing to end
+/// cleanly: they go to cage's whole process group. As PID 1 without a handler, this process would
+/// ignore them.
+fn stop_with_container(cage: &Child) -> Result<()> {
+    let group = i32::try_from(cage.id())
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or("cage's pid")?;
+    let mut signals =
+        Signals::new([SIGTERM, SIGINT, SIGHUP]).context("the stop signals' handler")?;
+    std::thread::spawn(move || {
+        for raw in signals.forever() {
+            let Some(signal) = Signal::from_named_raw(raw) else {
+                continue;
+            };
+            let sent = match application() {
+                Some(application) => rustix::process::kill_process(application, signal),
+                None => rustix::process::kill_process_group(group, signal),
+            };
+            if let Err(error) = sent {
+                eprintln!("with-display: signal {raw}: {error}");
+            }
+        }
+    });
     Ok(())
 }
 
-fn serve(socket: &str, geometry: &str, program: &str, program_arguments: &[String]) -> Result<()> {
-    // One left by this container before it restarted (`restartPolicy: Always`): Xvnc doesn't
-    // bind over it.
-    testbox_tools::remove_if_present(Path::new(socket))?;
-    let overridable: Vec<&'static str> = InputParameter::VARIANTS
+/// In cage: the display's size, a VNC server per view, then the application until it exits.
+fn session(
+    directory: &Path,
+    geometry: &str,
+    program: &str,
+    program_arguments: &[String],
+) -> Result<()> {
+    refuse_data_control()?;
+    let mut wlr_randr = Command::new("wlr-randr");
+    wlr_randr.args(["--output", OUTPUT, "--custom-mode", geometry]);
+    testbox_tools::process::run(wlr_randr)?;
+    let servers = View::VARIANTS
         .iter()
-        .map(|&parameter| parameter.into())
-        .collect();
-    let mut xvnc = Command::new("Xvnc")
-        .args([DISPLAY, "-geometry", geometry, "-depth", "24"])
-        // The socket only, the owner's only: no VNC port, no X over TCP.
-        .args([
-            "-rfbport=-1",
-            "-rfbunixpath",
-            socket,
-            "-rfbunixmode",
-            "0600",
-        ])
-        // X only on the file socket in this container's /tmp: the pod's containers share a
-        // network namespace, so an abstract socket (`local`) would let them all reach this
-        // display, and collide with each other's `:1`.
-        .args(["-nolisten", "tcp", "-nolisten", "local"])
-        // Whoever can open the socket may watch: its mode and its directory's are the access
-        // control.
-        .args(["-SecurityTypes", "None", "-AlwaysShared"])
-        .args(
-            overridable
-                .iter()
-                .map(|parameter| format!("-{parameter}=0")),
-        )
-        .arg("-AcceptSetDesktopSize=0")
-        .args([
-            "-AcceptCutText=0",
-            "-SendCutText=0",
-            "-SendPrimary=0",
-            "-SetPrimary=0",
-        ])
-        .args(["-AllowOverride", &overridable.join(",")])
-        // The display's number, once it accepts connections (Xserver(1) `-displayfd`).
-        .args(["-displayfd", "1"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("Xvnc")?;
-    let stdout = xvnc.stdout.take().ok_or("Xvnc's stdout isn't piped")?;
-    // Open while Xvnc runs: closed, Xvnc's next write to it would end Xvnc (SIGPIPE).
-    let mut announced = BufReader::new(stdout);
-    let mut number = String::new();
-    announced
-        .read_line(&mut number)
-        .context("Xvnc's -displayfd")?;
-    if number.trim().is_empty() {
-        let status = xvnc.wait().context("Xvnc")?;
-        return Err(Error::Failed(format!(
-            "Xvnc exited before it served a display: {status}"
-        )));
-    }
-    let mut command = Command::new(program)
+        .map(|&view| wayvnc(directory, view))
+        .collect::<Result<Vec<Child>>>()?;
+    let mut application = Command::new(program)
         .args(program_arguments)
-        .env("DISPLAY", DISPLAY)
+        .env(testbox_tools::DISPLAY_SIZE, geometry)
         .spawn()
         .context(program)?;
-    hand_on_signals(command.id())?;
-    let status = command.wait().context(program)?;
-    xvnc.kill().context("Xvnc")?;
-    xvnc.wait().context("Xvnc")?;
+    let pid = Path::new(RUNTIME).join(APPLICATION);
+    testbox_tools::write(&pid, application.id().to_string())?;
+    let status = application.wait().context(program)?;
+    testbox_tools::remove_if_present(&pid)?;
+    for mut server in servers {
+        server.kill().context("wayvnc")?;
+        server.wait().context("wayvnc")?;
+    }
     if status.success() {
         Ok(())
     } else {
@@ -135,26 +172,57 @@ fn serve(socket: &str, geometry: &str, program: &str, program_arguments: &[Strin
     }
 }
 
-/// Hands the stop signals this process gets on to `pid`, from a thread of its own, for as long as
-/// this process runs.
-fn hand_on_signals(pid: u32) -> Result<()> {
-    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP])
-        .context("the stop signals' handler")?;
-    let pid = libc::pid_t::try_from(pid).map_err(|_| Error::Failed(format!("pid {pid}")))?;
-    std::thread::Builder::new()
-        .name("signals".into())
-        .spawn(move || {
-            for signal in signals.forever() {
-                // SAFETY: kill(2) takes plain integers and touches no memory of ours.
-                if unsafe { libc::kill(pid, signal) } != 0 {
-                    eprintln!(
-                        "with-display: signal {signal} to {pid}: {}",
-                        std::io::Error::last_os_error()
-                    );
-                }
-            }
-        })
-        .context("the stop signals' thread")?;
-    Ok(())
+/// The application's pid, as the session writes it while the application runs.
+fn application() -> Option<Pid> {
+    let pid = std::fs::read_to_string(Path::new(RUNTIME).join(APPLICATION)).ok()?;
+    Pid::from_raw(pid.trim().parse().ok()?)
+}
+
+/// wayvnc on `view`'s socket in `directory`.
+fn wayvnc(directory: &Path, view: View) -> Result<Child> {
+    let name: &'static str = view.into();
+    let mut wayvnc = Command::new("wayvnc");
+    wayvnc
+        // wayvnc's default is 30, below what the viewers take.
+        .args(["--unix-socket", "--max-fps", "60", "--output", OUTPUT])
+        .arg("--socket")
+        .arg(Path::new(RUNTIME).join(format!("wayvnc-{name}")));
+    if view == View::Watch {
+        wayvnc.arg("--disable-input");
+    }
+    wayvnc.arg(directory.join(name)).spawn().context("wayvnc")
+}
+
+/// The globals' list, which `registry_queue_init` keeps; nothing to do on its events.
+struct Registry;
+
+impl Dispatch<WlRegistry, GlobalListContents> for Registry {
+    fn event(
+        _: &mut Self,
+        _: &WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+fn refuse_data_control() -> Result<()> {
+    let connection = Connection::connect_to_env().describe("cage")?;
+    let globals = registry_queue_init::<Registry>(&connection)
+        .describe("cage's globals")?
+        .0;
+    let offered = globals.contents().with_list(|list| {
+        DATA_CONTROL
+            .into_iter()
+            .find(|protocol| list.iter().any(|global| global.interface == *protocol))
+    });
+    match offered {
+        Some(protocol) => Err(Error::Failed(format!(
+            "cage offers {protocol}, through which wayvnc would share the clipboard with the \
+             viewers"
+        ))),
+        None => Ok(()),
+    }
 }

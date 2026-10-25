@@ -109,9 +109,8 @@ where
     let client = VncConnector::<S, std::future::Ready<Result<String, VncError>>>::new(stream)
         .add_encoding(VncEncoding::CopyRect)
         .add_encoding(VncEncoding::Raw)
-        // The cursor's shape apart from the frame: without it Xvnc draws the cursor into the
-        // frame, and where it was stays drawn (vnc-rs `X11Event::FullRefresh`'s "cursor
-        // ghosts").
+        // The cursor's shape apart from the frame: drawn into the frame, it stays drawn where it
+        // was (vnc-rs `X11Event::FullRefresh`'s "cursor ghosts").
         .add_encoding(VncEncoding::CursorPseudo)
         .allow_shared(true)
         .set_pixel_format(PixelFormat::rgba())

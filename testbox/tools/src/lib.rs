@@ -30,6 +30,9 @@ pub const JETTY_STARTED: &str = "org.eclipse.jetty.server.Server: Started";
 pub const CAPTCHA: &str = "signalcaptcha://noop.noop.registration.noop";
 pub const VERIFICATION_CODE: &str = "123456";
 
+/// The display's size (`<width>x<height>`) as `with-display` tells its program.
+pub const DISPLAY_SIZE: &str = "WITH_DISPLAY_SIZE";
+
 /// How many stickers testbox/stickers seeds.
 pub const STICKERS: u32 = 2;
 
@@ -165,12 +168,13 @@ pub fn argument(usage: &str) -> Result<Option<String>> {
     }
 }
 
-/// The viewer's input on a display (testbox/tools `with-display input`, the xtask's viewers).
-#[derive(Clone, Copy, strum::EnumString, strum::IntoStaticStr)]
+/// A display's VNC sockets (testbox/tools `with-display`), by their file names: one that only
+/// shows, one that takes the viewer's input.
+#[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
 #[strum(serialize_all = "lowercase")]
-pub enum Input {
-    On,
-    Off,
+pub enum View {
+    Watch,
+    Interact,
 }
 
 pub fn env_var(name: &str) -> Result<String> {

@@ -31,8 +31,8 @@ if (!socketPath) {
 }
 
 // `with-display` runs the driver on a display of its own, which Electron inherits.
-if (!Deno.env.get('DISPLAY')) {
-  throw new Error('DISPLAY is not set: run under with-display');
+if (!Deno.env.get('WAYLAND_DISPLAY')) {
+  throw new Error('WAYLAND_DISPLAY is not set: run under with-display');
 }
 
 // The server half from the box's keys (testbox/tools `provision`); the run's half here.
@@ -73,6 +73,7 @@ async function launch(): Promise<void> {
       '--use-fake-ui-for-media-stream',
       // Shared memory in /tmp: the pod's /dev/shm is 64 MB, which crashes renderers.
       '--disable-dev-shm-usage',
+      '--ozone-platform=wayland',
     ],
     env: { ...Deno.env.toObject(), SIGNAL_CI_CONFIG: JSON.stringify(config) },
     locale: 'en',
@@ -368,10 +369,12 @@ const methods = {
       message(text).locator('.module-quote__primary__text').filter({ hasText: quoted }),
       timeout_ms,
     ),
-  /** Deletes the message with `text` for everyone, as attachments_test.node.ts deletes one for
-   * itself: its context menu's "Delete", then DeleteMessagesModal.dom.tsx's button. */
+  /** Deletes the message with `text` for everyone: its "More actions" menu's "Delete", then
+   * DeleteMessagesModal.dom.tsx's button. Not its context menu, as attachments_test.node.ts
+   * does: on Wayland a right-click opens none. */
   delete_for_everyone: async ({ text }: Text) => {
-    await message(text).last().click({ button: 'right' });
+    const deleted = await hovered(text);
+    await deleted.getByRole('button', { name: 'More actions' }).click();
     await page().getByRole('menuitem', { name: 'Delete' }).click();
     await page().getByRole('button', { name: 'Delete for everyone' }).click();
     return null;

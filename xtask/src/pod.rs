@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Context, Error, Result, WithContext};
 use crate::process::{self, Heard};
+use testbox_tools::View;
 
 /// pod.yaml's `metadata.name`; kube play names each container `<pod>-<container>`.
 const POD: &str = "b33p-testbox";
@@ -242,8 +243,8 @@ impl Pod {
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))
             .context(run.display().to_string())?;
         // The displays' sockets likewise; pod.yaml mounts each client's, so all of them exist.
-        for directory in std::iter::once(self.repo.join(VIEW))
-            .chain(SCREENS.map(|screen| self.view_socket(screen).with_file_name("")))
+        for directory in
+            std::iter::once(self.repo.join(VIEW)).chain(SCREENS.map(|screen| self.view_dir(screen)))
         {
             std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
@@ -276,10 +277,22 @@ impl Pod {
         Ok(pod.replace("@REPO@", &self.repo.to_string_lossy()))
     }
 
-    /// Where `screen`'s display serves on the host (its `with-display` socket, /run/view/vnc).
-    pub fn view_socket(&self, screen: Service) -> PathBuf {
+    /// Where `screen`'s display serves on the host: its `with-display` directory, /run/view.
+    pub fn view_dir(&self, screen: Service) -> PathBuf {
         let name: &'static str = screen.into();
-        self.repo.join(VIEW).join(name).join("vnc")
+        self.repo.join(VIEW).join(name)
+    }
+
+    /// The socket in [`Self::view_dir`] that takes the viewer's input if `interactive`, else
+    /// the one that only shows.
+    pub fn view_socket(&self, screen: Service, interactive: bool) -> PathBuf {
+        let view = if interactive {
+            View::Interact
+        } else {
+            View::Watch
+        };
+        let socket: &'static str = view.into();
+        self.view_dir(screen).join(socket)
     }
 
     /// Whether `service`'s container runs; one that isn't there doesn't.

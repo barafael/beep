@@ -253,10 +253,8 @@ fn raise_anr_timeouts() -> Result<()> {
 /// The AVD's locks from an emulator of this container before it restarted (`restartPolicy:
 /// Always`): its processes went with it, and the emulator refuses an AVD it finds locked
 /// ("Running multiple emulators with the same AVD").
-fn clear_avd_locks() -> Result<()> {
-    let home = std::env::var_os("HOME").ok_or_else(|| Error::Failed("no HOME".to_owned()))?;
-    let avd = Path::new(&home).join(".android/avd/box.avd");
-    for entry in std::fs::read_dir(&avd).context(avd.display().to_string())? {
+fn clear_avd_locks(avd: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(avd).context(avd.display().to_string())? {
         let path = entry.context(avd.display().to_string())?.path();
         if path
             .extension()
@@ -295,20 +293,30 @@ fn localhost_port(url: &str) -> Option<u16> {
         .ok()
 }
 
-/// The device's screen: the Pixel 5's.
-const SCREEN: &str = "1080x2340";
-
-/// The AVD's hardware for the box ([`avd::Config::for_box`]).
-fn configure_avd() -> Result<()> {
-    let path = Path::new(&env_var("HOME")?).join(".android/avd/box.avd/config.ini");
+/// The AVD's hardware for the box ([`avd::Config::for_box`]), at the display's size.
+fn configure_avd(avd: &Path) -> Result<()> {
+    let path = avd.join("config.ini");
     let mut config = avd::Config::parse(&read(&path)?);
-    config.for_box(SCREEN)?;
+    config.for_box(&env_var(testbox_tools::DISPLAY_SIZE)?)?;
     write(&path, config.to_string())
 }
 
+/// The device at the scale the AVD's user config names, which the emulator caps at 80% of the
+/// display (its default leaves most of the display black). Read at start
+/// (`user_config_get_window_scale`), written at exit.
+fn set_window_scale(avd: &Path) -> Result<()> {
+    let user_config = avd.join("emulator-user.ini");
+    write(
+        &user_config,
+        "window.x = 0\nwindow.y = 0\nwindow.scale = 1.0\n",
+    )
+}
+
 fn boot_emulator(config: &LocalConfig) -> Result<()> {
-    clear_avd_locks()?;
-    configure_avd()?;
+    let avd = Path::new(&env_var("HOME")?).join(".android/avd/box.avd");
+    clear_avd_locks(&avd)?;
+    configure_avd(&avd)?;
+    set_window_scale(&avd)?;
     // The adb server first, so it finds the emulator as it comes up.
     adb(&["start-server"])?;
     let mut emulator = Command::new("emulator")
