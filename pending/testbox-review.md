@@ -34,8 +34,9 @@ doesn't check yet. The branches themselves are in [branches.md](branches.md).
    fix is confirmed hours after it is written, and two runs can't share the machine (one pod
    name).
 9. **Work spread out.** The fix for the race was written and proven in other sessions, on
-   branches named `integration-next`, `pr/session-lock`, `debug/session-trace-fixed`, with #69
-   open; finding what was where took longer than the fix. `branches.md` is the remedy here.
+   branches named `integration-next` (since renamed `langis/integration`), `pr/session-lock`,
+   `debug/session-trace-fixed`, with #69 open; finding what was where took longer than the
+   fix. `branches.md` is the remedy here.
 
 ## How the box could be better
 

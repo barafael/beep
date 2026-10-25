@@ -33,15 +33,15 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration-next` (`7e868e4`) | Upstream main with the fork's PRs and the session lock (whisperfish/presage#473); b33p #69 pins it | Base of the next |
-| `fix/edited-targets` (`ce28171`), pushed | `integration-next` plus one commit: edits and deletes for everyone find an edited message by its latest edit's time (`ContentsStore::message_sent_or_edited_at`), and a stored edit names its original's time; a store test | Pinned by `testbox-green` (b33p and presage-cli) |
+| `langis/integration` (`7e868e4`) | Upstream main with the fork's PRs and the session lock (whisperfish/presage#473); b33p #69 pinned it (as `langis/integration-next`, since renamed) | Base of the next |
+| `fix/edited-targets` (`ce28171`), pushed | `langis/integration` plus one commit: edits and deletes for everyone find an edited message by its latest edit's time (`ContentsStore::message_sent_or_edited_at`), and a stored edit names its original's time; a store test | Pinned by `testbox-green` (b33p and presage-cli) |
 | `pr/edited-targets` (`6c6594a`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs); store and manager tests pass | For the upstream PR (not opened yet) |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration-next` (`3b76dca`) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488) | Pinned by `testbox-green` for presage-cli too; no change needed |
+| `langis/integration` (`3b76dca`, formerly `langis/integration-next`) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488) | Pinned by `testbox-green` for presage-cli too; no change needed |
 
 ## Slint (barafael/slint)
 
