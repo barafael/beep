@@ -185,6 +185,42 @@ is. It belongs with #453.
 store ("b33p already has a store"). `Pod::down` now also removes the pod and the
 `b33p-testbox-*` volumes by name.
 
+### 4. Pictures arriving together took b33p past 2 GiB (b33p, fixed)
+
+`stress-content`: three PNGs of 11000×11000 px, 2.3 MB each as files, in one message. b33p's
+memory peaked at 2149 MiB (the cgroup's `memory.peak`), from 470 MiB. Each passes
+`decode_limited`'s bounds (12000 px a side, 512 MiB) and decodes to 484 MB, and the resize to
+the bubble needs a buffer of its own; up to four download at once, and each was decoded as soon
+as it arrived. Pictures are now decoded one at a time (`Downloads::decoding`), and a download's
+slot is free again before its picture waits to be decoded.
+
+### 5. A file with a long name saved once, not twice (b33p, fixed)
+
+A name of 254 bytes saves, but the second copy, "name (1).txt", is 258 bytes, past what Linux
+takes, and saving it failed ("failed to write"). The stem is now cut short, between
+characters, so that the name with its number fits 255 bytes. Control characters in a sender's
+file name (a line break saved as one) are now `_`.
+
+### What Group C and D found right
+
+- Every awkward text from the peer showed as sent: right to left and mixed, a direction
+  override, 200 combining marks, zero-width characters, long emoji sequences, control
+  characters, 20000 characters on one line, 500 lines, 30 KB, and whitespace alone. b33p sent
+  each back as typed, less what ends it in whitespace (as Signal's apps), and `*bold*` and the
+  like taken as formatting.
+- Broken pictures (empty, truncated, a header claiming 100000 px a side, text or noise as a
+  picture) showed as "This image can't be shown"; a PNG named .jpg and a 300-frame GIF showed.
+  A snapshot took under 20 ms throughout.
+- Odd names saved inside the downloads folder: `..\..\evil.txt` as `signal-attachment.bin`
+  (a dot first), Unicode, a dash first, dots at the end dropped.
+- presage-cli, Desktop and b33p sending into one chat at once: every message in order and once
+  on b33p, and all of b33p's at the peer. A message edited, reacted to and deleted in quick
+  succession ended deleted with no edit showing, with b33p running and with b33p stopped
+  until all of it was queued.
+- Two failures were the checks': b33p trims trailing whitespace and reads `*bold*` as
+  formatting, and presage-cli's `send` receives what's queued without printing it, so the
+  peer's messages are read from its store (`list-messages`) instead.
+
 ### Smaller notes
 
 - Saving a 90 MiB file takes four to five minutes in the box: b33p runs as a debug build there.
