@@ -39,7 +39,7 @@ the session lock). Its commits, oldest first:
 |---|---|---|
 | `langis/integration` (`7e868e4`) | Upstream main with the fork's PRs and the session lock (whisperfish/presage#473); b33p #69 pinned it (as `langis/integration-next`, since renamed) | Base of the next |
 | `fix/edited-targets` (`ce28171`), pushed | `langis/integration` plus one commit: edits and deletes for everyone find an edited message by its latest edit's time (`ContentsStore::message_sent_or_edited_at`), and a stored edit names its original's time; a store test | Pinned by `testbox-green` (b33p and presage-cli) |
-| `pr/edited-targets` (`6c6594a`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs); store and manager tests pass | For the upstream PR (not opened yet) |
+| `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
@@ -52,7 +52,7 @@ the session lock). Its commits, oldest first:
 | Branch | What | State |
 |---|---|---|
 | `fix/qt-color-bitmap-glyphs` (`6b8eef3`), pushed | `langis/integration-new` (`e38356d`, what b33p pins) plus one commit: the Qt backend renders glyphs of colour bitmap fonts (CBDT, sbix) with swash and draws them as images. Qt 6.4.2's `QFontEngineFT::loadGlyph` writes past a glyph buffer for them from `drawGlyphRun` (valgrind, b33p's mock on Debian 12); Qt 6.8.2 doesn't | Built into b33p's image |
-| `pr/qt-color-bitmap-glyphs` (`89a52ac`), pushed | The same commit on upstream master (applies cleanly; `i-slint-backend-qt` builds) | For the upstream PR (not opened yet) |
+| `pr/qt-color-bitmap-glyphs` (`89a52ac`), pushed | The same commit on upstream master (applies cleanly; `i-slint-backend-qt` builds) | slint-ui/slint#14449 |
 
 ## Testbox runs
 
