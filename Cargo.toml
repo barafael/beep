@@ -32,12 +32,12 @@ qrcode = { version = "0.14", default-features = false }
 # dropped from the branch: #14426 (the Qt backend draws variable fonts at their default instance,
 # not the thinnest). Rebuild the branch when master moves; drop it once these have landed upstream
 # and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
+slint = { git = "https://github.com/barafael/slint", rev = "2aa99c5bd6d9856232fb6f48a90fcb1c5f34d93b", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "2aa99c5bd6d9856232fb6f48a90fcb1c5f34d93b" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "2aa99c5bd6d9856232fb6f48a90fcb1c5f34d93b" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "2aa99c5bd6d9856232fb6f48a90fcb1c5f34d93b" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2aa99c5bd6d9856232fb6f48a90fcb1c5f34d93b" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
@@ -63,18 +63,20 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "4a
 #   (no PR yet) a receipt doesn't keep a message out of the store, nor take its place (with
 #        #453); an envelope is decrypted and its message kept in one store transaction, and
 #        acknowledged after it: a receiver stopping midway neither loses the message nor has
-#        it acknowledged unkept (needs libsignal-service-rs#442 and our fix to it)
+#        it acknowledged unkept (needs libsignal-service-rs#442 and #489; branch
+#        pr/receive-transaction, its PR not opened yet)
 #   (branch fix/list-messages-arg-group, no PR yet) presage-cli's list-messages doesn't panic
+# Rebuilt on upstream main past #359 (link previews), 2026-10-26.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length) and #460 (the provisioning link logged at debug instead of
 # info); #445 (drop sync messages from other accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "62b697b7a67e8c4ac9b81320c97c1c61546747dd" }
+presage = { git = "https://github.com/barafael/presage", rev = "b664297f3cfe22327d86eb29a129fda80a8dc653" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "62b697b7a67e8c4ac9b81320c97c1c61546747dd", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b664297f3cfe22327d86eb29a129fda80a8dc653", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -98,14 +100,14 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
 # the task's outcome handed to the pipes), #488 (one session step at a time, through a
 # `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once stored, not once read;
-# with a fix of ours, no PR yet: a handle dropped unacknowledged leaves the envelope to be
-# delivered again, not acknowledged unhandled) and servers of one's own (`SignalServers::Custom`, which presage's integration branch
-# follows). Landed upstream and dropped from the branch: #474 (drop sync messages from
-# other accounts on the PNI path too), #478 (a read timeout instead of one for the whole
-# request, so the history download isn't cut off).
+# with #489: a handle dropped unacknowledged leaves the envelope to be delivered again, not
+# acknowledged unhandled) and servers of one's own (`SignalServers::Custom`, which presage's
+# integration branch follows). Landed upstream and dropped from the branch: #474 (drop sync
+# messages from other accounts on the PNI path too), #478 (a read timeout instead of one for the
+# whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "6b623e490007a1a95eae15f338e792f5ba3d5265" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "a32d96b0ab29d6e44891cff7bf50a54f764366c5" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
