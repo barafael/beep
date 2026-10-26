@@ -1,5 +1,5 @@
 //! The testbox builds presage-cli and the sticker tool on the presage and libsignal-service b33p
-//! pins, but names those revisions in files of their own: testbox/presage/Containerfile's
+//! pins (presage-cli on b33p's SQLCipher too), but names those revisions in files of their own: testbox/presage/Containerfile's
 //! arguments, its lock, and testbox/stickers'. A test fails when they drift from b33p's
 //! Cargo.toml, as they did when b33p took the session lock and the box's presage-cli didn't.
 
@@ -63,6 +63,27 @@ mod tests {
             "presage-cli.lock",
         );
         assert_eq!(locked, b33p.1, "testbox/presage/presage-cli.lock");
+
+        let rusqlite = "barafael/rusqlite\", rev = \"";
+        let sqlcipher = one(&manifest, rusqlite, "b33p's libsqlite3-sys");
+        assert_eq!(
+            one(
+                &containerfile,
+                "ARG RUSQLITE_REV=",
+                "the Containerfile's libsqlite3-sys"
+            ),
+            sqlcipher,
+            "testbox/presage/Containerfile"
+        );
+        assert_eq!(
+            one(
+                &lock,
+                "barafael/rusqlite?rev=",
+                "presage-cli.lock's libsqlite3-sys"
+            ),
+            sqlcipher,
+            "testbox/presage/presage-cli.lock"
+        );
 
         let stickers = read(repo, "testbox/stickers/Cargo.toml");
         let sticker_tool = (
