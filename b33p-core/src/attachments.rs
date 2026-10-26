@@ -141,11 +141,14 @@ pub(crate) fn pointer(attachment: &Attachment) -> Option<AttachmentPointer> {
 }
 
 /// What a session's downloads share: one client for Signal's CDNs, which keeps its connections
-/// to use again (one per download would pay a TLS handshake for every picture), and the limit
-/// on how many run at once.
+/// to use again (one per download would pay a TLS handshake for every picture), the limit on
+/// how many run at once, and the one on decoding.
 pub(crate) struct Downloads {
     cdn: PushService,
     limit: Semaphore,
+    /// One picture decoded at a time: a picture may take up to [`decode_limited`]'s 512 MiB
+    /// decoded, and several arriving together took b33p past 2 GiB (pending/stress.md).
+    decoding: Semaphore,
 }
 
 impl Downloads {
@@ -153,6 +156,7 @@ impl Downloads {
         Rc::new(Self {
             cdn: PushService::new(servers, None, "b33p"),
             limit: Semaphore::new(PARALLEL_DOWNLOADS),
+            decoding: Semaphore::new(1),
         })
     }
 }
@@ -220,8 +224,10 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
         if attachment.kind == AttachmentKind::LongText && attachment.size > LONG_TEXT_FETCHED {
             return Err(Error::refused("This message is too long to show."));
         }
-        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
-        let data = download(&downloads.cdn, &attachment).await?;
+        let data = {
+            let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+            download(&downloads.cdn, &attachment).await?
+        };
         match attachment.kind {
             AttachmentKind::LongText => Ok(AttachmentContent::Text(shown_text(&data))),
             AttachmentKind::Audio | AttachmentKind::VoiceNote => {
@@ -229,6 +235,7 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
             }
             _ => {
                 let bounds = picture_bounds(&attachment);
+                let _decoding = downloads.decoding.acquire().await.map_err(stopped)?;
                 tokio::task::spawn_blocking(move || decode_picture(&data, bounds))
                     .await
                     .map_err(|e| Error::refused(e.to_string()))?
@@ -644,9 +651,12 @@ pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
     reader.decode().ok()
 }
 
+/// The longest file name, in bytes, that Linux and macOS take (and Windows, in UTF-16 units).
+const MAX_NAME: usize = 255;
+
 /// The sender's name for the file if it is safe to use (no directories, not hidden, and
-/// nothing Windows would quietly drop from the end, which could hide the real extension),
-/// otherwise one made up from the type.
+/// nothing Windows would quietly drop from the end, which could hide the real extension;
+/// control characters such as line breaks as `_`), otherwise one made up from the type.
 fn safe_name(attachment: &Attachment) -> String {
     attachment
         .file_name
@@ -655,8 +665,19 @@ fn safe_name(attachment: &Attachment) -> String {
         .and_then(|name| name.to_str())
         .map(|name| name.trim_end_matches(['.', ' ']))
         .filter(|name| !name.is_empty() && !name.starts_with('.'))
-        .map(str::to_owned)
+        .map(|name| {
+            name.chars()
+                .map(|c| if c.is_control() { '_' } else { c })
+                .collect()
+        })
         .unwrap_or_else(|| format!("signal-attachment.{}", extension(&attachment.content_type)))
+}
+
+/// `stem`, `suffix` and `ext` as one file name of at most [`MAX_NAME`] bytes: the stem cut
+/// short, between characters, if it has to be.
+fn fitted(stem: &str, suffix: &str, ext: &str) -> String {
+    let room = MAX_NAME.saturating_sub(suffix.len() + ext.len());
+    format!("{}{suffix}{ext}", &stem[..stem.floor_char_boundary(room)])
 }
 
 fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
@@ -676,11 +697,12 @@ fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
         .unwrap_or_default();
     (0..1000)
         .map(|n| {
-            if n == 0 {
-                dir.join(&name)
+            let suffix = if n == 0 {
+                String::new()
             } else {
-                dir.join(format!("{stem} ({n}){ext}"))
-            }
+                format!(" ({n})")
+            };
+            dir.join(fitted(&stem, &suffix, &ext))
         })
         .find(|candidate| !candidate.exists())
         .ok_or_else(|| format!("too many files named “{name}” in {}", dir.display()))
@@ -832,6 +854,25 @@ mod tests {
         assert_eq!(safe_name(&named("invoice.exe.")), "invoice.exe");
         assert_eq!(safe_name(&named("invoice.exe ")), "invoice.exe");
         assert_eq!(safe_name(&named("...")), "signal-attachment.bin");
+    }
+
+    /// A long name, and the same name saved again with its number, still make a file name;
+    /// a line break doesn't go into one.
+    #[test]
+    fn saved_names_fit_and_have_no_control_characters() {
+        let named = |name: &str| Attachment {
+            file_name: Some(name.into()),
+            ..describe(&pointer("text/plain", 0), false)
+        };
+        let long = format!("{}.txt", "文".repeat(100));
+        assert_eq!(safe_name(&named(&long)), long);
+        assert_eq!(fitted("文文文", "", ".txt"), "文文文.txt");
+        let again = fitted(&"文".repeat(100), " (1)", ".txt");
+        assert!(again.len() <= MAX_NAME, "{}", again.len());
+        assert!(again.ends_with("文 (1).txt"));
+        let path = free_path(&named(&long)).unwrap();
+        assert!(path.file_name().unwrap().len() <= MAX_NAME);
+        assert_eq!(safe_name(&named("line\nbreak.txt")), "line_break.txt");
     }
 
     #[test]

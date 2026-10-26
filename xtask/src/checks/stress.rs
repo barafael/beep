@@ -364,10 +364,12 @@ pub(crate) fn content(
 
     checks.record("awkward texts from b33p reach the peer as sent", || {
         select(&mut b33p, &conversation)?;
-        // Whitespace alone isn't a message to send, here as in Signal's apps.
+        // Whitespace alone isn't a message to send, and what ends one isn't sent, here as in
+        // Signal's apps; b33p takes `*bold*` and the like as formatting (the desktop phase).
         let texts: Vec<(&str, String)> = awkward_texts()
             .into_iter()
-            .filter(|(_, text)| !text.trim().is_empty())
+            .filter(|(what, text)| !text.trim().is_empty() && *what != MARKUP)
+            .map(|(what, text)| (what, text.trim_end().to_owned()))
             .collect();
         for (_, text) in &texts {
             type_and_send(&mut b33p, text)?;
@@ -551,14 +553,15 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
                 &from_desktop,
             )?;
             in_order_once(&all_texts(&mut b33p, "testbox stress: from b33p ")?, &from_b33p)?;
-            let received = peer.sync()?;
-            let not_once: Vec<&String> = from_b33p
+            // presage-cli's sends received some of them already: its store has them all.
+            let stored = peer.messages_with(&primary_aci)?;
+            let missing: Vec<&String> = from_b33p
                 .iter()
-                .filter(|text| received.matches(text.as_str()).count() != 1)
+                .filter(|text| !stored.contains(text.as_str()))
                 .collect();
-            if !not_once.is_empty() {
+            if !missing.is_empty() {
                 return Err(Error::Failed(format!(
-                    "the peer didn't get these once: {not_once:?}"
+                    "the peer didn't get these: {missing:?}"
                 )));
             }
             desktop_shows(&mut desktop, last(&from_b33p)?)
@@ -669,6 +672,9 @@ fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<(
     }
 }
 
+/// The name of [`awkward_texts`]' text of formatting marks.
+const MARKUP: &str = "markup characters";
+
 /// Texts b33p hasn't been sent before, each named for what is awkward about it.
 fn awkward_texts() -> Vec<(&'static str, String)> {
     let combining: String = (0..200)
@@ -709,7 +715,7 @@ fn awkward_texts() -> Vec<(&'static str, String)> {
         ),
         ("30 KB", "Signal ".repeat(4500)),
         (
-            "markup characters",
+            MARKUP,
             "*not bold* _not italic_ ~not struck~ `not code` ||no spoiler||".into(),
         ),
     ]

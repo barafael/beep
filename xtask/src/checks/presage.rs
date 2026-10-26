@@ -153,6 +153,12 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
         Ok(received)
     }
 
+    /// What this account has stored of its chat with `aci`, as presage-cli prints it. A `send`
+    /// receives what is queued first, without printing it, so only this shows all of it.
+    pub(super) fn messages_with(&self, aci: &str) -> Result<String> {
+        self.cli(&["list-messages", "--recipient-service-id", aci], "")
+    }
+
     /// Receives what is queued; fails unless presage-cli printed `expected`.
     pub(super) fn sync_printing(&self, expected: &str) -> Result<()> {
         let received = self.sync()?;
