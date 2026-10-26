@@ -66,14 +66,32 @@ impl<'pod> Presage<'pod> {
     /// `output`, after noting each message it says presage-cli lost (its
     /// `Received::DecryptionError`), for the check every phase ends with. Not only `sync`
     /// receives: a `send` does so in the background while it sends, and exits wherever that
-    /// got to.
+    /// got to. One that is stored is no loss but a redelivery: presage-cli exited after storing
+    /// it and before acknowledging it.
     fn noting_lost(&self, output: String) -> String {
         for line in output.lines().filter(|line| line.contains(LOST)) {
+            if self.stored(line) {
+                continue;
+            }
             let account = self.account.name();
             self.containers
                 .note_lost(format!("presage-cli ({account}): {}", line.trim()));
         }
         output
+    }
+
+    /// Whether the message that `line` (presage-cli's "failed to decrypt a message from
+    /// <ACI:…>.2 of 1793028555172: …") says it failed to decrypt is in its store.
+    fn stored(&self, line: &str) -> bool {
+        let Some((aci, timestamp)) = line
+            .split_once("<ACI:")
+            .and_then(|(_, rest)| rest.split_once('>'))
+            .and_then(|(aci, rest)| Some((aci, rest.split_once(" of ")?.1.split_once(':')?.0)))
+        else {
+            return false;
+        };
+        self.cli(&["list-messages", "-u", aci, "--from", timestamp], "")
+            .is_ok_and(|listed| listed.contains(&format!(" @ {timestamp}: ")))
     }
 
     /// Registers afresh, with the account's name as the profile's given name, and returns its ACI.
@@ -157,6 +175,12 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
     }
 
     /// Receives what is queued, answering what asks for an answer; what presage-cli printed.
+    /// What presage-cli's store holds of its chat with `aci`: one line per message, ending in
+    /// " / " and its text.
+    pub(super) fn messages_with(&self, aci: &str) -> Result<String> {
+        self.cli(&["list-messages", "-u", aci], "")
+    }
+
     pub(super) fn sync(&self) -> Result<String> {
         self.cli(&["sync", "--stop-after-empty-queue"], "")
             .map(|received| self.noting_lost(received))

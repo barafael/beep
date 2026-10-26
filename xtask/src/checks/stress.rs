@@ -770,6 +770,25 @@ pub(crate) fn soak(
                 samples.last().map(ToString::to_string).unwrap_or_default()
             );
             in_order_once(&all_texts(&mut b33p, "testbox soak: peer ")?, &from_peer)?;
+            // b33p's own, as it still shows them (edited, the deleted gone), on the peer.
+            let mine = all_texts(&mut b33p, "testbox soak: b33p ")?;
+            peer.sync()?;
+            let listed = peer.messages_with(&primary_aci)?;
+            let missing: Vec<&String> = mine
+                .iter()
+                .filter(|text| {
+                    !listed
+                        .lines()
+                        .any(|line| line.ends_with(&format!(" / {text}")))
+                })
+                .collect();
+            if !missing.is_empty() {
+                return Err(Error::Failed(format!(
+                    "the peer didn't get {} of b33p's {}: {missing:?}",
+                    missing.len(),
+                    mine.len()
+                )));
+            }
             growing(&samples)
         },
     );
