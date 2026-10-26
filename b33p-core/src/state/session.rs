@@ -262,6 +262,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::SaveAttachment(_)
         | Command::OpenAttachment(_)
         | Command::Send { .. }
+        | Command::DropUnsent { .. }
         | Command::Typing { .. }
         | Command::MarkRead { .. }
         | Command::Preferences(_) => false,

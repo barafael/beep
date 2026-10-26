@@ -325,6 +325,26 @@ impl ChatState {
                 }
                 update.conversations = true;
             }
+            Event::Interrupted(sends) => {
+                for send in sends {
+                    let Command::Send {
+                        conversation,
+                        timestamp,
+                        ..
+                    } = &send
+                    else {
+                        continue;
+                    };
+                    let failed = Event::SendFailed {
+                        conversation: conversation.clone(),
+                        timestamp: *timestamp,
+                        retryable: true,
+                    };
+                    update = update
+                        .merge(self.show_sending(&send))
+                        .merge(self.apply_event(failed));
+                }
+            }
             Event::SendFailed {
                 conversation,
                 timestamp,

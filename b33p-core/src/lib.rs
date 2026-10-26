@@ -905,6 +905,9 @@ pub enum Event {
     /// history is loaded. Unlike [`Event::Message`], it is not new and not unread.
     Latest(ChatMessage),
     Message(ChatMessage),
+    /// Our messages that hadn't gone out when b33p last stopped, each a [`Command::Send`] to
+    /// send again: shown as failed, as if [`Event::SendFailed`] had come for them.
+    Interrupted(Vec<Command>),
     /// Sending the message the UI showed at `timestamp` failed; [`Event::CommandFailed`]
     /// says why. `retryable`: sending it again may work (see [`Error::retryable`]); if not,
     /// Signal refused it as it is.
@@ -965,6 +968,12 @@ pub enum Command {
         styles: Vec<StyleRange>,
         /// People mentioned: where "@Name" stands in `body` (bytes), and who it is.
         mentions: Vec<Mention>,
+    },
+    /// Drops one of our messages that didn't go out (see [`Event::Interrupted`]), which the
+    /// user deleted: it isn't shown as failed again.
+    DropUnsent {
+        conversation: ConversationId,
+        timestamp: u64,
     },
     /// Looks for messages containing `query` (ignoring case) in a conversation's whole stored
     /// history; see [`Event::SearchResults`].

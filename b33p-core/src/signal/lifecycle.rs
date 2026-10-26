@@ -37,7 +37,7 @@ use crate::{
 use super::{
     Background, Ctx, GroupIds, Mgr,
     avatars::AvatarFetcher,
-    commands::{handle, outgoing},
+    commands::{handle, outgoing, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
     history::sweep_expired,
     receive::{Repairs, start_receiving},
@@ -796,6 +796,7 @@ async fn run_linked(
     }
     // Before receiving starts, or what arrives meanwhile would count twice (or not at all).
     send_unread(&manager, &ctx).await;
+    send_interrupted(&manager, &ctx).await;
 
     send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
@@ -878,6 +879,10 @@ async fn run_linked(
             continue;
         }
         if outgoing(&command) {
+            // Kept from here until it went out: should b33p stop before, it shows as failed.
+            if let Err(error) = ctx.tables.keep_unsent(&command).await {
+                warn!(%error, "failed to keep a message until it is sent");
+            }
             let _ = in_order.send(command);
             continue;
         }

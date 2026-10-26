@@ -1398,14 +1398,18 @@ fn a_failed_send_stays_shown_as_failed() {
     let shown = state.last_messages(1).next().unwrap().message.clone();
     assert_eq!(shown.unsent, Some(Unsent::Failed));
 
-    // Nothing points at a message that never went out; deleting it only removes it here.
+    // Nothing points at a message that never went out; deleting it removes it here, and
+    // tells the backend only not to show it as failed again.
     assert!(state.react(0, "👍").is_none());
     state.reply_to(0);
     assert!(state.replying().is_none());
     assert!(!state.can_edit(&shown));
     assert!(!ChatState::can_forward(&shown));
     let (command, _) = state.delete(0, false);
-    assert!(command.is_none());
+    assert!(matches!(
+        command,
+        Some(Command::DropUnsent { timestamp: t, .. }) if t == timestamp
+    ));
     assert_eq!(state.messages().count(), 0);
 }
 
@@ -1439,6 +1443,33 @@ fn a_failed_send_can_be_sent_again() {
     // Nor is someone else's message.
     state.apply(Event::Message(message("a", "Bob", timestamp + 1, false)));
     assert!(state.retry_send(1).is_none());
+}
+
+/// A message b33p didn't get to send before it stopped shows as failed when it starts again,
+/// once, and goes out as it was when sent again.
+#[test]
+fn an_interrupted_send_shows_as_failed() {
+    let mut state = state();
+    let a = ConversationId("a".into());
+    let send = Command::Send {
+        conversation: a.clone(),
+        timestamp: 1_000,
+        body: "hi".into(),
+        quote: None,
+        files: Vec::new(),
+        styles: Vec::new(),
+        mentions: Vec::new(),
+    };
+    state.apply(Event::Interrupted(vec![send.clone()]));
+    // Again, as when the backend's session starts over: still once.
+    state.apply(Event::Interrupted(vec![send.clone()]));
+    state.select(&a);
+    let shown: Vec<_> = state.messages().map(|m| m.message.clone()).collect();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].body, "hi");
+    assert_eq!(shown[0].unsent, Some(Unsent::Failed));
+    let again = state.retry_send(0).expect("sent again");
+    assert_eq!(format!("{again:?}"), format!("{send:?}"));
 }
 
 /// The banner says in words that a message couldn't go, not the library's error, and goes
@@ -2848,7 +2879,8 @@ fn deleting_picked_messages_deletes_each() {
         let (first, done) = together.delete_selection(for_everyone);
         let all: Vec<Command> = first.into_iter().chain(together.take_commands()).collect();
         assert_eq!(format!("{all:?}"), format!("{commands:?}"));
-        assert_eq!(all.len(), if for_everyone { 3 } else { 6 });
+        // Deleted here, the two that didn't go out are dropped too.
+        assert_eq!(all.len(), if for_everyone { 3 } else { 8 });
         assert_eq!(done, update);
         let rows = |state: &ChatState| -> Vec<(u64, String, bool)> {
             state

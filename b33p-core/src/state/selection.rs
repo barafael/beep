@@ -298,9 +298,14 @@ impl ChatState {
                 continue;
             }
             if message.unsent.is_some() {
-                // Never went out (or is still going): nothing to tell anyone. A send still
-                // under way finishes regardless, and the sent message shows up.
+                // Never went out (or is still going): nothing to tell anyone, only not to show
+                // it as failed again. A send still under way finishes regardless, and the sent
+                // message shows up.
                 unsent.push((message.conversation.clone(), message.timestamp));
+                commands.push(Command::DropUnsent {
+                    conversation: message.conversation.clone(),
+                    timestamp: message.timestamp,
+                });
                 continue;
             }
             let target = message.reference();
@@ -327,7 +332,7 @@ impl ChatState {
             i += 1;
             keep
         });
-        let update = if commands.is_empty() && unsent.is_empty() {
+        let update = if commands.is_empty() {
             Update::default()
         } else {
             self.forget_changed_rows();
