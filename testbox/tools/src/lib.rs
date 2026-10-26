@@ -79,6 +79,10 @@ pub enum Error {
         #[error(not(source))]
         output: String,
     },
+    /// A check others depend on failed, and was reported as it failed (the xtask's
+    /// `Checks::require`).
+    #[display("{_0} failed")]
+    Unmet(#[error(not(source))] String),
     /// The rest: a refused request, a wait that timed out, a state that isn't as expected.
     #[display("{_0}")]
     Failed(#[error(not(source))] String),

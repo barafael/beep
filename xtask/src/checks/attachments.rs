@@ -4,10 +4,8 @@ use b33p_harness::{
     Action, AttachmentKind, AttachmentSnapshot, Download, Saved, Snapshot, StickersSnapshot,
 };
 
-use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_chat, peer_text_reaches, select, type_and_send,
-};
-use super::setup::{LinkedBox, linked_box, linked_desktop, restart_b33p};
+use super::b33p::{b33p_chat, select, type_and_send};
+use super::setup::{LinkedBox, restart_b33p};
 use super::{Checks, PATIENCE, PATIENCE_MS};
 use crate::Sockets;
 use crate::error::{Context, Error, Result};
@@ -19,8 +17,9 @@ use testbox_tools::drivers;
 /// Pictures, files and audio through CDN3 between b33p and Signal-Desktop, in `desktop`'s box,
 /// then a profile picture and a sticker pack through CDN0. `files` is where both see the test
 /// files: the host's side of their read-only `/files` mount, which no container can write to.
-pub(crate) fn attachments(
+pub(super) fn attachments(
     checks: &mut Checks,
+    linked: &mut LinkedBox<'_>,
     containers: &Pod,
     sockets: &Sockets,
     files: &Path,
@@ -28,22 +27,12 @@ pub(crate) fn attachments(
 ) -> Result<()> {
     let LinkedBox {
         primary,
-        peer,
         primary_aci,
-        mut b33p,
-    } = linked_box(checks, containers, sockets)?;
-    let mut desktop = linked_desktop(checks, &sockets.desktop, &peer)?;
-    let conversation = checks.require("the peer's primary writes to b33p", || {
-        peer_text_reaches(
-            &mut b33p,
-            &peer,
-            &primary_aci,
-            "testbox attachments: from the peer",
-        )
-    })?;
-    checks.require(REQUEST_ACCEPTED, || {
-        accept_request(&mut b33p, &conversation)
-    })?;
+        b33p,
+        desktop,
+        conversation,
+        ..
+    } = linked;
 
     // The directory `cargo testbox up` made (xtask/src/pod.rs FILES).
     std::fs::copy(picture, files.join("picture.png")).context(picture.display().to_string())?;
@@ -53,11 +42,11 @@ pub(crate) fn attachments(
 
     let picture_text = "testbox attachments: a picture from b33p";
     checks.record("a picture from b33p reaches Desktop", || {
-        select(&mut b33p, &conversation)?;
+        select(b33p, conversation)?;
         b33p.act(Action::StageFiles {
             paths: vec![in_box("picture.png")],
         })?;
-        type_and_send(&mut b33p, picture_text)?;
+        type_and_send(b33p, picture_text)?;
         desktop.call(drivers::Desktop::OpenConversation {
             aci: primary_aci.clone(),
         })?;
@@ -71,7 +60,7 @@ pub(crate) fn attachments(
         b33p.act(Action::StageFiles {
             paths: vec![in_box("notes.txt")],
         })?;
-        type_and_send(&mut b33p, "testbox attachments: a file from b33p")?;
+        type_and_send(b33p, "testbox attachments: a file from b33p")?;
         desktop.call(drivers::Desktop::WaitForFile {
             file_name: "notes.txt".to_owned(),
             timeout_ms: PATIENCE_MS,
@@ -86,9 +75,9 @@ pub(crate) fn attachments(
                 paths: vec![in_box("picture.png")],
                 text: text.to_owned(),
             })?;
-            let id = incoming_attachment(&mut b33p, Some(text), AttachmentKind::Image)?;
+            let id = incoming_attachment(b33p, Some(text), AttachmentKind::Image)?;
             b33p.act(Action::FetchAttachment { id: id.clone() })?;
-            downloaded(&mut b33p, &id)
+            downloaded(b33p, &id)
         },
     );
 
@@ -98,25 +87,25 @@ pub(crate) fn attachments(
             paths: vec![in_box("notes.txt")],
             text: text.to_owned(),
         })?;
-        let id = incoming_attachment(&mut b33p, Some(text), AttachmentKind::File)?;
+        let id = incoming_attachment(b33p, Some(text), AttachmentKind::File)?;
         b33p.act(Action::SaveAttachment { id: id.clone() })?;
-        saved(&mut b33p, &id)
+        saved(b33p, &id)
     });
 
     // TESTPLAN.md §3.2. A voice message has no text, and b33p records none: what it sends the
     // other way is an audio file, which Desktop shows as audio as well (item 3).
     checks.record("a voice message from Desktop reaches b33p, saved", || {
         desktop.call(drivers::Desktop::SendVoiceMessage)?;
-        let id = incoming_attachment(&mut b33p, None, AttachmentKind::VoiceNote)?;
+        let id = incoming_attachment(b33p, None, AttachmentKind::VoiceNote)?;
         b33p.act(Action::SaveAttachment { id: id.clone() })?;
-        saved(&mut b33p, &id)
+        saved(b33p, &id)
     });
 
     checks.record("an audio file from b33p reaches Desktop as audio", || {
         b33p.act(Action::StageFiles {
             paths: vec![in_box("tone.wav")],
         })?;
-        type_and_send(&mut b33p, "testbox attachments: audio from b33p")?;
+        type_and_send(b33p, "testbox attachments: audio from b33p")?;
         desktop.call(drivers::Desktop::WaitForIncomingAudio {
             timeout_ms: PATIENCE_MS,
         })
@@ -130,13 +119,10 @@ pub(crate) fn attachments(
     // the primary's first receive answers b33p's request for contacts, which has b33p fetch them.
     checks.record("a profile picture set on Desktop shows in b33p", || {
         desktop.call(drivers::Desktop::SetProfileAvatar)?;
-        b33p = restart_b33p(containers, &sockets.b33p)?;
-        b33p_chat(
-            &mut b33p,
-            &conversation,
-            "with the peer's picture",
-            |chat| chat.avatar,
-        )
+        *b33p = restart_b33p(containers, &sockets.b33p)?;
+        b33p_chat(b33p, conversation, "with the peer's picture", |chat| {
+            chat.avatar
+        })
     });
 
     // TESTPLAN.md §2.11: a pack seeded on CDN0, installed on the primary as on a
@@ -168,7 +154,7 @@ pub(crate) fn attachments(
                 Some(since),
                 PATIENCE,
             )?;
-            select(&mut b33p, &conversation)?;
+            select(b33p, conversation)?;
             b33p.act(Action::OpenStickers)?;
             let sticker = b33p.wait_for("the pack in b33p's picker", PATIENCE, |snapshot| {
                 let StickersSnapshot::Installed(packs) = &snapshot.stickers else {

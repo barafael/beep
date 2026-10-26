@@ -1,11 +1,14 @@
 //! The box as one pod under `podman kube play` (testbox/pod.yaml), not Compose: that would be a
 //! second definition of the box beside the pod. Revise if the box has to run on Docker.
 
+use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+use tracing::{debug, info, warn};
 
 use crate::error::{Context, Error, Result, WithContext};
 use crate::process::{self, Heard};
@@ -19,9 +22,15 @@ const NETWORK: &str = "b33p-testbox";
 pub const RUN: &str = "target/testbox-run";
 /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
 pub const FILES: &str = "target/testbox-files";
-/// What each phase leaves for looking into it ([`crate::checks::Record`]), and `run`'s under
-/// `run/<when it started>/<round>-<phase>`.
+/// What each box leaves for looking into it (xtask/src/checks/record.rs): `test`'s under
+/// `<box>`, `run`'s under `run/<when it started>/<round>/<box>`.
 pub const RECORD: &str = "target/testbox-record";
+/// Each image's build output, as `<image>.log`.
+const BUILD_LOGS: &str = "target/testbox-build";
+/// The lock [`Pod::holding`] takes.
+const HELD: &str = "target/testbox.lock";
+/// How much of a failed build's log its error shows.
+const BUILD_TAIL: usize = 40;
 /// A directory per client for its display's socket, which only that client mounts
 /// (testbox/pod.yaml volumes `view-<client>`): no client reaches another's display.
 pub const VIEW: &str = "target/testbox-view";
@@ -119,9 +128,20 @@ impl Image {
     };
 }
 
+/// The server's image, which the clients' copy the box's keys and tools from.
+const SERVER: &str = "localhost/b33p-testbox-server";
+
+/// How a build shares the CPU.
+#[derive(Clone, Copy)]
+enum Priority {
+    Normal,
+    /// `nice -n 10`.
+    Lower,
+}
+
 const IMAGES: [Image; 10] = [
     Image {
-        tag: "localhost/b33p-testbox-server",
+        tag: SERVER,
         containerfile: "testbox/server/Containerfile",
         ..Image::REPOSITORY
     },
@@ -178,6 +198,59 @@ const IMAGES: [Image; 10] = [
     },
 ];
 
+/// An image's build going on; dropped before [`Building::finish`], it is stopped.
+pub struct Building {
+    name: &'static str,
+    log: PathBuf,
+    started: Instant,
+    child: Option<Child>,
+}
+
+impl Building {
+    /// Waits for the build to end; fails with the end of its log if it failed.
+    pub fn finish(mut self) -> Result<()> {
+        let mut child = self.child.take().ok_or("the build was stopped")?;
+        let status = child
+            .wait()
+            .context(format!("podman build {}", self.name))?;
+        if !status.success() {
+            let output = testbox_tools::read(&self.log).unwrap_or_default();
+            let lines: Vec<&str> = output.lines().collect();
+            let tail = lines[lines.len().saturating_sub(BUILD_TAIL)..].join("\n");
+            return Err(Error::Failed(format!(
+                "building {} failed ({status}); the end of {}:\n{tail}",
+                self.name,
+                self.log.display()
+            )));
+        }
+        info!(
+            "built {} in {:.0} s",
+            self.name,
+            self.started.elapsed().as_secs_f64()
+        );
+        Ok(())
+    }
+}
+
+impl Drop for Building {
+    /// With SIGTERM, which ends the build at once; podman keeps its working container
+    /// (`podman ps --all --external`).
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        warn!("stopping the build of {}", self.name);
+        let mut kill = Command::new("kill");
+        kill.args(["-TERM", &child.id().to_string()]);
+        if let Err(error) = process::run(kill) {
+            warn!("{error}");
+        }
+        if let Err(error) = child.wait() {
+            warn!("the build of {}: {error}", self.name);
+        }
+    }
+}
+
 pub struct Pod {
     repo: PathBuf,
     /// pod.yaml with its paths and clients filled in: hostPath must be absolute.
@@ -198,24 +271,117 @@ impl Pod {
     /// `optimized` builds b33p optimized as it ships (the `testbox` profile) instead of as the
     /// checks' own builds are.
     pub fn up(&self, clients: &[Client], optimized: bool) -> Result<()> {
-        for image in IMAGES
+        self.build(clients, optimized)?;
+        self.play(clients)
+    }
+
+    /// Builds the images the pod and `clients` run, b33p's `optimized` or not ([`Self::up`]).
+    pub fn build(&self, clients: &[Client], optimized: bool) -> Result<()> {
+        self.build_server()?;
+        self.build_others(clients, optimized)
+    }
+
+    /// Builds the server's image, which the clients' copy from (`COPY --from`).
+    pub fn build_server(&self) -> Result<()> {
+        self.build_images(|image| image.tag == SERVER, Priority::Normal, false)
+    }
+
+    /// Builds the images the pod and `clients` run but the server's, built already.
+    pub fn build_others(&self, clients: &[Client], optimized: bool) -> Result<()> {
+        self.build_images(
+            |image| {
+                image.tag != SERVER && image.client.is_none_or(|client| clients.contains(&client))
+            },
+            Priority::Normal,
+            optimized,
+        )
+    }
+
+    /// Starts building `client`'s image, the server's built already, beside a run's checks: at
+    /// a lower CPU priority, as the checks' waits are bounded and the build's isn't.
+    pub fn build_beside(&self, client: Client) -> Result<Building> {
+        let image = IMAGES
             .iter()
-            .filter(|image| image.client.is_none_or(|client| clients.contains(&client)))
-        {
-            // Stages that don't depend on each other at once (a Maven build and a cargo one).
-            let mut build = podman(&["build", "--jobs", "0", "-t", image.tag]);
-            if image.profiled {
-                let profile = if optimized { "testbox" } else { "dev" };
-                build.arg("--build-arg").arg(format!("PROFILE={profile}"));
-            }
-            build
-                .arg("-f")
-                .arg(self.repo.join(image.containerfile))
-                .arg(self.repo.join(image.context));
-            process::run(build)?;
+            .find(|image| image.client == Some(client))
+            .ok_or("no image of that client")?;
+        self.start_build(image, Priority::Lower, false)
+    }
+
+    /// Builds each image `wanted` takes, one after the other.
+    fn build_images(
+        &self,
+        wanted: impl Fn(&Image) -> bool,
+        priority: Priority,
+        optimized: bool,
+    ) -> Result<()> {
+        for image in IMAGES.iter().filter(|image| wanted(image)) {
+            self.start_build(image, priority, optimized)?.finish()?;
         }
+        Ok(())
+    }
+
+    /// Starts building `image`, its output in a log of its own under [`BUILD_LOGS`]: a build's
+    /// output would bury what a run's checks print.
+    fn start_build(&self, image: &Image, priority: Priority, optimized: bool) -> Result<Building> {
+        let logs = self.repo.join(BUILD_LOGS);
+        std::fs::create_dir_all(&logs).context(logs.display().to_string())?;
+        let name = image.tag.rsplit('/').next().unwrap_or(image.tag);
+        let path = logs.join(format!("{name}.log"));
+        let log = File::create(&path).context(path.display().to_string())?;
+        let mut build = match priority {
+            Priority::Normal => podman(&[]),
+            Priority::Lower => {
+                let mut nice = Command::new("nice");
+                nice.args(["-n", "10", "podman"]);
+                nice
+            }
+        };
+        // Stages that don't depend on each other at once (a Maven build and a cargo one).
+        build.args(["build", "--jobs", "0", "-t", image.tag]);
+        if image.profiled {
+            let profile = if optimized { "testbox" } else { "dev" };
+            build.arg("--build-arg").arg(format!("PROFILE={profile}"));
+        }
+        build
+            .arg("-f")
+            .arg(self.repo.join(image.containerfile))
+            .arg(self.repo.join(image.context))
+            .stdout(log.try_clone().context(path.display().to_string())?)
+            .stderr(log);
+        info!("building {name}: {}", path.display());
+        let child = build.spawn().context(format!("podman build {name}"))?;
+        Ok(Building {
+            name,
+            log: path,
+            started: Instant::now(),
+            child: Some(child),
+        })
+    }
+
+    /// Runs `change` with the box held: two commands that play or take down the one pod at once
+    /// break each other's. Fails at once if another process holds it.
+    pub fn holding(&self, change: impl FnOnce() -> Result<()>) -> Result<()> {
+        let path = self.repo.join(HELD);
+        let held = File::create(&path).context(path.display().to_string())?;
+        match held.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err(Error::Failed(format!(
+                    "another cargo testbox up, test or down holds the box ({})",
+                    path.display()
+                )));
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error).context(path.display().to_string());
+            }
+        }
+        change()
+    }
+
+    /// Plays the pod with `clients`, their images built.
+    pub fn play(&self, clients: &[Client]) -> Result<()> {
         // Not in pod.yaml: Kubernetes YAML has no network objects.
-        process::run(podman(&[
+        quietly(podman(&[
             "network",
             "create",
             "--ignore",
@@ -253,7 +419,13 @@ impl Pod {
         testbox_tools::write(&self.rendered, self.render(clients)?)?;
         let mut play = podman(&["kube", "play", "--replace", "--network", NETWORK]);
         play.arg(&self.rendered);
-        process::run(play)
+        quietly(play)
+    }
+
+    /// [`Self::play`] from nothing: the pod and every volume removed first.
+    pub fn fresh(&self, clients: &[Client]) -> Result<()> {
+        self.down(true)?;
+        self.play(clients)
     }
 
     /// pod.yaml with the repository filled in, and the clients' containers in its
@@ -320,14 +492,14 @@ impl Pod {
                 down.arg("--force");
             }
             down.arg(&self.rendered);
-            process::run(down)?;
+            quietly(down)?;
         }
         let pod = process::output(
             podman(&["pod", "ps", "-q", "--filter", &format!("name=^{POD}$")]),
             "",
         )?;
         if !pod.trim().is_empty() {
-            process::run(podman(&["pod", "rm", "--force", POD]))?;
+            quietly(podman(&["pod", "rm", "--force", POD]))?;
         }
         if wipe {
             let volumes = process::output(
@@ -336,7 +508,7 @@ impl Pod {
             )?;
             let volumes: Vec<&str> = volumes.split_whitespace().collect();
             if !volumes.is_empty() {
-                process::run(podman(&[&["volume", "rm"][..], &volumes].concat()))?;
+                quietly(podman(&[&["volume", "rm"][..], &volumes].concat()))?;
             }
         }
         Ok(())
@@ -432,7 +604,7 @@ impl Pod {
     }
 
     pub fn restart(&self, service: Service) -> Result<()> {
-        process::run(podman(&["restart", &container(service)]))
+        quietly(podman(&["restart", &container(service)]))
     }
 
     /// Stops `service` as `podman stop` does: its stop signal, then SIGKILL after the timeout.
@@ -527,6 +699,17 @@ impl Pod {
     }
 }
 
+/// Runs `command` to success, what it printed logged rather than shown: podman's account of what
+/// it did would break up a run's report.
+fn quietly(command: Command) -> Result<()> {
+    let printed = process::output(command, "")?;
+    let printed = printed.trim_end();
+    if !printed.is_empty() {
+        debug!("{printed}");
+    }
+    Ok(())
+}
+
 fn podman(args: &[&str]) -> Command {
     let mut podman = Command::new("podman");
     podman.args(args);
@@ -547,4 +730,27 @@ fn follow_logs(service: Service, since: Option<u64>) -> Command {
     }
     logs.arg(container(service));
     logs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second hold fails while the first is held, and succeeds once it ended.
+    #[test]
+    fn the_box_is_held_once() {
+        let repo = std::env::temp_dir().join(format!("testbox-hold-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join("target")).expect("a scratch repository");
+        let pod = Pod::new(&repo);
+        pod.holding(|| {
+            assert!(
+                pod.holding(|| Ok(())).is_err(),
+                "a second hold while the first is held"
+            );
+            Ok(())
+        })
+        .expect("the first hold");
+        pod.holding(|| Ok(())).expect("a hold once the first ended");
+        std::fs::remove_dir_all(&repo).expect("the scratch repository removed");
+    }
 }

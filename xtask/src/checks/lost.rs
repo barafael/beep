@@ -1,4 +1,4 @@
-//! The check every phase ends with: no message was lost. A phase's checks can pass with one
+//! The check every part of a run ends with (a fixture's setup, each phase): no message was lost. A phase's checks can pass with one
 //! lost on the way (a sync copy, an answer to a request), and only the clients' logs say so:
 //!
 //! - b33p: a message that failed to decrypt, or a duplicate of one it neither decrypted lately
@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::pod::{Pod, Service};
 
 /// b33p's lines for a lost message (b33p-core/src/signal.rs, `Received::DecryptionError`).
@@ -36,11 +36,8 @@ const DESKTOP_DECRYPTED: &str = "queueing decrypted envelope ";
 pub(super) const LOGCAT: &str = "/tmp/logcat.txt";
 /// Signal-Desktop's logs, app.log and main.log, in its user data (testbox/desktop/driver.ts).
 pub(super) const DESKTOP_LOGS: &str = "cat /home/desktop/data/logs/*.log";
-/// How many lost messages a failure lists.
-const LISTED: usize = 10;
-
-/// Fails, listing them, if any client's log tells of a lost message.
-pub(super) fn none(containers: &Pod) -> Result<()> {
+/// Every line of the clients' logs that tells of a lost message.
+pub(super) fn found(containers: &Pod) -> Result<Vec<String>> {
     let mut lost = Vec::new();
     if containers.running(Service::B33p) {
         let log = containers.log(Service::B33p)?;
@@ -59,12 +56,7 @@ pub(super) fn none(containers: &Pod) -> Result<()> {
         lost.extend(desktop(&logs));
     }
     lost.extend(containers.lost());
-    if lost.is_empty() {
-        return Ok(());
-    }
-    let count = lost.len();
-    lost.truncate(LISTED);
-    Err(Error::Failed(format!("{count} lost:\n{}", lost.join("\n"))))
+    Ok(lost)
 }
 
 /// `line` without the colours of b33p's log (SGR escapes, `ESC [ … m`).

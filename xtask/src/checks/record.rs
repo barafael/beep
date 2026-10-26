@@ -1,7 +1,7 @@
-//! What a phase leaves behind for looking into it once the box is wiped:
-//! `target/testbox-record/<phase>/`, with every container's log, Desktop's own logs and
-//! Android's logcat at the phase's end, and with `--screenshots` each client's display after
-//! each check (testbox/shot).
+//! What a box leaves behind for looking into it once it is wiped: `target/testbox-record/<box>/`,
+//! with every container's log, Desktop's own logs and Android's logcat at the box's end, and
+//! with `--screenshots` each client's display after each check (testbox/shot), in a directory
+//! for each part (the box's setup, each phase).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,7 +15,7 @@ use super::lost::{DESKTOP_LOGS, LOGCAT};
 /// How long a check's name may be in a screenshot's file name.
 const LABEL: usize = 60;
 
-/// A phase's record.
+/// A box's record, or a part's within it.
 pub(crate) struct Record {
     directory: PathBuf,
     shots: Option<Shots>,
@@ -23,6 +23,7 @@ pub(crate) struct Record {
 
 /// The screenshots: the tool, the displays as it takes them (`<name>=<socket>`), and how many
 /// were taken, which numbers them in the order of the checks.
+#[derive(Clone)]
 struct Shots {
     tool: PathBuf,
     displays: Vec<String>,
@@ -66,6 +67,14 @@ impl Record {
         } else {
             None
         };
+        Ok(Self { directory, shots })
+    }
+
+    /// The record of the part `name` within this one, its screenshots numbered from 1.
+    pub(super) fn part(&self, name: &str) -> Result<Self> {
+        let directory = self.directory.join(name);
+        std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
+        let shots = self.shots.clone().map(|shots| Shots { taken: 0, ..shots });
         Ok(Self { directory, shots })
     }
 

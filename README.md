@@ -156,11 +156,12 @@ lists the other tasks.
 Against Signal's own server and clients, without reaching Signal: the test box runs Signal-Server,
 Signal-Desktop and Signal-Android in a Podman pod with no egress, and checks b33p against them
 (Linux with rootless Podman; Android needs `/dev/kvm`). See [testbox/README.md](testbox/README.md)
-for what it needs and how to run it; the smallest box is
+for what it needs and how to run it:
 
 ```sh
-cargo testbox up
-cargo testbox test core
+cargo testbox test                # every phase
+cargo testbox test core           # one
+cargo test -p xtask -- --ignored  # every phase, as a test
 ```
 
 ## License

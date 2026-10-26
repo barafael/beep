@@ -2,12 +2,9 @@ use std::time::Duration;
 
 use b33p_harness::{Action, Delivery};
 
-use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, outgoing_index, peer_text_reaches, select, type_and_send,
-};
-use super::setup::{LinkedBox, linked_box};
+use super::b33p::{outgoing_index, peer_text_reaches, select, type_and_send};
+use super::setup::LinkedBox;
 use super::{Checks, PATIENCE};
-use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::pod::{Pod, Ready, Service};
 use crate::process;
@@ -17,31 +14,25 @@ use crate::process;
 /// one retry on a new connection.
 const SILENT_SERVER: Duration = Duration::from_secs(5 * 60);
 
-/// b33p linked to a presage-cli primary, with a presage-cli peer.
-pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+/// Text, reconnecting, and a send to a server that doesn't answer, between b33p and the
+/// presage-cli peer.
+pub(super) fn core(
+    checks: &mut Checks,
+    linked: &mut LinkedBox<'_>,
+    containers: &Pod,
+) -> Result<()> {
     let LinkedBox {
         peer,
         primary_aci,
-        mut b33p,
+        b33p,
+        conversation,
         ..
-    } = linked_box(checks, containers, sockets)?;
-
-    let conversation = checks.require("text from the peer reaches b33p", || {
-        peer_text_reaches(
-            &mut b33p,
-            &peer,
-            &primary_aci,
-            "testbox core: from the peer",
-        )
-    })?;
-    checks.require(REQUEST_ACCEPTED, || {
-        accept_request(&mut b33p, &conversation)
-    })?;
+    } = linked;
 
     let reply_text = "testbox core: from b33p to the peer";
     checks.record("text from b33p reaches the peer", || {
-        select(&mut b33p, &conversation)?;
-        type_and_send(&mut b33p, reply_text)?;
+        select(b33p, conversation)?;
+        type_and_send(b33p, reply_text)?;
         peer.sync_printing(reply_text)
     });
 
@@ -50,12 +41,7 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
     // device too, sends a delivery receipt for each message it receives
     // (ts/messages/handleDataMessage.preload.ts `deliveryReceiptQueue`).
     checks.record("b33p sends a delivery receipt", || {
-        peer_text_reaches(
-            &mut b33p,
-            &peer,
-            &primary_aci,
-            "testbox core: to be receipted",
-        )?;
+        peer_text_reaches(b33p, peer, primary_aci, "testbox core: to be receipted")?;
         peer.sync_printing("got Delivery receipt")
     });
 
@@ -64,13 +50,7 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
         let since = process::now()?;
         containers.restart(Service::Server)?;
         containers.await_ready(Ready::Server, Some(since), PATIENCE)?;
-        peer_text_reaches(
-            &mut b33p,
-            &peer,
-            &primary_aci,
-            "testbox core: after the drop",
-        )
-        .map(drop)
+        peer_text_reaches(b33p, peer, primary_aci, "testbox core: after the drop").map(drop)
     });
 
     // TESTPLAN.md §1.2 item 3: a message that can't go out says so, and goes out when sent again.
@@ -108,7 +88,7 @@ pub(crate) fn core(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> 
                 return Err(Error::Failed(format!("the banner reads {error:?}")));
             }
             // Once b33p has caught up again, which it lets nobody write before.
-            let index = outgoing_index(&mut b33p, text)?;
+            let index = outgoing_index(b33p, text)?;
             b33p.wait_for("b33p caught up", PATIENCE, |snapshot| {
                 snapshot.synced.then_some(())
             })?;

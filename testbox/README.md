@@ -84,44 +84,50 @@ sequenceDiagram
 - Rust, as for b33p itself. `cargo testbox vnc` opens a window; `cargo testbox web` serves the
   displays as a page on loopback instead.
 
-## Running a phase
+## Running the phases
 
-Each phase needs a fresh box: b33p must start unlinked, and the accounts must start new. So a
-phase is always the same three steps:
+```sh
+cargo testbox test                # every phase
+cargo testbox test desktop core   # some
+cargo test -p xtask -- --ignored  # every phase, as a test: its output only if it fails
+```
+
+`test` builds the images and plays the box itself. The phases share two boxes, each from
+nothing (b33p must start unlinked, the accounts new): the linked box, then the Android box.
+Each box is set up once, then its phases run one after the other, in the order below. The
+Android image builds while the linked box runs.
 
 ```mermaid
 flowchart LR
-    down["cargo testbox down --wipe"] --> up["cargo testbox up<br/>with the phase's clients"]
-    up --> test["cargo testbox test &lt;phase&gt;"]
-    test -- "the next phase" --> down
-    test -. "meanwhile" .-> watch["cargo testbox web<br/>or vnc"]
-    test -. "on a failure" .-> logs["cargo testbox logs &lt;container&gt;"]
+    build["build the images"] --> linked["the linked box:<br/>desktop, attachments, core"]
+    build -. "meanwhile" .-> image["build the Android image"]
+    linked --> android["the Android box:<br/>android, groups, storage"]
+    image --> android
+    linked -. "meanwhile" .-> watch["cargo testbox web<br/>or vnc"]
 ```
 
-| Phase | `up` with | What it checks |
+| Phase | Box | What it checks |
 |---|---|---|
-| `core` | | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, a message request, delivery receipts, reconnecting after the server drops, a send it leaves unanswered and its retry |
-| `desktop` | `--desktop` | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes and emoji each way |
-| `attachments` | `--desktop` | pictures, files and audio through CDN3 between b33p and Desktop; a profile picture and a sticker pack through CDN0 |
-| `android` | `--desktop --android` | Signal-Android registers as the primary and b33p links to it; Desktop links to the peer; text and receipts between the two accounts, each one's linked device in step |
-| `storage` | `--desktop --android` | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
-| `groups` | `--desktop --android` | a group b33p makes with the peer and a presage-cli member; what b33p changes shows on Desktop and Android, and what they change on b33p |
+| `desktop` | linked | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes and emoji each way |
+| `attachments` | linked | pictures, files and audio through CDN3 between b33p and Desktop; a profile picture and a sticker pack through CDN0 |
+| `core` | linked | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, delivery receipts, reconnecting after the server drops, a send it leaves unanswered and its retry |
+| `android` | Android | Signal-Android registers as the primary and b33p links to it; text and receipts between the two accounts, each one's linked device in step |
+| `groups` | Android | a group b33p makes with the peer and a presage-cli member; what b33p changes shows on Desktop and Android, and what they change on b33p |
+| `storage` | Android | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
 
-The first time, start with the smallest box:
+The linked box links b33p to a presage-cli primary and Desktop to a presage-cli peer; the
+Android box links b33p to Android and Desktop to the peer. On both, the peer's first message
+to b33p's account is accepted before the phases start.
 
-```sh
-cargo testbox up
-cargo testbox test core
-```
+Each check prints `check <what>: passed (<seconds>)` or `failed (<seconds>): <why>`, and each
+part (a box's setup, a phase) ends checking that no client lost a message or crashed; `test`
+fails if any check did. Each image's build output is in `target/testbox-build/<image>.log`. The setups are
+in `xtask/src/checks/setup.rs`, the phases' checks one file per phase beside it.
 
-Each check prints `check <what>: passed` or `failed: <why>`; `test` fails if any did. The
-phases' checks are in `xtask/src/checks/`, one file per phase.
+`cargo testbox run` runs `test` in rounds and sums up at the end: `cargo testbox run --rounds 2`
+runs every phase twice, `cargo testbox run desktop groups` only those.
 
-`cargo testbox run` does the three steps for each phase in turn, the clients each needs
-included, and sums up at the end: `cargo testbox run --rounds 2` runs every phase twice,
-`cargo testbox run desktop groups` only those.
-
-b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up` and `run`)
+b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up`, `test` and `run`)
 builds it optimized as it ships instead, which takes longer: for what only shows in an
 optimized build, or is too slow to tell apart in a debug one. It keeps debug assertions on
 (Cargo.toml's `testbox` profile), since b33p refuses its test servers in a release build. `--b33p-memory <MiB>` limits b33p's
@@ -129,7 +135,7 @@ container to that much memory, as a small machine would: past it the kernel kill
 "no client crashed" fails.
 
 `stress-volume`, `stress-interrupt`, `stress-content`, `stress-concurrency` and `stress-soak`
-aren't among `run`'s phases unless named: bursts of messages; b33p killed while it receives,
+run only when named, each on a box of its own, after the others: bursts of messages; b33p killed while it receives,
 sends and saves; awkward texts, broken and huge pictures, odd file names; several clients
 sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a seed it prints,
 which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
@@ -140,17 +146,18 @@ which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
 - `cargo testbox web` prints the address of a page with each client's display; `cargo testbox vnc`
   shows them in a window. Without `--interactive` they only show: your keys and clicks would race
   the drivers'.
-- Every phase leaves a record in `target/testbox-record/<phase>/` (`run`'s in
-  `target/testbox-record/run/<when it started>/<round>-<phase>/`): each container's log,
-  Desktop's own logs and Android's logcat as they were at the phase's end, so they outlast the
+- Every box leaves a record in `target/testbox-record/<box>/` (`run`'s in
+  `target/testbox-record/run/<when it started>/<round>/<box>/`): each container's log,
+  Desktop's own logs and Android's logcat as they were at the box's end, so they outlast the
   next `down --wipe`.
 - `test --screenshots` (and `run --screenshots`) also takes each client's display after each
-  check into the record, numbered in the order of the checks and named after them
-  (`07-text-from-b33p-reaches-desktop-b33p.png`); `testbox/shot` takes them over the displays'
-  sockets.
+  check into the record, in a directory for each part (`setup`, then each phase), numbered in
+  the order of the checks and named after them
+  (`desktop/07-text-from-b33p-reaches-desktop-b33p.png`); `testbox/shot` takes them over the
+  displays' sockets.
 - `cargo testbox logs b33p server` prints those containers' logs; the names are those in
-  `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The box stays up
-  after `test`, so a failed phase can be looked at as it was.
+  `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The last box
+  stays up after `test`, so a failure on it can be looked at as it was.
 - `cargo testbox qr` puts the link QR b33p shows on the emulator camera's poster, for linking by
   hand in Android's scanner.
 - `cargo testbox down` stops the pod and keeps the accounts and stores; `down --wipe` removes them

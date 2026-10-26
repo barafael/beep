@@ -1,12 +1,15 @@
-//! What the phases start from: the box confined and serving, presage-cli accounts, and b33p,
-//! Desktop and Android linked.
+//! The fixtures the phases start from: the box confined and serving, presage-cli accounts, b33p,
+//! Desktop and Android linked, and the peer's first message to b33p's account accepted. The
+//! phases on one fixture share it, one after the other (`super::run`).
 
 use std::path::Path;
 
 use b33p_harness::{Action, ScreenSnapshot};
 
-use super::b33p::{own_aci, unlock, wait_for_chats};
-use super::clients::{Android, Desktop};
+use super::b33p::{
+    REQUEST_ACCEPTED, accept_request, own_aci, peer_text_reaches, unlock, wait_for_chats,
+};
+use super::clients::{Android, Desktop, android_shows};
 use super::presage::{Account, Presage};
 use super::{Checks, HISTORY_PATIENCE, PATIENCE, START};
 use crate::Sockets;
@@ -17,16 +20,22 @@ use crate::process;
 use testbox_tools::drivers;
 
 const ANDROID_NUMBER: &str = "+15555550103";
+/// Written by Android before b33p links: it reaches b33p in the message history, through CDN3.
+pub(super) const NOTE: &str = "testbox android: a note from before b33p linked";
+/// The peer's first message to b33p's account, which b33p accepts as a message request.
+const FIRST: &str = "testbox: the peer's first message";
 /// b33p-slint/src/ui.rs `sync_status` for `HistoryTransfer::Waiting`.
 const WAITING_FOR_HISTORY: &str = "Waiting for your phone to send your message history…";
 
-/// What the checks without Android start from: no egress, the server healthy, two presage-cli
-/// accounts, and b33p linked to the primary.
+/// b33p linked to a presage-cli primary, Desktop to a presage-cli peer, and the peer's first
+/// message to b33p's account accepted in `conversation`.
 pub(super) struct LinkedBox<'pod> {
     pub(super) primary: Presage<'pod>,
     pub(super) peer: Presage<'pod>,
     pub(super) primary_aci: String,
     pub(super) b33p: Harness,
+    pub(super) desktop: Desktop,
+    pub(super) conversation: String,
 }
 
 pub(super) fn linked_box<'pod>(
@@ -34,6 +43,46 @@ pub(super) fn linked_box<'pod>(
     containers: &'pod Pod,
     sockets: &Sockets,
 ) -> Result<LinkedBox<'pod>> {
+    let PlainBox {
+        primary,
+        peer,
+        primary_aci,
+        mut b33p,
+    } = plain_box(checks, containers, sockets)?;
+    // Before the peer writes: Desktop gets the peer's message as a sync of its own.
+    let desktop = linked_desktop(checks, &sockets.desktop, &peer)?;
+    // b33p can't start a conversation by phone number (contact discovery, not in the box), so the
+    // peer writes first.
+    let conversation = checks.require("text from the peer reaches b33p", || {
+        peer_text_reaches(&mut b33p, &peer, &primary_aci, FIRST)
+    })?;
+    checks.require(REQUEST_ACCEPTED, || {
+        accept_request(&mut b33p, &conversation)
+    })?;
+    Ok(LinkedBox {
+        primary,
+        peer,
+        primary_aci,
+        b33p,
+        desktop,
+        conversation,
+    })
+}
+
+/// b33p linked to a presage-cli primary, and a presage-cli peer: what [`LinkedBox`] starts from,
+/// and the stress phases, each on a box of its own (`super::stress`).
+pub(super) struct PlainBox<'pod> {
+    pub(super) primary: Presage<'pod>,
+    pub(super) peer: Presage<'pod>,
+    pub(super) primary_aci: String,
+    pub(super) b33p: Harness,
+}
+
+pub(super) fn plain_box<'pod>(
+    checks: &mut Checks,
+    containers: &'pod Pod,
+    sockets: &Sockets,
+) -> Result<PlainBox<'pod>> {
     confined_and_healthy(checks, containers)?;
     let primary = Presage::new(containers, Account::Primary);
     let peer = Presage::new(containers, Account::Peer);
@@ -41,18 +90,28 @@ pub(super) fn linked_box<'pod>(
         peer.register()?;
         primary.register()
     })?;
-
     containers.await_ready(Ready::B33p, None, START)?;
     let mut b33p = Harness::connect(&sockets.b33p)?;
     checks.require("b33p links to the primary", || {
         link(&mut b33p, false, |url| primary.add_device(url))
     })?;
-    Ok(LinkedBox {
+    Ok(PlainBox {
         primary,
         peer,
         primary_aci,
         b33p,
     })
+}
+
+/// Connects to Signal-Desktop's driver, links it to `primary`, and waits for its inbox.
+pub(super) fn linked_desktop(
+    checks: &mut Checks,
+    socket: &Path,
+    primary: &Presage<'_>,
+) -> Result<Desktop> {
+    let mut desktop = linking_desktop(checks, socket, primary)?;
+    checks.require("Desktop shows its inbox", || desktop_inbox(&mut desktop))?;
+    Ok(desktop)
 }
 
 fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<()> {
@@ -90,27 +149,27 @@ fn server_healthy(containers: &Pod) -> Result<()> {
     containers.await_ready(Ready::Server, None, PATIENCE)
 }
 
-/// What the checks with Android start from: no egress, a presage-cli peer, Android registered, b33p
-/// linked to it, and Desktop linked to the peer.
+/// Android registered with a [`NOTE`] to itself, b33p linked to it with the message history,
+/// Desktop linked to a presage-cli peer, and the peer's first message to Android's account
+/// accepted in b33p's `conversation`.
 pub(super) struct AndroidBox<'pod> {
     pub(super) peer: Presage<'pod>,
     pub(super) android: Android,
     pub(super) b33p: Harness,
     pub(super) desktop: Desktop,
     pub(super) android_aci: String,
+    pub(super) conversation: String,
 }
 
-/// With a `note`, Android writes it to itself first, and b33p links with the message history.
 pub(super) fn android_box<'pod>(
     checks: &mut Checks,
     containers: &'pod Pod,
     sockets: &Sockets,
-    note: Option<&str>,
 ) -> Result<AndroidBox<'pod>> {
     confined_and_healthy(checks, containers)?;
     let peer = Presage::new(containers, Account::Peer);
     checks.require("a presage-cli peer registers", || peer.register().map(drop))?;
-    // Desktop syncs after linking for minutes (driver.ts `inbox`): while Android and b33p set up.
+    // Desktop syncs after linking (driver.ts `inbox`): while Android and b33p set up.
     let mut desktop = linking_desktop(checks, &sockets.desktop, &peer)?;
 
     // The driver listens once the emulator has booted and the agent listens.
@@ -122,38 +181,46 @@ pub(super) fn android_box<'pod>(
             name: "Android".to_owned(),
         })
     })?;
-    if let Some(note) = note {
-        checks.require("Android writes a note to itself", || {
-            android.call(drivers::Android::NoteToSelf {
-                text: note.to_owned(),
-            })
-        })?;
-    }
+    checks.require("Android writes a note to itself", || {
+        android.call(drivers::Android::NoteToSelf {
+            text: NOTE.to_owned(),
+        })
+    })?;
 
     containers.await_ready(Ready::B33p, None, START)?;
     let mut b33p = Harness::connect(&sockets.b33p)?;
-    let history = note.is_some();
-    let linked = if history {
-        "b33p links to Android, with the message history"
-    } else {
-        "b33p links to Android"
-    };
-    checks.require(linked, || {
-        link(&mut b33p, history, |url| {
+    checks.require("b33p links to Android, with the message history", || {
+        link(&mut b33p, true, |url| {
             android.call(drivers::Android::LinkDevice {
                 url: url.to_owned(),
-                transfer: history,
+                transfer: true,
             })
         })
     })?;
     let android_aci = checks.require("b33p knows Android's account", || own_aci(&mut b33p))?;
     checks.require("Desktop shows its inbox", || desktop_inbox(&mut desktop))?;
+
+    let conversation = checks.require("text from the peer reaches b33p", || {
+        peer_text_reaches(&mut b33p, &peer, &android_aci, FIRST)
+    })?;
+    // Before b33p accepts it for the account: a first message from someone Android doesn't know
+    // is a message request there, its row reading "Message Request", its text shown once open.
+    checks.record("text from the peer reaches Android", || {
+        android.call(drivers::Android::OpenConversation {
+            text: "Message Request".to_owned(),
+        })?;
+        android_shows(&mut android, FIRST)
+    });
+    checks.require(REQUEST_ACCEPTED, || {
+        accept_request(&mut b33p, &conversation)
+    })?;
     Ok(AndroidBox {
         peer,
         android,
         b33p,
         desktop,
         android_aci,
+        conversation,
     })
 }
 
@@ -169,17 +236,6 @@ fn desktop_inbox(desktop: &mut Desktop) -> Result<()> {
     desktop.call(drivers::Desktop::Inbox {
         timeout_ms: 10 * 60 * 1000,
     })
-}
-
-/// Connects to Signal-Desktop's driver and links it to `primary`.
-pub(super) fn linked_desktop(
-    checks: &mut Checks,
-    socket: &Path,
-    primary: &Presage<'_>,
-) -> Result<Desktop> {
-    let mut desktop = linking_desktop(checks, socket, primary)?;
-    checks.require("Desktop shows its inbox", || desktop_inbox(&mut desktop))?;
-    Ok(desktop)
 }
 
 /// Launches Desktop and links it to `primary`, without waiting for its inbox
