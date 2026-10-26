@@ -448,6 +448,19 @@ impl Pod {
         process::output(stats, "").map(|usage| usage.trim().to_owned())
     }
 
+    /// Lets `service` take at most `mib` MiB, swap included: past it, the kernel kills it.
+    pub fn limit_memory(&self, service: Service, mib: u64) -> Result<()> {
+        let limit = format!("{mib}m");
+        process::run(podman(&[
+            "update",
+            "--memory",
+            &limit,
+            "--memory-swap",
+            &limit,
+            &container(service),
+        ]))
+    }
+
     /// The most memory `service` used at once since it started, in bytes: its cgroup's
     /// `memory.peak`, which a sampled [`Self::memory`] would miss a spike of.
     pub fn memory_peak(&self, service: Service) -> Result<u64> {

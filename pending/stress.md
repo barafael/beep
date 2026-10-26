@@ -109,9 +109,11 @@ Each group is a phase of about ten minutes, except E.
 
 ## Where it stands (26 October 2026, main 8ff6797)
 
-Groups A to D are written: `cargo testbox run stress-volume stress-interrupt stress-content
-stress-concurrency` (`xtask/src/checks/stress.rs`). They aren't among `run`'s default phases.
-D has no group changes from two clients yet (it needs Android); E and F are still to do. `--release` (on `up` and `run`) builds b33p optimized, as it ships.
+Groups A to E are written: `cargo testbox run stress-volume stress-interrupt stress-content
+stress-concurrency stress-soak` (`xtask/src/checks/stress.rs`). They aren't among `run`'s
+default phases. D has no group changes from two clients yet (it needs Android). Of F there is
+`--b33p-memory <MiB>` on `up` and `run`, for any phase; a clock off, an ASan build and another
+locale are still to do. `--release` (on `up` and `run`) builds b33p optimized, as it ships.
 
 `stress-volume` passes: 200 messages in a burst arrive in order and once each, with b33p running
 (the last shown 0.1 s after the peer's last send) and with it stopped (caught up within a
