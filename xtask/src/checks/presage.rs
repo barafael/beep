@@ -63,6 +63,19 @@ impl<'pod> Presage<'pod> {
         self.containers.exec(Service::Presage, &argv, stdin)
     }
 
+    /// `output`, after noting each message it says presage-cli lost (its
+    /// `Received::DecryptionError`), for the check every phase ends with. Not only `sync`
+    /// receives: a `send` does so in the background while it sends, and exits wherever that
+    /// got to.
+    fn noting_lost(&self, output: String) -> String {
+        for line in output.lines().filter(|line| line.contains(LOST)) {
+            let account = self.account.name();
+            self.containers
+                .note_lost(format!("presage-cli ({account}): {}", line.trim()));
+        }
+        output
+    }
+
     /// Registers afresh, with the account's name as the profile's given name, and returns its ACI.
     /// The test server accepts any verification code and the captcha
     /// `noop.noop.registration.noop` (Signal-Server TESTING.md). A name, since Desktop won't
@@ -123,7 +136,9 @@ impl<'pod> Presage<'pod> {
 for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$text" || exit 1; done"#;
         let mut argv = vec!["sh", "-c", script, "sh", self.account.db(), recipient_aci];
         argv.extend(texts.iter().map(String::as_str));
-        self.containers.exec(Service::Presage, &argv, "").map(drop)
+        self.containers
+            .exec(Service::Presage, &argv, "")
+            .map(|output| drop(self.noting_lost(output)))
     }
 
     /// Sends `text` with the file at `path`, as presage-cli names it: by its file name, its
@@ -143,20 +158,8 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
 
     /// Receives what is queued, answering what asks for an answer; what presage-cli printed.
     pub(super) fn sync(&self) -> Result<String> {
-        let received = self.cli(&["sync", "--stop-after-empty-queue"], "")?;
-        // presage-cli's `Received::DecryptionError`, for the check every phase ends with.
-        for line in received.lines().filter(|line| line.contains(LOST)) {
-            let account = self.account.name();
-            self.containers
-                .note_lost(format!("presage-cli ({account}): {}", line.trim()));
-        }
-        Ok(received)
-    }
-
-    /// What this account has stored of its chat with `aci`, as presage-cli prints it. A `send`
-    /// receives what is queued first, without printing it, so only this shows all of it.
-    pub(super) fn messages_with(&self, aci: &str) -> Result<String> {
-        self.cli(&["list-messages", "--recipient-service-id", aci], "")
+        self.cli(&["sync", "--stop-after-empty-queue"], "")
+            .map(|received| self.noting_lost(received))
     }
 
     /// Receives what is queued; fails unless presage-cli printed `expected`.

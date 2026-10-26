@@ -157,6 +157,13 @@ in one database transaction. presage would need a store transaction that the pro
 writes and `save_message` share, which its store traits don't have: a change to propose
 upstream, not one to make on the fork alone. Until then the check keeps failing at this rate.
 
+presage-cli shows how often it bites a process that simply exits: its `send` receives in a task
+of its own while it sends, and exits wherever that task got to. With b33p sending 15 messages
+while presage-cli sent 60 (`stress-concurrency`, optimized b33p), presage-cli's store missed 4 of
+b33p's in one round and 1 in the next; Desktop, the peer's other device, had them all. The
+phase now checks b33p's messages on Desktop, and notes what `send_all` prints of a message
+presage-cli lost for the check every phase ends with.
+
 ### 2. A message that arrives at the millisecond of one of our receipts is dropped (presage)
 
 Same check, round 2: message 032 went missing before any kill, with presage's warning "not

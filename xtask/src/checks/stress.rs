@@ -553,18 +553,13 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
                 &from_desktop,
             )?;
             in_order_once(&all_texts(&mut b33p, "testbox stress: from b33p ")?, &from_b33p)?;
-            // presage-cli's sends received some of them already: its store has them all.
-            let stored = peer.messages_with(&primary_aci)?;
-            let missing: Vec<&String> = from_b33p
-                .iter()
-                .filter(|text| !stored.contains(text.as_str()))
-                .collect();
-            if !missing.is_empty() {
-                return Err(Error::Failed(format!(
-                    "the peer didn't get these: {missing:?}"
-                )));
+            // On the peer's side, Desktop: presage-cli's sends receive in the background and
+            // exit, which can drop a message between decrypting and storing it (finding 1b),
+            // and the check every phase ends with names those.
+            for text in &from_b33p {
+                desktop_shows(&mut desktop, text)?;
             }
-            desktop_shows(&mut desktop, last(&from_b33p)?)
+            Ok(())
         },
     );
 
