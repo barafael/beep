@@ -286,6 +286,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 | Command::Mute { .. }
                 | Command::Archive { .. }
                 | Command::SetTimer { .. }
+                | Command::DropUnsent { .. }
                 | Command::Preferences(_),
             ) => {}
             Ok(Command::Edit {

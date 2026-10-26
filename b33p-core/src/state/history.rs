@@ -94,15 +94,20 @@ impl ChatState {
         let target = message.reference();
         let conversation = message.conversation.clone();
         if message.unsent.is_some() {
-            // Never went out (or is still going): nothing to tell anyone. A send still under
-            // way finishes regardless, and the sent message shows up.
+            // Never went out (or is still going): nothing to tell anyone, only not to show it
+            // as failed again. A send still under way finishes regardless, and the sent
+            // message shows up.
             let timestamp = message.timestamp;
             self.pending_sends
                 .remove(&(conversation.clone(), timestamp));
             let history = self.history.get_mut(&conversation).expect("shown");
             history.retain(|m| !is_unsent_at(m, timestamp));
             self.forget_changed_rows();
-            return (None, Update::reset());
+            let command = Command::DropUnsent {
+                conversation,
+                timestamp,
+            };
+            return (Some(command), Update::reset());
         }
         if self.editing.as_ref() == Some(&target) {
             self.editing = None;

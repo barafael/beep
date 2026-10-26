@@ -30,15 +30,15 @@ use super::{
     avatars::send_group_avatar,
     conversations::{
         Names, conversation_id, details, display_name, ensure_conversation, find_number, or_logged,
-        own_id,
+        own_id, thread_of,
     },
     groups::{
         PHONE_NUMBER_ONLY, check_request, group_edit, member_aci, member_of, only_admin_check,
         parse_group_link, refresh_group, show_stored,
     },
     history::{
-        data_of, decorate, erase_deleted, history_page, media, original, search, start_timers,
-        to_chat_message, to_reaction,
+        data_of, decorate, erase_deleted, history_page, is_outgoing, media, original, search,
+        start_timers, to_chat_message, to_reaction,
     },
     send::{
         Outgoing, aci_binary, body_ranges, group_context, link_preview, respond, send_blocked,
@@ -48,6 +48,55 @@ use super::{
     stories::{STORY_BACKGROUND, STORY_FOREGROUND, send_stories, send_viewed},
     trust::{refresh_trust, set_verified},
 };
+
+/// Our messages that hadn't gone out when b33p last stopped ([`LocalStore::keep_unsent`]), to
+/// show as failed. One that went out after all, and is stored as ours, is forgotten instead:
+/// b33p stopped between sending it and forgetting it.
+///
+/// [`LocalStore::keep_unsent`]: crate::local::LocalStore::keep_unsent
+pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
+    let unsent = match ctx.tables.unsent().await {
+        Ok(unsent) => unsent,
+        Err(error) => {
+            warn!(%error, "failed to read the messages that didn't go out");
+            return;
+        }
+    };
+    let mut interrupted = Vec::new();
+    for send in unsent {
+        let Command::Send {
+            conversation,
+            timestamp,
+            ..
+        } = &send
+        else {
+            continue;
+        };
+        let stored = match thread_of(conversation) {
+            Some(thread) => manager
+                .store()
+                .message(&thread, *timestamp)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        if stored.is_some_and(|content| is_outgoing(manager, &content)) {
+            if let Err(error) = ctx.tables.sent(conversation, *timestamp).await {
+                warn!(%error, "failed to forget a message that went out");
+            }
+        } else {
+            interrupted.push(send);
+        }
+    }
+    if !interrupted.is_empty() {
+        warn!(
+            count = interrupted.len(),
+            "messages didn't go out before b33p stopped"
+        );
+        let _ = ctx.events.send(Event::Interrupted(interrupted));
+    }
+}
 
 /// Says why `command` failed: in the log, and to the user, who may try it again.
 pub(super) fn command_failed(events: &Events, error: Error, command: Command) {
@@ -303,7 +352,19 @@ async fn handle_command(
                 });
                 return Err(error);
             }
+            ctx.tables
+                .sent(&conversation, timestamp)
+                .await
+                .map_err(db)?;
         }
+        Command::DropUnsent {
+            conversation,
+            timestamp,
+        } => ctx
+            .tables
+            .sent(&conversation, timestamp)
+            .await
+            .map_err(db)?,
         Command::ViewStory(story) => {
             ctx.tables.story_viewed(&story).await.map_err(db)?;
             send_stories(manager, ctx).await;

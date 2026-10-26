@@ -17,7 +17,9 @@ use sqlx::{
 
 use presage::{proto::verified::State, store::Thread};
 
-use crate::{ChatSettings, ConversationId, Delivery, MessageRef};
+use crate::{
+    ChatSettings, Command, ConversationId, Delivery, Mention, MessageRef, Quote, Style, StyleRange,
+};
 
 /// Whether a contact's safety number was verified, and for which of their identity keys
 /// (serialized), in Signal's terms: [`State::Default`] (not verified, or cleared),
@@ -92,6 +94,46 @@ fn message_at(row: &SqliteRow, first: usize) -> MessageRef {
         author_id: row.get(first),
         timestamp: row.get::<i64, _>(first + 1) as u64,
     }
+}
+
+/// Ranges of a message's text with what they carry, as `b33p_unsent` keeps them: `start end
+/// what`, one per line. `what` is a style's code or a service id, neither of which has a space
+/// or a line break.
+fn ranges<'a>(ranges: impl Iterator<Item = (usize, usize, &'a str)>) -> String {
+    ranges
+        .map(|(start, end, what)| format!("{start} {end} {what}\n"))
+        .collect()
+}
+
+/// What [`ranges`] wrote; a line it can't read is left out.
+fn ranges_of(text: &str) -> impl Iterator<Item = (usize, usize, &str)> {
+    text.lines().filter_map(|line| {
+        let mut parts = line.splitn(3, ' ');
+        let start = parts.next()?.parse().ok()?;
+        let end = parts.next()?.parse().ok()?;
+        Some((start, end, parts.next()?))
+    })
+}
+
+fn style_code(style: Style) -> &'static str {
+    match style {
+        Style::Bold => "bold",
+        Style::Italic => "italic",
+        Style::Strikethrough => "strikethrough",
+        Style::Monospace => "monospace",
+        Style::Spoiler => "spoiler",
+    }
+}
+
+fn style_of(code: &str) -> Option<Style> {
+    Some(match code {
+        "bold" => Style::Bold,
+        "italic" => Style::Italic,
+        "strikethrough" => Style::Strikethrough,
+        "monospace" => Style::Monospace,
+        "spoiler" => Style::Spoiler,
+        _ => return None,
+    })
 }
 
 /// The columns [`settings_of`] reads, in its order, after the conversation id.
@@ -237,6 +279,23 @@ const SCHEMA: &[&str] = &[
         aci TEXT PRIMARY KEY NOT NULL,
         identity_key BLOB NOT NULL,
         verified INTEGER NOT NULL
+    )",
+    // Our messages that haven't gone out yet, as sent (`Command::Send`): one whose sending b33p
+    // didn't live to finish is shown as failed when it starts again. `styles` and `mentions`
+    // as [`ranges`] writes them, `files` the paths joined by NUL; the quote's columns are NULL
+    // without one.
+    "CREATE TABLE IF NOT EXISTS b33p_unsent (
+        conversation TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        styles TEXT NOT NULL,
+        mentions TEXT NOT NULL,
+        files BLOB NOT NULL,
+        quote_author TEXT,
+        quote_text TEXT,
+        quote_author_id TEXT,
+        quote_ts INTEGER,
+        PRIMARY KEY (conversation, ts)
     )",
     "CREATE TABLE IF NOT EXISTS b33p_meta (
         key TEXT PRIMARY KEY NOT NULL,
@@ -1117,6 +1176,113 @@ impl LocalStore {
         Ok((due, next.map(|n| n as u64)))
     }
 
+    /// Keeps `send` (a [`Command::Send`]; anything else is ignored) until [`Self::sent`]: if
+    /// b33p stops before then, [`Self::unsent`] has it. Kept again, it replaces itself.
+    pub(crate) async fn keep_unsent(&self, send: &Command) -> Result<(), sqlx::Error> {
+        let Command::Send {
+            conversation,
+            timestamp,
+            body,
+            quote,
+            files,
+            styles,
+            mentions,
+        } = send
+        else {
+            return Ok(());
+        };
+        let files = files
+            .iter()
+            .map(|file| file.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\0");
+        sqlx::query(
+            "INSERT OR REPLACE INTO b33p_unsent (conversation, ts, body, styles, mentions, files,
+                quote_author, quote_text, quote_author_id, quote_ts)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&conversation.0)
+        .bind(*timestamp as i64)
+        .bind(body)
+        .bind(ranges(
+            styles.iter().map(|r| (r.start, r.end, style_code(r.style))),
+        ))
+        .bind(ranges(
+            mentions
+                .iter()
+                .map(|m| (m.start, m.end, m.service_id.as_str())),
+        ))
+        .bind(files.into_bytes())
+        .bind(quote.as_ref().map(|q| &q.author))
+        .bind(quote.as_ref().map(|q| &q.text))
+        .bind(quote.as_ref().map(|q| &q.author_id))
+        .bind(quote.as_ref().map(|q| q.timestamp as i64))
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
+    /// Forgets the send at `timestamp`: it went out, or the user dropped it.
+    pub(crate) async fn sent(
+        &self,
+        conversation: &ConversationId,
+        timestamp: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM b33p_unsent WHERE conversation = ? AND ts = ?")
+            .bind(&conversation.0)
+            .bind(timestamp as i64)
+            .execute(&self.db)
+            .await
+            .map(drop)
+    }
+
+    /// The sends [`Self::keep_unsent`] keeps, oldest first.
+    pub(crate) async fn unsent(&self) -> Result<Vec<Command>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT conversation, ts, body, styles, mentions, files, quote_author, quote_text,
+                quote_author_id, quote_ts
+             FROM b33p_unsent ORDER BY ts",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let files: Vec<u8> = row.get(5);
+                let files = String::from_utf8_lossy(&files);
+                Command::Send {
+                    conversation: ConversationId(row.get(0)),
+                    timestamp: row.get::<i64, _>(1) as u64,
+                    body: row.get(2),
+                    styles: ranges_of(row.get(3))
+                        .filter_map(|(start, end, code)| {
+                            let style = style_of(code)?;
+                            Some(StyleRange { start, end, style })
+                        })
+                        .collect(),
+                    mentions: ranges_of(row.get(4))
+                        .map(|(start, end, service_id)| Mention {
+                            start,
+                            end,
+                            service_id: service_id.to_owned(),
+                        })
+                        .collect(),
+                    files: files
+                        .split('\0')
+                        .filter(|file| !file.is_empty())
+                        .map(Into::into)
+                        .collect(),
+                    quote: row.get::<Option<String>, _>(6).map(|author| Quote {
+                        author,
+                        text: row.get::<Option<String>, _>(7).unwrap_or_default(),
+                        author_id: row.get::<Option<String>, _>(8).unwrap_or_default(),
+                        timestamp: row.get::<Option<i64>, _>(9).unwrap_or_default() as u64,
+                    }),
+                }
+            })
+            .collect())
+    }
+
     /// Forgets messages gone from the store, in one transaction.
     pub(crate) async fn forget(
         &self,
@@ -1306,6 +1472,57 @@ mod tests {
             .filename(dir.path().join("local.db3"))
             .create_if_missing(true);
         LocalStore::open(options).await.unwrap()
+    }
+
+    /// A send kept until it went out comes back as it was, quote, styles, mentions and files
+    /// included, and is gone once sent.
+    #[test]
+    fn an_unsent_message_is_kept_until_sent() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open(&dir).await;
+            let conversation = ConversationId::contact("ann");
+            let send = Command::Send {
+                conversation: conversation.clone(),
+                timestamp: 1_000,
+                body: "@Bo look at this".into(),
+                quote: Some(Quote {
+                    author: "Bo".into(),
+                    text: "what?".into(),
+                    author_id: "bo-aci".into(),
+                    timestamp: 900,
+                }),
+                files: vec!["/home/ann/a picture.png".into(), "/tmp/notes.txt".into()],
+                styles: vec![StyleRange {
+                    start: 4,
+                    end: 8,
+                    style: Style::Bold,
+                }],
+                mentions: vec![Mention {
+                    start: 0,
+                    end: 3,
+                    service_id: "bo-aci".into(),
+                }],
+            };
+            let plain = Command::Send {
+                conversation: conversation.clone(),
+                timestamp: 1_001,
+                body: "plain".into(),
+                quote: None,
+                files: Vec::new(),
+                styles: Vec::new(),
+                mentions: Vec::new(),
+            };
+            store.keep_unsent(&send).await.unwrap();
+            store.keep_unsent(&plain).await.unwrap();
+            // Retried: kept once.
+            store.keep_unsent(&send).await.unwrap();
+            let unsent = store.unsent().await.unwrap();
+            assert_eq!(format!("{unsent:?}"), format!("{:?}", [&send, &plain]));
+            store.sent(&conversation, 1_000).await.unwrap();
+            let unsent = store.unsent().await.unwrap();
+            assert_eq!(format!("{unsent:?}"), format!("{:?}", [&plain]));
+        });
     }
 
     /// Changes to one conversation at once all land: each reads the row and writes it back,
