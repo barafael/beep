@@ -1,8 +1,9 @@
 //! The check every phase ends with: no message was lost. A phase's checks can pass with one
 //! lost on the way (a sync copy, an answer to a request), and only the clients' logs say so:
 //!
-//! - b33p: a message that failed to decrypt, or a duplicate of one it never decrypted, whose
-//!   sender used a counter twice (b33p-core/src/signal.rs `Decrypted`).
+//! - b33p: a message that failed to decrypt, or a duplicate of one it neither decrypted lately
+//!   nor stored: its sender used a counter twice, or b33p stopped between reading and storing
+//!   it (b33p-core/src/signal/receive.rs `Decrypted`).
 //! - Signal-Android: "Decryption error" (MessageDecryptor.kt), and "Duplicate message!" for an
 //!   envelope that hadn't been decrypted before. Each line names the envelope as
 //!   `[timestamp] sender:device |`, and each decrypted one is logged as such, so one delivered
@@ -19,7 +20,7 @@ use crate::pod::{Pod, Service};
 
 /// b33p's lines for a lost message (b33p-core/src/signal.rs, `Received::DecryptionError`).
 const B33P: [&str; 2] = [
-    "lost a message: its sender had used its counter for another one",
+    "lost a message: its counter was used before, and it isn't stored",
     "failed to decrypt a message",
 ];
 /// Signal-Android's (MessageDecryptor.kt).
