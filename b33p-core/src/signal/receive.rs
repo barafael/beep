@@ -253,15 +253,26 @@ async fn handle_received(
             // The server delivers a message again now and then (after a reconnect, say); one
             // already read is turned away by the session. Nothing to mend, nothing to say.
             if matches!(error, SignalProtocolError::DuplicatedMessage(..)) {
-                if decrypted.contains(&(sender, sender_device, timestamp)) {
+                // Read before, here or before b33p last stopped: the server delivers what it
+                // wasn't told was stored, which may have been.
+                let stored = || async {
+                    manager
+                        .store()
+                        .thread_for_sender_and_timestamp(&sender, timestamp)
+                        .await
+                        .is_ok_and(|thread| thread.is_some())
+                };
+                if decrypted.contains(&(sender, sender_device, timestamp)) || stored().await {
                     debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
                 } else {
-                    // The session is sound; only this message is gone.
+                    // The session is sound; only this message is gone: its sender used its
+                    // counter for another one, or it was read and b33p stopped before it was
+                    // stored.
                     warn!(
                         sender = %sender.service_id_string(),
                         device = %sender_device,
                         timestamp,
-                        "lost a message: its sender had used its counter for another one"
+                        "lost a message: its counter was used before, and it isn't stored"
                     );
                 }
                 return true;
