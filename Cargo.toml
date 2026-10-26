@@ -25,7 +25,7 @@ b33p-harness = { path = "b33p-harness" }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Branch langis/integration-next of our Slint fork: master (1.19, as of 2026-10-26) plus selecting
+# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-26) plus selecting
 # text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
 # reviewed), which the messages need, and the Qt backend drawing emoji (colour bitmap glyphs)
 # itself: Qt 6.4's QRawFont overruns the heap on them (slint-ui/slint#14449). Landed upstream and
@@ -39,7 +39,7 @@ i-slint-core = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c
 i-slint-common = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
 i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
 
-# Not on crates.io. Branch langis/integration-next of our fork: upstream main plus each of our
+# Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
 #   #443 paged thread reads                         #444 storage service from a linked device
 #   #447 wait for the history archive

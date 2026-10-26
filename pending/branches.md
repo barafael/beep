@@ -37,23 +37,20 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration-next` (`62975fd`), pushed | `langis/integration` rebased on upstream main `291c7ee` (past #457, #471, #474; #453's commit resolved against #471's call-message arm as in the PR) plus #475's commit (`ce28171`, which applies to it as is); workspace tests pass with the libsignal-service fork patched in | Pinned by `forks-moved` (b33p and presage-cli) |
-| `langis/integration` (`7e868e4`) | The previous integration, on upstream `6f63079` | Pinned by `main` until `forks-moved` merges |
-| `fix/edited-targets` (`ce28171`), pushed | `langis/integration` plus #475's commit | Pinned by `main` until `forks-moved` merges |
+| `langis/integration` (`9c4725e`; b33p pins `62975fd` on it) | Upstream main `291c7ee` with the fork's PRs (rebuilt past #457, #471, #474; #453's commit resolved against #471's call-message arm as in the PR) and #475's commit; since then the stress work's receipt fix, envelope ack after store, and a presage-cli fix. Built as `langis/integration-next` and moved here (force) on 2026-10-26; the old `7e868e4`…`5247c59` line is replaced | Pinned by `main` since #74 (b33p and presage-cli) |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`3b76dca`, formerly `langis/integration-next`) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488) | Pinned by `testbox-green` for presage-cli too; no change needed |
+| `langis/integration` (`cf94b22`; b33p pins `3b76dca` on it) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488); since then #442 (envelope ack handle) for the stress work | Pinned by `main` for presage-cli too |
 
 ## Slint (barafael/slint)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration-next` (`4a1f80b`), pushed | Upstream master `8700132` with merges of `styled-text-selection` (#13985, at `82f9656`) and `pr/qt-color-bitmap-glyphs` (#14449). The variable-font commit is dropped: it landed upstream as #14426 | Pinned by `forks-moved` |
-| `fix/qt-color-bitmap-glyphs` (`6b8eef3`), pushed | `langis/integration` (`e38356d`) plus the emoji commit | Pinned by `main` until `forks-moved` merges |
+| `langis/integration` (`4d07432`; b33p pins `4a1f80b` on it) | Upstream master `8700132` with merges of `styled-text-selection` (#13985, now at `eed8be0`) and `pr/qt-color-bitmap-glyphs` (#14449). The variable-font commit is dropped: it landed upstream as #14426. Built as `langis/integration-next` and moved here (force) on 2026-10-26 | Pinned by `main` since #74 |
 | `pr/qt-color-bitmap-glyphs` (`1f053c6`), pushed | The emoji commit, master merged in, and `CBDT` and `sbix` in the file's spell-check words (the PR's `lint_typecheck` failed on them) | slint-ui/slint#14449 |
 
 ## Testbox runs
@@ -67,6 +64,8 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `testbox-green` 28dc6bc | 1 | 0/1 (the failed-send check stopped the server; fixed since) | 0/1 (reactions and quotes of edited messages; fixed since) | 1/1 | 1/1 | 1/1 | 1/1 |
 | `testbox-green` 06061f7 (all fixes) | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
 | `testbox-green` 3261c5e…c0e2391 (banner, edited receipts, chat names, #71) | 1 | 1/1 (3261c5e) | 1/1 (3261c5e) | 1/1 (7182af0) | 1/1 (c0e2391; at 7182af0 the agent waited out a swipe at a list's end) | 1/1 (7182af0; at 3261c5e the edit check clicked nothing in Desktop) | 1/1 (7182af0) |
+| `main` 8ff6797 (#72, #70 merged) | 1 | 1/1 (on rerun; first under host overload) | 1/1 (on rerun) | 1/1 (on rerun) | 1/1 | 1/1 | 1/1 |
+| `forks-moved` 85e2ed0 (#74: Slint and presage rebuilt on upstream) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 
 ## Open
 
