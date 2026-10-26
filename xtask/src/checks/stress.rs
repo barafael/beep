@@ -1,6 +1,6 @@
 //! b33p run harder than the other phases run it (pending/stress.md): many messages at once,
-//! b33p or the server stopped at awkward moments, texts and files b33p hasn't seen, and
-//! several clients at once. Each check says what b33p must still show
+//! b33p or the server stopped at awkward moments, texts and files b33p hasn't seen, several
+//! clients at once, and a long run of mixed traffic. Each check says what b33p must still show
 //! afterwards; what it measures on the way (how long, how much memory) it prints.
 
 use std::path::Path;
@@ -11,7 +11,7 @@ use b33p_harness::{Action, AttachmentKind, Delivery, Download, Saved, Snapshot};
 
 use super::attachments::incoming_attachment;
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_shows, chat_previewing, peer_text_reaches, select,
+    REQUEST_ACCEPTED, accept_request, b33p_shows, chat_previewing, edit, peer_text_reaches, select,
     type_and_send,
 };
 use super::clients::desktop_shows;
@@ -675,6 +675,237 @@ fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<(
 /// The name of [`awkward_texts`]' text of formatting marks.
 const MARKUP: &str = "markup characters";
 
+/// Mixed traffic for [`soak_minutes`] minutes, from a seed it prints (`TESTBOX_SEED` repeats a
+/// run): the peer's texts and pictures; b33p's texts, reactions, edits and deletes. b33p's
+/// memory, open files and answering time, sampled each minute, mustn't keep growing, and every
+/// text of the peer's must be there at the end.
+pub(crate) fn soak(
+    checks: &mut Checks,
+    containers: &Pod,
+    sockets: &Sockets,
+    files: &Path,
+) -> Result<()> {
+    let LinkedBox {
+        peer,
+        primary_aci,
+        mut b33p,
+        ..
+    } = linked_box(checks, containers, sockets)?;
+    let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "soak")?;
+
+    checks.record(
+        "mixed traffic for a long while: nothing lost, and nothing keeps growing",
+        || {
+            let seed = std::env::var("TESTBOX_SEED")
+                .ok()
+                .and_then(|seed| seed.parse().ok())
+                .unwrap_or_else(|| process::now().unwrap_or(1) | 1);
+            let minutes = soak_minutes();
+            println!("  seed {seed}, {minutes} minutes (TESTBOX_SEED, TESTBOX_SOAK_MINUTES)");
+            let mut random = Xorshift(seed);
+            let picture = small_picture();
+            testbox_tools::write(&files.join("soak.png"), &picture)?;
+            let ends = Instant::now() + Duration::from_secs(60 * minutes);
+            let mut next_sample = Instant::now();
+            let mut samples = Vec::new();
+            let mut from_peer = Vec::new();
+            let mut mine = 0;
+            select(&mut b33p, &conversation)?;
+            while Instant::now() < ends {
+                if Instant::now() >= next_sample {
+                    let sample = sample(containers, &mut b33p)?;
+                    println!("  {sample}");
+                    samples.push(sample);
+                    next_sample += Duration::from_secs(60);
+                }
+                match random.below(100) {
+                    0..40 => {
+                        let count = 1 + random.below(5) as usize;
+                        let texts: Vec<String> = (0..count)
+                            .map(|n| format!("testbox soak: peer {:05}", from_peer.len() + n + 1))
+                            .collect();
+                        peer.send_all(&primary_aci, &texts)?;
+                        from_peer.extend(texts);
+                    }
+                    40..70 => {
+                        mine += 1;
+                        type_and_send(&mut b33p, &format!("testbox soak: b33p {mine:05}"))?;
+                    }
+                    70..80 => {
+                        if let Some(index) = newest(&b33p.snapshot()?, false) {
+                            b33p.act(Action::React {
+                                index,
+                                emoji: "👍".to_owned(),
+                            })?;
+                        }
+                    }
+                    80..88 => {
+                        if let Some(index) = newest(&b33p.snapshot()?, true) {
+                            edit(
+                                &mut b33p,
+                                index,
+                                &format!("testbox soak: b33p {mine:05}, edited"),
+                            )?;
+                        }
+                    }
+                    88..93 => {
+                        if let Some(index) = newest(&b33p.snapshot()?, true) {
+                            b33p.act(Action::Delete {
+                                index,
+                                everyone: true,
+                            })?;
+                        }
+                    }
+                    _ => {
+                        let text = format!("testbox soak: a picture {}", random.below(1_000_000));
+                        peer.send_file(&primary_aci, &text, "/files/soak.png")?;
+                    }
+                }
+                thread::sleep(Duration::from_millis(200 + random.below(1800)));
+            }
+            if let Some(last) = from_peer.last() {
+                b33p_shows(&mut b33p, &format!("{last:?}"), |message| {
+                    &message.text == last
+                })?;
+            }
+            settled(&mut b33p)?;
+            samples.push(sample(containers, &mut b33p)?);
+            println!(
+                "  at the end: {}",
+                samples.last().map(ToString::to_string).unwrap_or_default()
+            );
+            in_order_once(&all_texts(&mut b33p, "testbox soak: peer ")?, &from_peer)?;
+            growing(&samples)
+        },
+    );
+
+    checks.record("b33p logged no panic", || no_panic(containers));
+    Ok(())
+}
+
+/// How long [`soak`] runs: `TESTBOX_SOAK_MINUTES`, or half an hour.
+fn soak_minutes() -> u64 {
+    std::env::var("TESTBOX_SOAK_MINUTES")
+        .ok()
+        .and_then(|minutes| minutes.parse().ok())
+        .unwrap_or(30)
+}
+
+/// A reproducible sequence from its seed (xorshift64).
+struct Xorshift(u64);
+
+impl Xorshift {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % bound
+    }
+}
+
+/// The index of the newest message, ours or the peer's, that is neither deleted nor a notice.
+fn newest(snapshot: &Snapshot, outgoing: bool) -> Option<u32> {
+    snapshot
+        .messages
+        .iter()
+        .rfind(|message| {
+            message.outgoing == outgoing
+                && !message.deleted
+                && message.text.starts_with("testbox soak:")
+                && message.delivery != Some(Delivery::Sending)
+        })
+        .map(|message| message.index)
+}
+
+/// What [`soak`] watches, at one moment.
+struct Sample {
+    memory: u64,
+    files: u64,
+    answer: Duration,
+}
+
+impl std::fmt::Display for Sample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "memory {} MiB, {} open files, a snapshot in {:?}",
+            self.memory >> 20,
+            self.files,
+            self.answer
+        )
+    }
+}
+
+fn sample(containers: &Pod, b33p: &mut Harness) -> Result<Sample> {
+    let started = Instant::now();
+    b33p.snapshot()?;
+    let answer = started.elapsed();
+    let memory = containers
+        .exec(Service::B33p, &["cat", "/sys/fs/cgroup/memory.current"], "")?
+        .trim()
+        .parse()
+        .map_err(|_| Error::Failed("memory.current isn't a number".into()))?;
+    // b33p isn't the container's first process (with-display is).
+    let script = r#"for p in /proc/[0-9]*; do
+  [ "$(cat "$p/comm" 2>/dev/null)" = b33p ] && ls "$p/fd" | wc -l
+done"#;
+    let files = containers
+        .exec(Service::B33p, &["sh", "-c", script], "")?
+        .trim()
+        .parse()
+        .map_err(|_| Error::Failed("b33p's open files aren't a number".into()))?;
+    Ok(Sample {
+        memory,
+        files,
+        answer,
+    })
+}
+
+/// Fails if the last third of `samples` is well above the first third: memory by half and
+/// 64 MiB, open files by 32, the answering time past a second.
+fn growing(samples: &[Sample]) -> Result<()> {
+    let third = samples.len() / 3;
+    if third == 0 {
+        return Ok(());
+    }
+    let median = |part: &[Sample], of: fn(&Sample) -> u64| {
+        let mut values: Vec<u64> = part.iter().map(of).collect();
+        values.sort_unstable();
+        values[values.len() / 2]
+    };
+    let (first, last) = (&samples[..third], &samples[samples.len() - third..]);
+    let mut wrong = Vec::new();
+    let memory = (median(first, |s| s.memory), median(last, |s| s.memory));
+    if memory.1 > memory.0 + memory.0 / 2 && memory.1 > memory.0 + (64 << 20) {
+        wrong.push(format!(
+            "memory grew from {} to {} MiB",
+            memory.0 >> 20,
+            memory.1 >> 20
+        ));
+    }
+    let files = (median(first, |s| s.files), median(last, |s| s.files));
+    if files.1 > files.0 + 32 {
+        wrong.push(format!("open files grew from {} to {}", files.0, files.1));
+    }
+    if let Some(slow) = last.iter().find(|s| s.answer > Duration::from_secs(1)) {
+        wrong.push(format!("a snapshot took {:?}", slow.answer));
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Failed(wrong.join("; ")))
+    }
+}
+
+/// A 64 px picture, for the peer to send now and then.
+fn small_picture() -> Vec<u8> {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(64, 64, image::Rgba([30, 160, 90, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encodes");
+    png
+}
+
 /// Texts b33p hasn't been sent before, each named for what is awkward about it.
 fn awkward_texts() -> Vec<(&'static str, String)> {
     let combining: String = (0..200)
@@ -1063,6 +1294,32 @@ fn large_file() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(memory_mib: u64, files: u64) -> Sample {
+        Sample {
+            memory: memory_mib << 20,
+            files,
+            answer: Duration::from_millis(5),
+        }
+    }
+
+    #[test]
+    fn growth_is_told_from_noise() {
+        let steady: Vec<Sample> = [100, 120, 90, 110, 105, 115].map(|m| at(m, 40)).into();
+        assert!(growing(&steady).is_ok());
+        let leaking: Vec<Sample> = [100, 110, 160, 220, 300, 380].map(|m| at(m, 40)).into();
+        assert!(growing(&leaking).is_err());
+        let files: Vec<Sample> = [10, 20, 40, 60, 80, 100].map(|f| at(100, f)).into();
+        assert!(growing(&files).is_err());
+    }
+
+    #[test]
+    fn a_seed_repeats_its_sequence() {
+        let (mut a, mut b) = (Xorshift(42), Xorshift(42));
+        let first: Vec<u64> = (0..5).map(|_| a.below(100)).collect();
+        let second: Vec<u64> = (0..5).map(|_| b.below(100)).collect();
+        assert_eq!(first, second);
+    }
 
     #[test]
     fn numbered_texts_sort_in_order() {

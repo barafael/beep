@@ -36,7 +36,7 @@ pub(crate) use self::record::Record;
 pub(crate) use self::storage::storage;
 pub(crate) use self::stress::{
     concurrency as stress_concurrency, content as stress_content, interrupt as stress_interrupt,
-    volume as stress_volume,
+    soak as stress_soak, volume as stress_volume,
 };
 
 /// How long a client may take to say it listens: the emulator's first boot is the slowest.

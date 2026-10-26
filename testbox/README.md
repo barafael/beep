@@ -123,11 +123,15 @@ included, and sums up at the end: `cargo testbox run --rounds 2` runs every phas
 
 b33p is a debug build in the box, as in the checks' own builds. `--release` (on `up` and `run`)
 builds it as it ships instead, optimized, which takes longer: for what only shows in an
-optimized build, or is too slow to tell apart in a debug one.
+optimized build, or is too slow to tell apart in a debug one. `--b33p-memory <MiB>` limits b33p's
+container to that much memory, as a small machine would: past it the kernel kills b33p, and
+"no client crashed" fails.
 
-`stress-volume`, `stress-interrupt`, `stress-content` and `stress-concurrency` aren't among
-`run`'s phases unless named: bursts of messages; b33p killed while it receives, sends and saves;
-awkward texts, broken and huge pictures, odd file names; several clients sending at once
+`stress-volume`, `stress-interrupt`, `stress-content`, `stress-concurrency` and `stress-soak`
+aren't among `run`'s phases unless named: bursts of messages; b33p killed while it receives,
+sends and saves; awkward texts, broken and huge pictures, odd file names; several clients
+sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a seed it prints,
+which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
 ([pending/stress.md](../pending/stress.md)).
 
 ## Watching and looking into a failure

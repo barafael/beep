@@ -48,9 +48,8 @@ enum Command {
         /// Signal-Android on an emulator.
         #[arg(long)]
         android: bool,
-        /// b33p built as it ships, optimized, instead of as a debug build.
-        #[arg(long)]
-        release: bool,
+        #[command(flatten)]
+        b33p: B33pOptions,
     },
     /// Runs a phase's checks against the pod.
     ///
@@ -74,9 +73,8 @@ enum Command {
         /// As for `test`.
         #[arg(long)]
         screenshots: bool,
-        /// As for `up`.
-        #[arg(long)]
-        release: bool,
+        #[command(flatten)]
+        b33p: B33pOptions,
     },
     /// Shows the clients' displays in a window.
     Vnc {
@@ -107,6 +105,18 @@ enum Command {
     },
 }
 
+/// How `up` runs b33p.
+#[derive(Clone, Copy, clap::Args)]
+struct B33pOptions {
+    /// b33p built as it ships, optimized, instead of as a debug build.
+    #[arg(long)]
+    release: bool,
+    /// The most memory b33p's container may take, in MiB; the kernel kills b33p past it, as
+    /// on a small machine or under a desktop's own limits.
+    #[arg(long, value_name = "MIB")]
+    b33p_memory: Option<u64>,
+}
+
 /// `test`'s phases.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Phase {
@@ -125,6 +135,9 @@ enum Phase {
     StressContent,
     /// presage-cli, Desktop and b33p sending at once; races on one message.
     StressConcurrency,
+    /// Mixed traffic for half an hour (`TESTBOX_SOAK_MINUTES`), from a seed (`TESTBOX_SEED`):
+    /// b33p's memory and open files mustn't keep growing.
+    StressSoak,
 }
 
 impl Phase {
@@ -146,9 +159,11 @@ impl Phase {
     /// The clients the phase drives, which `up` brings.
     fn clients(self) -> &'static [Client] {
         match self {
-            Phase::Core | Phase::StressVolume | Phase::StressInterrupt | Phase::StressContent => {
-                &[]
-            }
+            Phase::Core
+            | Phase::StressVolume
+            | Phase::StressInterrupt
+            | Phase::StressContent
+            | Phase::StressSoak => &[],
             Phase::Desktop | Phase::Attachments | Phase::StressConcurrency => &[Client::Desktop],
             Phase::Android | Phase::Storage | Phase::Groups => &[Client::Desktop, Client::Android],
         }
@@ -162,14 +177,14 @@ fn main() -> ExitCode {
         Command::Up {
             desktop,
             android,
-            release,
+            b33p,
         } => {
             let clients = [(desktop, Client::Desktop), (android, Client::Android)];
             let clients: Vec<Client> = clients
                 .into_iter()
                 .filter_map(|(asked, client)| asked.then_some(client))
                 .collect();
-            up(&pod, &clients, release)
+            up(&pod, &clients, b33p)
         }
         Command::Test { phase, screenshots } => {
             test(&pod, &repo, phase, &phase.name(), screenshots)
@@ -178,8 +193,8 @@ fn main() -> ExitCode {
             phases,
             rounds,
             screenshots,
-            release,
-        } => run(&pod, &repo, &phases, rounds, screenshots, release),
+            b33p,
+        } => run(&pod, &repo, &phases, rounds, screenshots, b33p),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -231,8 +246,12 @@ fn run_dir(repo: &Path) -> PathBuf {
     repo.join(pod::RUN)
 }
 
-fn up(pod: &Pod, clients: &[Client], release: bool) -> Result<()> {
-    pod.up(clients, release)
+fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
+    pod.up(clients, b33p.release)?;
+    match b33p.b33p_memory {
+        Some(mib) => pod.limit_memory(pod::Service::B33p, mib),
+        None => Ok(()),
+    }
 }
 
 /// Each of `phases`, or all, `rounds` times, each on a fresh box; then how each went. Fails if
@@ -243,7 +262,7 @@ fn run(
     phases: &[Phase],
     rounds: u32,
     screenshots: bool,
-    release: bool,
+    b33p: B33pOptions,
 ) -> Result<()> {
     let phases = if phases.is_empty() {
         &Phase::ALL[..]
@@ -261,7 +280,7 @@ fn run(
             println!("== round {round}: {name}");
             let outcome = pod
                 .down(true)
-                .and_then(|()| up(pod, phase.clients(), release))
+                .and_then(|()| up(pod, phase.clients(), b33p))
                 .and_then(|()| {
                     test(
                         pod,
@@ -312,6 +331,7 @@ fn test(pod: &Pod, repo: &Path, phase: Phase, record: &str, screenshots: bool) -
             checks::stress_content(tally, pod, &sockets, &repo.join(pod::FILES))
         }
         Phase::StressConcurrency => checks::stress_concurrency(tally, pod, &sockets),
+        Phase::StressSoak => checks::stress_soak(tally, pod, &sockets, &repo.join(pod::FILES)),
         Phase::Attachments => checks::attachments(
             tally,
             pod,
