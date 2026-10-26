@@ -2619,7 +2619,7 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.36.0"
-source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa070f70a131a470e7dc#2a42b3354c9194700d08aa070f70a131a470e7dc"
+source = "git+https://github.com/barafael/rusqlite?rev=3475a314b4c98bcc006eb8143de5ef7bfeda8cbb#3475a314b4c98bcc006eb8143de5ef7bfeda8cbb"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4169,7 +4169,7 @@ dependencies = [
 [[package]]
 name = "sqlcipher-crypto-provider"
 version = "0.1.0"
-source = "git+https://github.com/whisperfish/rusqlite?rev=2a42b3354c9194700d08aa070f70a131a470e7dc#2a42b3354c9194700d08aa070f70a131a470e7dc"
+source = "git+https://github.com/barafael/rusqlite?rev=3475a314b4c98bcc006eb8143de5ef7bfeda8cbb#3475a314b4c98bcc006eb8143de5ef7bfeda8cbb"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
