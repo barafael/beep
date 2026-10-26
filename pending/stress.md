@@ -119,7 +119,8 @@ Optimized runs (`--optimized`): volume, interrupt and content passed in both rou
 concurrency passed once it checked b33p's messages on Desktop rather than in presage-cli's
 store (1b). With `--b33p-memory 768`, content and concurrency passed, b33p peaking at 678 MiB.
 The soak: memory 53 to 77 MiB, 43 to 46 open files, a snapshot within 70 ms over 30 minutes,
-nothing growing, the peer's messages all on b33p; it found finding 6.
+nothing growing, the peer's messages all on b33p; it found finding 6. With 1b fixed it passes:
+53 to 68 MiB, 43 open files, both directions complete.
 
 `stress-volume` passes: 200 messages in a burst arrive in order and once each, with b33p running
 (the last shown 0.1 s after the peer's last send) and with it stopped (caught up within a
@@ -152,7 +153,7 @@ come again and are dropped as delivered again, as they should be. b33p took thos
 messages too, since it remembers what it decrypted only in memory; it now asks the store
 whether one is there first (`receive.rs`), so only a real loss is logged as one.
 
-#### 1b. Decrypting and storing aren't one step (presage)
+#### 1b. Decrypting and storing weren't one step (presage, fixed on our fork)
 
 libsignal commits the session's new state as it decrypts (presage-store-sqlite's session store,
 in a transaction of its own), and presage stores the message after, in another. A process that
@@ -160,8 +161,25 @@ dies in between has used up the message's key without keeping the message. The s
 whenever the receiving task is dropped mid-envelope, as b33p's shutdown does
 (`receiving.abort()`), so not only on a crash. Signal-Android decrypts and inserts the message
 in one database transaction. presage would need a store transaction that the protocol store's
-writes and `save_message` share, which its store traits don't have: a change to propose
-upstream, not one to make on the fork alone. Until then the check keeps failing at this rate.
+writes and `save_message` share, which its store traits didn't have.
+
+Our presage fork now has one (62b697b): `Store::transaction` gives the store with its writes in
+one transaction, until `Store::commit`. The receive loop takes the session lock, decrypts with
+ciphers on that store, keeps the decrypted content in it (`ContentsStore::keep_decrypted`, table
+`decrypted_contents`), commits, and only then acknowledges the envelope. The content is then
+handled as before and forgotten (`ContentsStore::handled`); one kept but not handled when the
+receiver stopped is handled first when it starts again (`ContentsStore::decrypted`). A receiver
+stopping before the commit leaves the session as it was and the envelope unacknowledged: it
+comes again and decrypts. The sqlite store runs a transaction's queries, its protocol store's
+own write transactions included, on one connection its clones share (`db::Db`), so nothing in
+the protocol store changed. Holding the session lock until the commit keeps a sender from
+encrypting from a session the transaction is about to replace. With it, `stress-interrupt`,
+`stress-concurrency` and the soak passed, optimized: nothing lost on a kill, and presage-cli's
+two thousand exits mid-envelope lost nothing either.
+
+Two things to settle before proposing it upstream: two receive streams of one account at once
+would both handle what was kept before (b33p starts one only once the last has ended), and
+while a decryption holds the transaction, other writers to the database wait (milliseconds).
 
 presage-cli shows how often it bites a process that simply exits: its `send` receives in a task
 of its own while it sends, and exits wherever that task got to. With b33p sending 15 messages
@@ -227,18 +245,25 @@ a trace. Only two came back as duplicates.
 
 Our libsignal-service fork now acknowledges only on `AckHandle::ack`, and a handle dropped
 unacknowledged leaves its envelope to be delivered again (6b623e4). Our presage fork handles an
-envelope in a block of its own and acknowledges after it (1b7a6b6). Both are on branches
-`stress/ack-drop` for now, not yet `langis/integration`. The soak now also checks that what
+envelope in a block of its own and acknowledges after it (1b7a6b6). Both are on the forks'
+`langis/integration`; the comment on #442 describes the gap and our fix. The soak now also checks that what
 b33p still shows of its own (edited, the deleted gone) is in the peer's store, and a
 presage-cli "failed to decrypt" of a message it has stored counts as the redelivery it is.
 
 With that, the soak's next run had the peer miss 59 of b33p's 344, and 129 envelopes came back
 and failed as duplicates: those are 1b, now in plain sight instead of acknowledged away. Each
 of the soak's two thousand or so presage-cli processes can stop between decrypting an envelope
-and storing it. b33p hits the same at most once per quit. What's left needs 1b's fix (one
-store transaction for the session and the message, upstream), or a presage-cli that doesn't
-exit mid-envelope; until one of them, the soak's check on b33p's messages at the peer fails
-on presage-cli's account, not b33p's.
+and storing it. b33p hits the same at most once per quit. 1b's fix (above) closed it.
+
+### 7. presage-cli crashed in OPENSSL_cleanup as it exited (testbox, fixed)
+
+The first soak with 1b fixed stopped when one of presage-cli's `send`s exited with SIGSEGV (core
+in `exit` → `OPENSSL_cleanup`, its message already sent). presage-cli was built on presage's
+own libsqlite3-sys, whose SQLCipher still tears its global state down at exit; our rusqlite
+fork stopped that (a2f3939) for crashing while connections still close. With the transaction,
+a connection is more likely in use when presage-cli exits. The box now builds presage-cli on
+b33p's libsqlite3-sys (`RUSQLITE_REV`, checked by the pins test); the next 30-minute soak passed
+without a crash. presage-cli on whisperfish's rusqlite can still crash this way.
 
 ### What Group C and D found right
 
