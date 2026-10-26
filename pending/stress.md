@@ -115,6 +115,12 @@ default phases. D has no group changes from two clients yet (it needs Android). 
 `--b33p-memory <MiB>` on `up` and `run`, for any phase; a clock off, an ASan build and another
 locale are still to do. `--optimized` (on `up` and `run`) builds b33p optimized, as it ships, with debug assertions on.
 
+Optimized runs (`--optimized`): volume, interrupt and content passed in both rounds;
+concurrency passed once it checked b33p's messages on Desktop rather than in presage-cli's
+store (1b). With `--b33p-memory 768`, content and concurrency passed, b33p peaking at 678 MiB.
+The soak: memory 53 to 77 MiB, 43 to 46 open files, a snapshot within 70 ms over 30 minutes,
+nothing growing, the peer's messages all on b33p; it found finding 6.
+
 `stress-volume` passes: 200 messages in a burst arrive in order and once each, with b33p running
 (the last shown 0.1 s after the peer's last send) and with it stopped (caught up within a
 second of starting). Memory stays at 56 to 71 MB.
@@ -209,6 +215,30 @@ A name of 254 bytes saves, but the second copy, "name (1).txt", is 258 bytes, pa
 takes, and saving it failed ("failed to write"). The stem is now cut short, between
 characters, so that the name with its number fits 255 bytes. Control characters in a sender's
 file name (a line break saved as one) are now `_`.
+
+### 6. A task dropped mid-envelope acknowledged what it held (libsignal-service #442, fixed on our fork)
+
+The soak (30 minutes, optimized b33p) passed its own checks, but the peer's store held only
+about 240 of the 413 texts b33p sent. #442's `AckHandle` acknowledged its envelope when
+dropped, unless the thread was panicking. A task that is dropped isn't panicking: presage-cli's
+`send` receives in a task it drops when it exits, b33p aborts its receiving at shutdown, and
+the envelopes those held, handled or not, were acknowledged and deleted by the server, without
+a trace. Only two came back as duplicates.
+
+Our libsignal-service fork now acknowledges only on `AckHandle::ack`, and a handle dropped
+unacknowledged leaves its envelope to be delivered again (6b623e4). Our presage fork handles an
+envelope in a block of its own and acknowledges after it (1b7a6b6). Both are on branches
+`stress/ack-drop` for now, not yet `langis/integration`. The soak now also checks that what
+b33p still shows of its own (edited, the deleted gone) is in the peer's store, and a
+presage-cli "failed to decrypt" of a message it has stored counts as the redelivery it is.
+
+With that, the soak's next run had the peer miss 59 of b33p's 344, and 129 envelopes came back
+and failed as duplicates: those are 1b, now in plain sight instead of acknowledged away. Each
+of the soak's two thousand or so presage-cli processes can stop between decrypting an envelope
+and storing it. b33p hits the same at most once per quit. What's left needs 1b's fix (one
+store transaction for the session and the message, upstream), or a presage-cli that doesn't
+exit mid-envelope; until one of them, the soak's check on b33p's messages at the peer fails
+on presage-cli's account, not b33p's.
 
 ### What Group C and D found right
 
