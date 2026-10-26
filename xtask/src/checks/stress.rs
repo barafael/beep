@@ -840,9 +840,10 @@ fn sample(containers: &Pod, b33p: &mut Harness) -> Result<Sample> {
         .trim()
         .parse()
         .map_err(|_| Error::Failed("memory.current isn't a number".into()))?;
-    // b33p isn't the container's first process (with-display is).
+    // b33p isn't the container's first process (with-display is). An `if` rather than `&&`,
+    // which would leave the loop failing whenever the last process isn't b33p.
     let script = r#"for p in /proc/[0-9]*; do
-  [ "$(cat "$p/comm" 2>/dev/null)" = b33p ] && ls "$p/fd" | wc -l
+  if [ "$(cat "$p/comm" 2>/dev/null)" = b33p ]; then ls "$p/fd" | wc -l; fi
 done"#;
     let files = containers
         .exec(Service::B33p, &["sh", "-c", script], "")?
