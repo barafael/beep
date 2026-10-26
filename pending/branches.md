@@ -37,20 +37,22 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`9c4725e`; b33p pins `62975fd` on it) | Upstream main `291c7ee` with the fork's PRs (rebuilt past #457, #471, #474; #453's commit resolved against #471's call-message arm as in the PR) and #475's commit; since then the stress work's receipt fix, envelope ack after store, and a presage-cli fix. Built as `langis/integration-next` and moved here (force) on 2026-10-26; the old `7e868e4`…`5247c59` line is replaced | Pinned by `main` since #74 (b33p and presage-cli) |
+| `langis/integration` (`b664297`) | Upstream main `30ca664` (past #359, link previews) with the fork's PRs and fork-only commits, rebased 2026-10-26: our transfer-archive commit's `reqwest` line dropped for #359's, `session_lock` beside #359's `link_preview_client` | Pinned by `reconcile-upstream` |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
+| PR branches | Rebased on upstream main `30ca664` where they conflicted: `pr/session-lock` (#473, `d17f7d0`), `pr/receive-transaction` (`01ed8c3`, on it; PR not opened yet), `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). The other ten build merged with upstream main as they are | |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`cf94b22`; b33p pins `3b76dca` on it) | Upstream main with the fork's PRs and the `SessionLock` (whisperfish/libsignal-service-rs#488); since then #442 (envelope ack handle) for the stress work | Pinned by `main` for presage-cli too |
+| `langis/integration` (`a32d96b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, and #489's tests | Pinned by `reconcile-upstream` |
+| `groups-v2-changes` (`93f9dc2`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays) | Pinned by presage `pr/groups` |
 
 ## Slint (barafael/slint)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`4d07432`; b33p pins `4a1f80b` on it) | Upstream master `8700132` with merges of `styled-text-selection` (#13985, now at `eed8be0`) and `pr/qt-color-bitmap-glyphs` (#14449). The variable-font commit is dropped: it landed upstream as #14426. Built as `langis/integration-next` and moved here (force) on 2026-10-26 | Pinned by `main` since #74 |
+| `langis/integration` (`2aa99c5`) | Upstream master `7e32802` (2026-10-26) with merges of #13985 (`eed8be0`) and #14449 (`1f053c6`) | Pinned by `reconcile-upstream` |
 | `pr/qt-color-bitmap-glyphs` (`1f053c6`), pushed | The emoji commit, master merged in, and `CBDT` and `sbix` in the file's spell-check words (the PR's `lint_typecheck` failed on them) | slint-ui/slint#14449 |
 
 ## Testbox runs
