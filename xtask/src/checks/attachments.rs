@@ -197,7 +197,7 @@ pub(crate) fn attachments(
 
 /// The id of the `kind` attachment on an incoming message, reading `text` if given, once b33p
 /// shows it.
-fn incoming_attachment(
+pub(super) fn incoming_attachment(
     b33p: &mut Harness,
     text: Option<&str>,
     kind: AttachmentKind,
@@ -218,7 +218,7 @@ fn incoming_attachment(
 }
 
 /// Waits until the attachment `id`, fetched, is downloaded and decrypted.
-fn downloaded(b33p: &mut Harness, id: &str) -> Result<()> {
+pub(super) fn downloaded(b33p: &mut Harness, id: &str) -> Result<()> {
     b33p.wait_for(
         &format!("{id} downloaded"),
         PATIENCE,

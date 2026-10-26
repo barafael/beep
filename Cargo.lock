@@ -10349,6 +10349,7 @@ dependencies = [
  "b33p-harness",
  "clap",
  "derive_more",
+ "image",
  "serde",
  "serde_json",
  "strum 0.27.2",

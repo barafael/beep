@@ -251,6 +251,11 @@ fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<
 pub(super) fn restart_b33p(containers: &Pod, socket: &Path) -> Result<Harness> {
     let since = process::now()?;
     containers.restart(Service::B33p)?;
+    started_b33p(containers, socket, since)
+}
+
+/// b33p unlocked and showing its chats again, once it has started after `since`.
+pub(super) fn started_b33p(containers: &Pod, socket: &Path, since: u64) -> Result<Harness> {
     containers.await_ready(Ready::B33p, Some(since), PATIENCE)?;
     let mut b33p = Harness::connect(socket)?;
     b33p.wait_for("b33p asking for its password", PATIENCE, |snapshot| {

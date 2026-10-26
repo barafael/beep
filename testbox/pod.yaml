@@ -154,6 +154,7 @@
         volumeMounts: [
           { name: "keys", mountPath: "/keys", readOnly: true },
           { name: "presage", mountPath: "/presage" },
+          { name: "files", mountPath: "/files", readOnly: true },
         ],
       },
       # b33p from the working tree (testbox/b33p/Containerfile).

@@ -48,6 +48,9 @@ enum Command {
         /// Signal-Android on an emulator.
         #[arg(long)]
         android: bool,
+        /// b33p built as it ships, optimized, instead of as a debug build.
+        #[arg(long)]
+        release: bool,
     },
     /// Runs a phase's checks against the pod.
     ///
@@ -71,6 +74,9 @@ enum Command {
         /// As for `test`.
         #[arg(long)]
         screenshots: bool,
+        /// As for `up`.
+        #[arg(long)]
+        release: bool,
     },
     /// Shows the clients' displays in a window.
     Vnc {
@@ -110,6 +116,13 @@ enum Phase {
     Attachments,
     Storage,
     Groups,
+    /// Bursts of messages, with b33p running and stopped (pending/stress.md). Not in `run`'s
+    /// default phases.
+    StressVolume,
+    /// b33p killed while it receives, sends and downloads; the server hanging.
+    StressInterrupt,
+    /// Awkward texts, broken and huge pictures, odd file names.
+    StressContent,
 }
 
 impl Phase {
@@ -131,7 +144,9 @@ impl Phase {
     /// The clients the phase drives, which `up` brings.
     fn clients(self) -> &'static [Client] {
         match self {
-            Phase::Core => &[],
+            Phase::Core | Phase::StressVolume | Phase::StressInterrupt | Phase::StressContent => {
+                &[]
+            }
             Phase::Desktop | Phase::Attachments => &[Client::Desktop],
             Phase::Android | Phase::Storage | Phase::Groups => &[Client::Desktop, Client::Android],
         }
@@ -142,13 +157,17 @@ fn main() -> ExitCode {
     let repo = repo_root();
     let pod = Pod::new(&repo);
     let outcome = match Cli::parse().command {
-        Command::Up { desktop, android } => {
+        Command::Up {
+            desktop,
+            android,
+            release,
+        } => {
             let clients = [(desktop, Client::Desktop), (android, Client::Android)];
             let clients: Vec<Client> = clients
                 .into_iter()
                 .filter_map(|(asked, client)| asked.then_some(client))
                 .collect();
-            up(&pod, &clients)
+            up(&pod, &clients, release)
         }
         Command::Test { phase, screenshots } => {
             test(&pod, &repo, phase, &phase.name(), screenshots)
@@ -157,7 +176,8 @@ fn main() -> ExitCode {
             phases,
             rounds,
             screenshots,
-        } => run(&pod, &repo, &phases, rounds, screenshots),
+            release,
+        } => run(&pod, &repo, &phases, rounds, screenshots, release),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -209,13 +229,20 @@ fn run_dir(repo: &Path) -> PathBuf {
     repo.join(pod::RUN)
 }
 
-fn up(pod: &Pod, clients: &[Client]) -> Result<()> {
-    pod.up(clients)
+fn up(pod: &Pod, clients: &[Client], release: bool) -> Result<()> {
+    pod.up(clients, release)
 }
 
 /// Each of `phases`, or all, `rounds` times, each on a fresh box; then how each went. Fails if
 /// any did.
-fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool) -> Result<()> {
+fn run(
+    pod: &Pod,
+    repo: &Path,
+    phases: &[Phase],
+    rounds: u32,
+    screenshots: bool,
+    release: bool,
+) -> Result<()> {
     let phases = if phases.is_empty() {
         &Phase::ALL[..]
     } else {
@@ -232,7 +259,7 @@ fn run(pod: &Pod, repo: &Path, phases: &[Phase], rounds: u32, screenshots: bool)
             println!("== round {round}: {name}");
             let outcome = pod
                 .down(true)
-                .and_then(|()| up(pod, phase.clients()))
+                .and_then(|()| up(pod, phase.clients(), release))
                 .and_then(|()| {
                     test(
                         pod,
@@ -275,6 +302,13 @@ fn test(pod: &Pod, repo: &Path, phase: Phase, record: &str, screenshots: bool) -
         Phase::Android => checks::android(tally, pod, &sockets),
         Phase::Storage => checks::storage(tally, pod, &sockets),
         Phase::Groups => checks::groups(tally, pod, &sockets),
+        Phase::StressVolume => checks::stress_volume(tally, pod, &sockets),
+        Phase::StressInterrupt => {
+            checks::stress_interrupt(tally, pod, &sockets, &repo.join(pod::FILES))
+        }
+        Phase::StressContent => {
+            checks::stress_content(tally, pod, &sockets, &repo.join(pod::FILES))
+        }
         Phase::Attachments => checks::attachments(
             tally,
             pod,

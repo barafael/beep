@@ -103,6 +103,8 @@ struct Image {
     context: &'static str,
     /// Built only with this client.
     client: Option<Client>,
+    /// Takes the build profile (`PROFILE`): b33p's.
+    profiled: bool,
 }
 
 impl Image {
@@ -112,6 +114,7 @@ impl Image {
         containerfile: "",
         context: ".",
         client: None,
+        profiled: false,
     };
 }
 
@@ -156,6 +159,7 @@ const IMAGES: [Image; 10] = [
     Image {
         tag: "localhost/b33p-testbox-b33p",
         containerfile: "testbox/b33p/Containerfile",
+        profiled: true,
         ..Image::REPOSITORY
     },
     Image {
@@ -163,6 +167,7 @@ const IMAGES: [Image; 10] = [
         containerfile: "testbox/desktop/Containerfile",
         context: "testbox/desktop",
         client: Some(Client::Desktop),
+        profiled: false,
     },
     Image {
         tag: "localhost/b33p-testbox-android",
@@ -189,13 +194,18 @@ impl Pod {
         }
     }
 
-    pub fn up(&self, clients: &[Client]) -> Result<()> {
+    /// `release` builds b33p as it ships instead of as the checks' own builds are.
+    pub fn up(&self, clients: &[Client], release: bool) -> Result<()> {
         for image in IMAGES
             .iter()
             .filter(|image| image.client.is_none_or(|client| clients.contains(&client)))
         {
             // Stages that don't depend on each other at once (a Maven build and a cargo one).
             let mut build = podman(&["build", "--jobs", "0", "-t", image.tag]);
+            if image.profiled {
+                let profile = if release { "release" } else { "dev" };
+                build.arg("--build-arg").arg(format!("PROFILE={profile}"));
+            }
             build
                 .arg("-f")
                 .arg(self.repo.join(image.containerfile))
@@ -286,18 +296,36 @@ impl Pod {
         state.is_ok_and(|running| running.trim() == "true")
     }
 
-    /// `--force` also removes the persistentVolumeClaims' volumes. Nothing to do if no pod was
-    /// ever played from here: kube down needs the YAML it was played from.
+    /// `--force` also removes the persistentVolumeClaims' volumes. kube down needs the YAML the
+    /// pod was played from, which another worktree's `up` wrote in its own `target`: then the
+    /// pod and, to wipe, the volumes go by their names.
     pub fn down(&self, wipe: bool) -> Result<()> {
-        if !self.rendered.exists() {
-            return Ok(());
+        if self.rendered.exists() {
+            let mut down = podman(&["kube", "down"]);
+            if wipe {
+                down.arg("--force");
+            }
+            down.arg(&self.rendered);
+            process::run(down)?;
         }
-        let mut down = podman(&["kube", "down"]);
+        let pod = process::output(
+            podman(&["pod", "ps", "-q", "--filter", &format!("name=^{POD}$")]),
+            "",
+        )?;
+        if !pod.trim().is_empty() {
+            process::run(podman(&["pod", "rm", "--force", POD]))?;
+        }
         if wipe {
-            down.arg("--force");
+            let volumes = process::output(
+                podman(&["volume", "ls", "-q", "--filter", &format!("name=^{POD}-")]),
+                "",
+            )?;
+            let volumes: Vec<&str> = volumes.split_whitespace().collect();
+            if !volumes.is_empty() {
+                process::run(podman(&[&["volume", "rm"][..], &volumes].concat()))?;
+            }
         }
-        down.arg(&self.rendered);
-        process::run(down)
+        Ok(())
     }
 
     /// `service`'s log so far, what it wrote to stdout and stderr alike.
@@ -391,6 +419,42 @@ impl Pod {
 
     pub fn restart(&self, service: Service) -> Result<()> {
         process::run(podman(&["restart", &container(service)]))
+    }
+
+    /// Stops `service` as `podman stop` does: its stop signal, then SIGKILL after the timeout.
+    pub fn stop(&self, service: Service) -> Result<()> {
+        process::run(podman(&["stop", &container(service)]))
+    }
+
+    pub fn start(&self, service: Service) -> Result<()> {
+        process::run(podman(&["start", &container(service)]))
+    }
+
+    /// Ends every process in `service` at once, as a power cut would: nothing gets to flush or
+    /// close. `with-display` goes with its client, so the crash check doesn't count it.
+    pub fn kill(&self, service: Service) -> Result<()> {
+        process::run(podman(&["kill", "--signal", "KILL", &container(service)]))
+    }
+
+    /// What `service` uses of memory, as `podman stats` says it ("212.4MB / 33.3GB").
+    pub fn memory(&self, service: Service) -> Result<String> {
+        let stats = podman(&[
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.MemUsage}}",
+            &container(service),
+        ]);
+        process::output(stats, "").map(|usage| usage.trim().to_owned())
+    }
+
+    /// The most memory `service` used at once since it started, in bytes: its cgroup's
+    /// `memory.peak`, which a sampled [`Self::memory`] would miss a spike of.
+    pub fn memory_peak(&self, service: Service) -> Result<u64> {
+        let peak = self.exec(service, &["cat", "/sys/fs/cgroup/memory.peak"], "")?;
+        peak.trim()
+            .parse()
+            .map_err(|_| Error::Failed(format!("memory.peak reads {peak:?}")))
     }
 
     /// Waits until `service` logs a line containing `needle`, after `since`: what the service
