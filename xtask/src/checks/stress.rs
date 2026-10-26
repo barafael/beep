@@ -1,5 +1,6 @@
 //! b33p run harder than the other phases run it (pending/stress.md): many messages at once,
-//! b33p or the server stopped at awkward moments, and texts and files b33p hasn't seen. Each check says what b33p must still show
+//! b33p or the server stopped at awkward moments, texts and files b33p hasn't seen, and
+//! several clients at once. Each check says what b33p must still show
 //! afterwards; what it measures on the way (how long, how much memory) it prints.
 
 use std::path::Path;
@@ -10,16 +11,19 @@ use b33p_harness::{Action, AttachmentKind, Delivery, Download, Saved, Snapshot};
 
 use super::attachments::incoming_attachment;
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, chat_previewing, peer_text_reaches, select, type_and_send,
+    REQUEST_ACCEPTED, accept_request, b33p_shows, chat_previewing, peer_text_reaches, select,
+    type_and_send,
 };
+use super::clients::desktop_shows;
 use super::presage::Presage;
-use super::setup::{LinkedBox, linked_box, started_b33p};
+use super::setup::{LinkedBox, linked_box, linked_desktop, started_b33p};
 use super::{Checks, HISTORY_PATIENCE, PATIENCE};
 use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::harness::Harness;
 use crate::pod::{Pod, Service};
 use crate::process;
+use testbox_tools::drivers;
 
 /// Messages in a burst.
 const BURST: usize = 200;
@@ -484,6 +488,185 @@ pub(crate) fn content(
 
     checks.record("b33p logged no panic", || no_panic(containers));
     Ok(())
+}
+
+/// Desktop (linked to the peer), presage-cli (the peer's primary) and b33p sending at once; and
+/// one message edited, reacted to and deleted close together, with b33p running and stopped.
+pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+    let LinkedBox {
+        peer,
+        primary_aci,
+        mut b33p,
+        ..
+    } = linked_box(checks, containers, sockets)?;
+    let mut desktop = linked_desktop(checks, &sockets.desktop, &peer)?;
+    let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "concurrency")?;
+    checks.require("Desktop opens the chat with b33p", || {
+        desktop.call(drivers::Desktop::OpenConversation {
+            aci: primary_aci.clone(),
+        })
+    })?;
+
+    checks.record(
+        "presage-cli, Desktop and b33p sending at once: each gets the others' messages in order, once",
+        || {
+            let from_cli = numbered("testbox stress: from presage-cli", 60);
+            let from_desktop = numbered("testbox stress: from Desktop", 15);
+            let from_b33p = numbered("testbox stress: from b33p", 15);
+            select(&mut b33p, &conversation)?;
+            thread::scope(|scope| {
+                let cli = scope.spawn(|| peer.send_all(&primary_aci, &from_cli));
+                let desktop = scope.spawn(|| {
+                    from_desktop.iter().try_for_each(|text| {
+                        desktop.call(drivers::Desktop::Send { text: text.clone() })
+                    })
+                });
+                let mine = from_b33p.iter().try_for_each(|text| {
+                    b33p.act(Action::Type { text: text.clone() })?;
+                    b33p.act(Action::Send).map(drop)
+                });
+                let joined = |handle: thread::ScopedJoinHandle<'_, Result<()>>| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("a sender panicked".into()))
+                };
+                mine.and(joined(cli)).and(joined(desktop))
+            })?;
+            for last in [last(&from_cli)?, last(&from_desktop)?] {
+                b33p_shows(&mut b33p, &format!("{last:?}"), |message| message.text == last)?;
+            }
+            b33p.wait_for("b33p's own sent", PATIENCE, |snapshot| {
+                deliveries(snapshot, "testbox stress: from b33p")
+                    .iter()
+                    .all(|(_, delivery)| *delivery != Delivery::Sending)
+                    .then_some(())
+            })?;
+            settled(&mut b33p)?;
+            in_order_once(
+                &all_texts(&mut b33p, "testbox stress: from presage-cli ")?,
+                &from_cli,
+            )?;
+            in_order_once(
+                &all_texts(&mut b33p, "testbox stress: from Desktop ")?,
+                &from_desktop,
+            )?;
+            in_order_once(&all_texts(&mut b33p, "testbox stress: from b33p ")?, &from_b33p)?;
+            let received = peer.sync()?;
+            let not_once: Vec<&String> = from_b33p
+                .iter()
+                .filter(|text| received.matches(text.as_str()).count() != 1)
+                .collect();
+            if !not_once.is_empty() {
+                return Err(Error::Failed(format!(
+                    "the peer didn't get these once: {not_once:?}"
+                )));
+            }
+            desktop_shows(&mut desktop, last(&from_b33p)?)
+        },
+    );
+
+    checks.record(
+        "an edit, a reaction and a delete close together leave the message deleted",
+        || {
+            let text = "testbox stress: raced";
+            let edited = "testbox stress: raced, edited";
+            desktop.call(drivers::Desktop::Send {
+                text: text.to_owned(),
+            })?;
+            select(&mut b33p, &conversation)?;
+            let timestamp = b33p.wait_for("Desktop's message in b33p", PATIENCE, |snapshot| {
+                snapshot
+                    .messages
+                    .iter()
+                    .find(|message| message.text == text)
+                    .map(|message| message.timestamp)
+            })?;
+            desktop.call(drivers::Desktop::EditMessage {
+                old_text: text.to_owned(),
+                text: edited.to_owned(),
+            })?;
+            desktop.call(drivers::Desktop::ReactToMessage {
+                text: edited.to_owned(),
+            })?;
+            desktop.call(drivers::Desktop::DeleteForEveryone {
+                text: edited.to_owned(),
+            })?;
+            b33p_shows(&mut b33p, "the message deleted", |message| {
+                message.timestamp == timestamp && message.deleted
+            })?;
+            settled(&mut b33p)?;
+            still_deleted(&mut b33p, timestamp, &[text, edited])
+        },
+    );
+
+    checks.record(
+        "an edit, a reaction and a delete that wait for b33p leave the message deleted",
+        || {
+            let text = "testbox stress: raced while stopped";
+            let edited = "testbox stress: raced while stopped, edited";
+            containers.stop(Service::B33p)?;
+            desktop.call(drivers::Desktop::Send {
+                text: text.to_owned(),
+            })?;
+            for n in 1..=3 {
+                desktop.call(drivers::Desktop::EditMessage {
+                    old_text: if n == 1 {
+                        text.to_owned()
+                    } else {
+                        format!("{edited} {}", n - 1)
+                    },
+                    text: format!("{edited} {n}"),
+                })?;
+            }
+            let last_edit = format!("{edited} 3");
+            desktop.call(drivers::Desktop::ReactToMessage {
+                text: last_edit.clone(),
+            })?;
+            desktop.call(drivers::Desktop::DeleteForEveryone { text: last_edit })?;
+            let since = process::now()?;
+            containers.start(Service::B33p)?;
+            b33p = started_b33p(containers, &sockets.b33p, since)?;
+            select(&mut b33p, &conversation)?;
+            // The newest of Desktop's messages, deleted: its place shows no text.
+            let timestamp =
+                b33p.wait_for("a deleted message from Desktop", PATIENCE, |snapshot| {
+                    snapshot
+                        .messages
+                        .iter()
+                        .rfind(|message| !message.outgoing)
+                        .filter(|message| message.deleted)
+                        .map(|message| message.timestamp)
+                })?;
+            settled(&mut b33p)?;
+            let edits: Vec<String> = (1..=3).map(|n| format!("{edited} {n}")).collect();
+            let mut gone: Vec<&str> = edits.iter().map(String::as_str).collect();
+            gone.push(text);
+            still_deleted(&mut b33p, timestamp, &gone)
+        },
+    );
+
+    checks.record("b33p logged no panic", || no_panic(containers));
+    Ok(())
+}
+
+/// Fails unless the message at `timestamp` shows as deleted, and none of `texts` shows.
+fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<()> {
+    let snapshot = b33p.snapshot()?;
+    let shown: Vec<&str> = snapshot
+        .messages
+        .iter()
+        .filter(|message| texts.contains(&message.text.as_str()))
+        .map(|message| message.text.as_str())
+        .collect();
+    let deleted = snapshot
+        .messages
+        .iter()
+        .any(|message| message.timestamp == timestamp && message.deleted);
+    match (deleted, shown.is_empty()) {
+        (true, true) => Ok(()),
+        (false, _) => Err("the message no longer shows as deleted".into()),
+        (true, false) => Err(Error::Failed(format!("deleted, yet these show: {shown:?}"))),
+    }
 }
 
 /// Texts b33p hasn't been sent before, each named for what is awkward about it.

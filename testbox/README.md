@@ -125,8 +125,10 @@ b33p is a debug build in the box, as in the checks' own builds. `--release` (on 
 builds it as it ships instead, optimized, which takes longer: for what only shows in an
 optimized build, or is too slow to tell apart in a debug one.
 
-`stress-volume` and `stress-interrupt` aren't among `run`'s phases unless named: bursts of
-messages, and b33p killed while it receives, sends and saves ([pending/stress.md](../pending/stress.md)).
+`stress-volume`, `stress-interrupt`, `stress-content` and `stress-concurrency` aren't among
+`run`'s phases unless named: bursts of messages; b33p killed while it receives, sends and saves;
+awkward texts, broken and huge pictures, odd file names; several clients sending at once
+([pending/stress.md](../pending/stress.md)).
 
 ## Watching and looking into a failure
 
