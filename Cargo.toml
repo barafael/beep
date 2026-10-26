@@ -113,3 +113,10 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# The testbox's optimized b33p (`cargo testbox up --optimized`): built as a release is, but with
+# debug assertions, which the `test-servers` feature requires (b33p-core/src/signal/lifecycle.rs)
+# so that no release build can talk to servers other than Signal's. Never shipped.
+[profile.testbox]
+inherits = "release"
+debug-assertions = true

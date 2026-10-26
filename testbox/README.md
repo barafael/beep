@@ -121,9 +121,10 @@ phases' checks are in `xtask/src/checks/`, one file per phase.
 included, and sums up at the end: `cargo testbox run --rounds 2` runs every phase twice,
 `cargo testbox run desktop groups` only those.
 
-b33p is a debug build in the box, as in the checks' own builds. `--release` (on `up` and `run`)
-builds it as it ships instead, optimized, which takes longer: for what only shows in an
-optimized build, or is too slow to tell apart in a debug one. `--b33p-memory <MiB>` limits b33p's
+b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up` and `run`)
+builds it optimized as it ships instead, which takes longer: for what only shows in an
+optimized build, or is too slow to tell apart in a debug one. It keeps debug assertions on
+(Cargo.toml's `testbox` profile), since b33p refuses its test servers in a release build. `--b33p-memory <MiB>` limits b33p's
 container to that much memory, as a small machine would: past it the kernel kills b33p, and
 "no client crashed" fails.
 
