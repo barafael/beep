@@ -25,22 +25,21 @@ b33p-harness = { path = "b33p-harness" }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-25) plus selecting
+# Branch langis/integration-next of our Slint fork: master (1.19, as of 2026-10-26) plus selecting
 # text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
-# reviewed), which the messages need, and the Qt backend drawing variable fonts at their default
-# instance rather than their first named one (Qt 6.7+ loads a `QRawFont` from bytes as "named
-# instance 1", the thinnest of Inter or Adwaita Sans; not proposed upstream yet). Pinned at
-# branch fix/qt-color-bitmap-glyphs, which adds to it the Qt backend drawing emoji (colour bitmap
-# glyphs) itself: Qt 6.4's QRawFont overruns the heap on them (not proposed upstream yet). Rebuild
-# the branch when master moves; drop it once these have landed upstream and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+# reviewed), which the messages need, and the Qt backend drawing emoji (colour bitmap glyphs)
+# itself: Qt 6.4's QRawFont overruns the heap on them (slint-ui/slint#14449). Landed upstream and
+# dropped from the branch: #14426 (the Qt backend draws variable fonts at their default instance,
+# not the thinnest). Rebuild the branch when master moves; drop it once these have landed upstream
+# and a release carries them.
+slint = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "6b8eef34c8806a03a570db36072936ab2706b997" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "4a1f80b8b315c1d259a66222d3713635458e4684" }
 
-# Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
+# Not on crates.io. Branch langis/integration-next of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
 #   #443 paged thread reads                         #444 storage service from a linked device
 #   #447 wait for the history archive
@@ -60,18 +59,17 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "6b
 #        that fetches their profile
 #   #473 the manager's ciphers and senders share one session lock (needs
 #        libsignal-service-rs#488)
-#   (branch fix/edited-targets, no PR yet) an edited message is found by its latest edit's
-#        time, which Signal's apps name it by; pinned at that branch, on langis/integration
+#   #475 an edited message is found by its latest edit's time, which Signal's apps name it by
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length) and #460 (the provisioning link logged at debug instead of
 # info); #445 (drop sync messages from other accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "ce281711e8660a2b171dcfdd3d68c47c8c70f3eb" }
+presage = { git = "https://github.com/barafael/presage", rev = "62975fd49f589e6041d7dee4052ee58c20dc6817" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ce281711e8660a2b171dcfdd3d68c47c8c70f3eb", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "62975fd49f589e6041d7dee4052ee58c20dc6817", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.

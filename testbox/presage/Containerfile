@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # presage at the revision b33p pins (Cargo.toml). presage itself pins upstream libsignal-service,
 # which has no servers of one's own (`SignalServers::Custom`); b33p's Cargo.toml patches it to
 # its fork, and so does this build, through `--config` for this build only.
-ARG PRESAGE_REV=ce281711e8660a2b171dcfdd3d68c47c8c70f3eb
+ARG PRESAGE_REV=62975fd49f589e6041d7dee4052ee58c20dc6817
 ARG LIBSIGNAL_SERVICE_REV=3b76dca287b251160a03c955739d25466d59819d
 RUN git init -q /opt/presage && cd /opt/presage \
     && git fetch -q --depth 1 https://github.com/barafael/presage "$PRESAGE_REV" \
