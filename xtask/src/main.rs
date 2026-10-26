@@ -123,6 +123,8 @@ enum Phase {
     StressInterrupt,
     /// Awkward texts, broken and huge pictures, odd file names.
     StressContent,
+    /// presage-cli, Desktop and b33p sending at once; races on one message.
+    StressConcurrency,
 }
 
 impl Phase {
@@ -147,7 +149,7 @@ impl Phase {
             Phase::Core | Phase::StressVolume | Phase::StressInterrupt | Phase::StressContent => {
                 &[]
             }
-            Phase::Desktop | Phase::Attachments => &[Client::Desktop],
+            Phase::Desktop | Phase::Attachments | Phase::StressConcurrency => &[Client::Desktop],
             Phase::Android | Phase::Storage | Phase::Groups => &[Client::Desktop, Client::Android],
         }
     }
@@ -309,6 +311,7 @@ fn test(pod: &Pod, repo: &Path, phase: Phase, record: &str, screenshots: bool) -
         Phase::StressContent => {
             checks::stress_content(tally, pod, &sockets, &repo.join(pod::FILES))
         }
+        Phase::StressConcurrency => checks::stress_concurrency(tally, pod, &sockets),
         Phase::Attachments => checks::attachments(
             tally,
             pod,
