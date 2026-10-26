@@ -194,8 +194,9 @@ impl Pod {
         }
     }
 
-    /// `release` builds b33p as it ships instead of as the checks' own builds are.
-    pub fn up(&self, clients: &[Client], release: bool) -> Result<()> {
+    /// `optimized` builds b33p optimized as it ships (the `testbox` profile) instead of as the
+    /// checks' own builds are.
+    pub fn up(&self, clients: &[Client], optimized: bool) -> Result<()> {
         for image in IMAGES
             .iter()
             .filter(|image| image.client.is_none_or(|client| clients.contains(&client)))
@@ -203,7 +204,7 @@ impl Pod {
             // Stages that don't depend on each other at once (a Maven build and a cargo one).
             let mut build = podman(&["build", "--jobs", "0", "-t", image.tag]);
             if image.profiled {
-                let profile = if release { "release" } else { "dev" };
+                let profile = if optimized { "testbox" } else { "dev" };
                 build.arg("--build-arg").arg(format!("PROFILE={profile}"));
             }
             build

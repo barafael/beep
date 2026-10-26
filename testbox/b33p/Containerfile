@@ -13,7 +13,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo fetch --locked --target x86_64-unknown-linux-gnu \
     && cargo fetch --locked --manifest-path testbox/tools/Cargo.toml
-# `dev` as the checks' own builds, or `release` (`cargo testbox up --release`) as b33p ships.
+# `dev` as the checks' own builds, or `testbox` (`cargo testbox up --optimized`): optimized as b33p
+# ships, with the debug assertions `test-servers` needs (Cargo.toml).
 ARG PROFILE=dev
 RUN --network=none \
     --mount=type=cache,target=/usr/local/cargo/registry \

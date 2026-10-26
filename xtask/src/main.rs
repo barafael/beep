@@ -108,9 +108,10 @@ enum Command {
 /// How `up` runs b33p.
 #[derive(Clone, Copy, clap::Args)]
 struct B33pOptions {
-    /// b33p built as it ships, optimized, instead of as a debug build.
+    /// b33p optimized as it ships, with debug assertions on (Cargo.toml's `testbox` profile),
+    /// instead of as a debug build.
     #[arg(long)]
-    release: bool,
+    optimized: bool,
     /// The most memory b33p's container may take, in MiB; the kernel kills b33p past it, as
     /// on a small machine or under a desktop's own limits.
     #[arg(long, value_name = "MIB")]
@@ -247,7 +248,7 @@ fn run_dir(repo: &Path) -> PathBuf {
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
-    pod.up(clients, b33p.release)?;
+    pod.up(clients, b33p.optimized)?;
     match b33p.b33p_memory {
         Some(mib) => pod.limit_memory(pod::Service::B33p, mib),
         None => Ok(()),
