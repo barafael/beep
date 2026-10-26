@@ -116,6 +116,31 @@ impl<'pod> Presage<'pod> {
             .map(drop)
     }
 
+    /// Sends `texts` to `recipient_aci` one after another, in one `podman exec`: as fast as
+    /// presage-cli sends. Stops at the first that fails.
+    pub(super) fn send_all(&self, recipient_aci: &str, texts: &[String]) -> Result<()> {
+        let script = r#"db=$1; to=$2; shift 2
+for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$text" || exit 1; done"#;
+        let mut argv = vec!["sh", "-c", script, "sh", self.account.db(), recipient_aci];
+        argv.extend(texts.iter().map(String::as_str));
+        self.containers.exec(Service::Presage, &argv, "").map(drop)
+    }
+
+    /// Sends `text` with the file at `path`, as presage-cli names it: by its file name, its
+    /// type guessed from the extension.
+    pub(super) fn send_file(&self, recipient_aci: &str, text: &str, path: &str) -> Result<()> {
+        self.send_files(recipient_aci, text, &[path])
+    }
+
+    /// [`Self::send_file`] with each of `paths`, in one message.
+    pub(super) fn send_files(&self, recipient_aci: &str, text: &str, paths: &[&str]) -> Result<()> {
+        let mut argv = vec!["send", "--uuid", recipient_aci, "--message", text];
+        for path in paths {
+            argv.extend(["--attach", path]);
+        }
+        self.cli(&argv, "").map(drop)
+    }
+
     /// Receives what is queued, answering what asks for an answer; what presage-cli printed.
     pub(super) fn sync(&self) -> Result<String> {
         let received = self.cli(&["sync", "--stop-after-empty-queue"], "")?;

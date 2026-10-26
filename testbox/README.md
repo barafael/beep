@@ -121,6 +121,13 @@ phases' checks are in `xtask/src/checks/`, one file per phase.
 included, and sums up at the end: `cargo testbox run --rounds 2` runs every phase twice,
 `cargo testbox run desktop groups` only those.
 
+b33p is a debug build in the box, as in the checks' own builds. `--release` (on `up` and `run`)
+builds it as it ships instead, optimized, which takes longer: for what only shows in an
+optimized build, or is too slow to tell apart in a debug one.
+
+`stress-volume` and `stress-interrupt` aren't among `run`'s phases unless named: bursts of
+messages, and b33p killed while it receives, sends and saves ([pending/stress.md](../pending/stress.md)).
+
 ## Watching and looking into a failure
 
 - `cargo testbox web` prints the address of a page with each client's display; `cargo testbox vnc`
