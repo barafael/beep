@@ -2,6 +2,9 @@ Server values are build fields (`app/build.gradle.kts:263` to `:300`). Sending f
 build's expiry (`PushSendJob.kt:161`). Signal-Server asks every new session for a captcha
 (`VerificationController.java:236` "unconditionally request a captcha").
 
+It takes libsignal as testbox/patches/libsignal-local.patch publishes it, 0.105.0-testbox
+(`gradle/libs.versions.toml`).
+
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
 index f128335..a33b92a 100644
 --- a/app/build.gradle.kts
@@ -104,3 +107,16 @@ index 2f1c3dc..20ab2c9 100644
      LibSignalNetworkExtensions.applyConfiguration(network, config);
  
      ProxyConfig proxyConfig = ProxyConfig.resolve(config, BuildConfig.SIGNAL_URL);
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index a34e9ea..0c0e1bf 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -28,7 +28,7 @@ androidx-navigation3-core = "1.1.4"
+ androidx-core-telecom = "1.1.0-alpha06"
+ androidx-window = "1.3.0"
+ glide = "5.0.9"
+-libsignal-client = "0.105.0"
++libsignal-client = "0.105.0-testbox"
+ mp4parser = "1.9.39"
+ accompanist = "0.28.0"
+ nanohttpd = "2.3.1"

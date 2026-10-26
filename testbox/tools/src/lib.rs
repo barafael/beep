@@ -10,9 +10,13 @@ use std::path::Path;
 use derive_more::{Display, Error};
 
 pub mod agent;
+#[cfg(feature = "android")]
+pub mod avd;
 pub mod drivers;
 pub mod keys;
 pub mod process;
+#[cfg(feature = "android")]
+pub mod verification;
 
 /// What `provision` logs once the server serves with its remote config written: the box's
 /// server is ready for every client then.

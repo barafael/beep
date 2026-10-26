@@ -23,7 +23,7 @@ cdn0 = [
     "dep:toml",
 ]
 foundationdb = ["async"]
-android = []
+android = ["dep:hex", "dep:sha2"]
 storage = ["async", "dep:googleapis-tonic-google-bigtable-admin-v2", "dep:tonic"]
 provision = [
     "async",
@@ -91,6 +91,8 @@ toml = { version = "1", optional = true }
 
 base64 = { version = "0.22", optional = true }
 hex = { version = "0.4", optional = true }
+# The patched libsignal's checksums (`android verification`).
+sha2 = { version = "0.11", optional = true }
 # The sealed-sender certificate and the zkgroup public parameters, at the libsignal b33p's
 # Cargo.lock resolves (presage's pin), as the server's own `certificate` command and
 # GenericServerSecretParams make them.
