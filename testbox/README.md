@@ -127,6 +127,10 @@ in `xtask/src/checks/setup.rs`, the phases' checks one file per phase beside it.
 `cargo testbox run` runs `test` in rounds and sums up at the end: `cargo testbox run --rounds 2`
 runs every phase twice, `cargo testbox run desktop groups` only those.
 
+`--fresh` (on `test` and `run`) runs each phase on a box of its own instead, as the stress
+phases always are: slower, a box's setup for each, but no phase sees what another left, and
+their order doesn't matter.
+
 b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up`, `test` and `run`)
 builds it optimized as it ships instead, which takes longer: for what only shows in an
 optimized build, or is too slow to tell apart in a debug one. It keeps debug assertions on

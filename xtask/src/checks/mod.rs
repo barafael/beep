@@ -1,5 +1,6 @@
 //! `cargo testbox test`'s checks, against Signal-Server, by phase. The phases on one fixture
-//! (setup.rs) share a fresh box, set up once, and run one after the other.
+//! (setup.rs) share a fresh box, set up once, and run one after the other; with `--fresh`, and
+//! always the stress phases, each phase has a box of its own.
 //!
 //! Against Signal-Desktop or Signal-Android, b33p's side and the other share only libsignal, at
 //! different versions, so a defect there can pass unseen. Against presage-cli both sides are
@@ -31,7 +32,7 @@ use strum::VariantArray;
 use crate::error::{Error, Result};
 use crate::phase::{AndroidPhase, LinkedPhase, Phase, StressPhase};
 use crate::pod::{self, Client, Pod, Service};
-use crate::{B33pOptions, Sockets};
+use crate::{Sockets, TestOptions};
 
 use self::record::Record;
 
@@ -43,17 +44,21 @@ const PATIENCE: Duration = Duration::from_millis(PATIENCE_MS);
 /// Exporting, uploading, downloading and importing a message history.
 const HISTORY_PATIENCE: Duration = Duration::from_secs(600);
 
-/// Runs `phases`, every phase but the stress phases if none, each box's on a box from nothing
-/// with b33p as `b33p` says, its record in `target/testbox-record/<records>/<box>/` (with
-/// `screenshots`, each display after each check); fails if a check failed.
+/// Runs the phases `options` names, every phase but the stress phases if none, each fixture's on
+/// a box from nothing (with `--fresh`, each phase on a box of its own), each box's record in
+/// `target/testbox-record/<records>/<box>/`; fails if a check failed.
 pub(crate) fn run(
     containers: &Pod,
     repo: &Path,
-    phases: &[Phase],
     records: &str,
-    screenshots: bool,
-    b33p: B33pOptions,
+    options: &TestOptions,
 ) -> Result<()> {
+    let TestOptions {
+        phases,
+        screenshots,
+        fresh,
+        b33p,
+    } = options;
     let sockets = Sockets::new(repo);
     let files = repo.join(pod::FILES);
     let linked = chosen(phases, Phase::Linked);
@@ -65,7 +70,7 @@ pub(crate) fn run(
     // The Android image's build takes longest, most of an hour when Signal-Android changed: it
     // goes on while the rest build and the linked box runs, and stops if the run ends first. It
     // needs only the server's.
-    let android_image = if android.is_empty() {
+    let mut android_image = if android.is_empty() {
         None
     } else {
         Some(containers.build_beside(Client::Android)?)
@@ -83,14 +88,14 @@ pub(crate) fn run(
         containers,
         repo,
         records,
-        screenshots,
+        screenshots: *screenshots,
+        fresh: *fresh,
         failed: Vec::new(),
         not_run: 0,
         reported: Reported::default(),
     };
     on_fixture(
         &mut tally,
-        "the linked box",
         "linked",
         &linked,
         || play(&linked_clients),
@@ -111,11 +116,10 @@ pub(crate) fn run(
     );
     on_fixture(
         &mut tally,
-        "the Android box",
         "android",
         &android,
         || {
-            if let Some(build) = android_image {
+            if let Some(build) = android_image.take() {
                 build.finish()?;
             }
             play(&android_clients)
@@ -186,22 +190,39 @@ fn chosen<Each: VariantArray + Copy>(phases: &[Phase], phase: fn(Each) -> Phase)
         .collect()
 }
 
-/// Brings the box up from nothing (`ready`: its images built, the pod played), sets the fixture
-/// up, and runs `phases` on it one after the other: each part with a directory of its own in the
-/// box's record (`record`), the containers' logs in it at the end. Nothing if there are no
-/// `phases`; if the box doesn't come up, they count as not run.
+/// Runs a fixture's `phases` on the box `record` names, or with `--fresh` each on a box of its
+/// own, named after it ([`on_box`]).
 fn on_fixture<Fixture, Each: Copy + Into<&'static str>>(
     tally: &mut Tally<'_>,
-    name: &str,
+    record: &'static str,
+    phases: &[Each],
+    mut ready: impl FnMut() -> Result<()>,
+    mut fixture: impl FnMut(&mut Checks) -> Result<Fixture>,
+    mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<()>,
+) {
+    let per_box = if tally.fresh { 1 } else { phases.len().max(1) };
+    for group in phases.chunks(per_box) {
+        let record = match group {
+            [only] if tally.fresh => (*only).into(),
+            _ => record,
+        };
+        on_box(tally, record, group, &mut ready, &mut fixture, &mut phase);
+    }
+}
+
+/// Brings the box up from nothing (`ready`: its images built, the pod played), sets the fixture
+/// up, and runs `phases` on it one after the other: each part with a directory of its own in the
+/// box's record (`record`), the containers' logs in it at the end. If the box doesn't come up,
+/// they count as not run.
+fn on_box<Fixture, Each: Copy + Into<&'static str>>(
+    tally: &mut Tally<'_>,
     record: &str,
     phases: &[Each],
     ready: impl FnOnce() -> Result<()>,
     fixture: impl FnOnce(&mut Checks) -> Result<Fixture>,
     mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<()>,
 ) {
-    if phases.is_empty() {
-        return;
-    }
+    let name = format!("the {record} box");
     let record = match ready().and_then(|()| tally.record(record)) {
         Ok(record) => record,
         Err(error) => {
@@ -211,7 +232,7 @@ fn on_fixture<Fixture, Each: Copy + Into<&'static str>>(
             return;
         }
     };
-    match tally.part(name, &record, "setup", fixture) {
+    match tally.part(&name, &record, "setup", fixture) {
         Some(mut fixture) => {
             for &each in phases {
                 let part: &'static str = each.into();
@@ -232,6 +253,8 @@ struct Tally<'run> {
     /// Where the boxes' records go, under target/testbox-record.
     records: &'run str,
     screenshots: bool,
+    /// Each phase on a box of its own ([`on_fixture`]).
+    fresh: bool,
     failed: Vec<String>,
     /// Phases a box that didn't come up or wasn't set up left without a box to run on.
     not_run: usize,
