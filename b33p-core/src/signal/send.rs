@@ -35,7 +35,7 @@ use super::{
     Ctx, Mgr,
     conversations::{
         Names, accepted, e164_of, expire_timer, is_blocked, or_logged, own_id, sender_name,
-        thread_of,
+        thread_of, wrote_to,
     },
     groups::{group_identifier, member_aci},
     history::start_timers,
@@ -380,25 +380,7 @@ pub(super) async fn send_new(
     {
         warn!(error = %scrubbed(&error), "failed to save that a message was sent");
     }
-    // Writing to someone accepts the chat.
-    let accepted = ctx
-        .tables
-        .settings(&conversation)
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|s| s.accepted);
-    if !accepted
-        && let Ok(settings) = ctx
-            .tables
-            .update(&conversation, |s| s.accepted = true)
-            .await
-    {
-        let _ = ctx.events.send(Event::Settings {
-            conversation: conversation.clone(),
-            settings,
-        });
-    }
+    wrote_to(ctx, &conversation).await;
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
     Ok(())
 }

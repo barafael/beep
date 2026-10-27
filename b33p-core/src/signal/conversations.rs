@@ -401,6 +401,24 @@ pub(super) async fn sender_name(manager: &Mgr, names: &mut Names, sender: Servic
     name
 }
 
+/// We wrote to `id`, here or from another device of ours: that accepts the chat, as Signal's apps
+/// take it (they share our profile with whom we write to), and says so if it wasn't yet.
+pub(super) async fn wrote_to(ctx: &Ctx, id: &ConversationId) {
+    let accepted = ctx
+        .tables
+        .settings(id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.accepted);
+    if !accepted && let Ok(settings) = ctx.tables.update(id, |s| s.accepted = true).await {
+        let _ = ctx.events.send(Event::Settings {
+            conversation: id.clone(),
+            settings,
+        });
+    }
+}
+
 pub(super) async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
     ctx.tables
         .settings(id)

@@ -27,7 +27,7 @@ use presage::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, ConversationId, Delivery, Event, MessageRef, now_millis,
+    ChatMessage, ConversationId, Delivery, Event, MessageRef, attachments, now_millis,
     outbox::{Outbox, Sends as _},
     scrub::scrubbed,
 };
@@ -37,11 +37,11 @@ use super::{
     avatars::{AvatarFetcher, send_group_avatar},
     conversations::{
         Names, accepted, conversation_id, e164_of, ensure_conversation, is_blocked, own_id,
-        send_conversations, sender_name, thread_of,
+        send_conversations, sender_name, thread_of, wrote_to,
     },
     groups::{
-        forget_membership, is_member, lets_us_in, own_membership_change, refresh_group,
-        signed_group_change,
+        accept_from_trusted, forget_membership, is_member, lets_us_in, own_membership_change,
+        refresh_group, signed_group_change,
     },
     history::{
         author_of, data_of, erase_deleted, is_outgoing, original, start_timers, stored_at,
@@ -624,6 +624,27 @@ async fn handle_content(
         }
     }
     let id = ensure_conversation(manager, ctx, thread.clone(), content.timestamp()).await;
+    // Brought in by someone we accepted: no message request (Signal-Desktop's rule).
+    if let Thread::Group(key) = thread
+        && !is_outgoing(manager, content)
+        && let Some((data, _)) = data_of(content)
+        && let Some(context) = data.group_v2.as_ref()
+    {
+        let announcement = context.revision == Some(0)
+            && context.group_change.is_none()
+            && data.body.is_none()
+            && attachments::of_message(data).is_empty();
+        accept_from_trusted(
+            manager,
+            ctx,
+            key,
+            &id,
+            context,
+            announcement,
+            content.metadata.sender,
+        )
+        .await;
+    }
     // presage has taken over a group change by now; show the group as it is.
     if let Thread::Group(key) = thread
         && let Some(context) = data_of(content)
@@ -711,6 +732,9 @@ async fn handle_content(
     };
     // An edit's time names the message it edits, not one of its own.
     if outgoing && !edit {
+        // Written from another device of ours: as when written here (`send.rs`), that accepts
+        // the chat. Not only in the window (`ChatState`'s written_to): receipts go by the table.
+        wrote_to(ctx, &id).await;
         // Sent from another device: receipts name only the time, so remember where it went.
         if let Err(error) = ctx
             .tables
