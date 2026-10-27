@@ -37,6 +37,8 @@ const TIMER: u32 = 10;
 const SAMPLE_EVERY: Duration = Duration::from_secs(30);
 /// How long the details of a group are waited for before they are opened again.
 const DETAILS_AGAIN: Duration = Duration::from_secs(3);
+/// How many steps in a row may be drawn to let the rest go before the tour gives up on it.
+const FILLERS: usize = 8;
 /// The most groups the tour makes.
 const GROUPS: usize = 2;
 const EMOJI: [&str; 5] = ["👍", "❤️", "😂", "😮", "🎉"];
@@ -374,6 +376,10 @@ enum Step {
         by: usize,
         thread: usize,
         admin: usize,
+        /// Asked for, as by one who left: told to the members they knew. One who was never in
+        /// joins by a link that needs no approval, as a first request reaches no admin until
+        /// they fetch the group (pending/tour.md).
+        approval: bool,
     },
     Story {
         by: usize,
@@ -429,14 +435,29 @@ pub(super) fn tour(
         .flat_map(|&kind| std::iter::repeat_n(kind, repeat))
         .collect();
     let mut number = 0;
+    let mut fillers = 0;
     while !left.is_empty() {
         number += 1;
         let drawn = tour.world.draw(&mut left);
         let (kind, step) = match drawn {
-            Some(drawn) => drawn,
-            // Nothing left can go yet (all of it needs a group, say): a text, which counts as
-            // none of them.
-            None => (Kind::Text, tour.world.text_step()?),
+            Some(drawn) => {
+                fillers = 0;
+                drawn
+            }
+            // Nothing left can go yet: a step that may let it (a member leaving lets one ask to
+            // join again), which counts as none of them; and no end of those.
+            None => {
+                fillers += 1;
+                if fillers > FILLERS {
+                    let stuck: Vec<&'static str> = left.iter().map(|&kind| kind.into()).collect();
+                    return checks.require("every kind of step came up", || {
+                        Err(Error::Failed(format!(
+                            "{stuck:?} could never go; again with TESTBOX_SEED={seed}"
+                        )))
+                    });
+                }
+                tour.world.filler()?
+            }
         };
         let name = format!("step {number}: {}", tour.world.describe(&step));
         let started = Instant::now();
@@ -580,8 +601,19 @@ impl World {
         None
     }
 
-    fn text_step(&mut self) -> Result<Step> {
-        self.plan(Kind::Text)
+    /// A step that may let what is left go, drawn from those that can go now: someone leaves
+    /// (to join again), is added (to be removed, made an admin, post a story), a group is made,
+    /// or, failing all of that, a text.
+    fn filler(&mut self) -> Result<(Kind, Step)> {
+        let mut kinds = [Kind::Leave, Kind::AddMember, Kind::CreateGroup];
+        for i in (1..kinds.len()).rev() {
+            let j = self.below(i + 1);
+            kinds.swap(i, j);
+        }
+        kinds
+            .into_iter()
+            .chain([Kind::Text])
+            .find_map(|kind| Some((kind, self.plan(kind)?)))
             .ok_or_else(|| Error::Failed("no chat to write in".to_owned()))
     }
 
@@ -898,18 +930,17 @@ impl World {
                 Step::Leave { by, thread }
             }
             Kind::JoinByLink => {
-                // Only who left asks to join again: a first request reaches no admin until they
-                // fetch the group, as with Signal-Desktop, and a join where the link needs no
-                // approval fails (pending/tour.md).
                 let (admin, thread, by) = self.admin_and(|thread, _| {
-                    thread
-                        .left
-                        .iter()
-                        .copied()
+                    (0..count)
                         .filter(|k| !thread.members.contains(k) && !thread.removed.contains(k))
                         .collect()
                 })?;
-                Step::JoinByLink { by, thread, admin }
+                Step::JoinByLink {
+                    by,
+                    thread,
+                    admin,
+                    approval: self.threads[thread].left.contains(&by),
+                }
             }
             Kind::Story => {
                 let (by, thread) = self.someone_in(false, true)?;
@@ -1004,8 +1035,22 @@ impl World {
                 format!("b33p {by} makes {member} an admin of {}", name(thread))
             }
             Step::Leave { by, thread } => format!("b33p {by} leaves {}", name(thread)),
-            Step::JoinByLink { by, thread, admin } => format!(
+            Step::JoinByLink {
+                by,
+                thread,
+                admin,
+                approval: true,
+            } => format!(
                 "b33p {by} asks to join {} again by its link, and {admin} approves",
+                name(thread)
+            ),
+            Step::JoinByLink {
+                by,
+                thread,
+                admin,
+                approval: false,
+            } => format!(
+                "b33p {by} joins {} by the link {admin} turns on",
                 name(thread)
             ),
             Step::Story { by, thread, .. } => {
@@ -1394,7 +1439,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 self.converge_group(thread)?;
                 self.converge_details(thread)
             }
-            Step::JoinByLink { by, thread, admin } => self.join_by_link(by, thread, admin),
+            Step::JoinByLink {
+                by,
+                thread,
+                admin,
+                approval,
+            } => self.join_by_link(by, thread, admin, approval),
             Step::Story { by, thread, text } => self.story(by, thread, &text),
             Step::Restart { by } => self.restart(by),
             Step::LinkWithoutPreview { by, thread, text } => {
@@ -1798,21 +1848,30 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         self.converge_details(thread)
     }
 
-    /// `admin` turns `thread`'s link on, with approval; `by`, who left it, asks to join again;
-    /// the request reaches `admin` without a fetch, as `by` tells the members it knew; `admin`
-    /// approves, and turns the link off.
-    fn join_by_link(&mut self, by: usize, thread: usize, admin: usize) -> Result<()> {
+    /// `admin` turns `thread`'s link on, with `approval` or for anyone; `by` joins by it. With
+    /// approval `by`, who left, asks again; the request reaches `admin` without a fetch, as `by`
+    /// tells the members it knew, and `admin` approves. The link goes off after.
+    fn join_by_link(
+        &mut self,
+        by: usize,
+        thread: usize,
+        admin: usize,
+        approval: bool,
+    ) -> Result<()> {
         let aci = self.world.acis[by].clone();
         let title = self.world.threads[thread].title.clone();
+        let access = if approval {
+            InviteLinkAccess::Approval
+        } else {
+            InviteLinkAccess::Anyone
+        };
         self.open(admin, thread)?;
         let b33p = self.harness(admin);
-        b33p.act(Action::SetInviteLink {
-            access: InviteLinkAccess::Approval,
-        })?;
+        b33p.act(Action::SetInviteLink { access })?;
         b33p.act(Action::OpenDetails)?;
         let link = b33p.wait_for("the invite link", PATIENCE, |snapshot| {
             let details = snapshot.details.as_ref()?;
-            (details.invite_link_access == InviteLinkAccess::Approval)
+            (details.invite_link_access == access)
                 .then(|| details.invite_link.clone())
                 .flatten()
         });
@@ -1825,44 +1884,64 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         })?;
         joining.wait_for("the group behind the link", PATIENCE, |snapshot| {
             let join = snapshot.join.as_ref()?;
-            (join.title.as_deref() == Some(title.as_str()) && join.approval && !join.busy)
+            (join.title.as_deref() == Some(title.as_str())
+                && join.approval == approval
+                && !join.busy)
                 .then_some(())
         })?;
         joining.act(Action::JoinGroup)?;
         let id = self.world.threads[thread].id_on(by, self.b33ps);
         let joining = self.harness(by);
-        joining.wait_for("the request sent", PATIENCE, |snapshot| {
-            snapshot
-                .conversations
-                .iter()
-                .any(|chat| chat.id == id && chat.requested)
-                .then_some(())
-        })?;
+        joining.wait_for(
+            if approval {
+                "the request sent"
+            } else {
+                "the group joined"
+            },
+            PATIENCE,
+            |snapshot| {
+                snapshot
+                    .conversations
+                    .iter()
+                    .any(|chat| {
+                        chat.id == id
+                            && if approval {
+                                chat.requested
+                            } else {
+                                !chat.left && !chat.requested
+                            }
+                    })
+                    .then_some(())
+            },
+        )?;
         joining.act(Action::CloseJoinGroup)?;
 
-        let b33p = self.harness(admin);
-        let deadline = Instant::now() + PATIENCE;
-        let asked = loop {
-            b33p.act(Action::OpenDetails)?;
-            let asked = b33p.wait_for("the request in the details", DETAILS_AGAIN, |snapshot| {
-                snapshot
-                    .details
-                    .as_ref()?
-                    .requests
-                    .iter()
-                    .any(|request| request.contains(aci.as_str()))
-                    .then_some(())
-            });
-            b33p.act(Action::CloseDetails)?;
-            if asked.is_ok() || Instant::now() >= deadline {
-                break asked;
-            }
-        };
-        asked?;
-        b33p.act(Action::AnswerJoinRequest {
-            member: aci,
-            approve: true,
-        })?;
+        if approval {
+            let b33p = self.harness(admin);
+            let deadline = Instant::now() + PATIENCE;
+            let asked = loop {
+                b33p.act(Action::OpenDetails)?;
+                let asked =
+                    b33p.wait_for("the request in the details", DETAILS_AGAIN, |snapshot| {
+                        snapshot
+                            .details
+                            .as_ref()?
+                            .requests
+                            .iter()
+                            .any(|request| request.contains(aci.as_str()))
+                            .then_some(())
+                    });
+                b33p.act(Action::CloseDetails)?;
+                if asked.is_ok() || Instant::now() >= deadline {
+                    break asked;
+                }
+            };
+            asked?;
+            b33p.act(Action::AnswerJoinRequest {
+                member: aci,
+                approve: true,
+            })?;
+        }
         self.joins(thread, by);
         self.converge_group(thread)?;
         self.converge_details(thread)?;
@@ -2263,6 +2342,23 @@ mod tests {
         };
         assert_eq!(tour(11), tour(11));
         assert_ne!(tour(11), tour(13));
+    }
+
+    /// When only a join by link is left and nobody may join (2 was removed), the step drawn
+    /// instead lets someone leave or is another that may help, never nothing.
+    #[test]
+    fn a_stuck_tour_draws_what_may_unstick_it() {
+        let mut world = world(5);
+        world.threads[3].left.clear();
+        world.threads[3].removed.insert(2);
+        assert!(world.plan(Kind::JoinByLink).is_none());
+        let mut left = vec![Kind::JoinByLink];
+        assert!(world.draw(&mut left).is_none());
+        let (kind, _) = world.filler().expect("a filler");
+        assert!(
+            [Kind::Leave, Kind::AddMember, Kind::CreateGroup].contains(&kind),
+            "{kind:?}"
+        );
     }
 
     /// Nothing that needs a message or a group is drawn before there is one.
