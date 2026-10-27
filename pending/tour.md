@@ -332,3 +332,21 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 - **Where the tour stands:** three rounds fully green so far (run 7 round 3, run 8 rounds 1 and
   2). The rounds that fail now fail on b33p and presage bugs (8, 11, 12, 13), not on the tour.
   Finding 8 is the most frequent, and b33p's own to fix.
+- **Fixes, by the user's decision:**
+  - finding 8 is barrafael/beep#86, merged;
+  - finding 12 is #87, merged;
+  - findings 11 and 13 are merge-prs-full-run's: 11 in #85, 13 to be reproduced as
+    `--instance repro`, then the error chain logged in full, the pool idle timeout set below
+    the server's, and the group fetch retried.
+- **Finding 13's timing:** b33p 1 last fetched the group at about 12:54:09, and the failing fetch
+  was at 12:54:40.18. The connection was idle about 31 s, at Jetty's 30 s default. That fits a
+  pooled connection reused after the server closed it.
+- **Run 11**: `tour` plus #86, without the setup's wait for titles (finding 8's trigger back on).
+  3 of 3 rounds passed, 68 checks each; records in `target/testbox-tour-record/run/1793107440/`.
+  - A message showed on the other b33ps in 0.2–0.3 s median, 2 s at most.
+  - A killed b33p was back with its chats in 2–3 s. Linking took 2–4 s.
+  - Each b33p used 90–145 MiB with about 50 open files, and no snapshot took over 30 ms.
+  - Slowest steps (median): disappearing 10.4 s (the 10 s timer), join-by-link 7.9 s,
+    story 5.3 s, make-admin 5.0 s, create-group 4.6 s, leave 4.2 s.
+- **A new step, `quote-then-edit`:** a reply to one's own message, that message edited, then a
+  restart. It is #87's check: it should fail on main, where finding 12 shows, and pass with #87.
