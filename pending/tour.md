@@ -135,6 +135,13 @@ This file is kept as the runs go. Newest entries go at the end of each section.
    - The tour's setup now waits for each chat's real title before accepting, which steps around
      it. A targeted check would accept right after a first message and check the request stays
      answered.
+   - **A second trigger, for groups** (run 10, round 3, seed 1793106393, step 11).
+     - b33p 1 was added to a group and accepted it; the tour saw it accepted.
+     - Group updates then came in. Each calls `groups::refresh_group`, which rebuilds the chat
+       with `first_settings`, read from the table. `respond` hadn't written the table yet.
+     - The group turned back into a request (`accepted: false`), and its stories were hidden
+       (`story_shown` hides a request's). The story step failed, with nothing in the log.
+     - Any reload that reads the table can do this, not only `retitle_once_saved`.
 9. **Joining by a link that needs no approval fails at the server.** HTTP 400 `{"code":400,
    "message":"Invalid field set on action"}` comes back for presage's `join_group` on the
    `AccessRequired::Any` path (run 5, rounds 1 and 2, PATCH `/v2/groups/?inviteLinkPassword=…`).
@@ -184,6 +191,32 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     - The tour checks pictures strictly, except for a member that joined after the picture last
       changed. That case is a check of its own, "who came back shows the group's picture", which
       fails without ending the tour.
+
+12. **After a reload, a reply's quote shows text the quoted message got only later.** Run 10,
+    round 2 (seed 1793106083, step 29): b33p 2 replied to its own message, edited that message
+    later, and was restarted.
+    - Live, the quote shows the text it quoted. After the restart it shows the edit.
+    - `history.rs` (around :506) looks the quoted message up by `quote.id` with
+      `message_sent_or_edited_at`. presage keeps an edit in place under the original timestamp,
+      so a lookup by the original timestamp returns the latest version.
+    - The comment there means "the version it quotes".
+    - Fix in b33p: use the stored body only if its version is the one quoted (`edited_at()`, or
+      its own timestamp if never edited, equals `quote.id`). Otherwise use `quote.text`, which
+      the quoting sender wrote.
+13. **One failed group fetch leaves a group stale until its next message.** Run 10, round 1
+    (seed 1793105499, step 56).
+    - b33p 1 got b33p 2's leave. presage's `upsert_group` then failed to fetch the group: "HTTP
+      reqwest error: error sending request for url".
+    - It only warns, keeps the old revision, and nothing fetches again. The admin listed the
+      leaver for good.
+    - The transport error happened once in all the runs. Its cause is unknown, because the log
+      line (`%error`) drops the error's source.
+      - A guess: reqwest reused a pooled connection (kept 90 s) that the storage service had
+        closed after its idle timeout. Jetty's default is 30 s, and the box sets none.
+    - Suggestions:
+      - presage retries a failed group fetch, or keeps the group marked to fetch again;
+      - libsignal-service retries an idempotent GET once on a reused connection;
+      - logs print an error's whole chain.
 
 ## Open questions
 
@@ -293,3 +326,9 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 - **Run 8**, as `--instance tour`, records in `target/testbox-tour-record/run/1793103275/`:
   - **rounds 1 and 2 passed;**
   - round 3 failed at step 14 (finding 11).
+- **Run 10**: `tour` with #85, three rounds, records in
+  `target/testbox-tour-record/run/1793105144/`. All three rounds failed, on findings 13, 12 and
+  8 (groups).
+- **Where the tour stands:** three rounds fully green so far (run 7 round 3, run 8 rounds 1 and
+  2). The rounds that fail now fail on b33p and presage bugs (8, 11, 12, 13), not on the tour.
+  Finding 8 is the most frequent, and b33p's own to fix.
