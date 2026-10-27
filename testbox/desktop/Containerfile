@@ -1,7 +1,7 @@
 # Signal-Desktop from source at the pin, run the way its mock-server tests run it
 # (.github/workflows/ci.yml "Run mock server tests"): `pnpm install --frozen-lockfile`,
-# `pnpm run generate`, then Electron with ci.js and SIGNAL_CI_CONFIG on an X display (Xvfb there,
-# TigerVNC's Xvnc here, which `cargo testbox vnc` can show). The image keeps
+# `pnpm run generate`, then Electron with ci.js and SIGNAL_CI_CONFIG on a display of its own,
+# which `cargo testbox vnc` can show. The image keeps
 # what runs: the built app with its production dependencies, and Electron and Playwright for the
 # driver at the versions Desktop's package.json names. Node and pnpm at the versions its
 # `devEngines` names.
@@ -82,11 +82,12 @@ RUN deno fmt --check driver.ts && deno lint driver.ts && deno check --frozen dri
 
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ARG ELECTRON_LIBS
-# Electron's runtime libraries (ci.yml's `libpulse0`); TigerVNC's Xvnc for the display
-# `with-display` starts, vncconfig for its `input on|off`.
+# Electron's runtime libraries (ci.yml's `libpulse0`); cage, wayvnc and wlr-randr for its
+# display (testbox/tools `with-display`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tigervnc-standalone-server tigervnc-tools $ELECTRON_LIBS \
-    && rm -rf /var/lib/apt/lists/*
+        ca-certificates cage wayvnc wlr-randr $ELECTRON_LIBS \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm /usr/bin/Xwayland
 COPY --from=localhost/b33p-testbox-server /usr/local/bin/with-display /usr/local/bin/with-display
 COPY --from=build /opt/signal-desktop /opt/signal-desktop
 COPY --from=build /opt/runtime/node_modules /opt/signal-desktop/node_modules
@@ -99,7 +100,7 @@ WORKDIR /opt/testbox
 # above), write where Desktop and Playwright write and its socket is, and connect to localhost
 # (Playwright to Electron) and its own socket. That narrows the driver, not Electron: a process it
 # runs is outside Deno's checks, and the container is the boundary.
-ENTRYPOINT ["with-display", "/run/view/vnc", "1280x1024", "--", \
+ENTRYPOINT ["with-display", "/run/view", "1280x1024", "--", \
     "deno", "run", "--frozen", "--cached-only", "--allow-env", "--allow-sys", "--allow-read", \
     "--allow-write=/tmp,/home/desktop,/run/b33p", \
     "--allow-run=/opt/testbox/node_modules/.deno/electron@44.7.2/node_modules/electron/dist/electron", \

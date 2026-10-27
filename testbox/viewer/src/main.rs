@@ -19,7 +19,7 @@ use testbox_vnc::{Frame, NamedKey, VncClient, X11Event};
 use tokio::sync::mpsc;
 
 slint::slint! {
-    import { CheckBox } from "std-widgets.slint";
+    import { CheckBox, Palette } from "std-widgets.slint";
 
     export struct Screen {
         // Its place among all the displays, which the callbacks name it by.
@@ -31,20 +31,24 @@ slint::slint! {
         shown: bool,
     }
 
-    component Pane inherits VerticalLayout {
-        in property <Screen> screen;
+    // The viewer's input to the display numbered `index`.
+    export global Input {
         in property <bool> interactive;
         // The pointer at (x, y) of the frame's pixels, with these buttons down.
-        callback pointer(x: float, y: float, left: bool, middle: bool, right: bool);
+        callback pointer(index: int, x: float, y: float, left: bool, middle: bool, right: bool);
         // A wheel step.
-        callback wheel(x: float, y: float, up: bool);
+        callback wheel(index: int, x: float, y: float, up: bool);
         // A key, by the text Slint gives it, pressed or released.
-        callback key(text: string, down: bool);
+        callback key(index: int, text: string, down: bool);
+    }
+
+    component Pane inherits VerticalLayout {
+        in property <Screen> screen;
         spacing: 2px;
 
         Text {
             text: root.screen.state == "" ? root.screen.name : root.screen.name + ": " + root.screen.state;
-            color: #e0e0e0;
+            color: Palette.foreground;
         }
         Rectangle {
             // As `image-fit: contain` draws the frame: scaled to fit, centred.
@@ -63,21 +67,22 @@ slint::slint! {
                 height: 100%;
             }
             keys := FocusScope {
-                enabled: root.interactive;
+                enabled: Input.interactive;
                 key-pressed(event) => {
-                    root.key(event.text, true);
+                    Input.key(root.screen.index, event.text, true);
                     accept
                 }
                 key-released(event) => {
-                    root.key(event.text, false);
+                    Input.key(root.screen.index, event.text, false);
                     accept
                 }
                 TouchArea {
-                    enabled: root.interactive;
+                    enabled: Input.interactive;
                     function frame-x() -> float { (self.mouse-x - left-edge) / (1px * scale) }
                     function frame-y() -> float { (self.mouse-y - top-edge) / (1px * scale) }
                     function report() {
-                        root.pointer(frame-x(), frame-y(), left-down, middle-down, right-down);
+                        Input.pointer(root.screen.index, frame-x(), frame-y(), left-down, middle-down,
+                            right-down);
                     }
                     pointer-event(event) => {
                         if event.kind == PointerEventKind.down {
@@ -100,7 +105,7 @@ slint::slint! {
                         report();
                     }
                     scroll-event(event) => {
-                        root.wheel(frame-x(), frame-y(), event.delta-y > 0);
+                        Input.wheel(root.screen.index, frame-x(), frame-y(), event.delta-y > 0);
                         accept
                     }
                 }
@@ -112,15 +117,19 @@ slint::slint! {
         title: "testbox";
         preferred-width: 1600px;
         preferred-height: 1000px;
-        background: #1e1e1e;
+        // The widgets' own colours follow the scheme; a light one's labels are unreadable on
+        // the displays' black.
+        background: Palette.background;
+        default-font-size: 16px;
+        init => {
+            Palette.color-scheme = ColorScheme.dark;
+        }
         // All the displays, for the toggles, and the ones they show.
         in property <[Screen]> screens;
-        in property <[Screen]> panes;
-        in property <bool> interactive;
+        // The shown ones: portrait beside landscape, which stack.
+        in property <[Screen]> tall-panes;
+        in property <[Screen]> wide-panes;
         callback toggled(index: int, shown: bool);
-        callback pointer(index: int, x: float, y: float, left: bool, middle: bool, right: bool);
-        callback wheel(index: int, x: float, y: float, up: bool);
-        callback key(index: int, text: string, down: bool);
 
         VerticalLayout {
             padding: 4px;
@@ -136,24 +145,20 @@ slint::slint! {
                     }
                 }
                 Text {
-                    text: root.interactive ? "input on" : "watching: input off";
-                    color: #e0e0e0;
+                    text: Input.interactive ? "input on" : "watching: input off";
+                    color: Palette.foreground;
                     vertical-alignment: center;
                 }
             }
             HorizontalLayout {
                 spacing: 4px;
-                for screen in root.panes: Pane {
+                for screen in root.tall-panes: Pane {
                     screen: screen;
-                    interactive: root.interactive;
-                    pointer(x, y, left, middle, right) => {
-                        root.pointer(screen.index, x, y, left, middle, right);
-                    }
-                    wheel(x, y, up) => {
-                        root.wheel(screen.index, x, y, up);
-                    }
-                    key(text, down) => {
-                        root.key(screen.index, text, down);
+                }
+                if root.wide-panes.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    for screen in root.wide-panes: Pane {
+                        screen: screen;
                     }
                 }
             }
@@ -209,13 +214,19 @@ fn run() -> Result<()> {
             })
             .collect::<Vec<_>>(),
     ));
-    // Panes for the shown ones only: a hidden element would keep its place in the layout.
-    let panes = Rc::new(FilterModel::new(screens.clone(), |screen: &Screen| {
-        screen.shown
-    }));
+    // Panes for the shown ones only: a hidden element would keep its place in the layout. A
+    // display is landscape until its first frame says otherwise.
+    let panes = |tall: bool| {
+        ModelRc::new(FilterModel::new(screens.clone(), move |screen: &Screen| {
+            let size = screen.frame.size();
+            screen.shown && (size.height > size.width) == tall
+        }))
+    };
     viewer.set_screens(ModelRc::from(screens.clone()));
-    viewer.set_panes(ModelRc::from(panes.clone()));
-    viewer.set_interactive(interactive);
+    viewer.set_tall_panes(panes(true));
+    viewer.set_wide_panes(panes(false));
+    let input = viewer.global::<Input>();
+    input.set_interactive(interactive);
     viewer.show().describe("the window")?;
     let restricted = testbox_vnc::sandbox(readable())?;
     eprintln!(
@@ -245,24 +256,23 @@ fn run() -> Result<()> {
         if let Some(mut screen) = screens.row_data(position) {
             screen.shown = shown;
             screens.set_row_data(position, screen);
-            panes.reset();
         }
         if let Some(display) = shared.get(position) {
             display.shown.store(shown, Ordering::Relaxed);
         }
     });
     let pointers = inputs.clone();
-    viewer.on_pointer(move |index, x, y, left, middle, right| {
+    input.on_pointer(move |index, x, y, left, middle, right| {
         let buttons = u8::from(left) | u8::from(middle) << 1 | u8::from(right) << 2;
         send(&pointers, index, testbox_vnc::pointer(x, y, buttons));
     });
     let wheels = inputs.clone();
-    viewer.on_wheel(move |index, x, y, up| {
+    input.on_wheel(move |index, x, y, up| {
         for event in testbox_vnc::wheel(x, y, up) {
             send(&wheels, index, event);
         }
     });
-    viewer.on_key(move |index, text: slint::SharedString, down| {
+    input.on_key(move |index, text: slint::SharedString, down| {
         if let Some(keysym) = keysym(&text) {
             send(&inputs, index, testbox_vnc::key(keysym, down));
         }

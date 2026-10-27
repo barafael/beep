@@ -24,6 +24,8 @@ cdn0 = [
 ]
 foundationdb = ["async"]
 android = ["dep:hex", "dep:sha2"]
+# `with-display`: the compositor's protocols, the umask for its sockets, the stop signals.
+display = ["dep:wayland-client", "dep:rustix", "dep:signal-hook"]
 storage = ["async", "dep:googleapis-tonic-google-bigtable-admin-v2", "dep:tonic"]
 provision = [
     "async",
@@ -63,15 +65,13 @@ required-features = ["provision"]
 
 [[bin]]
 name = "with-display"
+required-features = ["display"]
 
 [dependencies]
 derive_more = { version = "2", features = ["display", "error"] }
 serde = { version = "1", features = ["derive"] }
 # The drivers' protocol and the keys' JSON.
 serde_json = "1"
-# `with-display` hands the stop signals on to the client it runs.
-signal-hook = "0.4"
-libc = "0.2"
 # The chat menu's labels, from its items' names.
 strum = { version = "0.27", features = ["derive"] }
 # The agent protocol's Kotlin side is generated from its Rust (src/agent.rs); the attribute alone.
@@ -107,3 +107,6 @@ time = { version = "0.3", optional = true }
 # Bigtable's admin API, generated from googleapis by tonic-build; plain gRPC to the emulator.
 googleapis-tonic-google-bigtable-admin-v2 = { version = "0.45", optional = true }
 tonic = { version = "0.14", optional = true, default-features = false, features = ["transport", "codegen"] }
+wayland-client = { version = "0.31", optional = true }
+rustix = { version = "1", optional = true, features = ["fs", "process"] }
+signal-hook = { version = "0.4", optional = true }

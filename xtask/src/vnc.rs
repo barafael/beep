@@ -6,7 +6,6 @@ use std::path::Path;
 use std::process::Command;
 
 use b33p_harness::ScreenSnapshot;
-use testbox_tools::Input;
 
 use crate::error::{Error, Result};
 use crate::harness::Harness;
@@ -44,10 +43,11 @@ fn viewer(pod: &Pod, repo: &Path, manifest: &str, interactive: bool) -> Result<C
     }
     let mut shown = 0;
     for screen in SCREENS.into_iter().filter(|screen| pod.running(*screen)) {
-        let input: &'static str = if interactive { Input::On } else { Input::Off }.into();
-        pod.exec(screen, &["with-display", "input", input], "")?;
         let name: &'static str = screen.into();
-        run.arg(format!("{name}={}", pod.view_socket(screen).display()));
+        run.arg(format!(
+            "{name}={}",
+            pod.view_socket(screen, interactive).display()
+        ));
         shown += 1;
     }
     if shown == 0 {

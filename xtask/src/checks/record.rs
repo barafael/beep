@@ -55,7 +55,7 @@ impl Record {
                 .filter(|screen| pod.running(*screen))
                 .map(|screen| {
                     let name: &'static str = screen.into();
-                    format!("{name}={}", pod.view_socket(screen).display())
+                    format!("{name}={}", pod.view_socket(screen, false).display())
                 })
                 .collect();
             Some(Shots {
