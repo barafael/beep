@@ -25,10 +25,10 @@ b33p-harness = { path = "b33p-harness" }
 crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 
-# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-27) plus selecting
-# text in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as
-# reviewed), which the messages need, and the Qt backend drawing emoji (color bitmap glyphs)
-# itself: Qt 6.4's QRawFont overruns the heap on them (slint-ui/slint#14449, as reviewed). Landed upstream and
+# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-27) plus selecting text
+# in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as reviewed),
+# which the messages need, and the Qt backend drawing emoji (color bitmap glyphs) itself: Qt 6.4's
+# QRawFont overruns the heap on them (slint-ui/slint#14449, as reviewed). Landed upstream and
 # dropped from the branch: #14426 (the Qt backend draws variable fonts at their default instance,
 # not the thinnest). Rebuild the branch when master moves; drop it once these have landed upstream
 # and a release carries them.
@@ -100,19 +100,19 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Go back to whisperfish's once both have landed.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
-# Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group
-# changes through /v2/groups, with the avatar upload and joins by an open invite link, which
-# presage #448 needs), #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
-# #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
-# the task's outcome handed to the pipes), #488 (one session step at a time, in order, through a
-# `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once stored, not once read;
-# with #489: a handle dropped unacknowledged leaves the envelope to be delivered again, not
-# acknowledged unhandled), servers of one's own (`SignalServers::Custom`, which presage's
-# integration branch follows) and #490 (idle connections
-# dropped before the servers drop them, and a GET that meets one closing under it sent again
-# (a group fetch failed so, 30 s after the last)). Landed upstream and dropped from the branch: #474 (drop sync
-# messages from other accounts on the PNI path too), #478 (a read timeout instead of one for the
-# whole request, so the history download isn't cut off).
+# Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group changes
+# through /v2/groups, with the avatar upload and joins by an open invite link, which presage #448
+# needs), #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy
+# socket after a stall), #482 (websocket errors that name their cause, the string reasons in
+# `ServiceError` as enums, the task's outcome handed to the pipes), #488 (one session step at a
+# time, in order, through a `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once
+# stored, not once read; with #489: a handle dropped unacknowledged leaves the envelope to be
+# delivered again, not acknowledged unhandled), servers of one's own (`SignalServers::Custom`, which
+# presage's integration branch follows) and #490 (idle connections dropped before the servers drop
+# them, and a GET that meets one closing under it sent again (a group fetch failed so, 30 s after
+# the last)). Landed upstream and dropped from the branch: #474 (drop sync messages from other
+# accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
+# history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
 libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "33f271d1fda1328d164276a1ebaca07c58f58433" }
