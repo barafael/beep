@@ -8,27 +8,60 @@ it works the same with either driver:
 - the readiness waits (pod.rs `await_logs`);
 - the lost-message and crash checks (checks/lost.rs, checks/crashed.rs).
 
-What changes is when the lines get there.
+What differs is how late the lines arrive. Measured, journald is the smaller part of that.
 
-## What went wrong with journald
+## What prompted it
 
-In a tour round on a loaded host (run 17, 2026-10-27), journald took in Signal-Server's output
-up to 41 s after the server wrote it:
-- The ERROR line for an HTTP 500, logged at 16:07:20, reached the journal at 16:08:01.
-- The box's record is taken once its checks end. Its copy of the server's log stopped at
-  16:06:48, half a minute before the 500, with the cause of the failure missing from it.
-- Only `journalctl --user` had the whole log, under the container's name.
+In a tour round on a loaded host (run 17, 2026-10-27), Signal-Server's ERROR line for an HTTP
+500 carried the server's timestamp 16:07:20 and reached the journal at 16:08:01, 41 s later. The
+box's record, taken when the checks ended, held the server's log only up to 16:06:48, without the
+failure's cause. That 41 s was first put down to journald. The measurements below show that most
+of it wasn't.
 
-journald can also drop lines. It rate-limits each service by default, and a Java server that
-starts up and prints stack traces sends a lot at once. A record could therefore lose lines in
-the middle of a log as well as at its end.
+## Measured
 
-## Why k8s-file
+The time from a line's own timestamp to the moment the driver took it, on this 32-core host with
+NVMe storage.
 
-conmon appends each line to the container's log file as it reads it, with no service in
-between to fall behind or throttle. A record taken at a box's end therefore holds everything
-written until then. In the tour round that confirmed the change, the record's server log ended
-at 18:39:21, and the record was written at 18:39:22.
+**Experiment A: the drivers alone.** A container writes 3000 lines, each stamped with its own
+clock (`date +%s%N`).
+
+| Load | journald p50 / p95 / max | k8s-file p50 / p95 / max |
+|---|---|---|
+| idle | 0.1 / 0.3 / 6.6 ms | 0.1 / 0.2 / 1.7 ms |
+| the host's own load | 0.1 / 0.1 / 4.6 ms | 0.1 / 0.1 / 0.4 ms |
+| 48 busy CPU loops | 0.6 / 2.8 / 16 ms | 0.3 / 1.9 / 10 ms |
+| 8 writers doing fsync on the journal's disk | 285 / 884 / 939 ms | 0.1 / 1.0 / 7.6 ms |
+
+journald falls behind only under heavy disk writes, by up to about a second. k8s-file stays in
+milliseconds. journald never reported suppressing lines; its rate limit didn't come into it.
+
+**Experiment B: Signal-Server in a tour round**, under the same disk-write load. This compares the
+server's own Dropwizard timestamp with the driver's.
+
+| Driver | p50 | p95 | max |
+|---|---|---|---|
+| journald | 20 ms | 1135 ms | 1211 ms |
+| k8s-file | 1.7 ms | 915 ms | 935 ms |
+
+With k8s-file too, the server's lines arrive up to about a second after their timestamps. So most
+of the delay is inside the JVM, not in the driver. Dropwizard wraps every appender in an
+asynchronous queue (256 entries), which drains late when the host is loaded, and drops INFO and
+DEBUG lines once it is 80 % full. journald adds a little on top.
+
+Neither experiment comes near 41 s, and that delay is still unexplained. Run 17 also had image
+builds and three b33ps running on the host.
+
+## Why k8s-file stays
+
+- It is never the slower driver, and under disk load it is by far the faster one.
+- File-based logs are the common setup: Docker's default `json-file`, and Kubernetes' CRI log
+  files.
+- It needs nothing of journald's.
+
+It doesn't solve the record missing lines, though. Lines still sitting in a service's own queue
+when the record is taken are lost with either driver. A record that holds everything has to stop
+the containers first, so that they flush, and that is still to do.
 
 ## What it costs
 
@@ -38,4 +71,5 @@ at 18:39:21, and the record was written at 18:39:22.
   removed (`down`), so that doesn't build up.
 
 When reading a log on a loaded host, compare the timestamps the service writes with where its
-lines sit in the log. With journald, those two could be a minute apart.
+lines sit in the log. A Java service's lines can be a second or more behind their own
+timestamps, whatever the driver.
