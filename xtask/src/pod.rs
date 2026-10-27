@@ -22,24 +22,61 @@ use testbox_tools::View;
 const POD: &str = "b33p-testbox";
 /// How much of a failed build's log its error shows.
 const BUILD_TAIL: usize = 40;
-/// The clients with a display, as pod.yaml's `view-<client>` volumes name them.
-pub const SCREENS: [Service; 3] = [Service::B33p, Service::Desktop, Service::Android];
 /// The line of pod.yaml's container list the clients go in, all of it.
 const CLIENTS: &str = "# @CLIENTS@";
+/// The lines of pod.yaml's container and volume lists each b33p's go in
+/// (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml).
+const B33PS: &str = "# @B33PS@";
+const B33P_VOLUMES: &str = "# @B33P_VOLUMES@";
+/// The most b33ps a box has (`--b33ps`).
+pub const MAX_B33PS: u8 = 16;
 /// The longest instance name: the names podman gives the pod's parts stay short.
 const INSTANCE_MAX: usize = 24;
 
 /// A container of the pod (testbox/pod.yaml, the clients' files).
-#[derive(Clone, Copy, strum::IntoStaticStr)]
-#[strum(serialize_all = "lowercase")]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Server,
     Storage,
     Cdn0,
     Presage,
-    B33p,
+    /// The `n`th b33p of [`Pod::play`]'s: every box has the first, a mesh several.
+    B33p(u8),
     Desktop,
     Android,
+}
+
+/// The b33p every box has.
+pub const B33P: Service = Service::B33p(0);
+
+impl Service {
+    /// Its container's name in pod.yaml: `b33p` for the first b33p, `b33p-<n>` for the others.
+    pub fn name(self) -> String {
+        match self {
+            Self::Server => "server".to_owned(),
+            Self::Storage => "storage".to_owned(),
+            Self::Cdn0 => "cdn0".to_owned(),
+            Self::Presage => "presage".to_owned(),
+            Self::B33p(0) => "b33p".to_owned(),
+            Self::B33p(n) => format!("b33p-{n}"),
+            Self::Desktop => "desktop".to_owned(),
+            Self::Android => "android".to_owned(),
+        }
+    }
+
+    /// The clients with a display, as pod.yaml's `view-<client>` volumes name them, by their
+    /// containers' names; none for another container.
+    fn screen(name: &str) -> Option<Self> {
+        match name {
+            "b33p" => Some(B33P),
+            "desktop" => Some(Self::Desktop),
+            "android" => Some(Self::Android),
+            _ => name
+                .strip_prefix("b33p-")
+                .and_then(|n| n.parse().ok())
+                .map(Self::B33p),
+        }
+    }
 }
 
 /// A service that says in its log when it is ready. The lines are constants the logging side
@@ -51,7 +88,7 @@ pub enum Ready {
     /// failed".
     Server,
     Storage,
-    B33p,
+    B33p(u8),
     Desktop,
     Android,
 }
@@ -61,7 +98,7 @@ impl Ready {
         match self {
             Self::Server => Service::Server,
             Self::Storage => Service::Storage,
-            Self::B33p => Service::B33p,
+            Self::B33p(n) => Service::B33p(n),
             Self::Desktop => Service::Desktop,
             Self::Android => Service::Android,
         }
@@ -73,7 +110,7 @@ impl Ready {
         match self {
             Self::Server => testbox_tools::SERVER_READY,
             Self::Storage => testbox_tools::STORAGE_READY,
-            Self::B33p => b33p_harness::LISTENING,
+            Self::B33p(_) => b33p_harness::LISTENING,
             Self::Desktop | Self::Android => testbox_tools::drivers::LISTENING,
         }
     }
@@ -336,9 +373,9 @@ impl Pod {
 
     /// `optimized` builds b33p optimized as it ships (the `testbox` profile) instead of as the
     /// checks' own builds are.
-    pub fn up(&self, clients: &[Client], optimized: bool) -> Result<()> {
+    pub fn up(&self, clients: &[Client], b33ps: u8, optimized: bool) -> Result<()> {
         self.build(clients, optimized)?;
-        self.play(clients)
+        self.play(clients, b33ps)
     }
 
     /// Builds the images the pod and `clients` run, b33p's `optimized` or not ([`Self::up`]).
@@ -453,8 +490,8 @@ impl Pod {
         change()
     }
 
-    /// Plays the pod with `clients`, their images built.
-    pub fn play(&self, clients: &[Client]) -> Result<()> {
+    /// Plays the pod with `clients` and `b33ps` b33ps (at least one), their images built.
+    pub fn play(&self, clients: &[Client], b33ps: u8) -> Result<()> {
         // Not in pod.yaml: Kubernetes YAML has no network objects. Named after the pod: each box
         // on a network of its own, out of the other boxes' reach.
         let network = self.name.as_str();
@@ -486,41 +523,56 @@ impl Pod {
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))
             .context(run.display().to_string())?;
         // The displays' sockets likewise; pod.yaml mounts each client's, so all of them exist.
+        let screens = (0..b33ps.max(1))
+            .map(Service::B33p)
+            .chain([Service::Desktop, Service::Android]);
         for directory in
-            std::iter::once(self.views_dir()).chain(SCREENS.map(|screen| self.view_dir(screen)))
+            std::iter::once(self.views_dir()).chain(screens.map(|screen| self.view_dir(screen)))
         {
             std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
                 .context(directory.display().to_string())?;
         }
-        testbox_tools::write(&self.rendered, self.render(clients)?)?;
+        testbox_tools::write(&self.rendered, self.render(clients, b33ps)?)?;
         let mut play = podman(&["kube", "play", "--replace", "--network", network]);
         play.arg(&self.rendered);
         quietly(play)
     }
 
     /// [`Self::play`] from nothing: the pod and every volume removed first.
-    pub fn fresh(&self, clients: &[Client]) -> Result<()> {
+    pub fn fresh(&self, clients: &[Client], b33ps: u8) -> Result<()> {
         self.down(true)?;
-        self.play(clients)
+        self.play(clients, b33ps)
     }
 
-    /// pod.yaml with this box's names (`@POD@`) and directories (`@TARGET@`) filled in, and the
-    /// clients' containers in its [`CLIENTS`] line.
-    fn render(&self, clients: &[Client]) -> Result<String> {
+    /// pod.yaml with this box's names (`@POD@`) and directories (`@TARGET@`) filled in, the
+    /// clients' containers in its [`CLIENTS`] line, and each b33p's container and volumes in its
+    /// [`B33PS`] and [`B33P_VOLUMES`] lines.
+    fn render(&self, clients: &[Client], b33ps: u8) -> Result<String> {
         let read = |path: &str| testbox_tools::read(&self.repo.join(path));
         let containers = clients
             .iter()
             .map(|client| read(&client.container()))
             .collect::<Result<String>>()?;
+        let each_b33p = |path: &str| -> Result<String> {
+            let template = read(path)?;
+            Ok((0..b33ps.max(1))
+                .map(|n| {
+                    template
+                        .replace("@B33P@", &Service::B33p(n).name())
+                        .replace("@AGENT@", &agent_socket(n))
+                })
+                .collect())
+        };
+        let b33p_containers = each_b33p("testbox/b33p/pod.yaml")?;
+        let b33p_volumes = each_b33p("testbox/b33p/volumes.yaml")?;
         let pod: String = read("testbox/pod.yaml")?
             .lines()
-            .map(|line| {
-                if line.trim() == CLIENTS {
-                    containers.clone()
-                } else {
-                    format!("{line}\n")
-                }
+            .map(|line| match line.trim() {
+                CLIENTS => containers.clone(),
+                B33PS => b33p_containers.clone(),
+                B33P_VOLUMES => b33p_volumes.clone(),
+                _ => format!("{line}\n"),
             })
             .collect();
         Ok(pod
@@ -530,8 +582,31 @@ impl Pod {
 
     /// Where `screen`'s display serves on the host: its `with-display` directory, /run/view.
     pub fn view_dir(&self, screen: Service) -> PathBuf {
-        let name: &'static str = screen.into();
-        self.views_dir().join(name)
+        self.views_dir().join(screen.name())
+    }
+
+    /// The clients with a display that run, as [`Self::containers`] says.
+    pub fn screens(&self) -> Vec<Service> {
+        let prefix = format!("{}-", self.name);
+        let mut screens: Vec<Service> = self
+            .containers()
+            .iter()
+            .filter_map(|name| Service::screen(name.strip_prefix(&prefix)?))
+            .filter(|screen| self.running(*screen))
+            .collect();
+        screens.sort_by_key(|screen| match screen {
+            Service::B33p(n) => u16::from(*n),
+            _ => u16::MAX,
+        });
+        screens
+    }
+
+    /// The b33ps that run: [`Self::screens`]' b33ps.
+    pub fn b33ps(&self) -> Vec<Service> {
+        self.screens()
+            .into_iter()
+            .filter(|screen| matches!(screen, Service::B33p(_)))
+            .collect()
     }
 
     /// The socket in [`Self::view_dir`] that takes the viewer's input if `interactive`, else
@@ -588,7 +663,8 @@ impl Pod {
             quietly(podman(&["pod", "rm", "--force", &self.name]))?;
         }
         if wipe {
-            let claims = claims(&self.render(&[])?);
+            // Every b33p's too, however many this box had.
+            let claims = claims(&self.render(&[], MAX_B33PS)?);
             let present = process::output(podman(&["volume", "ls", "-q"]), "")?;
             let volumes: Vec<&str> = present
                 .split_whitespace()
@@ -812,8 +888,7 @@ fn podman(args: &[&str]) -> Command {
 impl Pod {
     /// What kube play names `service`'s container.
     fn container(&self, service: Service) -> String {
-        let name: &'static str = service.into();
-        format!("{}-{name}", self.name)
+        format!("{}-{}", self.name, service.name())
     }
 
     /// `logs --follow` of `service`, from `since` on (seconds since the epoch), or from its
@@ -825,6 +900,14 @@ impl Pod {
         }
         logs.arg(self.container(service));
         logs
+    }
+}
+
+/// The file name of the `n`th b33p's harness socket in the run directory (`B33P_AGENT_SOCKET`).
+pub fn agent_socket(n: u8) -> String {
+    match n {
+        0 => "agent.sock".to_owned(),
+        n => format!("agent-{n}.sock"),
     }
 }
 
@@ -875,11 +958,11 @@ mod tests {
     fn the_default_box_keeps_its_names() {
         let repo = repo();
         let pod = Pod::new(&repo, None).expect("the default box");
-        assert_eq!(pod.container(Service::B33p), "b33p-testbox-b33p");
+        assert_eq!(pod.container(B33P), "b33p-testbox-b33p");
         assert_eq!(pod.tag(SERVER), "localhost/b33p-testbox-server");
         assert_eq!(pod.run_dir(), repo.join("target/testbox-run"));
         assert_eq!(pod.record_dir(), repo.join("target/testbox-record"));
-        let rendered = pod.render(&[]).expect("pod.yaml");
+        let rendered = pod.render(&[], 1).expect("pod.yaml");
         assert!(rendered.contains(r#"name: "b33p-testbox","#), "{rendered}");
         assert!(rendered.contains(r#"image: "localhost/b33p-testbox-b33p","#));
         assert!(rendered.contains(&format!(r#"path: "{}/target/testbox-run""#, repo.display())));
@@ -891,12 +974,12 @@ mod tests {
     fn an_instance_shares_nothing_with_the_default_box() {
         let repo = repo();
         let pod = Pod::new(&repo, Some("two")).expect("an instance");
-        assert_eq!(pod.container(Service::B33p), "b33p-testbox.two-b33p");
+        assert_eq!(pod.container(B33P), "b33p-testbox.two-b33p");
         assert_eq!(pod.tag("b33p"), "localhost/b33p-testbox.two-b33p");
         assert_eq!(pod.run_dir(), repo.join("target/testbox-two-run"));
         assert_eq!(pod.files_dir(), repo.join("target/testbox-two-files"));
         let rendered = pod
-            .render(&[Client::Desktop, Client::Android])
+            .render(&[Client::Desktop, Client::Android], 2)
             .expect("pod.yaml");
         for line in rendered
             .lines()
@@ -923,8 +1006,13 @@ mod tests {
     #[test]
     fn a_wipe_takes_only_its_own_volumes() {
         let repo = repo();
-        let default = claims(&Pod::new(&repo, None).unwrap().render(&[]).unwrap());
-        let two = claims(&Pod::new(&repo, Some("two")).unwrap().render(&[]).unwrap());
+        let default = claims(&Pod::new(&repo, None).unwrap().render(&[], 2).unwrap());
+        let two = claims(
+            &Pod::new(&repo, Some("two"))
+                .unwrap()
+                .render(&[], 2)
+                .unwrap(),
+        );
         assert!(
             default.contains(&"b33p-testbox-keys".to_owned()),
             "{default:?}"
@@ -951,6 +1039,55 @@ mod tests {
             &"x".repeat(INSTANCE_MAX + 1),
         ] {
             assert!(Pod::new(Path::new("/r"), Some(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Each b33p gets a container, a home, a display and a harness socket of its own; the first
+    /// keeps the names a box of one b33p always had.
+    #[test]
+    fn each_b33p_is_rendered_apart() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace");
+        let pod = Pod::new(repo, None).expect("the default box");
+        let one = pod.render(&[], 1).expect("a pod of one b33p");
+        for kept in [
+            r#"name: "b33p","#,
+            r#"value: "/run/b33p/agent.sock""#,
+            r#"claimName: "b33p-testbox-b33p-home""#,
+            "target/testbox-view/b33p\"",
+        ] {
+            assert!(one.contains(kept), "{kept} in\n{one}");
+        }
+        assert!(
+            !one.contains(r#"name: "b33p-1""#),
+            "a second b33p in\n{one}"
+        );
+        let three = pod
+            .render(&[Client::Desktop], 3)
+            .expect("a pod of three b33ps");
+        for n in 1..=2 {
+            for named in [
+                format!(r#"name: "b33p-{n}","#),
+                format!(r#"value: "/run/b33p/agent-{n}.sock""#),
+                format!(r#"claimName: "b33p-testbox-b33p-{n}-home""#),
+                format!(r#"name: "view-b33p-{n}", hostPath"#),
+            ] {
+                assert!(three.contains(&named), "{named} in\n{three}");
+            }
+        }
+        assert!(three.contains(r#"name: "desktop","#));
+        for placeholder in ["@B33P@", "@AGENT@", "@REPO@"] {
+            assert!(
+                !three.contains(placeholder),
+                "{placeholder} left in\n{three}"
+            );
+        }
+        for line in [CLIENTS, B33PS, B33P_VOLUMES] {
+            assert!(
+                !three.lines().any(|each| each.trim() == line),
+                "{line} left in\n{three}"
+            );
         }
     }
 }

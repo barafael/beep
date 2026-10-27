@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::error::{Error, Result};
 use crate::pod::{Pod, Service};
 use testbox_tools::keys::KeyFile;
@@ -14,31 +16,36 @@ pub(super) enum Account {
     Peer,
     /// A group's member besides the peer (`groups`).
     Member,
+    /// The account the `n`th b33p of a mesh links to (`tour`).
+    Mesh(u8),
 }
 
 impl Account {
-    fn db(self) -> &'static str {
+    fn db(self) -> Cow<'static, str> {
         match self {
-            Self::Primary => "/presage/primary.db",
-            Self::Peer => "/presage/peer.db",
-            Self::Member => "/presage/member.db",
+            Self::Primary => "/presage/primary.db".into(),
+            Self::Peer => "/presage/peer.db".into(),
+            Self::Member => "/presage/member.db".into(),
+            Self::Mesh(n) => format!("/presage/mesh-{n}.db").into(),
         }
     }
 
-    fn phone_number(self) -> &'static str {
+    fn phone_number(self) -> Cow<'static, str> {
         match self {
-            Self::Primary => "+15555550101",
-            Self::Peer => "+15555550102",
-            Self::Member => "+15555550104",
+            Self::Primary => "+15555550101".into(),
+            Self::Peer => "+15555550102".into(),
+            Self::Member => "+15555550104".into(),
+            Self::Mesh(n) => format!("+1555555{:04}", 200 + u16::from(n)).into(),
         }
     }
 
     /// The profile's given name, which the clients show it by.
-    pub(super) fn name(self) -> &'static str {
+    pub(super) fn name(self) -> Cow<'static, str> {
         match self {
-            Self::Primary => "Primary",
-            Self::Peer => "Peer",
-            Self::Member => "Member",
+            Self::Primary => "Primary".into(),
+            Self::Peer => "Peer".into(),
+            Self::Member => "Member".into(),
+            Self::Mesh(n) => format!("Mesh {n}").into(),
         }
     }
 }
@@ -59,7 +66,7 @@ impl<'pod> Presage<'pod> {
 
     fn cli(&self, arguments: &[&str], stdin: &str) -> Result<String> {
         let db = self.account.db();
-        let argv = [&["presage-cli", "--sqlite-db-path", db][..], arguments].concat();
+        let argv = [&["presage-cli", "--sqlite-db-path", &db][..], arguments].concat();
         self.containers.exec(Service::Presage, &argv, stdin)
     }
 
@@ -108,7 +115,7 @@ impl<'pod> Presage<'pod> {
             "--servers-file",
             &servers,
             "--phone-number",
-            self.account.phone_number(),
+            &self.account.phone_number(),
             "--captcha",
             testbox_tools::CAPTCHA,
         ];
@@ -117,7 +124,10 @@ impl<'pod> Presage<'pod> {
             &register,
             &format!("{}\n", testbox_tools::VERIFICATION_CODE),
         )?;
-        self.cli(&["update-profile", "--given-name", self.account.name()], "")?;
+        self.cli(
+            &["update-profile", "--given-name", &self.account.name()],
+            "",
+        )?;
         let whoami = self.cli(&["whoami"], "")?;
         // presage-cli prints `WhoAmIResponse { aci: <uuid>, ... }`.
         whoami
@@ -136,7 +146,7 @@ impl<'pod> Presage<'pod> {
         self.containers
             .exec(
                 Service::Presage,
-                &["testbox-stickers", self.account.db()],
+                &["testbox-stickers", &self.account.db()],
                 "",
             )
             .map(|id| id.trim().to_owned())
@@ -152,7 +162,8 @@ impl<'pod> Presage<'pod> {
     pub(super) fn send_all(&self, recipient_aci: &str, texts: &[String]) -> Result<()> {
         let script = r#"db=$1; to=$2; shift 2
 for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$text" || exit 1; done"#;
-        let mut argv = vec!["sh", "-c", script, "sh", self.account.db(), recipient_aci];
+        let db = self.account.db();
+        let mut argv = vec!["sh", "-c", script, "sh", &db, recipient_aci];
         argv.extend(texts.iter().map(String::as_str));
         self.containers
             .exec(Service::Presage, &argv, "")

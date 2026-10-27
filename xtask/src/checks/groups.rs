@@ -181,7 +181,7 @@ pub(super) fn groups(
         checks.record(name, || {
             android.call(drivers::Android::GroupMember {
                 group: by_desktop.to_owned(),
-                member: Account::Member.name().to_owned(),
+                member: Account::Member.name().into_owned(),
                 change,
             })?;
             b33p_details(b33p, b33p_says, "the member's place", |details| {
@@ -245,7 +245,7 @@ pub(super) fn groups(
             || {
                 android.call(drivers::Android::ApproveRequest {
                     group: by_desktop.to_owned(),
-                    member: Account::Peer.name().to_owned(),
+                    member: Account::Peer.name().into_owned(),
                 })?;
                 b33p_details(
                     b33p,

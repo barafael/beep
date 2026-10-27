@@ -17,11 +17,11 @@ use super::b33p::{
 use super::clients::desktop_shows;
 use super::presage::Presage;
 use super::setup::{PlainBox, linked_desktop, plain_box, started_b33p};
-use super::{Checks, HISTORY_PATIENCE, PATIENCE};
+use super::{Checks, HISTORY_PATIENCE, PATIENCE, rng};
 use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::harness::Harness;
-use crate::pod::{Pod, Service};
+use crate::pod::{B33P, Pod, Service};
 use crate::process;
 use testbox_tools::drivers;
 
@@ -78,10 +78,10 @@ pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         &format!("{BURST} messages sent while b33p is stopped reach it once it starts"),
         || {
             let texts = numbered("testbox stress: while stopped", BURST);
-            containers.stop(Service::B33p)?;
+            containers.stop(B33P)?;
             peer.send_all(&primary_aci, &texts)?;
             let since = process::now()?;
-            containers.start(Service::B33p)?;
+            containers.start(B33P)?;
             b33p = started_b33p(containers, &sockets.b33p, since)?;
             let started = Instant::now();
             chat_previewing(&mut b33p, last(&texts)?)?;
@@ -96,7 +96,7 @@ pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         },
     );
 
-    checks.record("b33p logged no panic", || no_panic(containers));
+    checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
 }
 
@@ -324,7 +324,7 @@ pub(crate) fn interrupt(
         },
     );
 
-    checks.record("b33p logged no panic", || no_panic(containers));
+    checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
 }
 
@@ -405,7 +405,7 @@ pub(crate) fn content(
             let shown = fetched(&mut b33p, text, pictures.len())?;
             println!("  b33p shows {shown:?}");
             responsive(&mut b33p)?;
-            no_panic(containers)
+            no_panic(containers, B33P)
         },
     );
 
@@ -425,13 +425,13 @@ pub(crate) fn content(
             }
             let paths: Vec<String> = names.iter().map(|name| in_box(name)).collect();
             let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-            let before = containers.memory_peak(Service::B33p)?;
+            let before = containers.memory_peak(B33P)?;
             let text = "testbox stress: huge pictures";
             peer.send_files(&primary_aci, text, &paths)?;
             select(&mut b33p, &conversation)?;
             let shown = fetched(&mut b33p, text, HUGE_PICTURES)?;
             println!("  b33p shows {shown:?}");
-            let peak = containers.memory_peak(Service::B33p)?;
+            let peak = containers.memory_peak(B33P)?;
             println!(
                 "  b33p's peak: {} MiB before, {} MiB after",
                 before >> 20,
@@ -488,7 +488,7 @@ pub(crate) fn content(
         },
     );
 
-    checks.record("b33p logged no panic", || no_panic(containers));
+    checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
 }
 
@@ -602,7 +602,7 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
         || {
             let text = "testbox stress: raced while stopped";
             let edited = "testbox stress: raced while stopped, edited";
-            containers.stop(Service::B33p)?;
+            containers.stop(B33P)?;
             desktop.call(drivers::Desktop::Send {
                 text: text.to_owned(),
             })?;
@@ -622,7 +622,7 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
             })?;
             desktop.call(drivers::Desktop::DeleteForEveryone { text: last_edit })?;
             let since = process::now()?;
-            containers.start(Service::B33p)?;
+            containers.start(B33P)?;
             b33p = started_b33p(containers, &sockets.b33p, since)?;
             select(&mut b33p, &conversation)?;
             // The newest of Desktop's messages, deleted: its place shows no text.
@@ -643,7 +643,7 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
         },
     );
 
-    checks.record("b33p logged no panic", || no_panic(containers));
+    checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
 }
 
@@ -691,13 +691,10 @@ pub(crate) fn soak(
     checks.record(
         "mixed traffic for a long while: nothing lost, and nothing keeps growing",
         || {
-            let seed = std::env::var("TESTBOX_SEED")
-                .ok()
-                .and_then(|seed| seed.parse().ok())
-                .unwrap_or_else(|| process::now().unwrap_or(1) | 1);
+            let seed = rng::seed();
             let minutes = soak_minutes();
             println!("  seed {seed}, {minutes} minutes (TESTBOX_SEED, TESTBOX_SOAK_MINUTES)");
-            let mut random = Xorshift(seed);
+            let mut random = rng::Xorshift(seed);
             let picture = small_picture();
             testbox_tools::write(&files.join("soak.png"), &picture)?;
             let ends = Instant::now() + Duration::from_secs(60 * minutes);
@@ -708,7 +705,7 @@ pub(crate) fn soak(
             select(&mut b33p, &conversation)?;
             while Instant::now() < ends {
                 if Instant::now() >= next_sample {
-                    let sample = sample(containers, &mut b33p)?;
+                    let sample = sample(containers, B33P, &mut b33p)?;
                     println!("  {sample}");
                     samples.push(sample);
                     next_sample += Duration::from_secs(60);
@@ -764,7 +761,7 @@ pub(crate) fn soak(
                 })?;
             }
             settled(&mut b33p)?;
-            samples.push(sample(containers, &mut b33p)?);
+            samples.push(sample(containers, B33P, &mut b33p)?);
             println!(
                 "  at the end: {}",
                 samples.last().map(ToString::to_string).unwrap_or_default()
@@ -793,7 +790,7 @@ pub(crate) fn soak(
         },
     );
 
-    checks.record("b33p logged no panic", || no_panic(containers));
+    checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
 }
 
@@ -803,18 +800,6 @@ fn soak_minutes() -> u64 {
         .ok()
         .and_then(|minutes| minutes.parse().ok())
         .unwrap_or(30)
-}
-
-/// A reproducible sequence from its seed (xorshift64).
-struct Xorshift(u64);
-
-impl Xorshift {
-    fn below(&mut self, bound: u64) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0 % bound
-    }
 }
 
 /// The index of the newest message, ours or the peer's, that is neither deleted nor a notice.
@@ -832,10 +817,10 @@ fn newest(snapshot: &Snapshot, outgoing: bool) -> Option<u32> {
 }
 
 /// What [`soak`] watches, at one moment.
-struct Sample {
-    memory: u64,
-    files: u64,
-    answer: Duration,
+pub(super) struct Sample {
+    pub(super) memory: u64,
+    pub(super) files: u64,
+    pub(super) answer: Duration,
 }
 
 impl std::fmt::Display for Sample {
@@ -850,12 +835,13 @@ impl std::fmt::Display for Sample {
     }
 }
 
-fn sample(containers: &Pod, b33p: &mut Harness) -> Result<Sample> {
+/// What `service`'s b33p uses and how fast it answers, now.
+pub(super) fn sample(containers: &Pod, service: Service, b33p: &mut Harness) -> Result<Sample> {
     let started = Instant::now();
     b33p.snapshot()?;
     let answer = started.elapsed();
     let memory = containers
-        .exec(Service::B33p, &["cat", "/sys/fs/cgroup/memory.current"], "")?
+        .exec(service, &["cat", "/sys/fs/cgroup/memory.current"], "")?
         .trim()
         .parse()
         .map_err(|_| Error::Failed("memory.current isn't a number".into()))?;
@@ -865,7 +851,7 @@ fn sample(containers: &Pod, b33p: &mut Harness) -> Result<Sample> {
   if [ "$(cat "$p/comm" 2>/dev/null)" = b33p ]; then ls "$p/fd" | wc -l; fi
 done"#;
     let files = containers
-        .exec(Service::B33p, &["sh", "-c", script], "")?
+        .exec(service, &["sh", "-c", script], "")?
         .trim()
         .parse()
         .map_err(|_| Error::Failed("b33p's open files aren't a number".into()))?;
@@ -878,7 +864,7 @@ done"#;
 
 /// Fails if the last third of `samples` is well above the first third: memory by half and
 /// 64 MiB, open files by 32, the answering time past a second.
-fn growing(samples: &[Sample]) -> Result<()> {
+pub(super) fn growing(samples: &[Sample]) -> Result<()> {
     let third = samples.len() / 3;
     if third == 0 {
         return Ok(());
@@ -1252,10 +1238,10 @@ fn in_order_once(found: &[String], expected: &[String]) -> Result<()> {
 /// Kills b33p's container, starts it again, and connects to it unlocked.
 fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness> {
     let since = process::now()?;
-    containers.kill(Service::B33p)?;
+    containers.kill(B33P)?;
     // The pod may have started it again already (`restartPolicy: Always`): then this does
     // nothing.
-    containers.start(Service::B33p)?;
+    containers.start(B33P)?;
     started_b33p(containers, &sockets.b33p, since)
 }
 
@@ -1272,15 +1258,15 @@ fn responsive(b33p: &mut Harness) -> Result<()> {
 }
 
 fn memory(containers: &Pod, when: &str) {
-    match containers.memory(Service::B33p) {
+    match containers.memory(B33P) {
         Ok(usage) => println!("  b33p's memory {when}: {usage}"),
         Err(error) => println!("  b33p's memory {when}: unknown ({error})"),
     }
 }
 
-/// Fails, quoting them, if b33p's log has a Rust panic.
-fn no_panic(containers: &Pod) -> Result<()> {
-    let log = containers.log(Service::B33p)?;
+/// Fails, quoting them, if `service`'s b33p's log has a Rust panic.
+pub(super) fn no_panic(containers: &Pod, service: Service) -> Result<()> {
+    let log = containers.log(service)?;
     let panics: Vec<&str> = log
         .lines()
         .filter(|line| line.contains("panicked at"))
@@ -1326,14 +1312,6 @@ mod tests {
         assert!(growing(&leaking).is_err());
         let files: Vec<Sample> = [10, 20, 40, 60, 80, 100].map(|f| at(100, f)).into();
         assert!(growing(&files).is_err());
-    }
-
-    #[test]
-    fn a_seed_repeats_its_sequence() {
-        let (mut a, mut b) = (Xorshift(42), Xorshift(42));
-        let first: Vec<u64> = (0..5).map(|_| a.below(100)).collect();
-        let second: Vec<u64> = (0..5).map(|_| b.below(100)).collect();
-        assert_eq!(first, second);
     }
 
     #[test]
