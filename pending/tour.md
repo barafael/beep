@@ -391,3 +391,19 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       once;
     - presage fcbdf70: a failed group fetch is tried once more, and its causes are logged;
     - beep branch `stale-connections` pins them.
+- **Finding 13 a third time** (run 14, on #88, seed 1793111805): join_group's
+  `GET /v1/groups/join/…` sent on a connection the storage service had closed, so the join
+  failed.
+- **11b fixed in #89** (merge-prs-full-run): `Command::JoinGroup` sends the group's picture
+  after a join or a request. Run 15 replayed seed 1793111125 on #89: 70 of 70 passed, step 46
+  included, with no "who came back" failure (4 on main).
+- **Finding 13 fixed in #90** (merge-prs-full-run): presage a1f75aa, libsignal-service 33f271d.
+- **Run 16: main with #88, #89 and #90 merged**, 3 rounds, all passed (70, 71, 70 checks).
+  Records are in `target/testbox-tour-record/run/1793112508/`.
+  - There is no transport error left. The 12 group-fetch warnings are all "Authorization
+    failed", for a b33p no longer in the group, as they should be. #90 retries those once,
+    pointlessly but harmlessly.
+  - A message showed on the other b33ps in 0.20–0.32 s median and 0.41–0.63 s at the 95th
+    percentile; the most was 5.5 s, once.
+  - Memory, now as `anon`: each b33p from 62 MiB to 75–97 MiB over a round, with 18–27 MiB of
+    page cache apart.
