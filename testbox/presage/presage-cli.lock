@@ -2845,7 +2845,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=d1d684ea02490d28e10a3b6f54ca87be181a29f3#d1d684ea02490d28e10a3b6f54ca87be181a29f3"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=33f271d1fda1328d164276a1ebaca07c58f58433#33f271d1fda1328d164276a1ebaca07c58f58433"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -2861,6 +2861,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac 0.13.0",
+ "hyper",
  "libsignal-account-keys",
  "libsignal-core",
  "libsignal-net",
