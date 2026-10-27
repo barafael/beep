@@ -550,6 +550,8 @@ async fn handle_command(
                 settings,
             });
             refresh_group(manager, ctx, key).await;
+            // Our own change, which doesn't come back to us: the picture isn't sent with it.
+            send_group_avatar(manager.clone(), ctx, key).await;
             if let presage::manager::GroupJoin::Joined { timestamp } = joined {
                 show_stored(manager, ctx, &id, &thread, timestamp).await;
             }
