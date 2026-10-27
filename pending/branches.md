@@ -37,7 +37,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`b664297`) | Upstream main `30ca664` (past #359, link previews) with the fork's PRs and fork-only commits, rebased 2026-10-26: our transfer-archive commit's `reqwest` line dropped for #359's, `session_lock` beside #359's `link_preview_client` | Pinned by `reconcile-upstream` |
+| `langis/integration` (`b664297`) | Upstream main `30ca664` (past #359, link previews) with the fork's PRs and fork-only commits, rebased 2026-10-26: our transfer-archive commit's `reqwest` line dropped for #359's, `session_lock` beside #359's `link_preview_client` | Pinned by `main` (#76) |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
 | PR branches | Rebased on upstream main `30ca664` where they conflicted: `pr/session-lock` (#473, `d17f7d0`), `pr/receive-transaction` (`01ed8c3`, on it; PR not opened yet), `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). The other ten build merged with upstream main as they are | |
 
@@ -45,14 +45,14 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`a32d96b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, and #489's tests | Pinned by `reconcile-upstream` |
+| `langis/integration` (`a32d96b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, and #489's tests | Pinned by `main` (#76) |
 | `groups-v2-changes` (`93f9dc2`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays) | Pinned by presage `pr/groups` |
 
 ## Slint (barafael/slint)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`2aa99c5`) | Upstream master `7e32802` (2026-10-26) with merges of #13985 (`eed8be0`) and #14449 (`1f053c6`) | Pinned by `reconcile-upstream` |
+| `langis/integration` (`2aa99c5`) | Upstream master `7e32802` (2026-10-26) with merges of #13985 (`eed8be0`) and #14449 (`1f053c6`) | Pinned by `main` (#76) |
 | `pr/qt-color-bitmap-glyphs` (`1f053c6`), pushed | The emoji commit, master merged in, and `CBDT` and `sbix` in the file's spell-check words (the PR's `lint_typecheck` failed on them) | slint-ui/slint#14449 |
 
 ## Testbox runs
@@ -68,6 +68,12 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `testbox-green` 3261c5e…c0e2391 (banner, edited receipts, chat names, #71) | 1 | 1/1 (3261c5e) | 1/1 (3261c5e) | 1/1 (7182af0) | 1/1 (c0e2391; at 7182af0 the agent waited out a swipe at a list's end) | 1/1 (7182af0; at 3261c5e the edit check clicked nothing in Desktop) | 1/1 (7182af0) |
 | `main` 8ff6797 (#72, #70 merged) | 1 | 1/1 (on rerun; first under host overload) | 1/1 (on rerun) | 1/1 (on rerun) | 1/1 | 1/1 | 1/1 |
 | `forks-moved` 85e2ed0 (#74: Slint and presage rebuilt on upstream) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| `reconcile-upstream` 280aa2f (#76: forks and PR branches reconciled with upstream) | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| `reconcile-upstream` 280aa2f, `--optimized` | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+
+The optimized pass of 280aa2f also ran the stress phases, each 1/1: stress-volume, stress-interrupt,
+stress-content, stress-concurrency and stress-soak (30 minutes, seed 1793064895; b33p held at 70 to
+85 MiB and 42 open files).
 
 ## Open
 
