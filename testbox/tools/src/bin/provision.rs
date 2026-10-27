@@ -11,6 +11,9 @@
 //! (testbox/pod.yaml `hostAliases`), with the Redis cluster's nodes on ports of their own
 //! (`REDIS_CLUSTER_URI`). Nothing waits for the stores here, as kube play has no readiness or
 //! startup probes: the pod restarts a server that found one missing (`restartPolicy: Always`).
+//! Not the server: one that finds the Redis cluster still forming starts all the same, and its
+//! cluster client stays disconnected for a while after it formed, its requests failing ("Currently
+//! not connected"). So the cluster is checked here first, as the pre-key bucket and DynamoDB are.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
@@ -79,6 +82,10 @@ const PREKEY_BUCKET: PreKeyBucket = PreKeyBucket {
 const REDIS_URI: &str = "redis://redis:6379";
 /// The cluster's first node, in the pod's one port space (testbox/pod.yaml `redis-0`).
 const REDIS_CLUSTER_URI: &str = "redis://redis-0:7000";
+/// The same node, for [`redis_cluster_formed`].
+const REDIS_CLUSTER_NODE: &str = "redis-0:7000";
+/// How long a check of the cluster may take.
+const REDIS_PATIENCE: Duration = Duration::from_secs(5);
 const DYNAMODB_ENDPOINT: &str = "http://dynamodb:8000";
 /// Longer than any start of the server's here (about a minute), so that a log without Jetty's
 /// start line fails the container instead of leaving Desktop without its remote config.
@@ -115,6 +122,7 @@ async fn run(keys_only: bool) -> Result<()> {
         serde_yaml::from_str(&read(&secrets_path)?).describe(secrets_path.display().to_string())?;
     let password = keystore_password(&secrets)?;
     let http = reqwest::Client::new();
+    redis_cluster_formed()?;
     let ((), has_tables) =
         tokio::try_join!(ensure_prekey_bucket(&http), dynamodb_has_tables(&http))?;
     write_server_config(password, !has_tables)?;
@@ -774,6 +782,48 @@ fn set(root: &mut Value, path: &[&str], new: Value) -> Result<()> {
     // What it replaces, if anything, is test.yml's, and goes.
     mapping.insert(Value::from(*last), new);
     Ok(())
+}
+
+/// Fails unless the Redis cluster says it is formed (`CLUSTER INFO`'s `cluster_state:ok`), which
+/// the node `redis-2` creates once all three run (testbox/pod.yaml `REDIS_CLUSTER_CREATOR`).
+fn redis_cluster_formed() -> Result<()> {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    let address = REDIS_CLUSTER_NODE
+        .to_socket_addrs()
+        .describe(REDIS_CLUSTER_NODE.to_owned())?
+        .next()
+        .ok_or_else(|| Error::Failed(format!("{REDIS_CLUSTER_NODE} resolves to nothing")))?;
+    let mut node = TcpStream::connect_timeout(&address, REDIS_PATIENCE)
+        .describe(REDIS_CLUSTER_NODE.to_owned())?;
+    node.set_read_timeout(Some(REDIS_PATIENCE))
+        .describe(REDIS_CLUSTER_NODE.to_owned())?;
+    // An inline command; the answer is a bulk string of `key:value` lines.
+    node.write_all(b"CLUSTER INFO\r\n")
+        .describe(REDIS_CLUSTER_NODE.to_owned())?;
+    let mut answer = Vec::new();
+    let mut chunk = [0; 4096];
+    while !String::from_utf8_lossy(&answer).contains("cluster_state:") {
+        let read = node
+            .read(&mut chunk)
+            .describe(REDIS_CLUSTER_NODE.to_owned())?;
+        if read == 0 {
+            break;
+        }
+        answer.extend_from_slice(&chunk[..read]);
+    }
+    let answer = String::from_utf8_lossy(&answer);
+    if answer.lines().any(|line| line.trim() == "cluster_state:ok") {
+        Ok(())
+    } else {
+        Err(Error::Failed(format!(
+            "the Redis cluster isn't formed yet: {}",
+            answer
+                .lines()
+                .find(|line| line.starts_with("cluster_state:"))
+                .unwrap_or(answer.trim())
+        )))
+    }
 }
 
 /// LocalStack takes an unsigned path-style PUT; 409 means the bucket exists already.

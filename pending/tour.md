@@ -270,6 +270,30 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Now the samples are `memory.stat`'s `anon` (what the processes hold, what a leak grows),
     with `file` recorded beside it (`cache_mib` in `tour.json`).
   - The soak's earlier numbers (53 to 68/77 MiB) were `memory.current`.
+- **Signal-Server can start before the Redis cluster has formed, and then fail requests.**
+  - Run 17, round 1: the redis nodes came up 35 s apart on a loaded host
+    (`redis-1` 16:05:51, `redis-0` 16:06:22, `redis-2` 16:06:25).
+  - The server's last start (16:06:23) found the cluster still forming. It said it served all
+    the same, and its cluster client stayed "Currently not connected" well past 16:07:20.
+  - A registration at 16:07:17 got HTTP 500 (error ID 2ffbc094e2798511, `RedisException`).
+  - `provision` assumed a missing store fails the server, so the pod would start it again. For
+    the cluster it doesn't.
+  - The fix (branch `testbox-redis-cluster-ready`): `provision` asks `redis-0` for `CLUSTER
+    INFO` and fails unless it says `cluster_state:ok`, as it does for the pre-key bucket.
+- **A box's record can miss the end of a container's log.** In run 17, the server's log reached
+  journald (the containers' log driver) up to 41 s late on a loaded host: the 500's ERROR line,
+  logged at 16:07:20, arrived at 16:08:01. The record, taken at the box's end, stopped at
+  16:06:48.
+  - The whole log was in `journalctl --user` (by container name).
+  - `Record::keep_logs` could wait for the log to catch up, or read journald directly.
+- **Every build needs the network for Desktop's `ADD https://registry.npmjs.org/pnpm/…`.**
+  podman fetches an `ADD <url>` again on each build, checksum or not, cached layer or not.
+  - A Wi-Fi roam at 17:29:32 (DHCP restarted) failed a build with "Temporary failure in name
+    resolution".
+  - The tour builds Desktop's image too, as `checks::run` builds the linked box's images
+    whatever the phases.
+  - Improvements: keep the tarball in the repository or a build cache by its checksum, and build
+    only the images the chosen phases use.
 - **`podman run --pod <box>` inherits the pod's `restartPolicy: Always`.** A one-off container
   started that way is restarted after every exit unless given `--restart=no`. merge-prs-full-run
   drew a wrong conclusion from this before noticing.
@@ -407,3 +431,9 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     percentile; the most was 5.5 s, once.
   - Memory, now as `anon`: each b33p from 62 MiB to 75–97 MiB over a round, with 18–27 MiB of
     page cache apart.
+- **Run 17**, main with #88, #89 and #90 at their final heads:
+  - first attempt: round 1 failed in setup (the Redis race above), rounds 2 and 3 passed;
+  - rerun: 3 of 3 rounds passed (70, 71 and 70 checks), records in
+    `target/testbox-tour-record/run/1793117809/`.
+- **Merged on the user's word:** #90 (7b53abd), #89 (6ca0563), #88 (6dde8ac). Main's tree is
+  byte-identical to the tested one.
