@@ -130,14 +130,18 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 9. **Joining by a link that needs no approval fails at the server.** HTTP 400 `{"code":400,
    "message":"Invalid field set on action"}` comes back for presage's `join_group` on the
    `AccessRequired::Any` path (run 5, rounds 1 and 2, PATCH `/v2/groups/?inviteLinkPassword=…`).
-   - Likely cause: libsignal-service's `build_join_from_invite_link_action`
-     (groups_v2/operations.rs:965) sets `join_from_invite_link = true` on the
-     `AddMemberAction`. As far as I recall, Signal's protos have only the server set that, and
-     Signal-Android's direct join leaves it unset. This is unconfirmed: the storage service's
-     source isn't at hand.
-   - Reported to merge-prs-full-run, whose fork this is.
-   - Until then the tour joins only as a rejoin with approval, after leaving (which needs
-     `forks-454`'s fix for finding 6).
+   - Cause, confirmed by merge-prs-full-run: libsignal-service's
+     `build_join_from_invite_link_action` (groups_v2/operations.rs:965) set
+     `join_from_invite_link = true` on the `AddMemberAction`. The storage service
+     (`GroupValidator.validateAddMember`) refuses an action that has it set, and sets it itself.
+   - Fixed by merge-prs-full-run:
+     - libsignal-service `groups-v2-changes` a725052, on #473, with a test that fails before
+       the fix;
+     - `langis/integration` d1d684e;
+     - presage pr/groups 421083d;
+     - b33p `forks-454` ac682da, a fast-forward of 940b6a9.
+   - The tour, rebased onto ac682da, joins by link both ways: first-time by an open link, and as
+     a rejoin with approval.
 
 ## Open questions
 
@@ -184,6 +188,11 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 - **Noise in every b33p log:** cage's "Cannot find Xwayland binary", since the image removes
   Xwayland on purpose, and Qt's "Detected locale C …" on every start.
 - **`kill` and `start` print the container's name** (podman's output) into the run's stdout.
+- **A stopped run leaves no record.** `Record::keep_logs` runs at the box's end, so a run that is
+  interrupted (Ctrl-C, a livelock) keeps nothing unless the logs are saved by hand first.
+- **`down --wipe` removes volumes by the prefix `b33p-testbox-`.** That would also take another
+  instance's volumes. merge-prs-full-run's parallel-instances branch names instances
+  `b33p-testbox.NAME` (with a dot) so the old filter misses them, and wipes by name.
 
 - **A group's stories are filed under the group,** not under their author
   (`stories::on_story`). The first story step opened the author's chat, which was my mistake
@@ -220,3 +229,14 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   apart from the step, so its failure doesn't end the tour.
   - It is expected to fail on main, where presage looks the link up, and to pass once
     `forks-454` (1eacb7c) is in.
+- **Run 6** (rebased onto `forks-454` 940b6a9) livelocked in round 1, a bug in the tour.
+  - After step 55, every kind left in the pool needed something no remaining step would make.
+    A rejoin needs someone who left, and no Leave was left to draw.
+  - So it drew filler texts for an hour: 4,000 steps, all passing.
+  - Stopped by hand. Its container logs are kept in the scratchpad (`run6-logs/`), since a
+    stopped run writes no record.
+  - Up to step 55 everything passed, including a rejoin by link with approval (finding 6's
+    fix) and the link sent with previews off (finding 1's fix, now with a link presage does
+    try).
+  - Fixed: when stuck, the tour draws a step that may unstick it (a leave, an add, a new group),
+    and fails after eight in a row, naming the kinds that never could go.
