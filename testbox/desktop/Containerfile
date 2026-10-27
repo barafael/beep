@@ -20,10 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
         $ELECTRON_LIBS \
     && rm -rf /var/lib/apt/lists/*
 # pnpm as its package names it, by checksum (npm's published integrity for 11.24.0 is this
-# tarball's).
-ADD --checksum=sha256:d1eab2433172661cc36a18ec85fce93f771db1962717329cc01ec9c2824ca24f \
-    https://registry.npmjs.org/pnpm/-/pnpm-11.24.0.tgz /tmp/pnpm.tgz
-RUN npm install -g --no-fund --no-audit /tmp/pnpm.tgz && rm /tmp/pnpm.tgz
+# tarball's). Fetched in a RUN, not an ADD: podman fetches an ADD's URL on every build, cached
+# layer or not, so every build needed the registry; a RUN that didn't change is taken from the
+# cache.
+RUN npm pack --silent pnpm@11.24.0 \
+    && echo "d1eab2433172661cc36a18ec85fce93f771db1962717329cc01ec9c2824ca24f  pnpm-11.24.0.tgz" \
+        | sha256sum -c - \
+    && npm install -g --no-fund --no-audit ./pnpm-11.24.0.tgz \
+    && rm pnpm-11.24.0.tgz
 ARG SIGNAL_DESKTOP_REV=f3040f3e13b6dca5021c3db149320e0f7a771f0a
 WORKDIR /opt/signal-desktop
 RUN git init -q . \

@@ -77,7 +77,12 @@ pub(crate) fn run(
     } else {
         Some(containers.build_beside(Client::Android)?)
     };
-    containers.build_others(&linked_clients, b33p.optimized)?;
+    // Desktop's image only for a box that runs Desktop: a tour's has none.
+    let desktop = !linked.is_empty()
+        || !android.is_empty()
+        || phases.contains(&Phase::Stress(StressPhase::Concurrency));
+    let built: &[Client] = if desktop { &linked_clients } else { &[] };
+    containers.build_others(built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| {
         containers.fresh(clients, b33ps)?;
         b33p.limit_memory(containers)

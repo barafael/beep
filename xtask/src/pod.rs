@@ -534,7 +534,18 @@ impl Pod {
                 .context(directory.display().to_string())?;
         }
         testbox_tools::write(&self.rendered, self.render(clients, b33ps)?)?;
-        let mut play = podman(&["kube", "play", "--replace", "--network", network]);
+        // Each container's log in a file conmon writes as it comes (k8s-file), not journald's,
+        // which a loaded host fed late (a minute behind) or not at all (its rate limit): a box's
+        // record, taken at its end, missed the end of a log (pending/tour.md).
+        let mut play = podman(&[
+            "kube",
+            "play",
+            "--replace",
+            "--log-driver",
+            "k8s-file",
+            "--network",
+            network,
+        ]);
         play.arg(&self.rendered);
         quietly(play)
     }
