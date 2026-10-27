@@ -1826,9 +1826,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             .iter()
             .position(|t| t.pair == Some((by.min(third), by.max(third))))
             .ok_or("the chat of the third b33p")?;
-        let marker = self
-            .world
-            .new_text(&format!("after the blocked one, from {third}"));
+        // Not drawn: a seed then replays what came after as it did before the step had it.
+        self.world.texts += 1;
+        let marker = format!(
+            "tour {}: after the blocked one, from {third}",
+            self.world.texts
+        );
         self.open(third, beside)?;
         let ts = self.send(third, &marker)?;
         self.add(beside, third, ts, &marker);

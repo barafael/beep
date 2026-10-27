@@ -160,7 +160,19 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       the old bytes.
     - Fix: clear the cached picture when `info.avatar` is empty, as `fetch_group` does for "none
       any more".
-    - Reported to merge-prs-full-run (presage fork).
+    - Fixed by merge-prs-full-run: presage pr/groups 1873f8b (on #448), `langis/integration`
+      45b2365. b33p's pin moves in a small PR after #82.
+    - **To do:** replay seed 1793102699 with the pins at 45b2365 (local only), and see step 42
+      pass.
+
+11. **A member added back doesn't show a group picture set while it was away**, until b33p
+    restarts. Seen in run 8, round 3 (seed 1793104113, step 14): b33p 0 left, the admin set
+    a picture, then added b33p 0 back.
+    - presage fetched the group and downloaded the picture (CDN0 GET at 12:29:02).
+    - b33p sends a group's picture to the UI only when the change it receives has a picture
+      change in it (`receive.rs:633-643`), and being added has none.
+    - Fix: send the picture when the stored group's picture differs from what the UI has, or
+      whenever we join or are added.
 
 ## Open questions
 
@@ -266,3 +278,7 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     finding 5).
   - Round 2 failed at step 42 (finding 10).
   - **Round 3 passed: the first tour with every step green.**
+
+- **Run 8**, as `--instance tour`, records in `target/testbox-tour-record/run/1793103275/`:
+  - **rounds 1 and 2 passed;**
+  - round 3 failed at step 14 (finding 11).
