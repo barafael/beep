@@ -136,6 +136,22 @@ pub(crate) struct B33pOptions {
     /// on a small machine or under a desktop's own limits.
     #[arg(long, value_name = "MIB")]
     pub(crate) b33p_memory: Option<u64>,
+    /// How many b33ps the box has, each in a container of its own: `up`'s and every box's but
+    /// the mesh's one, the mesh's three.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(1..=i64::from(pod::MAX_B33PS)))]
+    pub(crate) b33ps: Option<u8>,
+}
+
+impl B33pOptions {
+    /// Lets each of the box's b33ps take at most `--b33p-memory`, if given.
+    fn limit_memory(&self, pod: &Pod) -> Result<()> {
+        let Some(mib) = self.b33p_memory else {
+            return Ok(());
+        };
+        pod.b33ps()
+            .into_iter()
+            .try_for_each(|b33p| pod.limit_memory(b33p, mib))
+    }
 }
 
 fn main() -> ExitCode {
@@ -192,9 +208,11 @@ fn main() -> ExitCode {
 /// The harness's and drivers' sockets, on the host.
 #[cfg(unix)]
 struct Sockets {
+    /// The first b33p's ([`Self::agent`] 0).
     b33p: PathBuf,
     desktop: PathBuf,
     android: PathBuf,
+    run: PathBuf,
 }
 
 #[cfg(unix)]
@@ -204,10 +222,16 @@ impl Sockets {
     fn new(pod: &Pod) -> Self {
         let run = pod.run_dir();
         Self {
-            b33p: run.join("agent.sock"),
+            b33p: run.join(pod::agent_socket(0)),
             desktop: run.join("desktop.sock"),
             android: run.join("android.sock"),
+            run,
         }
+    }
+
+    /// The `n`th b33p's harness.
+    fn agent(&self, n: u8) -> PathBuf {
+        self.run.join(pod::agent_socket(n))
     }
 }
 
@@ -219,11 +243,8 @@ fn repo_root() -> PathBuf {
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
-    pod.up(clients, b33p.optimized)?;
-    match b33p.b33p_memory {
-        Some(mib) => pod.limit_memory(pod::Service::B33p, mib),
-        None => Ok(()),
-    }
+    pod.up(clients, b33p.b33ps.unwrap_or(1), b33p.optimized)?;
+    b33p.limit_memory(pod)
 }
 
 /// `test` `rounds` times, each round's records in a directory of its own; then how each went.

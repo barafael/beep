@@ -2,8 +2,10 @@
 # flow mappings, quoted strings. `cargo testbox up` fills in @POD@, the pod's name, which
 # also starts its images' and volumes' (`b33p-testbox`, or `b33p-testbox.<instance>`), and
 # @TARGET@, where its directories go (hostPath must be absolute); it puts the clients it is
-# asked for in place of the @CLIENTS@ line (testbox/desktop/pod.yaml, testbox/android/pod.yaml)
-# and attaches the pod to an `--internal` network of its own: no egress.
+# asked for in place of the @CLIENTS@ line (testbox/desktop/pod.yaml, testbox/android/pod.yaml),
+# each b33p's container and volumes in place of the @B33PS@ and @B33P_VOLUMES@ lines
+# (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml), and attaches the pod to an `--internal`
+# network of its own: no egress.
 #
 # One pod: every container shares localhost, as libsignal-net's local override needs;
 # the stores' names resolve to it (`hostAliases`), and each listens on a port of its own.
@@ -159,38 +161,13 @@
           { name: "files", mountPath: "/files", readOnly: true },
         ],
       },
-      # b33p from the working tree (testbox/b33p/Containerfile).
-      {
-        name: "b33p",
-        image: "localhost/@POD@-b33p",
-        env: [
-          # b33p makes its directories under HOME.
-          { name: "HOME", value: "/home/b33p" },
-          # The box's servers (testbox/tools `provision` writes the file).
-          { name: "B33P_SIGNAL_SERVERS", value: "/keys/servers.toml" },
-          { name: "B33P_AGENT_SOCKET", value: "/run/b33p/agent.sock" },
-          { name: "QT_QPA_PLATFORM", value: "wayland" },
-          # Drawn larger: the viewers show the display shrunk beside the others.
-          { name: "QT_SCALE_FACTOR", value: "1.5" },
-          # A bus of its own that isn't there, as in b33p-slint/tests/harness.rs.
-          { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent" },
-          { name: "RUST_LOG", value: "b33p=debug,presage=info,libsignal_service=info" },
-        ],
-        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
-        volumeMounts: [
-          { name: "keys", mountPath: "/keys", readOnly: true },
-          { name: "b33p-home", mountPath: "/home/b33p" },
-          { name: "run", mountPath: "/run/b33p" },
-          { name: "files", mountPath: "/files", readOnly: true },
-          { name: "view-b33p", mountPath: "/run/view" },
-        ],
-      },
+      # @B33PS@
       # @CLIENTS@
     ],
     volumes: [
       { name: "keys", persistentVolumeClaim: { claimName: "@POD@-keys" } },
       { name: "presage", persistentVolumeClaim: { claimName: "@POD@-presage" } },
-      { name: "b33p-home", persistentVolumeClaim: { claimName: "@POD@-b33p-home" } },
+      # @B33P_VOLUMES@
       { name: "desktop-home", persistentVolumeClaim: { claimName: "@POD@-desktop-home" } },
       { name: "tus-data", persistentVolumeClaim: { claimName: "@POD@-tus-data" } },
       { name: "cdn0-data", persistentVolumeClaim: { claimName: "@POD@-cdn0-data" } },
@@ -199,7 +176,6 @@
       # The test files, which the xtask writes: read-only to every container.
       { name: "files", hostPath: { path: "@TARGET@-files", type: "Directory" } },
       # Each client's display socket, in a directory only that client mounts.
-      { name: "view-b33p", hostPath: { path: "@TARGET@-view/b33p", type: "Directory" } },
       { name: "view-desktop", hostPath: { path: "@TARGET@-view/desktop", type: "Directory" } },
       { name: "view-android", hostPath: { path: "@TARGET@-view/android", type: "Directory" } },
     ],

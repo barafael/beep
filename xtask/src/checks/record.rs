@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Context, Result};
-use crate::pod::{Pod, SCREENS, Service};
+use crate::pod::{Pod, Service};
 use crate::process;
 
 use super::lost::{DESKTOP_LOGS, LOGCAT};
@@ -52,12 +52,15 @@ impl Record {
             ]);
             build.arg(&manifest);
             process::run(build)?;
-            let displays = SCREENS
+            let displays = pod
+                .screens()
                 .into_iter()
-                .filter(|screen| pod.running(*screen))
                 .map(|screen| {
-                    let name: &'static str = screen.into();
-                    format!("{name}={}", pod.view_socket(screen, false).display())
+                    format!(
+                        "{}={}",
+                        screen.name(),
+                        pod.view_socket(screen, false).display()
+                    )
                 })
                 .collect();
             Some(Shots {
@@ -120,7 +123,8 @@ impl Record {
         println!("record: {}", self.directory.display());
     }
 
-    fn write(&self, name: &str, contents: &str) {
+    /// `contents` as the file `name` in the record; a failure is said, and fails nothing.
+    pub(super) fn write(&self, name: &str, contents: &str) {
         let path = self.directory.join(name);
         if let Err(error) = std::fs::write(&path, contents) {
             println!("record: {}: {error}", path.display());

@@ -19,9 +19,11 @@ mod groups;
 mod lost;
 mod presage;
 mod record;
+mod rng;
 mod setup;
 mod storage;
 mod stress;
+mod tour;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -30,8 +32,8 @@ use std::time::{Duration, Instant};
 use strum::VariantArray;
 
 use crate::error::{Error, Result};
-use crate::phase::{AndroidPhase, LinkedPhase, Phase, StressPhase};
-use crate::pod::{Client, Pod, Service};
+use crate::phase::{AndroidPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
+use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
 use self::record::Record;
@@ -76,13 +78,18 @@ pub(crate) fn run(
         Some(containers.build_beside(Client::Android)?)
     };
     containers.build_others(&linked_clients, b33p.optimized)?;
-    let play = |clients: &[Client]| {
-        containers.fresh(clients)?;
-        match b33p.b33p_memory {
-            Some(mib) => containers.limit_memory(Service::B33p, mib),
-            None => Ok(()),
-        }
+    let play = |clients: &[Client], b33ps: u8| {
+        containers.fresh(clients, b33ps)?;
+        b33p.limit_memory(containers)
     };
+    let b33ps = b33p.b33ps.unwrap_or(1);
+    // Only when named, as the stress phases.
+    let mesh: Vec<MeshPhase> = MeshPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phases.contains(&Phase::Mesh(phase)))
+        .collect();
+    let mesh_b33ps = b33p.b33ps.unwrap_or(3);
 
     let mut tally = Tally {
         containers,
@@ -98,7 +105,7 @@ pub(crate) fn run(
         &mut tally,
         "linked",
         &linked,
-        || play(&linked_clients),
+        || play(&linked_clients, b33ps),
         |checks| setup::linked_box(checks, containers, &sockets),
         |phase, checks, fixture| match phase {
             LinkedPhase::Desktop => desktop::desktop(checks, fixture),
@@ -122,7 +129,7 @@ pub(crate) fn run(
             if let Some(build) = android_image.take() {
                 build.finish()?;
             }
-            play(&android_clients)
+            play(&android_clients, b33ps)
         },
         |checks| setup::android_box(checks, containers, &sockets),
         |phase, checks, fixture| match phase {
@@ -146,7 +153,7 @@ pub(crate) fn run(
         on_own_box(
             &mut tally,
             phase.into(),
-            || play(clients),
+            || play(clients, b33ps),
             |checks| match phase {
                 StressPhase::Volume => stress::volume(checks, containers, &sockets),
                 StressPhase::Interrupt => stress::interrupt(checks, containers, &sockets, &files),
@@ -156,6 +163,23 @@ pub(crate) fn run(
             },
         );
     }
+    on_fixture(
+        &mut tally,
+        "mesh",
+        &mesh,
+        || play(&[], mesh_b33ps),
+        |checks| setup::mesh_box(checks, containers, &sockets, mesh_b33ps),
+        |phase, checks, fixture| match phase {
+            MeshPhase::Tour => tour::tour(
+                checks,
+                fixture,
+                containers,
+                &sockets,
+                &files,
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
+        },
+    );
     tally.finish()
 }
 

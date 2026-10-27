@@ -1,0 +1,28 @@
+# b33p from the working tree (testbox/b33p/Containerfile), once for each b33p the box has
+# (`cargo testbox`'s `--b33ps`): a container for testbox/pod.yaml's list, in place of its b33ps' line,
+# with its name (`b33p`, `b33p-1`, …) and its harness's socket in /run/b33p filled in.
+      {
+        name: "@B33P@",
+        image: "localhost/@POD@-b33p",
+        env: [
+          # b33p makes its directories under HOME.
+          { name: "HOME", value: "/home/b33p" },
+          # The box's servers (testbox/tools `provision` writes the file).
+          { name: "B33P_SIGNAL_SERVERS", value: "/keys/servers.toml" },
+          { name: "B33P_AGENT_SOCKET", value: "/run/b33p/@AGENT@" },
+          { name: "QT_QPA_PLATFORM", value: "wayland" },
+          # Drawn larger: the viewers show the display shrunk beside the others.
+          { name: "QT_SCALE_FACTOR", value: "1.5" },
+          # A bus of its own that isn't there, as in b33p-slint/tests/harness.rs.
+          { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent" },
+          { name: "RUST_LOG", value: "b33p=debug,presage=info,libsignal_service=info" },
+        ],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "@B33P@-home", mountPath: "/home/b33p" },
+          { name: "run", mountPath: "/run/b33p" },
+          { name: "files", mountPath: "/files", readOnly: true },
+          { name: "view-@B33P@", mountPath: "/run/view" },
+        ],
+      },

@@ -1,0 +1,4 @@
+# Each b33p's volumes (testbox/b33p/pod.yaml), for testbox/pod.yaml's volume list, in place of
+# its b33p volumes' line: its home, and its display's socket in a directory only it mounts.
+      { name: "@B33P@-home", persistentVolumeClaim: { claimName: "@POD@-@B33P@-home" } },
+      { name: "view-@B33P@", hostPath: { path: "@TARGET@-view/@B33P@", type: "Directory" } },

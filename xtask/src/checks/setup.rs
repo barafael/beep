@@ -3,11 +3,12 @@
 //! phases on one fixture share it, one after the other (`super::run`).
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use b33p_harness::{Action, ScreenSnapshot};
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, own_aci, peer_text_reaches, unlock, wait_for_chats,
+    REQUEST_ACCEPTED, accept_request, b33p_chat, own_aci, peer_text_reaches, unlock, wait_for_chats,
 };
 use super::clients::{Android, Desktop, android_shows};
 use super::presage::{Account, Presage};
@@ -15,7 +16,7 @@ use super::{Checks, HISTORY_PATIENCE, PATIENCE, START};
 use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::harness::Harness;
-use crate::pod::{Pod, Ready, Service};
+use crate::pod::{B33P, Pod, Ready, Service};
 use crate::process;
 use testbox_tools::drivers;
 
@@ -90,7 +91,7 @@ pub(super) fn plain_box<'pod>(
         peer.register()?;
         primary.register()
     })?;
-    containers.await_ready(Ready::B33p, None, START)?;
+    containers.await_ready(Ready::B33p(0), None, START)?;
     let mut b33p = Harness::connect(&sockets.b33p)?;
     checks.require("b33p links to the primary", || {
         link(&mut b33p, false, |url| primary.add_device(url))
@@ -100,6 +101,141 @@ pub(super) fn plain_box<'pod>(
         peer,
         primary_aci,
         b33p,
+    })
+}
+
+/// Several b33ps, each linked to a presage-cli primary of its own, each listing every other's
+/// account as an accepted chat: each primary wrote to every later one's account first (contact
+/// discovery isn't in the box), and the later one's b33p accepted it.
+pub(super) struct MeshBox<'pod> {
+    pub(super) b33ps: Vec<MeshB33p<'pod>>,
+}
+
+/// One b33p of a [`MeshBox`].
+pub(super) struct MeshB33p<'pod> {
+    /// Which of the box's b33ps it is (`Service::B33p`).
+    pub(super) n: u8,
+    pub(super) primary: Presage<'pod>,
+    /// Its account's.
+    pub(super) aci: String,
+    pub(super) b33p: Harness,
+    /// How long it took to link, from its harness listening to its chats.
+    pub(super) linked_in: Duration,
+}
+
+impl MeshB33p<'_> {
+    /// The id of the other b33ps' chat with its account.
+    pub(super) fn chat(&self) -> String {
+        format!("c:{}", self.aci)
+    }
+}
+
+/// The text each primary of a mesh writes to every later one's account first.
+pub(super) fn mesh_hello(from: u8, to: u8) -> String {
+    format!("testbox mesh: hello from {from} to {to}")
+}
+
+pub(super) fn mesh_box<'pod>(
+    checks: &mut Checks,
+    containers: &'pod Pod,
+    sockets: &Sockets,
+    b33ps: u8,
+) -> Result<MeshBox<'pod>> {
+    confined_and_healthy(checks, containers)?;
+    let primaries: Vec<Presage<'pod>> = (0..b33ps)
+        .map(|n| Presage::new(containers, Account::Mesh(n)))
+        .collect();
+    let acis = checks.require(&format!("{b33ps} presage-cli primaries register"), || {
+        each(&primaries, |primary| primary.register())
+    })?;
+    let linked = checks.require(&format!("{b33ps} b33ps link, each to its primary"), || {
+        each(&primaries, |primary| {
+            let n = primaries
+                .iter()
+                .position(|each| std::ptr::eq(each, primary))
+                .and_then(|n| u8::try_from(n).ok())
+                .ok_or("a primary of the mesh's")?;
+            containers.await_ready(Ready::B33p(n), None, START)?;
+            let started = Instant::now();
+            let mut b33p = Harness::connect(&sockets.agent(n))?;
+            link(&mut b33p, false, |url| primary.add_device(url))?;
+            Ok((b33p, started.elapsed()))
+        })
+    })?;
+    let mut mesh = MeshBox {
+        b33ps: primaries
+            .into_iter()
+            .zip(acis)
+            .zip(linked)
+            .zip(0..)
+            .map(|(((primary, aci), (b33p, linked_in)), n)| MeshB33p {
+                n,
+                primary,
+                aci,
+                b33p,
+                linked_in,
+            })
+            .collect(),
+    };
+    checks.require("each primary writes to every later one's account", || {
+        for (i, from) in mesh.b33ps.iter().enumerate() {
+            for to in &mesh.b33ps[i + 1..] {
+                from.primary.send(&to.aci, &mesh_hello(from.n, to.n))?;
+            }
+        }
+        Ok(())
+    })?;
+    checks.require(
+        "each b33p accepts the earlier ones' first messages, and lists the later ones' chats",
+        || {
+            for i in 0..mesh.b33ps.len() {
+                let (earlier, rest) = mesh.b33ps.split_at_mut(i);
+                let (this, later) = rest.split_first_mut().ok_or("a b33p of the mesh's")?;
+                for other in earlier.iter() {
+                    // Once b33p shows the sender by name: until presage has saved them, the
+                    // chat is titled by their id, and once saved b33p reloads every chat's
+                    // settings, which would take back an acceptance not yet written
+                    // (pending/tour.md, finding 8).
+                    let name = Account::Mesh(other.n).name();
+                    b33p_chat(&mut this.b33p, &other.chat(), "titled by name", |chat| {
+                        chat.title == name
+                    })?;
+                    accept_request(&mut this.b33p, &other.chat())?;
+                }
+                for other in later.iter() {
+                    let chat = other.chat();
+                    b33p_chat(&mut this.b33p, &chat, "of its primary's hello", |chat| {
+                        // b33p-core's `ConversationView::preview` of one's own.
+                        chat.preview == format!("You: {}", mesh_hello(this.n, other.n))
+                            && !chat.request
+                    })?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(mesh)
+}
+
+/// `work` on each of `items` at once, in threads; every outcome, in order, or the first failure.
+fn each<Item: Sync, Done: Send>(
+    items: &[Item],
+    work: impl Fn(&Item) -> Result<Done> + Sync,
+) -> Result<Vec<Done>> {
+    std::thread::scope(|scope| {
+        let work = &work;
+        let running: Vec<_> = items
+            .iter()
+            .map(|item| scope.spawn(move || work(item)))
+            .collect();
+        running
+            .into_iter()
+            .map(|thread| {
+                thread
+                    .join()
+                    .map_err(|_| Error::Failed("a thread panicked".to_owned()))?
+            })
+            .collect()
     })
 }
 
@@ -187,7 +323,7 @@ pub(super) fn android_box<'pod>(
         })
     })?;
 
-    containers.await_ready(Ready::B33p, None, START)?;
+    containers.await_ready(Ready::B33p(0), None, START)?;
     let mut b33p = Harness::connect(&sockets.b33p)?;
     checks.require("b33p links to Android, with the message history", || {
         link(&mut b33p, true, |url| {
@@ -306,13 +442,18 @@ fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<
 /// Restarts b33p and connects to it again, its store unlocked and its chats shown.
 pub(super) fn restart_b33p(containers: &Pod, socket: &Path) -> Result<Harness> {
     let since = process::now()?;
-    containers.restart(Service::B33p)?;
+    containers.restart(B33P)?;
     started_b33p(containers, socket, since)
 }
 
 /// b33p unlocked and showing its chats again, once it has started after `since`.
 pub(super) fn started_b33p(containers: &Pod, socket: &Path, since: u64) -> Result<Harness> {
-    containers.await_ready(Ready::B33p, Some(since), PATIENCE)?;
+    started(containers, 0, socket, since)
+}
+
+/// The `n`th b33p as [`started_b33p`].
+pub(super) fn started(containers: &Pod, n: u8, socket: &Path, since: u64) -> Result<Harness> {
+    containers.await_ready(Ready::B33p(n), Some(since), PATIENCE)?;
     let mut b33p = Harness::connect(socket)?;
     b33p.wait_for("b33p asking for its password", PATIENCE, |snapshot| {
         matches!(snapshot.screen, ScreenSnapshot::Password { .. }).then_some(())

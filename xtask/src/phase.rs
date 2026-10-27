@@ -1,5 +1,6 @@
 //! `cargo testbox test`'s phases, by the box they run on: their names and the order they run in
-//! are those of [`LinkedPhase`]'s, [`AndroidPhase`]'s and [`StressPhase`]'s variants.
+//! are those of [`LinkedPhase`]'s, [`AndroidPhase`]'s, [`StressPhase`]'s and [`MeshPhase`]'s
+//! variants.
 
 use std::sync::LazyLock;
 
@@ -51,6 +52,16 @@ pub(crate) enum StressPhase {
     Soak,
 }
 
+/// The phases on the mesh (xtask/src/checks/setup.rs `MeshBox`), several b33ps writing to each
+/// other, and only when named.
+#[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum MeshPhase {
+    // Every feature, in an order drawn from a seed (`TESTBOX_SEED`), each checked on every b33p
+    // it reaches (xtask/src/checks/tour.rs).
+    Tour,
+}
+
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,
 /// or with `--fresh` one per phase), then the stress phases', each on a box of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,6 +69,7 @@ pub(crate) enum Phase {
     Linked(LinkedPhase),
     Android(AndroidPhase),
     Stress(StressPhase),
+    Mesh(MeshPhase),
 }
 
 /// Every phase, in the order they run.
@@ -68,6 +80,7 @@ static PHASES: LazyLock<Vec<Phase>> = LazyLock::new(|| {
         .map(Phase::Linked)
         .chain(AndroidPhase::VARIANTS.iter().copied().map(Phase::Android))
         .chain(StressPhase::VARIANTS.iter().copied().map(Phase::Stress))
+        .chain(MeshPhase::VARIANTS.iter().copied().map(Phase::Mesh))
         .collect()
 });
 
@@ -81,6 +94,7 @@ impl ValueEnum for Phase {
             Self::Linked(phase) => phase.into(),
             Self::Android(phase) => phase.into(),
             Self::Stress(phase) => phase.into(),
+            Self::Mesh(phase) => phase.into(),
         };
         Some(PossibleValue::new(name))
     }

@@ -39,12 +39,13 @@ pub(super) const DESKTOP_LOGS: &str = "cat /home/desktop/data/logs/*.log";
 /// Every line of the clients' logs that tells of a lost message.
 pub(super) fn found(containers: &Pod) -> Result<Vec<String>> {
     let mut lost = Vec::new();
-    if containers.running(Service::B33p) {
-        let log = containers.log(Service::B33p)?;
+    for b33p in containers.b33ps() {
+        let log = containers.log(b33p)?;
+        let name = b33p.name();
         lost.extend(
             log.lines()
                 .filter(|line| B33P.iter().any(|needle| line.contains(needle)))
-                .map(|line| format!("b33p: {}", plain(line).trim())),
+                .map(|line| format!("{name}: {}", plain(line).trim())),
         );
     }
     if containers.running(Service::Android) {

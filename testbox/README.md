@@ -134,7 +134,7 @@ their order doesn't matter.
 b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up`, `test` and `run`)
 builds it optimized as it ships instead, which takes longer: for what only shows in an
 optimized build, or is too slow to tell apart in a debug one. It keeps debug assertions on
-(Cargo.toml's `testbox` profile), since b33p refuses its test servers in a release build. `--b33p-memory <MiB>` limits b33p's
+(Cargo.toml's `testbox` profile), since b33p refuses its test servers in a release build. `--b33p-memory <MiB>` limits each b33p's
 container to that much memory, as a small machine would: past it the kernel kills b33p, and
 "no client crashed" fails.
 
@@ -155,6 +155,15 @@ sends and saves; awkward texts, broken and huge pictures, odd file names; severa
 sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a seed it prints,
 which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
 ([pending/stress.md](../pending/stress.md)).
+
+`tour` runs only when named, on a box of several b33ps (`--b33ps <N>`, three by default), each
+linked to a presage-cli primary of its own and writing to the others: every feature b33p has,
+each `TESTBOX_TOUR_REPEAT` times (two), in an order drawn from a seed it prints, which
+`TESTBOX_SEED` repeats; after each step every b33p it reaches has to show what a model of the
+chats says (`xtask/src/checks/tour.rs`). How long each kind of step took, how long a message
+took to show on the others, and each b33p's memory and open files are in the record's
+`tour.json`. `--b33ps` gives the other boxes more b33ps too, and `up` a box of that many; the
+first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, displays and records.
 
 ## Watching and looking into a failure
 

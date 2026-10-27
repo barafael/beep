@@ -9,7 +9,7 @@ use b33p_harness::ScreenSnapshot;
 
 use crate::error::{Error, Result};
 use crate::harness::Harness;
-use crate::pod::{Pod, SCREENS, Service};
+use crate::pod::{Pod, Service};
 use crate::process;
 
 /// Shows each running client's display in a window. `interactive` lets the window's keys and
@@ -42,8 +42,8 @@ fn viewer(pod: &Pod, repo: &Path, manifest: &str, interactive: bool) -> Result<C
         run.arg("--interactive");
     }
     let mut shown = 0;
-    for screen in SCREENS.into_iter().filter(|screen| pod.running(*screen)) {
-        let name: &'static str = screen.into();
+    for screen in pod.screens() {
+        let name = screen.name();
         run.arg(format!(
             "{name}={}",
             pod.view_socket(screen, interactive).display()
