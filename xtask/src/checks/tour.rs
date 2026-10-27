@@ -2174,6 +2174,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     .map(|(sample, &at)| SampleRecord {
                         at,
                         memory_mib: sample.memory as f64 / f64::from(1 << 20),
+                        cache_mib: sample.cache as f64 / f64::from(1 << 20),
                         files: sample.files,
                         answer_ms: sample.answer.as_secs_f64() * 1000.0,
                     })
@@ -2339,7 +2340,10 @@ struct StepRecord {
 struct SampleRecord {
     /// Seconds into the tour.
     at: f64,
+    /// What b33p's container holds itself (`anon`).
     memory_mib: f64,
+    /// Its page cache (`file`), apart.
+    cache_mib: f64,
     files: u64,
     answer_ms: f64,
 }

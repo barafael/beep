@@ -263,6 +263,16 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 - **Noise in every b33p log:** cage's "Cannot find Xwayland binary", since the image removes
   Xwayland on purpose, and Qt's "Detected locale C …" on every start.
 - **`kill` and `start` print the container's name** (podman's output) into the run's stdout.
+- **Memory samples counted the page cache.** The soak's and the tour's samples read cgroup
+  `memory.current`, which includes the page cache: the files read and written, and what a
+  restarted b33p reads again. So "memory grew" could mean nothing.
+  - Run 13, round 3: b33p 1's 168 MiB was 67 MiB anon and 93 MiB file.
+  - Now the samples are `memory.stat`'s `anon` (what the processes hold, what a leak grows),
+    with `file` recorded beside it (`cache_mib` in `tour.json`).
+  - The soak's earlier numbers (53 to 68/77 MiB) were `memory.current`.
+- **`podman run --pod <box>` inherits the pod's `restartPolicy: Always`.** A one-off container
+  started that way is restarted after every exit unless given `--restart=no`. merge-prs-full-run
+  drew a wrong conclusion from this before noticing.
 - **A stopped run leaves no record.** `Record::keep_logs` runs at the box's end, so a run that is
   interrupted (Ctrl-C, a livelock) keeps nothing unless the logs are saved by hand first.
 - **`down --wipe` removes volumes by the prefix `b33p-testbox-`.** That would also take another
@@ -350,3 +360,34 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     story 5.3 s, make-admin 5.0 s, create-group 4.6 s, leave 4.2 s.
 - **A new step, `quote-then-edit`:** a reply to one's own message, that message edited, then a
   restart. It is #87's check: it should fail on main, where finding 12 shows, and pass with #87.
+- **Run 12**, `quote-then-edit` without and with the fix:
+  - On #83's branch alone (seed 1793108413), step 22 failed as finding 12 says: after the
+    restart, the quote showed "tour 15: edited by 0 …" instead of "tour 9: from 0 …".
+  - On #83 plus #86 and #87, 3 rounds, 70 checks each: every `quote-then-edit` passed.
+  - Round 2 failed only the recorded check "who came back shows the group's picture" (finding
+    11). That branch lacked #85, where it is fixed.
+- **All merged into main** on the user's word: #85 (17e8a9e), #83 (03f4461), #86 (8705be1),
+  #87 (6ef429d). Main's CI passed on 03f4461.
+- **Run 13, on main at 03f4461** (all of it merged), 3 rounds, records in
+  `target/testbox-tour-record/run/1793110205/`:
+  - **round 1 passed**, 70 checks;
+  - round 2 failed at step 47, a description b33p 1 never showed: finding 13 for the second
+    time, a group fetch failing on "error sending request" at 14:21:47.9;
+  - round 3 failed "who came back shows the group's picture" four times. That is finding 11's
+    fix missing a case, call it 11b: b33p 1 joined a group for the first time by an open
+    link, after its picture was set. #85 sends the picture when a received change lets us
+    in, but a join by an open link is the joiner's own change (`Command::JoinGroup`, which
+    only calls `refresh_group`). Reported to merge-prs-full-run.
+  - Round 3 also failed "b33p 1's memory … didn't keep growing" (95 to 168 MiB). That was the
+    page cache, not a leak: 67 MiB anon and 93 MiB file, after b33p 1 was killed and started
+    again. A measurement flaw (see the testbox notes).
+- **Finding 13 reproduced and fixed by merge-prs-full-run.**
+  - The box's storage service closes an idle connection after 30.03 s, and reqwest keeps one
+    90 s.
+  - Requests sent at about 30 s idle: 5 of 1210 failed with "connection closed before message
+    completed". With a 20 s pool idle timeout, 0 failed; with one GET retry, 0 failed.
+  - The fixes:
+    - libsignal-service c0cb9bf: idle connections are dropped after 20 s, and a GET is retried
+      once;
+    - presage fcbdf70: a failed group fetch is tried once more, and its causes are logged;
+    - beep branch `stale-connections` pins them.

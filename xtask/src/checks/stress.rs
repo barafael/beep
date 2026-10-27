@@ -818,7 +818,12 @@ fn newest(snapshot: &Snapshot, outgoing: bool) -> Option<u32> {
 
 /// What [`soak`] watches, at one moment.
 pub(super) struct Sample {
+    /// What the container's processes hold (cgroup `memory.stat` `anon`), in bytes: what a leak
+    /// grows. Not `memory.current`, which counts the page cache too, the files b33p read and
+    /// wrote, and which grows on its own after a restart (pending/tour.md).
     pub(super) memory: u64,
+    /// The page cache (`memory.stat` `file`), in bytes, beside it.
+    pub(super) cache: u64,
     pub(super) files: u64,
     pub(super) answer: Duration,
 }
@@ -827,8 +832,9 @@ impl std::fmt::Display for Sample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "memory {} MiB, {} open files, a snapshot in {:?}",
+            "memory {} MiB (and {} MiB of page cache), {} open files, a snapshot in {:?}",
             self.memory >> 20,
+            self.cache >> 20,
             self.files,
             self.answer
         )
@@ -840,11 +846,19 @@ pub(super) fn sample(containers: &Pod, service: Service, b33p: &mut Harness) -> 
     let started = Instant::now();
     b33p.snapshot()?;
     let answer = started.elapsed();
-    let memory = containers
-        .exec(service, &["cat", "/sys/fs/cgroup/memory.current"], "")?
-        .trim()
-        .parse()
-        .map_err(|_| Error::Failed("memory.current isn't a number".into()))?;
+    let stat = containers.exec(service, &["cat", "/sys/fs/cgroup/memory.stat"], "")?;
+    let of = |key: &str| -> Result<u64> {
+        stat.lines()
+            .find_map(|line| {
+                line.strip_prefix(key)?
+                    .strip_prefix(' ')?
+                    .trim()
+                    .parse()
+                    .ok()
+            })
+            .ok_or_else(|| Error::Failed(format!("no {key} in memory.stat")))
+    };
+    let (memory, cache) = (of("anon")?, of("file")?);
     // b33p isn't the container's first process (with-display is). An `if` rather than `&&`,
     // which would leave the loop failing whenever the last process isn't b33p.
     let script = r#"for p in /proc/[0-9]*; do
@@ -857,6 +871,7 @@ done"#;
         .map_err(|_| Error::Failed("b33p's open files aren't a number".into()))?;
     Ok(Sample {
         memory,
+        cache,
         files,
         answer,
     })
@@ -1299,6 +1314,7 @@ mod tests {
     fn at(memory_mib: u64, files: u64) -> Sample {
         Sample {
             memory: memory_mib << 20,
+            cache: 0,
             files,
             answer: Duration::from_millis(5),
         }
