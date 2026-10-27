@@ -208,6 +208,75 @@ pub(super) fn lets_us_in(
     })
 }
 
+/// Who brought us into a group, by the message that told us: the editor of a change that lets us
+/// in ([`lets_us_in`]), or the sender of a new group's announcement (revision 0 and nothing else
+/// in it, as presage's `create_group` sends to the members it made the group with). Signal-Desktop
+/// keeps the same as a group's `addedBy` (ts/util/isConversationAccepted.preload.ts).
+pub(super) fn added_by(
+    changes: Option<&presage::libsignal_service::groups_v2::GroupChanges>,
+    announcement: bool,
+    sender: ServiceId,
+    aci: presage::libsignal_service::protocol::Aci,
+    pni: presage::libsignal_service::protocol::Pni,
+) -> Option<ServiceId> {
+    match changes {
+        Some(changes) => lets_us_in(changes, aci, pni).then_some(ServiceId::Aci(changes.editor)),
+        None => announcement.then_some(sender),
+    }
+}
+
+/// A group isn't a message request when whoever brought us into it is someone we accepted (or
+/// wrote to): Signal-Desktop's `isConversationAccepted`, by `isFromOrAddedByTrustedContact` and
+/// `isTrustedContact` (profile sharing, which accepting or writing to someone gives). Accepts the
+/// group `id` then, as a member, not when only invited; says so.
+pub(super) async fn accept_from_trusted(
+    manager: &Mgr,
+    ctx: &Ctx,
+    key: [u8; 32],
+    id: &ConversationId,
+    context: &GroupContextV2,
+    announcement: bool,
+    sender: ServiceId,
+) {
+    let ids = &manager.registration_data().service_ids;
+    let (aci, pni) = (ids.aci(), ids.pni());
+    let changes = match context.group_change {
+        Some(_) => match signed_group_change(manager, key, context).await {
+            Some(changes) => Some(changes),
+            // A change without the server's signature brings nobody in.
+            None => return,
+        },
+        None => None,
+    };
+    let Some(adder) = added_by(changes.as_ref(), announcement, sender, aci, pni) else {
+        return;
+    };
+    if adder == ServiceId::Aci(aci) || !is_member(manager, key, ServiceId::Aci(aci)).await {
+        return;
+    }
+    let accepted = async |id: &ConversationId| {
+        ctx.tables
+            .settings(id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.accepted)
+    };
+    let by = ConversationId::contact(&adder.service_id_string());
+    if accepted(id).await || !accepted(&by).await {
+        return;
+    }
+    match ctx.tables.update(id, |s| s.accepted = true).await {
+        Ok(settings) => {
+            let _ = ctx.events.send(Event::Settings {
+                conversation: id.clone(),
+                settings,
+            });
+        }
+        Err(error) => warn!(error = %scrubbed(&error), "failed to accept a group from a contact"),
+    }
+}
+
 /// Whether `changes` is `sender` changing their own place in the group: leaving it as a member
 /// or an invitee, asking to join through the link or taking that back, or joining through it.
 /// The messages a non-member may still send to the group (Desktop sends its request to the
@@ -733,6 +802,61 @@ mod tests {
         }));
         assert!(!lets_in(GroupChange::DeleteMember(own)));
         assert!(!lets_in(GroupChange::Title("hi".into())));
+    }
+
+    /// Who brought us into a group: the editor of a change that lets us in, or the sender of the
+    /// announcement of a group made with us in it; nobody for any other change or message.
+    #[test]
+    fn who_added_us_is_known() {
+        use presage::libsignal_service::groups_v2::{GroupChange, Member, Role};
+        use presage::libsignal_service::protocol::Pni;
+        use presage::libsignal_service::zkgroup::profiles::ProfileKey;
+        let (own, other, admin) = (aci(1), aci(2), aci(3));
+        let own_pni = Pni::from(presage::libsignal_service::prelude::Uuid::from_u128(11));
+        let sender = ServiceId::Aci(other);
+        let member = |aci| Member {
+            aci,
+            role: Role::Default,
+            profile_key: ProfileKey::create([0; 32]),
+            joined_at_version: 7,
+            label: None,
+            label_emoji: None,
+        };
+        let by_change = |change| {
+            added_by(
+                Some(&changes(admin, vec![change])),
+                false,
+                sender,
+                own,
+                own_pni,
+            )
+        };
+        assert_eq!(
+            by_change(GroupChange::NewMember(member(own))),
+            Some(ServiceId::Aci(admin))
+        );
+        assert_eq!(
+            by_change(GroupChange::PromoteRequestingMember {
+                aci: own,
+                role: Role::Default
+            }),
+            Some(ServiceId::Aci(admin))
+        );
+        assert_eq!(by_change(GroupChange::NewMember(member(other))), None);
+        assert_eq!(by_change(GroupChange::Title("hi".into())), None);
+        // A change that lets us in is the editor's, even sent by someone else.
+        assert_eq!(
+            added_by(
+                Some(&changes(admin, vec![GroupChange::NewMember(member(own))])),
+                true,
+                sender,
+                own,
+                own_pni
+            ),
+            Some(ServiceId::Aci(admin))
+        );
+        assert_eq!(added_by(None, true, sender, own, own_pni), Some(sender));
+        assert_eq!(added_by(None, false, sender, own, own_pni), None);
     }
 
     /// A group picture goes out as a square JPEG no larger than Signal's clients send,
