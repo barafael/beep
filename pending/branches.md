@@ -47,9 +47,9 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`9e9c2ef`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, and #488's tokio `Mutex` (gferon's review: steps wait in order) | Pinned by `forks-454` |
+| `langis/integration` (`d1d684e`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, #488's tokio `Mutex` (gferon's review: steps wait in order), and #473's open-link join fix | Pinned by `forks-454` (#82) |
 | `pr/session-lock` (`d56c1ad`), `pr/session-lock-ack` (`586b5a2`) | #488 with the tokio `Mutex`; the same with #442 and #489 on top | whisperfish/libsignal-service-rs#488; pinned by presage #473 and #476 |
-| `groups-v2-changes` (`93f9dc2`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays) | Pinned by presage `pr/groups` |
+| `groups-v2-changes` (`a725052`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays), plus: joining by an open invite link leaves `join_from_invite_link` to the server, which refused it ("Invalid field set on action"; found by the tour) | Pinned by presage `pr/groups` (`421083d`) |
 
 ## Slint (barafael/slint)
 

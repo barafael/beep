@@ -98,7 +98,8 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 # Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group
-# changes through /v2/groups, with the avatar upload, which presage #448 needs), #476 (send a
+# changes through /v2/groups, with the avatar upload and joins by an open invite link, which
+# presage #448 needs), #476 (send a
 # sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
 # #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
 # the task's outcome handed to the pipes), #488 (one session step at a time, in order, through a
@@ -110,7 +111,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "9e9c2ef1009e80763333229b840dd13233c8258d" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "d1d684ea02490d28e10a3b6f54ca87be181a29f3" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
