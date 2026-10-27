@@ -16,7 +16,7 @@ use super::b33p::{
 };
 use super::clients::desktop_shows;
 use super::presage::Presage;
-use super::setup::{LinkedBox, linked_box, linked_desktop, started_b33p};
+use super::setup::{PlainBox, linked_desktop, plain_box, started_b33p};
 use super::{Checks, HISTORY_PATIENCE, PATIENCE};
 use crate::Sockets;
 use crate::error::{Error, Result};
@@ -48,12 +48,12 @@ const LONG_NAME: usize = 254;
 
 /// Bursts of messages from the peer, with b33p running and with it stopped.
 pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
-    let LinkedBox {
+    let PlainBox {
         peer,
         primary_aci,
         mut b33p,
         ..
-    } = linked_box(checks, containers, sockets)?;
+    } = plain_box(checks, containers, sockets)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "volume")?;
 
     checks.record(
@@ -107,12 +107,12 @@ pub(crate) fn interrupt(
     sockets: &Sockets,
     files: &Path,
 ) -> Result<()> {
-    let LinkedBox {
+    let PlainBox {
         peer,
         primary_aci,
         mut b33p,
         ..
-    } = linked_box(checks, containers, sockets)?;
+    } = plain_box(checks, containers, sockets)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "interrupt")?;
 
     checks.record("b33p killed while a burst arrives loses none of it", || {
@@ -336,12 +336,12 @@ pub(crate) fn content(
     sockets: &Sockets,
     files: &Path,
 ) -> Result<()> {
-    let LinkedBox {
+    let PlainBox {
         peer,
         primary_aci,
         mut b33p,
         ..
-    } = linked_box(checks, containers, sockets)?;
+    } = plain_box(checks, containers, sockets)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "content")?;
 
     checks.record("awkward texts from the peer reach b33p as sent", || {
@@ -495,12 +495,12 @@ pub(crate) fn content(
 /// Desktop (linked to the peer), presage-cli (the peer's primary) and b33p sending at once; and
 /// one message edited, reacted to and deleted close together, with b33p running and stopped.
 pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
-    let LinkedBox {
+    let PlainBox {
         peer,
         primary_aci,
         mut b33p,
         ..
-    } = linked_box(checks, containers, sockets)?;
+    } = plain_box(checks, containers, sockets)?;
     let mut desktop = linked_desktop(checks, &sockets.desktop, &peer)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "concurrency")?;
     checks.require("Desktop opens the chat with b33p", || {
@@ -680,12 +680,12 @@ pub(crate) fn soak(
     sockets: &Sockets,
     files: &Path,
 ) -> Result<()> {
-    let LinkedBox {
+    let PlainBox {
         peer,
         primary_aci,
         mut b33p,
         ..
-    } = linked_box(checks, containers, sockets)?;
+    } = plain_box(checks, containers, sockets)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "soak")?;
 
     checks.record(

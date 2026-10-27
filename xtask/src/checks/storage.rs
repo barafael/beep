@@ -1,45 +1,29 @@
 use b33p_harness::Action;
 
-use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_chat, b33p_shows, edit, outgoing_index,
-    peer_text_reaches, read, select, type_and_send,
-};
+use super::b33p::{b33p_chat, b33p_shows, edit, outgoing_index, read, select, type_and_send};
 use super::clients::{Android, desktop_shows, desktop_status};
-use super::setup::{AndroidBox, android_box};
+use super::setup::AndroidBox;
 use super::{Checks, PATIENCE, PATIENCE_MS};
-use crate::Sockets;
 use crate::error::Result;
 use crate::harness::Harness;
-use crate::pod::Pod;
 use testbox_tools::drivers;
 
 /// Android's suggested folder of every 1:1 chat (strings.xml `ChatFoldersFragment__one_on_one_chats`).
 const FOLDER: &str = "1:1 chats";
 
 /// Chat settings through the storage service, between b33p, Android (the primary: it writes
-/// there, presage-cli doesn't) and Desktop, linked to the peer. Needs a fresh box with both
-/// (`cargo testbox up --desktop --android`).
-pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+/// there, presage-cli doesn't) and Desktop, linked to the peer.
+pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<()> {
     use drivers::ChatMenuItem::{Archive, Mute, Pin, Read, Unmute, Unpin, Unread};
 
     let AndroidBox {
-        peer,
-        mut android,
-        mut b33p,
-        mut desktop,
+        android,
+        b33p,
+        desktop,
         android_aci,
-    } = android_box(checks, containers, sockets, None)?;
-    let conversation = checks.require("text from the peer reaches b33p", || {
-        peer_text_reaches(
-            &mut b33p,
-            &peer,
-            &android_aci,
-            "testbox storage: from the peer",
-        )
-    })?;
-    checks.require(REQUEST_ACCEPTED, || {
-        accept_request(&mut b33p, &conversation)
-    })?;
+        conversation,
+        ..
+    } = fixture;
 
     // Desktop sends read receipts only with the setting on, which presage-cli, its primary,
     // links it without (libsignal-service-rs `ProvisionMessage` `read_receipts: None`). Desktop
@@ -59,32 +43,32 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
     // Android's chat list shows the chat by its latest message, which this stays.
     let row = "testbox storage: read on Desktop";
     checks.require("text from b33p reaches Desktop", || {
-        select(&mut b33p, &conversation)?;
-        type_and_send(&mut b33p, row)?;
-        desktop_shows(&mut desktop, row)
+        select(b33p, conversation)?;
+        type_and_send(b33p, row)?;
+        desktop_shows(desktop, row)
     })?;
     // TESTPLAN.md §1.1 item 2.
     checks.record("Desktop's read receipt shows on b33p as read", || {
-        read(&mut b33p, row)
+        read(b33p, row)
     });
     // From here on the chat isn't open in b33p: an open chat is read, which would undo a mark.
     b33p.act(Action::Back)?;
 
     // TESTPLAN.md §1.8, §1.10.
     checks.record("a chat pinned on Android shows pinned in b33p", || {
-        chat_menu(&mut android, row, Pin)?;
-        b33p_chat(&mut b33p, &conversation, "pinned", |chat| chat.pinned)
+        chat_menu(android, row, Pin)?;
+        b33p_chat(b33p, conversation, "pinned", |chat| chat.pinned)
     });
     checks.record("a chat muted on Android shows muted in b33p", || {
-        chat_menu(&mut android, row, Mute)?;
-        b33p_chat(&mut b33p, &conversation, "muted", |chat| chat.muted)
+        chat_menu(android, row, Mute)?;
+        b33p_chat(b33p, conversation, "muted", |chat| chat.muted)
     });
     // Archiving unpins, on Android as in b33p. b33p lists archived chats with its archive open
     // (b33p-core/src/state.rs `listed`).
     checks.record("a chat archived on Android shows archived in b33p", || {
-        chat_menu(&mut android, row, Archive)?;
+        chat_menu(android, row, Archive)?;
         b33p.act(Action::ShowArchived { show: true })?;
-        let archived = b33p_chat(&mut b33p, &conversation, "archived, not pinned", |chat| {
+        let archived = b33p_chat(b33p, conversation, "archived, not pinned", |chat| {
             chat.archived && !chat.pinned
         });
         b33p.act(Action::ShowArchived { show: false })?;
@@ -112,7 +96,7 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
 
     // TESTPLAN.md §2.13: b33p writes only when told to sync to the phone.
     checks.record("b33p's unarchive and pin show on Android", || {
-        android_takes(&mut android, &mut b33p, |b33p| {
+        android_takes(android, b33p, |b33p| {
             b33p.act(Action::Archive {
                 conversation: conversation.clone(),
                 archived: false,
@@ -123,7 +107,7 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             .map(drop)
         })?;
         // Unarchived, pinned, and still muted from Android.
-        menu_offers(&mut android, row, &[Unpin, Unmute])
+        menu_offers(android, row, &[Unpin, Unmute])
     });
 
     // Not a 409: b33p reads right before each write (b33p-core/src/signal.rs `follow_storage`),
@@ -137,21 +121,21 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             android.call(drivers::Android::OpenConversation {
                 text: row.to_owned(),
             })?;
-            sync_to_phone(&mut b33p, false)?;
+            sync_to_phone(b33p, false)?;
             b33p.act(Action::Mute {
                 conversation: conversation.clone(),
                 minutes: 0,
             })?;
-            chat_menu(&mut android, row, Unread)?;
+            chat_menu(android, row, Unread)?;
             b33p_chat(
-                &mut b33p,
-                &conversation,
+                b33p,
+                conversation,
                 "marked unread from Android, unmuted here",
                 |chat| chat.marked_unread && !chat.muted,
             )?;
-            android_takes(&mut android, &mut b33p, |_b33p| Ok(()))?;
-            menu_offers(&mut android, row, &[Read, Mute, Unpin])?;
-            b33p_chat(&mut b33p, &conversation, "as on Android", |chat| {
+            android_takes(android, b33p, |_b33p| Ok(()))?;
+            menu_offers(android, row, &[Read, Mute, Unpin])?;
+            b33p_chat(b33p, conversation, "as on Android", |chat| {
                 chat.marked_unread && !chat.muted && chat.pinned
             })
         },
@@ -163,11 +147,11 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
     checks.record(
         "Desktop's read receipt for b33p's edit shows on b33p",
         || {
-            select(&mut b33p, &conversation)?;
+            select(b33p, conversation)?;
             let edited = "testbox storage: read on Desktop, edited";
-            let index = outgoing_index(&mut b33p, row)?;
-            edit(&mut b33p, index, edited)?;
-            desktop_shows(&mut desktop, edited)?;
+            let index = outgoing_index(b33p, row)?;
+            edit(b33p, index, edited)?;
+            desktop_shows(desktop, edited)?;
             // Desktop reads an edit with the conversation's next read (markConversationRead's
             // `unreadEditedMessages`), and reads only while someone is at it: for 15 s after a
             // click or key (ActiveWindowService.std.ts `ACTIVE_TIMEOUT`), and again at the next
@@ -175,7 +159,7 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
             desktop.call(drivers::Desktop::OpenConversation {
                 aci: android_aci.clone(),
             })?;
-            read(&mut b33p, edited)
+            read(b33p, edited)
         },
     );
     checks.record(
@@ -183,24 +167,24 @@ pub(crate) fn storage(checks: &mut Checks, containers: &Pod, sockets: &Sockets) 
         || {
             let text = "testbox storage: from Desktop";
             let edited = "testbox storage: from Desktop, edited";
-            select(&mut b33p, &conversation)?;
+            select(b33p, conversation)?;
             b33p.act(Action::SetWindowFocused { focused: true })?;
             desktop.call(drivers::Desktop::Send {
                 text: text.to_owned(),
             })?;
-            desktop_status(&mut desktop, text, "read")?;
+            desktop_status(desktop, text, "read")?;
             // Away from the window: the edit is delivered, not read.
             b33p.act(Action::SetWindowFocused { focused: false })?;
             desktop.call(drivers::Desktop::EditMessage {
                 old_text: text.to_owned(),
                 text: edited.to_owned(),
             })?;
-            b33p_shows(&mut b33p, &format!("{edited:?}"), |message| {
+            b33p_shows(b33p, &format!("{edited:?}"), |message| {
                 message.text == edited
             })?;
-            desktop_status(&mut desktop, edited, "delivered")?;
+            desktop_status(desktop, edited, "delivered")?;
             b33p.act(Action::SetWindowFocused { focused: true })?;
-            desktop_status(&mut desktop, edited, "read")
+            desktop_status(desktop, edited, "read")
         },
     );
 

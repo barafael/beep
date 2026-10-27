@@ -1,60 +1,63 @@
 use b33p_harness::{Action, InviteLinkAccess};
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_chat, b33p_details, b33p_shows, b33p_title,
-    chat_previewing, select, type_and_send,
+    accept_request, b33p_chat, b33p_details, b33p_shows, b33p_title, chat_previewing, select,
+    type_and_send,
 };
 use super::clients::{android_containing, android_shows, desktop_shows, desktop_text};
 use super::presage::{Account, Presage};
-use super::setup::{AndroidBox, android_box};
+use super::setup::AndroidBox;
 use super::{Checks, PATIENCE, PATIENCE_MS};
-use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::pod::Pod;
 use testbox_tools::drivers::{self, MemberChange};
 
 /// A group b33p makes of its account (A, with Android) and the peer (B, with Desktop) and a
 /// presage-cli member (C); what b33p changes shows on Desktop and Android, what Desktop changes
-/// on b33p. Needs a fresh box with both clients.
-pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+/// on b33p.
+pub(super) fn groups(
+    checks: &mut Checks,
+    fixture: &mut AndroidBox<'_>,
+    containers: &Pod,
+) -> Result<()> {
     let AndroidBox {
         peer,
-        mut android,
-        mut b33p,
-        mut desktop,
+        android,
+        b33p,
+        desktop,
         android_aci,
-    } = android_box(checks, containers, sockets, None)?;
+        conversation,
+    } = fixture;
     let member = Presage::new(containers, Account::Member);
     checks.require("a presage-cli member registers", || {
         member.register().map(drop)
     })?;
-    // A message of each brings b33p their profile keys: with them b33p adds them to the group
-    // outright, without, it invites them (presage `create_group`). Sent at once, so that the two
-    // deliveries overlap.
+    // The member's message brings b33p its profile key, as the fixture's brought the peer's: with
+    // them b33p adds them to the group outright, without, it invites them (presage
+    // `create_group`). The peer's at once, so that the two deliveries overlap.
     let (peer_text, member_text) = (
         "testbox groups: from the peer",
         "testbox groups: from the member",
     );
     checks.require("the peer and the member write to b33p's account", || {
         std::thread::scope(|scope| {
-            let from_peer = scope.spawn(|| peer.send(&android_aci, peer_text));
-            let from_member = member.send(&android_aci, member_text);
+            let from_peer = scope.spawn(|| peer.send(android_aci, peer_text));
+            let from_member = member.send(android_aci, member_text);
             from_peer
                 .join()
                 .map_err(|_| Error::Failed("the peer's send panicked".to_owned()))??;
             from_member
         })
     })?;
-    let peer_chat = checks.require("text from the peer reaches b33p", || {
-        chat_previewing(&mut b33p, peer_text)
+    checks.require("the peer's text beside the member's reaches b33p", || {
+        chat_previewing(b33p, peer_text).map(drop)
     })?;
-    checks.require(REQUEST_ACCEPTED, || accept_request(&mut b33p, &peer_chat))?;
     let member_chat = checks.require("text from the member reaches b33p", || {
-        chat_previewing(&mut b33p, member_text)
+        chat_previewing(b33p, member_text)
     })?;
     checks.require(
         "the member's first message is a message request in b33p, accepted",
-        || accept_request(&mut b33p, &member_chat),
+        || accept_request(b33p, &member_chat),
     )?;
 
     // TESTPLAN.md §3.1.
@@ -62,7 +65,7 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
     let group = checks.require("b33p makes a group of the peer and the member", || {
         b33p.act(Action::CreateGroup {
             title: title.to_owned(),
-            members: vec![peer_chat.clone(), member_chat.clone()],
+            members: vec![conversation.clone(), member_chat.clone()],
         })?;
         b33p.wait_for("the group in b33p", PATIENCE, |snapshot| {
             snapshot
@@ -79,17 +82,17 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
     checks.record(
         "text b33p sends to the group reaches Desktop and Android",
         || {
-            select(&mut b33p, &group)?;
-            type_and_send(&mut b33p, hello)?;
+            select(b33p, &group)?;
+            type_and_send(b33p, hello)?;
             desktop.call(drivers::Desktop::OpenTitled {
                 title: title.to_owned(),
             })?;
-            desktop_shows(&mut desktop, hello)?;
+            desktop_shows(desktop, hello)?;
             // By its name: the chat list's preview of it is "You: <text>".
             android.call(drivers::Android::OpenConversation {
                 text: title.to_owned(),
             })?;
-            android_shows(&mut android, hello)
+            android_shows(android, hello)
         },
     );
 
@@ -99,14 +102,14 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         || {
             // The group's current name, as b33p has it: Desktop opens its settings by it.
             desktop.call(drivers::Desktop::EditGroup {
-                old_title: b33p_title(&mut b33p, &group)?,
+                old_title: b33p_title(b33p, &group)?,
                 title: Some(by_desktop.to_owned()),
                 description: None,
             })?;
-            b33p_chat(&mut b33p, &group, "named on Desktop", |chat| {
+            b33p_chat(b33p, &group, "named on Desktop", |chat| {
                 chat.title == by_desktop
             })?;
-            android_containing(&mut android, by_desktop)
+            android_containing(android, by_desktop)
         },
     );
     let description = "testbox: a group to test groups with";
@@ -116,17 +119,17 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         "a description Desktop gives the group shows on b33p and Android",
         || {
             desktop.call(drivers::Desktop::EditGroup {
-                old_title: b33p_title(&mut b33p, &group)?,
+                old_title: b33p_title(b33p, &group)?,
                 title: None,
                 description: Some(description.to_owned()),
             })?;
             b33p_details(
-                &mut b33p,
+                b33p,
                 "Peer changed the group's description.",
                 "the group's description",
                 |details| (details.description.as_deref() == Some(description)).then_some(()),
             )?;
-            android_containing(&mut android, "changed the group description")
+            android_containing(android, "changed the group description")
         },
     );
     // The picture goes by CDN0, by the form storage-service hands out (`GET
@@ -136,14 +139,14 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
         "a picture Desktop gives the group shows on b33p and Android",
         || {
             desktop.call(drivers::Desktop::SetGroupPicture {
-                old_title: b33p_title(&mut b33p, &group)?,
+                old_title: b33p_title(b33p, &group)?,
             })?;
-            b33p_shows(&mut b33p, "the picture's notice", |message| {
+            b33p_shows(b33p, "the picture's notice", |message| {
                 message.notice && message.text == "Peer changed the group's picture."
             })?;
-            b33p_chat(&mut b33p, &group, "with a picture", |chat| chat.avatar)?;
+            b33p_chat(b33p, &group, "with a picture", |chat| chat.avatar)?;
             // strings.xml `MessageRecord_s_changed_the_group_avatar`.
-            android_containing(&mut android, "changed the group avatar")
+            android_containing(android, "changed the group avatar")
         },
     );
 
@@ -181,14 +184,14 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                 member: Account::Member.name().to_owned(),
                 change,
             })?;
-            b33p_details(&mut b33p, b33p_says, "the member's place", |details| {
+            b33p_details(b33p, b33p_says, "the member's place", |details| {
                 let member = details
                     .members
                     .iter()
                     .find(|member| member.name == Account::Member.name());
                 (member.map(|member| member.admin) == admin).then_some(())
             })?;
-            desktop_text(&mut desktop, desktop_says)
+            desktop_text(desktop, desktop_says)
         });
     }
 
@@ -197,32 +200,31 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
     // `icu:GroupV2--join--link-forbidden`); one who left may.
     let linked = checks.report(
         "the invite link Android turns on, with approval, shows on b33p",
-        android
-            .call(drivers::Android::GroupLink {
+        || {
+            android.call(drivers::Android::GroupLink {
                 group: by_desktop.to_owned(),
                 approval: true,
-            })
-            .and_then(|()| {
-                b33p_details(
-                    &mut b33p,
-                    "You turned the invite link on, with admin approval.",
-                    "the invite link, and the peer among the members",
-                    |details| {
-                        let link = details.invite_link.clone()?;
-                        let peer = details
-                            .members
-                            .iter()
-                            .find(|member| member.name == Account::Peer.name())?;
-                        (details.invite_link_access == InviteLinkAccess::Approval)
-                            .then(|| (link, peer.service_id.clone()))
-                    },
-                )
-            }),
+            })?;
+            b33p_details(
+                b33p,
+                "You turned the invite link on, with admin approval.",
+                "the invite link, and the peer among the members",
+                |details| {
+                    let link = details.invite_link.clone()?;
+                    let peer = details
+                        .members
+                        .iter()
+                        .find(|member| member.name == Account::Peer.name())?;
+                    (details.invite_link_access == InviteLinkAccess::Approval)
+                        .then(|| (link, peer.service_id.clone()))
+                },
+            )
+        },
     );
     if let Some((link, peer)) = linked {
         checks.record("the peer leaving on Desktop shows on b33p", || {
             desktop.call(drivers::Desktop::LeaveGroup)?;
-            b33p_shows(&mut b33p, "the peer's leaving", |message| {
+            b33p_shows(b33p, "the peer's leaving", |message| {
                 message.notice && message.text == "Peer left the group."
             })
         });
@@ -231,7 +233,7 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
             || {
                 desktop.call(drivers::Desktop::JoinGroup { link: link.clone() })?;
                 b33p_details(
-                    &mut b33p,
+                    b33p,
                     "Peer asked to join the group.",
                     "the peer's request",
                     |details| details.requests.contains(&peer).then_some(()),
@@ -246,7 +248,7 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                     member: Account::Peer.name().to_owned(),
                 })?;
                 b33p_details(
-                    &mut b33p,
+                    b33p,
                     "You accepted Peer's request to join.",
                     "the peer among the members",
                     |details| {
@@ -257,7 +259,7 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                             .then_some(())
                     },
                 )?;
-                desktop_text(&mut desktop, "approved your request to join")
+                desktop_text(desktop, "approved your request to join")
             },
         );
     }
@@ -272,10 +274,10 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                 member: "Android".to_owned(),
                 text: mentioned.to_owned(),
             })?;
-            b33p_shows(&mut b33p, "the mention", |message| {
+            b33p_shows(b33p, "the mention", |message| {
                 !message.outgoing
                     && message.text.ends_with(mentioned)
-                    && message.mentions.contains(&android_aci)
+                    && message.mentions.contains(android_aci)
             })
         },
     );
@@ -294,7 +296,7 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
 
     // b33p's own changes to the group. Android was left elsewhere (the request it approved), so
     // it opens the chat again, by the name it has once the change reached it.
-    select(&mut b33p, &group)?;
+    select(b33p, &group)?;
     let renamed = "testbox group, renamed";
     checks.record(
         "a name b33p gives the group shows on Desktop and Android",
@@ -302,12 +304,12 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
             b33p.act(Action::RenameGroup {
                 title: renamed.to_owned(),
             })?;
-            b33p_chat(&mut b33p, &group, "renamed", |chat| chat.title == renamed)?;
-            desktop_text(&mut desktop, renamed)?;
+            b33p_chat(b33p, &group, "renamed", |chat| chat.title == renamed)?;
+            desktop_text(desktop, renamed)?;
             android.call(drivers::Android::OpenConversation {
                 text: renamed.to_owned(),
             })?;
-            android_containing(&mut android, renamed)
+            android_containing(android, renamed)
         },
     );
     // "set the disappearing message time(r) to 1 hour." (messages.json `icu:DisappearingTimer--set`,
@@ -319,14 +321,14 @@ pub(crate) fn groups(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
                 conversation: group.clone(),
                 seconds: 60 * 60,
             })?;
-            b33p_chat(&mut b33p, &group, "with a timer", |chat| {
+            b33p_chat(b33p, &group, "with a timer", |chat| {
                 chat.expire_timer == 60 * 60
             })?;
-            desktop_text(&mut desktop, "to 1 hour")?;
+            desktop_text(desktop, "to 1 hour")?;
             android.call(drivers::Android::OpenConversation {
                 text: renamed.to_owned(),
             })?;
-            android_containing(&mut android, "to 1 hour")
+            android_containing(android, "to 1 hour")
         },
     );
 
