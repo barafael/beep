@@ -76,6 +76,9 @@ enum Kind {
     Restart,
     /// A link sent with link previews off (b33p's default): nothing may look it up.
     LinkWithoutPreview,
+    /// A reply to one's own message, the message edited after, and a restart: the quote stays
+    /// what it quoted.
+    QuoteThenEdit,
 }
 
 /// `TESTBOX_TOUR_REPEAT`, or 2.
@@ -395,6 +398,13 @@ enum Step {
         by: usize,
         thread: usize,
         text: String,
+    },
+    QuoteThenEdit {
+        by: usize,
+        thread: usize,
+        quoted: u64,
+        reply: String,
+        edit: String,
     },
 }
 
@@ -970,6 +980,18 @@ impl World {
             Kind::Restart => Step::Restart {
                 by: self.below(count),
             },
+            Kind::QuoteThenEdit => {
+                let (by, thread, quoted) = self.some_message(true, true, |k, m| {
+                    m.from == k && !m.deleted && m.attachments.is_empty()
+                })?;
+                Step::QuoteThenEdit {
+                    by,
+                    thread,
+                    quoted,
+                    reply: self.new_text(&format!("a reply from {by}, its quote edited after")),
+                    edit: self.new_text(&format!("edited by {by} after its reply")),
+                }
+            }
             Kind::LinkWithoutPreview => {
                 let (by, thread) = self.someone_in(true, true)?;
                 let text = self.new_text(&format!("a link from {by}"));
@@ -1071,6 +1093,10 @@ impl World {
                 format!("b33p {by} posts a story to {}", name(thread))
             }
             Step::Restart { by } => format!("b33p {by} is killed and starts again"),
+            Step::QuoteThenEdit { by, thread, .. } => format!(
+                "b33p {by} replies to its message in {}, edits that, and starts again",
+                name(thread)
+            ),
             Step::LinkWithoutPreview { by, thread, .. } => format!(
                 "b33p {by} sends a link in {}, with link previews off",
                 name(thread)
@@ -1465,6 +1491,28 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             } => self.join_by_link(by, thread, admin, approval),
             Step::Story { by, thread, text } => self.story(by, thread, &text),
             Step::Restart { by } => self.restart(by),
+            Step::QuoteThenEdit {
+                by,
+                thread,
+                quoted,
+                reply,
+                edit,
+            } => {
+                self.perform(&Step::Reply {
+                    by,
+                    thread,
+                    to: quoted,
+                    text: reply,
+                })?;
+                self.perform(&Step::Edit {
+                    by,
+                    thread,
+                    message: quoted,
+                    text: edit,
+                })?;
+                // Shown from the store now: the quote must still be what it quoted.
+                self.restart(by)
+            }
             Step::LinkWithoutPreview { by, thread, text } => {
                 // presage's line for a preview it tried to build (presage
                 // `fetch_link_previews`); without egress every try fails, and says so.
