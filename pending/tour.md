@@ -162,8 +162,14 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       any more".
     - Fixed by merge-prs-full-run: presage pr/groups 1873f8b (on #448), `langis/integration`
       45b2365. b33p's pin moves in a small PR after #82.
-    - **To do:** replay seed 1793102699 with the pins at 45b2365 (local only), and see step 42
-      pass.
+    - Replayed seed 1793102699 on `tour` with #85 (presage 45b2365). It drew the same steps,
+      and step 42 failed the same way.
+      - What the check sees is b33p's UI, finding 11. b33p 0 restarted on that box then showed
+        no picture, so presage's store is right with #85.
+      - Without #85 the restart wasn't tried. That presage's store kept the old picture rests on
+        reading the code.
+      - So there are two layers: presage's store (fixed in #85) and b33p's UI (finding 11, not
+        fixed).
 
 11. **A member added back doesn't show a group picture set while it was away**, until b33p
     restarts. Seen in run 8, round 3 (seed 1793104113, step 14): b33p 0 left, the admin set
@@ -173,6 +179,11 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       change in it (`receive.rs:633-643`), and being added has none.
     - Fix: send the picture when the stored group's picture differs from what the UI has, or
       whenever we join or are added.
+    - It covers a rejoin by link too, and a picture removed as well as set: the UI keeps what
+      it showed before (run 7 round 2, and its replay).
+    - The tour checks pictures strictly, except for a member that joined after the picture last
+      changed. That case is a check of its own, "who came back shows the group's picture", which
+      fails without ending the tour.
 
 ## Open questions
 

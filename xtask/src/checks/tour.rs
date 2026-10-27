@@ -104,6 +104,8 @@ struct Thread {
     joined: BTreeMap<usize, u64>,
     description: Option<String>,
     picture: bool,
+    /// When the picture last changed, in milliseconds since the epoch.
+    picture_at: u64,
     messages: Vec<Expected>,
 }
 
@@ -488,6 +490,13 @@ pub(super) fn tour(
                 },
             );
         }
+        let stale = std::mem::take(&mut tour.stale_pictures);
+        if !stale.is_empty() {
+            checks.record(
+                &format!("step {number}: who came back shows the group's picture"),
+                || Err(Error::Failed(stale.join("\n"))),
+            );
+        }
         if outcome.is_err() {
             tour.write(checks, seed);
             tour.keep_snapshots(checks);
@@ -547,6 +556,7 @@ impl World {
                 joined: BTreeMap::new(),
                 description: None,
                 picture: false,
+                picture_at: 0,
                 messages: Vec::new(),
             })
             .collect();
@@ -1087,6 +1097,8 @@ struct Tour<'run, 'pod> {
     sampled_at: Vec<Vec<f64>>,
     /// Who sent a link at the last step, and how often it was looked up.
     looked_up: Option<(usize, usize)>,
+    /// The groups whose picture a member that came back after it changed doesn't show.
+    stale_pictures: Vec<String>,
     started: Instant,
     sampled: Instant,
 }
@@ -1118,6 +1130,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             samples: (0..count).map(|_| Vec::new()).collect(),
             sampled_at: (0..count).map(|_| Vec::new()).collect(),
             looked_up: None,
+            stale_pictures: Vec::new(),
             started: Instant::now(),
             sampled: Instant::now(),
         }
@@ -1398,6 +1411,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     path: picture.then(|| format!("/files/{PICTURE}")),
                 })?;
                 self.world.threads[thread].picture = picture;
+                self.world.threads[thread].picture_at = now_ms();
                 self.converge_group(thread)
             }
             Step::AddMember { by, thread, member } => {
@@ -1582,6 +1596,17 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     answer: Answer::Accept,
                 })?;
             }
+            // One that joined after the picture last changed isn't shown it until b33p restarts
+            // (pending/tour.md, finding 11): told apart, the tour going on.
+            let group = &self.world.threads[thread];
+            let came_after = group
+                .joined
+                .get(&k)
+                .is_some_and(|&at| at > group.picture_at);
+            let shown = |chat: &b33p_harness::ConversationSnapshot, with_picture: bool| {
+                chat.title == title && !chat.request && (!with_picture || chat.avatar == picture)
+            };
+            let b33p = self.harness(k);
             b33p.wait_for(
                 &format!("the group {title:?} with its picture {picture} on b33p {k}"),
                 PATIENCE,
@@ -1590,12 +1615,26 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                         .conversations
                         .iter()
                         .find(|chat| chat.id == id)
-                        .filter(|chat| {
-                            chat.title == title && chat.avatar == picture && !chat.request
-                        })
+                        .filter(|chat| shown(chat, !came_after))
                         .map(drop)
                 },
             )?;
+            if came_after {
+                let pictured = b33p.wait_for("the picture", DETAILS_AGAIN, |snapshot| {
+                    snapshot
+                        .conversations
+                        .iter()
+                        .find(|chat| chat.id == id)
+                        .filter(|chat| chat.avatar == picture)
+                        .map(drop)
+                });
+                if pictured.is_err() {
+                    self.stale_pictures.push(format!(
+                        "b33p {k} shows {title:?} with the picture {}, not {picture}",
+                        !picture
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1868,6 +1907,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
+            picture_at: 0,
             messages: Vec::new(),
         });
         let thread = self.world.threads.len() - 1;
@@ -2294,6 +2334,7 @@ mod tests {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
+            picture_at: 0,
             messages: vec![Expected {
                 ts: 5,
                 from: 0,
@@ -2341,6 +2382,7 @@ mod tests {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
+            picture_at: 0,
             messages: Vec::new(),
         });
         world
