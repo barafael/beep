@@ -512,10 +512,12 @@ pub(super) async fn to_chat_message(
                     .flatten(),
                 _ => None,
             };
-            // The quote's copy of the text is written by the quoting sender.
+            // The quote's copy of the text is written by the quoting sender, and is the version
+            // it quotes where the stored message has been edited since.
             let (quoted, ranges) = match stored
                 .as_ref()
                 .filter(|stored| Some(stored.metadata.sender) == author_id)
+                .filter(|stored| quote.id.is_some_and(|id| is_quoted_version(stored, id)))
                 .and_then(data_of)
             {
                 Some((data, _)) => (
@@ -685,11 +687,58 @@ pub(super) async fn search(
     }
 }
 
+/// Whether `stored` is still the version of its message that a quote naming `quoted` shows: the
+/// store keeps a message as last edited, and a quote names the version it showed, the first
+/// sent or an edit (`send::send_data`'s `quoted_version`).
+fn is_quoted_version(stored: &Content, quoted: u64) -> bool {
+    stored.edited_at().unwrap_or_else(|| stored.timestamp()) == quoted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::signal::send::aci_binary;
     use presage::model::identity::OnNewIdentity;
+
+    /// A quote of a message edited since shows what it quoted, not the edit; a quote of the
+    /// latest edit, that.
+    #[test]
+    fn a_quote_is_of_the_version_it_names() {
+        use presage::libsignal_service::{content::Metadata, push_service::DEFAULT_DEVICE_ID};
+        let alice = ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000001")
+            .unwrap();
+        let content = |body: ContentBody| Content {
+            metadata: Metadata {
+                sender: alice,
+                destination: alice,
+                sender_device: *DEFAULT_DEVICE_ID,
+                pni_verified: None,
+                client_timestamp: chrono::DateTime::from_timestamp_millis(10).unwrap(),
+                server_timestamp: chrono::DateTime::from_timestamp_millis(11).unwrap(),
+                needs_receipt: false,
+                unidentified_sender: false,
+                was_plaintext: false,
+                server_guid: None,
+            },
+            body,
+        };
+        let sent = content(ContentBody::DataMessage(DataMessage {
+            body: Some("first".into()),
+            timestamp: Some(10),
+            ..Default::default()
+        }));
+        assert!(is_quoted_version(&sent, 10));
+        let edited = content(ContentBody::EditMessage(presage::proto::EditMessage {
+            target_sent_timestamp: Some(10),
+            data_message: Some(DataMessage {
+                body: Some("edited".into()),
+                timestamp: Some(20),
+                ..Default::default()
+            }),
+        }));
+        assert!(!is_quoted_version(&edited, 10), "quoted before the edit");
+        assert!(is_quoted_version(&edited, 20), "quoted after it");
+    }
 
     #[test]
     fn deleting_for_everyone_erases_only_the_authors_message() {
