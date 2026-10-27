@@ -150,6 +150,9 @@ cargo test                                # unit tests and the window's own beha
 cargo test -p b33p-slint --features harness   # end-to-end: drives the mock over the harness
 ```
 
+`just check` runs what CI checks: formatting, clippy, the tests, cargo-deny and zizmor; `just`
+lists the other tasks.
+
 Against Signal's own server and clients, without reaching Signal: the test box runs Signal-Server,
 Signal-Desktop and Signal-Android in a Podman pod with no egress, and checks b33p against them
 (Linux with rootless Podman; Android needs `/dev/kvm`). See [testbox/README.md](testbox/README.md)
