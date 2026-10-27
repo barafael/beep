@@ -51,7 +51,6 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2a
 #   #461 why a message failed to decrypt, and from which device and when, and retry receipts as
 #        their own event
 #   #453 only a message's sender deletes or edits it
-#   #454 write transactions take the lock up front
 #   #464 a send retried once when the websocket closed under it
 #   servers of one's own: `SignalServers::Custom` carries its configuration (follows our
 #        libsignal-service branch)
@@ -65,18 +64,19 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2a
 #        it acknowledged unkept (on #473; needs libsignal-service-rs#442 and #489)
 #   (no PR yet) a receipt doesn't keep a message out of the store, nor take its place (with
 #        #453)
-#   (branch fix/list-messages-arg-group, no PR yet) presage-cli's list-messages doesn't panic
-# Rebuilt on upstream main past #359 (link previews), 2026-10-26.
+#   #477 presage-cli's list-messages doesn't panic
+# Rebuilt on upstream main past #454, 2026-10-27.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
-# master key of the wrong length) and #460 (the provisioning link logged at debug instead of
-# info); #445 (drop sync messages from other accounts) is now libsignal-service-rs#474's job.
+# master key of the wrong length), #454 (write transactions take the lock up front) and #460
+# (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
+# accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "b664297f3cfe22327d86eb29a129fda80a8dc653" }
+presage = { git = "https://github.com/barafael/presage", rev = "79ed787ad029a3f7f2b75d7b3b14e8a3d26a8bf3" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b664297f3cfe22327d86eb29a129fda80a8dc653", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "79ed787ad029a3f7f2b75d7b3b14e8a3d26a8bf3", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -98,7 +98,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # changes through /v2/groups, with the avatar upload, which presage #448 needs), #476 (send a
 # sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
 # #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
-# the task's outcome handed to the pipes), #488 (one session step at a time, through a
+# the task's outcome handed to the pipes), #488 (one session step at a time, in order, through a
 # `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once stored, not once read;
 # with #489: a handle dropped unacknowledged leaves the envelope to be delivered again, not
 # acknowledged unhandled) and servers of one's own (`SignalServers::Custom`, which presage's
@@ -107,7 +107,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "a32d96b0ab29d6e44891cff7bf50a54f764366c5" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "9e9c2ef1009e80763333229b840dd13233c8258d" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

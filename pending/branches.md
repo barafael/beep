@@ -37,15 +37,16 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`b664297`) | Upstream main `30ca664` (past #359, link previews) with the fork's PRs and fork-only commits, rebased 2026-10-26: our transfer-archive commit's `reqwest` line dropped for #359's, `session_lock` beside #359's `link_preview_client` | Pinned by `main` (#76) |
+| `langis/integration` (`79ed787`) | Upstream main `86a86e7` (#454 landed, its commit dropped) with the fork's PRs and fork-only commits, rebased 2026-10-27; the same code as before plus main's rustls bump | Pinned by `forks-454` |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
-| PR branches | Rebased on upstream main `30ca664` where they conflicted: `pr/session-lock` (#473, `d17f7d0`), `pr/receive-transaction` (#476, `01ed8c3`, on it), `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). The other ten build merged with upstream main as they are | |
+| PR branches | Rebased on upstream main `86a86e7` (2026-10-27, #454 landed): `pr/session-lock` (#473, `e5efe3d`, pins lss `pr/session-lock` `d56c1ad`), `pr/receive-transaction` (#476, `8cd8bc1`, on it; its `Db` begins #454's immediate transactions; pins lss `pr/session-lock-ack` `586b5a2`), `pr/identity-change` (#449, `6237b78`), `pr/pinned-identities` (#450, `13dcb0c`). Earlier, on `30ca664`: `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). `fix/list-messages-arg-group` (#477) got a rustfmt commit (`d4d2549`). The others build merged with upstream main as they are | |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`a32d96b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, and #489's tests | Pinned by `main` (#76) |
+| `langis/integration` (`9e9c2ef`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, and #488's tokio `Mutex` (gferon's review: steps wait in order) | Pinned by `forks-454` |
+| `pr/session-lock` (`d56c1ad`), `pr/session-lock-ack` (`586b5a2`) | #488 with the tokio `Mutex`; the same with #442 and #489 on top | whisperfish/libsignal-service-rs#488; pinned by presage #473 and #476 |
 | `groups-v2-changes` (`93f9dc2`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays) | Pinned by presage `pr/groups` |
 
 ## Slint (barafael/slint)
