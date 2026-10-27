@@ -2,6 +2,11 @@
 # glibc 2.36, Qt 6.4: .github/workflows/ci.yml's image, .devcontainer/install-deps.sh), run in
 # Debian 13 as the box's other images, whose Qt 6.8 runs what Qt 6.4 built. The build context is
 # the repository; .containerignore leaves out build output and .git.
+
+# The server's image, which `cargo testbox` builds first, of its box (`--build-arg SERVER`).
+ARG SERVER=localhost/b33p-testbox-server
+FROM ${SERVER} AS server
+
 FROM docker.io/library/rust:1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS build
 COPY .devcontainer/install-deps.sh /tmp/
 RUN sh /tmp/install-deps.sh && rm -rf /var/lib/apt/lists/* /tmp/install-deps.sh
@@ -34,5 +39,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && rm /usr/bin/Xwayland
 COPY --from=build /usr/local/bin/b33p /usr/local/bin/b33p
-COPY --from=localhost/b33p-testbox-server /usr/local/bin/with-display /usr/local/bin/with-display
+COPY --from=server /usr/local/bin/with-display /usr/local/bin/with-display
 ENTRYPOINT ["with-display", "/run/view", "1280x900", "--", "b33p"]

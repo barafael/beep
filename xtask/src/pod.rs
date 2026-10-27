@@ -14,30 +14,20 @@ use crate::error::{Context, Error, Result, WithContext};
 use crate::process::{self, Heard};
 use testbox_tools::View;
 
-/// pod.yaml's `metadata.name`; kube play names each container `<pod>-<container>`.
+/// The pod's name without an instance (`--instance`); an instance's is `<POD>.<instance>`, which
+/// no `b33p-testbox-` prefix matches (an older xtask wipes the volumes by it) and no other
+/// `b33p-testbox-*` image is named. It is pod.yaml's `metadata.name` (`@POD@`), after which kube
+/// play names each container `<pod>-<container>` and the volumes are `<pod>-<claim>`; the
+/// network's; and the images', `localhost/<pod>-<image>`.
 const POD: &str = "b33p-testbox";
-const NETWORK: &str = "b33p-testbox";
-/// The harness's and the drivers' sockets (testbox/pod.yaml volume `run`): the owner's only, as
-/// the clients' side and the xtask's are both the user's.
-pub const RUN: &str = "target/testbox-run";
-/// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
-pub const FILES: &str = "target/testbox-files";
-/// What each box leaves for looking into it (xtask/src/checks/record.rs): `test`'s under
-/// `<box>`, `run`'s under `run/<when it started>/<round>/<box>`.
-pub const RECORD: &str = "target/testbox-record";
-/// Each image's build output, as `<image>.log`.
-const BUILD_LOGS: &str = "target/testbox-build";
-/// The lock [`Pod::holding`] takes.
-const HELD: &str = "target/testbox.lock";
 /// How much of a failed build's log its error shows.
 const BUILD_TAIL: usize = 40;
-/// A directory per client for its display's socket, which only that client mounts
-/// (testbox/pod.yaml volumes `view-<client>`): no client reaches another's display.
-pub const VIEW: &str = "target/testbox-view";
 /// The clients with a display, as pod.yaml's `view-<client>` volumes name them.
 pub const SCREENS: [Service; 3] = [Service::B33p, Service::Desktop, Service::Android];
 /// The line of pod.yaml's container list the clients go in, all of it.
 const CLIENTS: &str = "# @CLIENTS@";
+/// The longest instance name: the names podman gives the pod's parts stay short.
+const INSTANCE_MAX: usize = 24;
 
 /// A container of the pod (testbox/pod.yaml, the clients' files).
 #[derive(Clone, Copy, strum::IntoStaticStr)]
@@ -107,7 +97,8 @@ impl Client {
 /// An image pod.yaml runs, built before it plays: kube play builds only images named after a
 /// directory of their own, and these mostly build from the repository (for testbox/tools).
 struct Image {
-    tag: &'static str,
+    /// Tagged `localhost/<pod>-<name>` ([`Pod::tag`]).
+    name: &'static str,
     /// Relative to the repository.
     containerfile: &'static str,
     context: &'static str,
@@ -115,21 +106,24 @@ struct Image {
     client: Option<Client>,
     /// Takes the build profile (`PROFILE`): b33p's.
     profiled: bool,
+    /// Copies from the server's image, which its `SERVER` build argument names.
+    from_server: bool,
 }
 
 impl Image {
     /// The defaults: the repository as the context, with every client.
     const REPOSITORY: Self = Self {
-        tag: "",
+        name: "",
         containerfile: "",
         context: ".",
         client: None,
         profiled: false,
+        from_server: false,
     };
 }
 
 /// The server's image, which the clients' copy the box's keys and tools from.
-const SERVER: &str = "localhost/b33p-testbox-server";
+const SERVER: &str = "server";
 
 /// How a build shares the CPU.
 #[derive(Clone, Copy)]
@@ -141,66 +135,69 @@ enum Priority {
 
 const IMAGES: [Image; 10] = [
     Image {
-        tag: SERVER,
+        name: SERVER,
         containerfile: "testbox/server/Containerfile",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-dynamodb",
+        name: "dynamodb",
         containerfile: "testbox/dynamodb/Containerfile",
         context: "testbox/dynamodb",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-foundationdb",
+        name: "foundationdb",
         containerfile: "testbox/foundationdb/Containerfile",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-tus",
+        name: "tus",
         containerfile: "testbox/tus/Containerfile",
         context: "testbox/tus",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-cdn0",
+        name: "cdn0",
         containerfile: "testbox/garage/Containerfile",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-storage",
+        name: "storage",
         containerfile: "testbox/storage/Containerfile",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-presage",
+        name: "presage",
         containerfile: "testbox/presage/Containerfile",
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-b33p",
+        name: "b33p",
         containerfile: "testbox/b33p/Containerfile",
         profiled: true,
+        from_server: true,
         ..Image::REPOSITORY
     },
     Image {
-        tag: "localhost/b33p-testbox-desktop",
+        name: "desktop",
         containerfile: "testbox/desktop/Containerfile",
         context: "testbox/desktop",
         client: Some(Client::Desktop),
         profiled: false,
+        from_server: true,
     },
     Image {
-        tag: "localhost/b33p-testbox-android",
+        name: "android",
         containerfile: "testbox/android/Containerfile",
         client: Some(Client::Android),
+        from_server: true,
         ..Image::REPOSITORY
     },
 ];
 
 /// An image's build going on; dropped before [`Building::finish`], it is stopped.
 pub struct Building {
-    name: &'static str,
+    name: String,
     log: PathBuf,
     started: Instant,
     child: Option<Child>,
@@ -253,6 +250,11 @@ impl Drop for Building {
 
 pub struct Pod {
     repo: PathBuf,
+    /// [`POD`], or `<POD>.<instance>`.
+    name: String,
+    /// Where the host side of the box goes, relative to the repository: [`POD`]'s in
+    /// `target/testbox-<what>`, an instance's in `target/testbox-<instance>-<what>`.
+    target: String,
     /// pod.yaml with its paths and clients filled in: hostPath must be absolute.
     rendered: PathBuf,
     /// What tells of a lost message, from outside the containers' logs ([`Self::note_lost`]).
@@ -260,12 +262,76 @@ pub struct Pod {
 }
 
 impl Pod {
-    pub fn new(repo: &Path) -> Self {
-        Self {
+    /// The box of `instance`, one of several on the host, each with a pod, network, volumes,
+    /// images and directories of its own; without one, [`POD`]'s.
+    pub fn new(repo: &Path, instance: Option<&str>) -> Result<Self> {
+        let (name, target) = match instance {
+            None => (POD.to_owned(), "target/testbox".to_owned()),
+            Some(instance) => {
+                let valid = instance.len() <= INSTANCE_MAX
+                    && instance.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    && instance
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if !valid {
+                    return Err(Error::Failed(format!(
+                        "instance {instance:?}: up to {INSTANCE_MAX} lowercase letters, digits \
+                         and dashes, starting with a letter or digit"
+                    )));
+                }
+                (
+                    format!("{POD}.{instance}"),
+                    format!("target/testbox-{instance}"),
+                )
+            }
+        };
+        Ok(Self {
             repo: repo.to_owned(),
-            rendered: repo.join("target/testbox-pod.yaml"),
+            rendered: repo.join(format!("{target}-pod.yaml")),
+            name,
+            target,
             lost: Mutex::default(),
-        }
+        })
+    }
+
+    /// This box's `what` on the host ([`Self::target`]).
+    fn target(&self, what: &str) -> PathBuf {
+        self.repo.join(format!("{}-{what}", self.target))
+    }
+
+    /// The harness's and the drivers' sockets (testbox/pod.yaml volume `run`): the owner's only,
+    /// as the clients' side and the xtask's are both the user's.
+    pub fn run_dir(&self) -> PathBuf {
+        self.target("run")
+    }
+
+    /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
+    pub fn files_dir(&self) -> PathBuf {
+        self.target("files")
+    }
+
+    /// What each box leaves for looking into it (xtask/src/checks/record.rs): `test`'s under
+    /// `<box>`, `run`'s under `run/<when it started>/<round>/<box>`.
+    pub fn record_dir(&self) -> PathBuf {
+        self.target("record")
+    }
+
+    /// A directory per client for its display's socket, which only that client mounts
+    /// (testbox/pod.yaml volumes `view-<client>`): no client reaches another's display.
+    fn views_dir(&self) -> PathBuf {
+        self.target("view")
+    }
+
+    /// `image`'s tag: this box's own, as each box builds its images from its own worktree.
+    fn tag(&self, image: &str) -> String {
+        format!("localhost/{}-{image}", self.name)
+    }
+
+    /// The lock [`Self::holding`] takes: the host's, for this box from any worktree.
+    fn held(&self) -> PathBuf {
+        let runtime =
+            std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        runtime.join(format!("{}.lock", self.name))
     }
 
     /// `optimized` builds b33p optimized as it ships (the `testbox` profile) instead of as the
@@ -283,14 +349,14 @@ impl Pod {
 
     /// Builds the server's image, which the clients' copy from (`COPY --from`).
     pub fn build_server(&self) -> Result<()> {
-        self.build_images(|image| image.tag == SERVER, Priority::Normal, false)
+        self.build_images(|image| image.name == SERVER, Priority::Normal, false)
     }
 
     /// Builds the images the pod and `clients` run but the server's, built already.
     pub fn build_others(&self, clients: &[Client], optimized: bool) -> Result<()> {
         self.build_images(
             |image| {
-                image.tag != SERVER && image.client.is_none_or(|client| clients.contains(&client))
+                image.name != SERVER && image.client.is_none_or(|client| clients.contains(&client))
             },
             Priority::Normal,
             optimized,
@@ -320,12 +386,14 @@ impl Pod {
         Ok(())
     }
 
-    /// Starts building `image`, its output in a log of its own under [`BUILD_LOGS`]: a build's
-    /// output would bury what a run's checks print.
+    /// Starts building `image`, its output in a log of its own, `<image>.log` in
+    /// `target/testbox-build` ([`Self::target`]): a build's output would bury what a run's
+    /// checks print.
     fn start_build(&self, image: &Image, priority: Priority, optimized: bool) -> Result<Building> {
-        let logs = self.repo.join(BUILD_LOGS);
+        let logs = self.target("build");
         std::fs::create_dir_all(&logs).context(logs.display().to_string())?;
-        let name = image.tag.rsplit('/').next().unwrap_or(image.tag);
+        let tag = self.tag(image.name);
+        let name = tag.rsplit('/').next().unwrap_or(&tag).to_owned();
         let path = logs.join(format!("{name}.log"));
         let log = File::create(&path).context(path.display().to_string())?;
         let mut build = match priority {
@@ -337,7 +405,12 @@ impl Pod {
             }
         };
         // Stages that don't depend on each other at once (a Maven build and a cargo one).
-        build.args(["build", "--jobs", "0", "-t", image.tag]);
+        build.args(["build", "--jobs", "0", "-t", &tag]);
+        if image.from_server {
+            build
+                .arg("--build-arg")
+                .arg(format!("SERVER={}", self.tag(SERVER)));
+        }
         if image.profiled {
             let profile = if optimized { "testbox" } else { "dev" };
             build.arg("--build-arg").arg(format!("PROFILE={profile}"));
@@ -358,16 +431,18 @@ impl Pod {
         })
     }
 
-    /// Runs `change` with the box held: two commands that play or take down the one pod at once
-    /// break each other's. Fails at once if another process holds it.
+    /// Runs `change` with the box held: two commands that play or take down one pod at once
+    /// break each other's, from one worktree or two. Fails at once if another process holds it.
     pub fn holding(&self, change: impl FnOnce() -> Result<()>) -> Result<()> {
-        let path = self.repo.join(HELD);
+        let path = self.held();
         let held = File::create(&path).context(path.display().to_string())?;
         match held.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
                 return Err(Error::Failed(format!(
-                    "another cargo testbox up, test or down holds the box ({})",
+                    "another cargo testbox up, test or down holds the box {} ({}); another box \
+                     plays beside it with --instance",
+                    self.name,
                     path.display()
                 )));
             }
@@ -380,44 +455,46 @@ impl Pod {
 
     /// Plays the pod with `clients`, their images built.
     pub fn play(&self, clients: &[Client]) -> Result<()> {
-        // Not in pod.yaml: Kubernetes YAML has no network objects.
+        // Not in pod.yaml: Kubernetes YAML has no network objects. Named after the pod: each box
+        // on a network of its own, out of the other boxes' reach.
+        let network = self.name.as_str();
         quietly(podman(&[
             "network",
             "create",
             "--ignore",
             "--internal",
-            NETWORK,
+            network,
         ]))?;
         // `--ignore` keeps a network of that name that was there: only if it has no egress.
         let internal = process::output(
-            podman(&["network", "inspect", "--format", "{{.Internal}}", NETWORK]),
+            podman(&["network", "inspect", "--format", "{{.Internal}}", network]),
             "",
         )?;
         if internal.trim() != "true" {
             return Err(Error::Failed(format!(
-                "the network {NETWORK} has egress: `podman network rm {NETWORK}`"
+                "the network {network} has egress: `podman network rm {network}`"
             )));
         }
         // The test files: the clients mount them read-only, so none can plant a link there for
         // the xtask to write through.
-        let files = self.repo.join(FILES);
+        let files = self.files_dir();
         std::fs::create_dir_all(&files).context(files.display().to_string())?;
         // The sockets: the owner's only, whatever is in it; a link a container plants there
         // leads nowhere (`testbox_tools::box_socket`).
-        let run = self.repo.join(RUN);
+        let run = self.run_dir();
         std::fs::create_dir_all(&run).context(run.display().to_string())?;
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))
             .context(run.display().to_string())?;
         // The displays' sockets likewise; pod.yaml mounts each client's, so all of them exist.
         for directory in
-            std::iter::once(self.repo.join(VIEW)).chain(SCREENS.map(|screen| self.view_dir(screen)))
+            std::iter::once(self.views_dir()).chain(SCREENS.map(|screen| self.view_dir(screen)))
         {
             std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
                 .context(directory.display().to_string())?;
         }
         testbox_tools::write(&self.rendered, self.render(clients)?)?;
-        let mut play = podman(&["kube", "play", "--replace", "--network", NETWORK]);
+        let mut play = podman(&["kube", "play", "--replace", "--network", network]);
         play.arg(&self.rendered);
         quietly(play)
     }
@@ -428,8 +505,8 @@ impl Pod {
         self.play(clients)
     }
 
-    /// pod.yaml with the repository filled in, and the clients' containers in its
-    /// [`CLIENTS`] line.
+    /// pod.yaml with this box's names (`@POD@`) and directories (`@TARGET@`) filled in, and the
+    /// clients' containers in its [`CLIENTS`] line.
     fn render(&self, clients: &[Client]) -> Result<String> {
         let read = |path: &str| testbox_tools::read(&self.repo.join(path));
         let containers = clients
@@ -446,13 +523,15 @@ impl Pod {
                 }
             })
             .collect();
-        Ok(pod.replace("@REPO@", &self.repo.to_string_lossy()))
+        Ok(pod
+            .replace("@TARGET@", &self.repo.join(&self.target).to_string_lossy())
+            .replace("@POD@", &self.name))
     }
 
     /// Where `screen`'s display serves on the host: its `with-display` directory, /run/view.
     pub fn view_dir(&self, screen: Service) -> PathBuf {
         let name: &'static str = screen.into();
-        self.repo.join(VIEW).join(name)
+        self.views_dir().join(name)
     }
 
     /// The socket in [`Self::view_dir`] that takes the viewer's input if `interactive`, else
@@ -475,7 +554,7 @@ impl Pod {
                 "inspect",
                 "--format",
                 "{{.State.Running}}",
-                &container(service),
+                &self.container(service),
             ]),
             "",
         );
@@ -484,7 +563,8 @@ impl Pod {
 
     /// `--force` also removes the persistentVolumeClaims' volumes. kube down needs the YAML the
     /// pod was played from, which another worktree's `up` wrote in its own `target`: then the
-    /// pod and, to wipe, the volumes go by their names.
+    /// pod and, to wipe, the volumes go by their names, pod.yaml's claims. Not by a prefix: the
+    /// default box's would take every instance's.
     pub fn down(&self, wipe: bool) -> Result<()> {
         if self.rendered.exists() {
             let mut down = podman(&["kube", "down"]);
@@ -495,18 +575,25 @@ impl Pod {
             quietly(down)?;
         }
         let pod = process::output(
-            podman(&["pod", "ps", "-q", "--filter", &format!("name=^{POD}$")]),
+            podman(&[
+                "pod",
+                "ps",
+                "-q",
+                "--filter",
+                &format!("name=^{}$", self.name),
+            ]),
             "",
         )?;
         if !pod.trim().is_empty() {
-            quietly(podman(&["pod", "rm", "--force", POD]))?;
+            quietly(podman(&["pod", "rm", "--force", &self.name]))?;
         }
         if wipe {
-            let volumes = process::output(
-                podman(&["volume", "ls", "-q", "--filter", &format!("name=^{POD}-")]),
-                "",
-            )?;
-            let volumes: Vec<&str> = volumes.split_whitespace().collect();
+            let claims = claims(&self.render(&[])?);
+            let present = process::output(podman(&["volume", "ls", "-q"]), "")?;
+            let volumes: Vec<&str> = present
+                .split_whitespace()
+                .filter(|volume| claims.iter().any(|claim| claim == volume))
+                .collect();
             if !volumes.is_empty() {
                 quietly(podman(&[&["volume", "rm"][..], &volumes].concat()))?;
             }
@@ -516,7 +603,7 @@ impl Pod {
 
     /// `service`'s log so far, what it wrote to stdout and stderr alike.
     pub fn log(&self, service: Service) -> Result<String> {
-        self.log_named(&container(service))
+        self.log_named(&self.container(service))
     }
 
     /// The pod's containers by name, stopped ones too; none if podman can't say.
@@ -526,7 +613,7 @@ impl Pod {
                 "ps",
                 "--all",
                 "--filter",
-                &format!("pod={POD}"),
+                &format!("pod={}", self.name),
                 "--format",
                 "{{.Names}}",
             ]),
@@ -572,7 +659,7 @@ impl Pod {
 
     pub fn logs(&self, services: &[&str]) -> Result<()> {
         for service in services {
-            process::run(podman(&["logs", &format!("{POD}-{service}")]))?;
+            process::run(podman(&["logs", &format!("{}-{service}", self.name)]))?;
         }
         Ok(())
     }
@@ -580,14 +667,14 @@ impl Pod {
     /// Runs `argv` in `service`, without a shell, with `stdin` as its input; returns stdout, and
     /// fails with what it printed on a non-zero exit.
     pub fn exec(&self, service: Service, argv: &[&str], stdin: &str) -> Result<String> {
-        let mut exec = podman(&["exec", "-i", &container(service)]);
+        let mut exec = podman(&["exec", "-i", &self.container(service)]);
         exec.args(argv);
         process::output(exec, stdin)
     }
 
     /// Runs `argv` in `service` without a shell, and returns how it ended, whatever that was.
     pub fn exec_status(&self, service: Service, argv: &[&str]) -> Result<std::process::Output> {
-        let mut exec = podman(&["exec", &container(service)]);
+        let mut exec = podman(&["exec", &self.container(service)]);
         exec.args(argv);
         exec.output()
             .with_context(|| format!("podman exec {}", argv.join(" ")))
@@ -596,30 +683,35 @@ impl Pod {
     /// Freezes `service` until [`Self::unpause`]: its connections stay open, and nothing answers
     /// on them, as when a network goes away without a word.
     pub fn pause(&self, service: Service) -> Result<()> {
-        process::run(podman(&["pause", &container(service)]))
+        process::run(podman(&["pause", &self.container(service)]))
     }
 
     pub fn unpause(&self, service: Service) -> Result<()> {
-        process::run(podman(&["unpause", &container(service)]))
+        process::run(podman(&["unpause", &self.container(service)]))
     }
 
     pub fn restart(&self, service: Service) -> Result<()> {
-        quietly(podman(&["restart", &container(service)]))
+        quietly(podman(&["restart", &self.container(service)]))
     }
 
     /// Stops `service` as `podman stop` does: its stop signal, then SIGKILL after the timeout.
     pub fn stop(&self, service: Service) -> Result<()> {
-        process::run(podman(&["stop", &container(service)]))
+        process::run(podman(&["stop", &self.container(service)]))
     }
 
     pub fn start(&self, service: Service) -> Result<()> {
-        process::run(podman(&["start", &container(service)]))
+        process::run(podman(&["start", &self.container(service)]))
     }
 
     /// Ends every process in `service` at once, as a power cut would: nothing gets to flush or
     /// close. `with-display` goes with its client, so the crash check doesn't count it.
     pub fn kill(&self, service: Service) -> Result<()> {
-        process::run(podman(&["kill", "--signal", "KILL", &container(service)]))
+        process::run(podman(&[
+            "kill",
+            "--signal",
+            "KILL",
+            &self.container(service),
+        ]))
     }
 
     /// What `service` uses of memory, as `podman stats` says it ("212.4MB / 33.3GB").
@@ -629,7 +721,7 @@ impl Pod {
             "--no-stream",
             "--format",
             "{{.MemUsage}}",
-            &container(service),
+            &self.container(service),
         ]);
         process::output(stats, "").map(|usage| usage.trim().to_owned())
     }
@@ -643,7 +735,7 @@ impl Pod {
             &limit,
             "--memory-swap",
             &limit,
-            &container(service),
+            &self.container(service),
         ]))
     }
 
@@ -688,10 +780,11 @@ impl Pod {
         let deadline = Instant::now() + patience;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            match process::await_lines(follow_logs(service, since), needle, times, left)? {
+            match process::await_lines(self.follow_logs(service, since), needle, times, left)? {
                 Heard::Found => return Ok(()),
                 Heard::Ended => {
-                    let running = podman(&["wait", "--condition", "running", &container(service)]);
+                    let running =
+                        podman(&["wait", "--condition", "running", &self.container(service)]);
                     process::output(running, "")?;
                 }
             }
@@ -716,41 +809,148 @@ fn podman(args: &[&str]) -> Command {
     podman
 }
 
-/// What kube play names `service`'s container.
-fn container(service: Service) -> String {
-    let name: &'static str = service.into();
-    format!("{POD}-{name}")
+impl Pod {
+    /// What kube play names `service`'s container.
+    fn container(&self, service: Service) -> String {
+        let name: &'static str = service.into();
+        format!("{}-{name}", self.name)
+    }
+
+    /// `logs --follow` of `service`, from `since` on (seconds since the epoch), or from its
+    /// start.
+    fn follow_logs(&self, service: Service, since: Option<u64>) -> Command {
+        let mut logs = podman(&["logs", "--follow"]);
+        if let Some(since) = since {
+            logs.args(["--since", &since.to_string()]);
+        }
+        logs.arg(self.container(service));
+        logs
+    }
 }
 
-/// `logs --follow` of `service`, from `since` on (seconds since the epoch), or from its start.
-fn follow_logs(service: Service, since: Option<u64>) -> Command {
-    let mut logs = podman(&["logs", "--follow"]);
-    if let Some(since) = since {
-        logs.args(["--since", &since.to_string()]);
-    }
-    logs.arg(container(service));
-    logs
+/// The volumes a rendered pod.yaml claims (`claimName`), by name.
+fn claims(pod: &str) -> Vec<String> {
+    pod.split("claimName: \"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_owned)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A second hold fails while the first is held, and succeeds once it ended.
+    /// The repository xtask is in, for pod.yaml.
+    fn repo() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lives in the workspace root")
+            .to_owned()
+    }
+
+    /// A second hold fails while the first is held, and succeeds once it ended; the host's, so
+    /// from any worktree.
     #[test]
     fn the_box_is_held_once() {
-        let repo = std::env::temp_dir().join(format!("testbox-hold-{}", std::process::id()));
-        std::fs::create_dir_all(repo.join("target")).expect("a scratch repository");
-        let pod = Pod::new(&repo);
+        let instance = format!("hold-{}", std::process::id());
+        let pod = Pod::new(Path::new("/one"), Some(&instance)).expect("an instance");
+        let elsewhere = Pod::new(Path::new("/two"), Some(&instance)).expect("an instance");
         pod.holding(|| {
             assert!(
-                pod.holding(|| Ok(())).is_err(),
+                elsewhere.holding(|| Ok(())).is_err(),
                 "a second hold while the first is held"
             );
             Ok(())
         })
         .expect("the first hold");
-        pod.holding(|| Ok(())).expect("a hold once the first ended");
-        std::fs::remove_dir_all(&repo).expect("the scratch repository removed");
+        elsewhere
+            .holding(|| Ok(()))
+            .expect("a hold once the first ended");
+        std::fs::remove_file(pod.held()).expect("the lock removed");
+    }
+
+    /// Without an instance, the names and directories are those of before instances.
+    #[test]
+    fn the_default_box_keeps_its_names() {
+        let repo = repo();
+        let pod = Pod::new(&repo, None).expect("the default box");
+        assert_eq!(pod.container(Service::B33p), "b33p-testbox-b33p");
+        assert_eq!(pod.tag(SERVER), "localhost/b33p-testbox-server");
+        assert_eq!(pod.run_dir(), repo.join("target/testbox-run"));
+        assert_eq!(pod.record_dir(), repo.join("target/testbox-record"));
+        let rendered = pod.render(&[]).expect("pod.yaml");
+        assert!(rendered.contains(r#"name: "b33p-testbox","#), "{rendered}");
+        assert!(rendered.contains(r#"image: "localhost/b33p-testbox-b33p","#));
+        assert!(rendered.contains(&format!(r#"path: "{}/target/testbox-run""#, repo.display())));
+    }
+
+    /// An instance's names and directories are its own, and pod.yaml leaves none of the
+    /// default box's: two boxes share nothing.
+    #[test]
+    fn an_instance_shares_nothing_with_the_default_box() {
+        let repo = repo();
+        let pod = Pod::new(&repo, Some("two")).expect("an instance");
+        assert_eq!(pod.container(Service::B33p), "b33p-testbox.two-b33p");
+        assert_eq!(pod.tag("b33p"), "localhost/b33p-testbox.two-b33p");
+        assert_eq!(pod.run_dir(), repo.join("target/testbox-two-run"));
+        assert_eq!(pod.files_dir(), repo.join("target/testbox-two-files"));
+        let rendered = pod
+            .render(&[Client::Desktop, Client::Android])
+            .expect("pod.yaml");
+        for line in rendered
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+        {
+            assert!(
+                !line.contains("@POD@") && !line.contains("@TARGET@") && !line.contains("@REPO@"),
+                "a placeholder left: {line}"
+            );
+            for word in line.split('"').filter(|word| word.contains("b33p-testbox")) {
+                assert!(
+                    word.contains("b33p-testbox.two"),
+                    "the default box's {word:?} in {line:?}"
+                );
+            }
+            if line.contains("hostPath") {
+                assert!(line.contains("/target/testbox-two-"), "{line}");
+            }
+        }
+    }
+
+    /// A wipe takes a box's own volumes, by their names: the default box's not an instance's,
+    /// though theirs start alike.
+    #[test]
+    fn a_wipe_takes_only_its_own_volumes() {
+        let repo = repo();
+        let default = claims(&Pod::new(&repo, None).unwrap().render(&[]).unwrap());
+        let two = claims(&Pod::new(&repo, Some("two")).unwrap().render(&[]).unwrap());
+        assert!(
+            default.contains(&"b33p-testbox-keys".to_owned()),
+            "{default:?}"
+        );
+        assert!(two.contains(&"b33p-testbox.two-keys".to_owned()), "{two:?}");
+        assert_eq!(default.len(), two.len());
+        assert!(default.iter().all(|claim| !two.contains(claim)));
+        // What an older xtask's wipe takes, `name=^b33p-testbox-`, is none of an instance's.
+        assert!(two.iter().all(|claim| !claim.starts_with("b33p-testbox-")));
+    }
+
+    #[test]
+    fn an_instance_is_a_short_plain_name() {
+        for good in ["2", "tour", "pr-82"] {
+            assert!(Pod::new(Path::new("/r"), Some(good)).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "Tour",
+            "a b",
+            "a/b",
+            "a_b",
+            &"x".repeat(INSTANCE_MAX + 1),
+        ] {
+            assert!(Pod::new(Path::new("/r"), Some(bad)).is_err(), "{bad:?}");
+        }
     }
 }

@@ -9,7 +9,7 @@ publish = false
 b33p-harness.workspace = true
 # Its mock voice message, as the box's test audio. Without the `signal` feature.
 b33p-core.workspace = true
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 derive_more = { version = "2", features = ["display", "error", "from"] }
 # The pictures `stress-content` sends: huge, broken and animated ones. b33p-core's version.
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

@@ -31,7 +31,7 @@ use strum::VariantArray;
 
 use crate::error::{Error, Result};
 use crate::phase::{AndroidPhase, LinkedPhase, Phase, StressPhase};
-use crate::pod::{self, Client, Pod, Service};
+use crate::pod::{Client, Pod, Service};
 use crate::{Sockets, TestOptions};
 
 use self::record::Record;
@@ -59,8 +59,8 @@ pub(crate) fn run(
         fresh,
         b33p,
     } = options;
-    let sockets = Sockets::new(repo);
-    let files = repo.join(pod::FILES);
+    let sockets = Sockets::new(containers);
+    let files = containers.files_dir();
     let linked = chosen(phases, Phase::Linked);
     let android = chosen(phases, Phase::Android);
     let linked_clients = [Client::Desktop];
