@@ -192,14 +192,6 @@ pub(super) fn mesh_box<'pod>(
                 let (earlier, rest) = mesh.b33ps.split_at_mut(i);
                 let (this, later) = rest.split_first_mut().ok_or("a b33p of the mesh's")?;
                 for other in earlier.iter() {
-                    // Once b33p shows the sender by name: until presage has saved them, the
-                    // chat is titled by their id, and once saved b33p reloads every chat's
-                    // settings, which would take back an acceptance not yet written
-                    // (pending/tour.md, finding 8).
-                    let name = Account::Mesh(other.n).name();
-                    b33p_chat(&mut this.b33p, &other.chat(), "titled by name", |chat| {
-                        chat.title == name
-                    })?;
                     accept_request(&mut this.b33p, &other.chat())?;
                 }
                 for other in later.iter() {

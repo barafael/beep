@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use b33p_harness::{Action, Answer, AttachmentKind, Delivery, InviteLinkAccess, Snapshot};
+use b33p_harness::{Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot};
 use serde::Serialize;
 use strum::VariantArray;
 
@@ -107,8 +107,6 @@ struct Thread {
     joined: BTreeMap<usize, u64>,
     description: Option<String>,
     picture: bool,
-    /// When the picture last changed, in milliseconds since the epoch.
-    picture_at: u64,
     messages: Vec<Expected>,
 }
 
@@ -486,27 +484,6 @@ pub(super) fn tour(
             .entry(kind.into())
             .or_default()
             .push(took.as_secs_f64());
-        if let Some((by, tried)) = tour.looked_up.take() {
-            checks.record(
-                &format!("step {number}: nothing looked the link up"),
-                || {
-                    if tried == 0 {
-                        Ok(())
-                    } else {
-                        Err(Error::Failed(format!(
-                            "b33p {by} logged {tried} tries at a preview, with link previews off"
-                        )))
-                    }
-                },
-            );
-        }
-        let stale = std::mem::take(&mut tour.stale_pictures);
-        if !stale.is_empty() {
-            checks.record(
-                &format!("step {number}: who came back shows the group's picture"),
-                || Err(Error::Failed(stale.join("\n"))),
-            );
-        }
         if outcome.is_err() {
             tour.write(checks, seed);
             tour.keep_snapshots(checks);
@@ -566,7 +543,6 @@ impl World {
                 joined: BTreeMap::new(),
                 description: None,
                 picture: false,
-                picture_at: 0,
                 messages: Vec::new(),
             })
             .collect();
@@ -1121,10 +1097,6 @@ struct Tour<'run, 'pod> {
     /// Each b33p's samples, with when they were taken (seconds into the tour).
     samples: Vec<Vec<Sample>>,
     sampled_at: Vec<Vec<f64>>,
-    /// Who sent a link at the last step, and how often it was looked up.
-    looked_up: Option<(usize, usize)>,
-    /// The groups whose picture a member that came back after it changed doesn't show.
-    stale_pictures: Vec<String>,
     started: Instant,
     sampled: Instant,
 }
@@ -1155,8 +1127,6 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             restarts: Vec::new(),
             samples: (0..count).map(|_| Vec::new()).collect(),
             sampled_at: (0..count).map(|_| Vec::new()).collect(),
-            looked_up: None,
-            stale_pictures: Vec::new(),
             started: Instant::now(),
             sampled: Instant::now(),
         }
@@ -1437,7 +1407,6 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     path: picture.then(|| format!("/files/{PICTURE}")),
                 })?;
                 self.world.threads[thread].picture = picture;
-                self.world.threads[thread].picture_at = now_ms();
                 self.converge_group(thread)
             }
             Step::AddMember { by, thread, member } => {
@@ -1527,10 +1496,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 let ts = self.send(by, &text)?;
                 self.add(thread, by, ts, &text);
                 self.converge_timed(thread, by, started)?;
-                let tried = tries(self)? - before;
-                // Checked apart (`tour`), as a failure here leaves the chats as the model has them.
-                self.looked_up = Some((by, tried));
-                Ok(())
+                match tries(self)? - before {
+                    0 => Ok(()),
+                    tried => Err(Error::Failed(format!(
+                        "b33p {by} logged {tried} tries at a preview, with link previews off"
+                    ))),
+                }
             }
         }
     }
@@ -1618,71 +1589,37 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         outcome.map_err(|error| Error::Failed(format!("{error}\n{}", difference(&expected, &last))))
     }
 
-    /// Waits until every member of the group `thread` lists it with its title and picture,
-    /// answering a request to join it as a member would.
+    /// Waits until every member of the group `thread` lists it with its title and picture, and not
+    /// as a message request: whoever brought them in is a b33p they accepted, or themselves
+    /// (Signal-Desktop's `isConversationAccepted`).
     fn converge_group(&mut self, thread: usize) -> Result<()> {
         let members: Vec<usize> = self.world.threads[thread].members.iter().copied().collect();
         for k in members {
             let group = &self.world.threads[thread];
             let id = group.id_on(k, self.b33ps);
             let (title, picture) = (group.title.clone(), group.picture);
-            let b33p = self.harness(k);
-            let request = b33p.wait_for(
-                &format!("the group {title:?} on b33p {k}"),
-                PATIENCE,
-                |snapshot| {
-                    snapshot
-                        .conversations
-                        .iter()
-                        .find(|chat| chat.id == id && !chat.left)
-                        .map(|chat| chat.request)
-                },
-            )?;
-            if request {
-                select(b33p, &id)?;
-                b33p.act(Action::Respond {
-                    answer: Answer::Accept,
-                })?;
-            }
-            // One that joined after the picture last changed isn't shown it until b33p restarts
-            // (pending/tour.md, finding 11): told apart, the tour going on.
-            let group = &self.world.threads[thread];
-            let came_after = group
-                .joined
-                .get(&k)
-                .is_some_and(|&at| at > group.picture_at);
-            let shown = |chat: &b33p_harness::ConversationSnapshot, with_picture: bool| {
-                chat.title == title && !chat.request && (!with_picture || chat.avatar == picture)
-            };
-            let b33p = self.harness(k);
-            b33p.wait_for(
+            let mut last = None;
+            let shown = self.harness(k).wait_for(
                 &format!("the group {title:?} with its picture {picture} on b33p {k}"),
                 PATIENCE,
                 |snapshot| {
-                    snapshot
+                    let chat = snapshot
                         .conversations
                         .iter()
-                        .find(|chat| chat.id == id)
-                        .filter(|chat| shown(chat, !came_after))
-                        .map(drop)
+                        .find(|chat| chat.id == id && !chat.left)?;
+                    last = Some((chat.title.clone(), chat.avatar, chat.request));
+                    (chat.title == title && chat.avatar == picture && !chat.request).then_some(())
                 },
-            )?;
-            if came_after {
-                let pictured = b33p.wait_for("the picture", DETAILS_AGAIN, |snapshot| {
-                    snapshot
-                        .conversations
-                        .iter()
-                        .find(|chat| chat.id == id)
-                        .filter(|chat| chat.avatar == picture)
-                        .map(drop)
-                });
-                if pictured.is_err() {
-                    self.stale_pictures.push(format!(
-                        "b33p {k} shows {title:?} with the picture {}, not {picture}",
-                        !picture
-                    ));
-                }
-            }
+            );
+            shown.map_err(|error| match last {
+                Some((_, _, true)) => Error::Failed(format!(
+                    "{error}\nb33p {k} shows the group as a message request"
+                )),
+                Some((shown, avatar, false)) => Error::Failed(format!(
+                    "{error}\nb33p {k} shows {shown:?} with the picture {avatar}"
+                )),
+                None => error,
+            })?;
         }
         Ok(())
     }
@@ -1955,7 +1892,6 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
-            picture_at: 0,
             messages: Vec::new(),
         });
         let thread = self.world.threads.len() - 1;
@@ -2386,7 +2322,6 @@ mod tests {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
-            picture_at: 0,
             messages: vec![Expected {
                 ts: 5,
                 from: 0,
@@ -2434,7 +2369,6 @@ mod tests {
             joined: BTreeMap::new(),
             description: None,
             picture: false,
-            picture_at: 0,
             messages: Vec::new(),
         });
         world
