@@ -53,8 +53,8 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`2aa99c5`) | Upstream master `7e32802` (2026-10-26) with merges of #13985 (`eed8be0`) and #14449 (`1f053c6`) | Pinned by `main` (#76) |
-| `pr/qt-color-bitmap-glyphs` (`1f053c6`), pushed | The emoji commit, master merged in, and `CBDT` and `sbix` in the file's spell-check words (the PR's `lint_typecheck` failed on them) | slint-ui/slint#14449 |
+| `langis/integration` (`69f78e9`) | `2aa99c5` (upstream master `7e32802` with merges of #13985 and #14449) plus a merge of #14449 as reviewed (`930ceeb`), which brings master `a63a8ed` (2026-10-27) | Pinned by `forks-454` (#82) |
+| `pr/qt-color-bitmap-glyphs` (`930ceeb`), pushed | The emoji commit, master merged in, `CBDT` and `sbix` in the spell-check words, and the review's points: a stroke draws no emoji (it drew them twice: 713 of 2499 pixels differed), the font parsed only on a cache miss, why glyphs without a bitmap are skipped, straight alpha (measured), `tests/Cargo.lock` master's plus `swash`, "color". On Debian 12's Qt 6.4.2, b33p's mock under valgrind: 0 errors; 5 invalid writes in `QFontEngineFT::loadGlyph` without the fix | slint-ui/slint#14449 |
 
 ## Testbox runs
 
