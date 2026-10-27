@@ -60,11 +60,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2a
 #   #473 the manager's ciphers and senders share one session lock (needs
 #        libsignal-service-rs#488)
 #   #475 an edited message is found by its latest edit's time, which Signal's apps name it by
-#   (no PR yet) a receipt doesn't keep a message out of the store, nor take its place (with
-#        #453); an envelope is decrypted and its message kept in one store transaction, and
+#   #476 an envelope is decrypted and its message kept in one store transaction, and
 #        acknowledged after it: a receiver stopping midway neither loses the message nor has
-#        it acknowledged unkept (needs libsignal-service-rs#442 and #489; branch
-#        pr/receive-transaction, its PR not opened yet)
+#        it acknowledged unkept (on #473; needs libsignal-service-rs#442 and #489)
+#   (no PR yet) a receipt doesn't keep a message out of the store, nor take its place (with
+#        #453)
 #   (branch fix/list-messages-arg-group, no PR yet) presage-cli's list-messages doesn't panic
 # Rebuilt on upstream main past #359 (link previews), 2026-10-26.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
