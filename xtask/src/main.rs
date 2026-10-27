@@ -37,6 +37,11 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(bin_name = "cargo testbox")]
 struct Cli {
+    /// A box of its own beside the others, from any worktree: its pod, network, volumes and
+    /// images named `b33p-testbox.<instance>`, its directories `target/testbox-<instance>-*`.
+    /// Without it, the box is `b33p-testbox`, with its directories in `target/testbox-*`.
+    #[arg(long, global = true, env = "TESTBOX_INSTANCE")]
+    instance: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -143,8 +148,15 @@ fn main() -> ExitCode {
         )
         .init();
     let repo = repo_root();
-    let pod = Pod::new(&repo);
-    let outcome = match Cli::parse().command {
+    let cli = Cli::parse();
+    let pod = match Pod::new(&repo, cli.instance.as_deref()) {
+        Ok(pod) => pod,
+        Err(reason) => {
+            eprintln!("testbox: {reason}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let outcome = match cli.command {
         Command::Up {
             desktop,
             android,
@@ -161,7 +173,7 @@ fn main() -> ExitCode {
         Command::Run { rounds, options } => pod.holding(|| run(&pod, &repo, rounds, &options)),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
-        Command::Qr => qr(&pod, &repo),
+        Command::Qr => qr(&pod),
         Command::Down { wipe } => pod.holding(|| pod.down(wipe)),
         Command::Logs { services } => {
             let services: Vec<&str> = services.iter().map(String::as_str).collect();
@@ -187,8 +199,10 @@ struct Sockets {
 
 #[cfg(unix)]
 impl Sockets {
-    fn new(repo: &Path) -> Self {
-        let run = run_dir(repo);
+    /// Where the harness and driver sockets appear on the host: the clients' `/run/b33p`
+    /// (testbox/pod.yaml).
+    fn new(pod: &Pod) -> Self {
+        let run = pod.run_dir();
         Self {
             b33p: run.join("agent.sock"),
             desktop: run.join("desktop.sock"),
@@ -202,12 +216,6 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("xtask lives in the workspace root")
         .to_owned()
-}
-
-/// Where the harness and driver sockets appear on the host: the clients' `/run/b33p`
-/// (testbox/pod.yaml).
-fn run_dir(repo: &Path) -> PathBuf {
-    repo.join(pod::RUN)
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
@@ -235,7 +243,7 @@ fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<()>
     }
     println!(
         "== summary (records in {})",
-        repo.join(pod::RECORD).join(&run).display()
+        pod.record_dir().join(&run).display()
     );
     for (round, passed) in &outcomes {
         let outcome = if *passed { "passed" } else { "FAILED" };
@@ -263,8 +271,8 @@ fn vnc(pod: &Pod, repo: &Path, interactive: bool) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn qr(pod: &Pod, repo: &Path) -> Result<()> {
-    vnc::qr(pod, &Sockets::new(repo).b33p)
+fn qr(pod: &Pod) -> Result<()> {
+    vnc::qr(pod, &Sockets::new(pod).b33p)
 }
 
 #[cfg(not(unix))]

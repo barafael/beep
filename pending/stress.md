@@ -215,8 +215,9 @@ is. It belongs with #453.
 
 `kube down` needs the YAML the pod was played from, which `up` writes in its own worktree's
 `target/`. From another worktree `down` did nothing, and the next phase found the last one's b33p
-store ("b33p already has a store"). `Pod::down` now also removes the pod and the
-`b33p-testbox-*` volumes by name.
+store ("b33p already has a store"). `Pod::down` now also removes the pod and its
+volumes by name (since instances, by pod.yaml's claims: a `b33p-testbox-*` prefix would take
+every instance's).
 
 ### 4. Pictures arriving together took b33p past 2 GiB (b33p, fixed)
 

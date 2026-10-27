@@ -7,6 +7,10 @@
 # which signal-android-local.patch takes); the `verification` stage reads its artifacts by it,
 # and fails if there are none.
 ARG LIBSIGNAL_VERSION=0.105.0-testbox
+# The server's image, which `cargo testbox` builds first, of its box (`--build-arg SERVER`).
+ARG SERVER=localhost/b33p-testbox-server
+FROM ${SERVER} AS server
+
 # The SDK as Signal-Android's reproducible build installs it (reproducible-builds/Dockerfile):
 # the same command-line tools, build tools and NDK, on Debian's JDK 21.
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS sdk
@@ -92,7 +96,7 @@ RUN git apply /tmp/signal-android-local.patch \
 # The local flavor's values (`android config`, the same bytes for the same keys), from the keys
 # alone: a change to the driver's code doesn't rebuild Signal-Android, new keys do.
 FROM sdk AS config
-COPY --from=localhost/b33p-testbox-server /opt/testbox/keys /keys
+COPY --from=server /opt/testbox/keys /keys
 COPY --from=tools /usr/local/bin/android /usr/local/bin/android
 RUN android config
 
@@ -102,7 +106,7 @@ RUN android config
 FROM sdk AS truststore
 RUN apt-get update && apt-get install -y --no-install-recommends libbcprov-java \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=localhost/b33p-testbox-server /opt/testbox/keys/tls-ca.pem /tmp/tls-ca.pem
+COPY --from=server /opt/testbox/keys/tls-ca.pem /tmp/tls-ca.pem
 RUN mkdir /out && keytool -importcert -noprompt -alias box -file /tmp/tls-ca.pem \
         -keystore /out/whisper.store -storepass whisper -storetype BKS \
         -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider \
@@ -176,7 +180,7 @@ COPY testbox/android/Toren1BD.posters /opt/android-sdk/emulator/resources/Toren1
 COPY --from=app /opt/testbox /opt/testbox
 COPY --from=agent /opt/testbox/agent.apk /opt/testbox/agent.apk
 COPY --from=tools /usr/local/bin/android /usr/local/bin/android
-COPY --from=localhost/b33p-testbox-server /usr/local/bin/with-display /usr/local/bin/with-display
+COPY --from=server /usr/local/bin/with-display /usr/local/bin/with-display
 # The device's size: the driver sets the AVD's screen to it (testbox/tools `avd`). 720x1560
 # rather than the Pixel 5's 1080x2340: the emulator draws on the CPU, and half the pixels take it
 # half the CPU at the same frame rate.

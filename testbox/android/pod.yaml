@@ -4,7 +4,7 @@
 # for the box's keys.
       {
         name: "android",
-        image: "localhost/b33p-testbox-android",
+        image: "localhost/@POD@-android",
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
         env: [{ name: "ANDROID_DRIVER_SOCKET", value: "/run/b33p/android.sock" }],
         # KVM, as `--device` would pass it (kube play's CDI selector).

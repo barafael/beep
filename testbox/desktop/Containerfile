@@ -9,6 +9,10 @@
 # Electron too (`generate`'s `build:db-schema`).
 ARG ELECTRON_LIBS="libpulse0 libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxkbcommon0 \
     libdrm2 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxshmfence1"
+# The server's image, which `cargo testbox` builds first, of its box (`--build-arg SERVER`).
+ARG SERVER=localhost/b33p-testbox-server
+FROM ${SERVER} AS server
+
 FROM docker.io/library/node:24.21.0-trixie-slim@sha256:c83040f7e24bacea68e58a0b96a484ba430bf24abb2973eab7ba4701144b7b63 AS build
 # Build tools for the native modules Electron's app-deps step rebuilds.
 ARG ELECTRON_LIBS
@@ -88,7 +92,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates cage wayvnc wlr-randr $ELECTRON_LIBS \
     && rm -rf /var/lib/apt/lists/* \
     && rm /usr/bin/Xwayland
-COPY --from=localhost/b33p-testbox-server /usr/local/bin/with-display /usr/local/bin/with-display
+COPY --from=server /usr/local/bin/with-display /usr/local/bin/with-display
 COPY --from=build /opt/signal-desktop /opt/signal-desktop
 COPY --from=build /opt/runtime/node_modules /opt/signal-desktop/node_modules
 COPY --from=deno /deno /usr/local/bin/deno

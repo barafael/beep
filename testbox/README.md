@@ -138,6 +138,17 @@ optimized build, or is too slow to tell apart in a debug one. It keeps debug ass
 container to that much memory, as a small machine would: past it the kernel kills b33p, and
 "no client crashed" fails.
 
+Boxes run beside each other as instances: `--instance <name>` (or `TESTBOX_INSTANCE`) on any
+command gives the box its own pod, internal network, volumes and images, all named
+`b33p-testbox.<name>`, and its own directories, `target/testbox-<name>-*`. Without it, the box is
+`b33p-testbox` with `target/testbox-*`, as before. A box is held while `up`, `test`, `run` or
+`down` changes it, from whichever worktree (`$XDG_RUNTIME_DIR/<pod>.lock`): a second command on
+the same box fails at once and names `--instance`. The dot keeps an instance clear of the
+`b33p-testbox-` prefix: of other `b33p-testbox-*` images, and of an older xtask's wipe, which
+removes the volumes by it. Each box takes a Signal-Server, its stores
+and the clients, Android's emulator the most, so the host's load is what limits how many run
+well at once. `down --wipe` removes only its own box's volumes, by name.
+
 `stress-volume`, `stress-interrupt`, `stress-content`, `stress-concurrency` and `stress-soak`
 run only when named, each on a box of its own, after the others: bursts of messages; b33p killed while it receives,
 sends and saves; awkward texts, broken and huge pictures, odd file names; several clients

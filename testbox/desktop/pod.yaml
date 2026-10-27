@@ -4,7 +4,7 @@
 # rust/bridge/shared/testing/src/net_env.rs:32 `hostname: "localhost"`).
       {
         name: "desktop",
-        image: "localhost/b33p-testbox-desktop",
+        image: "localhost/@POD@-desktop",
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
         env: [
           { name: "HOME", value: "/home/desktop" },

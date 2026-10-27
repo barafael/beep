@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Context, Result};
-use crate::pod::{Pod, RECORD, SCREENS, Service};
+use crate::pod::{Pod, SCREENS, Service};
 use crate::process;
 
 use super::lost::{DESKTOP_LOGS, LOGCAT};
@@ -31,10 +31,11 @@ struct Shots {
 }
 
 impl Record {
-    /// The record in target/testbox-record/`name`, emptied of a former run's; with
+    /// The record in target/testbox-record/`name` ([`Pod::record_dir`]), emptied of a former
+    /// run's; with
     /// `screenshots`, testbox/shot built and the running clients' displays found.
     pub(crate) fn new(pod: &Pod, repo: &Path, name: &str, screenshots: bool) -> Result<Self> {
-        let directory = repo.join(RECORD).join(name);
+        let directory = pod.record_dir().join(name);
         if directory.exists() {
             std::fs::remove_dir_all(&directory).context(directory.display().to_string())?;
         }
