@@ -69,6 +69,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "69
 #   #477 presage-cli's list-messages doesn't panic
 #   #478 a setting to turn automatic link previews off: since #359 presage fetches the page of
 #        every message's first link, which b33p leaves to its user's `link_previews`
+#   (branch pr/group-fetch-again, no PR yet) a group whose fetch failed is fetched once more,
+#        and the error logged with its causes
 # Rebuilt on upstream main past #454, 2026-10-27.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
@@ -76,11 +78,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "69
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "45b23656bb35afdbaf0a79134dde8ac9a827cf75" }
+presage = { git = "https://github.com/barafael/presage", rev = "a1f75aaa5e57b109b475930dd1114abacf599555" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "45b23656bb35afdbaf0a79134dde8ac9a827cf75", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "a1f75aaa5e57b109b475930dd1114abacf599555", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -100,19 +102,20 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 
 # Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group
 # changes through /v2/groups, with the avatar upload and joins by an open invite link, which
-# presage #448 needs), #476 (send a
-# sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
+# presage #448 needs), #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy socket after a stall),
 # #482 (websocket errors that name their cause, the string reasons in `ServiceError` as enums,
 # the task's outcome handed to the pipes), #488 (one session step at a time, in order, through a
 # `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once stored, not once read;
 # with #489: a handle dropped unacknowledged leaves the envelope to be delivered again, not
-# acknowledged unhandled) and servers of one's own (`SignalServers::Custom`, which presage's
-# integration branch follows). Landed upstream and dropped from the branch: #474 (drop sync
+# acknowledged unhandled), servers of one's own (`SignalServers::Custom`, which presage's
+# integration branch follows) and, on branch fix/stale-connections (no PR yet), idle connections
+# dropped before the servers drop them, and a GET that meets one closing under it sent again
+# (a group fetch failed so, 30 s after the last). Landed upstream and dropped from the branch: #474 (drop sync
 # messages from other accounts on the PNI path too), #478 (a read timeout instead of one for the
 # whole request, so the history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "d1d684ea02490d28e10a3b6f54ca87be181a29f3" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "33f271d1fda1328d164276a1ebaca07c58f58433" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
