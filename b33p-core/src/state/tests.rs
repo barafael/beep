@@ -1215,9 +1215,13 @@ fn the_start_screen_shows_until_caught_up() {
 fn a_chat_opens_at_its_first_unread_message() {
     let open = |unread: u64| {
         let mut state = state();
-        let mut conversation = conversation("a", false);
-        conversation.settings.last_read = 10;
-        state.apply(Event::Conversations(vec![conversation]));
+        state.apply(Event::Settings {
+            conversation: id("a"),
+            settings: ChatSettings {
+                last_read: 10,
+                ..Default::default()
+            },
+        });
         state.select(&id("a"));
         assert_eq!(state.jump(), None, "not before the history is there");
         let read = (1..=10).map(|t| message("a", "Ann", t, false));
@@ -3104,6 +3108,39 @@ fn message_requests_wait_for_an_answer() {
     state.apply(Event::Cleared(id("a")));
     assert!(state.selected().is_none());
     assert_eq!(listed(&state), ["g"]);
+}
+
+/// The backend lists chats again with what its table had (a contact saved, a group changed),
+/// which can be read before an answer to a request is written there: the answer stays, and
+/// only the backend's own settings changes (`Event::Settings`) change them.
+#[test]
+fn listing_chats_again_keeps_an_answer() {
+    let mut state = state();
+    state.apply(Event::Message(message("a", "Ann", 10, false)));
+    state.apply(Event::StorageRead);
+    let chat = |state: &ChatState| state.conversation(&id("a")).unwrap().clone();
+    assert!(state.is_request(&chat(&state)));
+    state.respond(&id("a"), RequestResponse::Accept);
+    // Read from the table before the answer was written there.
+    state.apply(Event::Conversations(vec![conversation("a", false)]));
+    assert!(!state.is_request(&chat(&state)), "the answer taken back");
+    state.select(&id("a"));
+    assert!(state.can_compose("hi"));
+    // What the backend changes itself still shows.
+    state.apply(Event::Settings {
+        conversation: id("a"),
+        settings: ChatSettings {
+            accepted: true,
+            archived: true,
+            ..Default::default()
+        },
+    });
+    assert!(chat(&state).settings.archived);
+    // A chat new here takes the settings it comes with.
+    let mut new = conversation("n", false);
+    new.settings.accepted = true;
+    state.apply(Event::Conversations(vec![new]));
+    assert!(state.conversation(&id("n")).unwrap().settings.accepted);
 }
 
 #[test]

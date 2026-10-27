@@ -455,12 +455,18 @@ async fn handle_command(
                 .await
                 .map_err(send_failed("failed to create the group"))?;
             let thread = Thread::Group(key);
-            // Ours, so not a request: accepted before it is first shown.
-            ctx.tables
+            // Ours, so not a request: accepted before it is first shown, and said so should it
+            // be shown already (a chat listed again keeps the settings it had).
+            let settings = ctx
+                .tables
                 .update(&conversation_id(&thread), |s| s.accepted = true)
                 .await
                 .map_err(db)?;
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
+            let _ = events.send(Event::Settings {
+                conversation: id.clone(),
+                settings,
+            });
             refresh_group(manager, ctx, key).await;
             show_stored(manager, ctx, &id, &thread, timestamp).await;
             let _ = events.send(Event::GroupCreated(id));
@@ -532,11 +538,17 @@ async fn handle_command(
                 .map_err(send_failed("couldn't join the group"))?;
             let thread = Thread::Group(key);
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
-            // Our doing, so not a request.
-            ctx.tables
+            // Our doing, so not a request; said so, as the chat may be listed already (a chat
+            // listed again keeps the settings it had).
+            let settings = ctx
+                .tables
                 .update(&id, |s| s.accepted = true)
                 .await
                 .map_err(db)?;
+            let _ = events.send(Event::Settings {
+                conversation: id.clone(),
+                settings,
+            });
             refresh_group(manager, ctx, key).await;
             if let presage::manager::GroupJoin::Joined { timestamp } = joined {
                 show_stored(manager, ctx, &id, &thread, timestamp).await;

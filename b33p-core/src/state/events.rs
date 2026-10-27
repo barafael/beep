@@ -128,7 +128,14 @@ impl ChatState {
             Event::Conversations(list) => {
                 for conversation in list {
                     match self.conversation_at.get(&conversation.id) {
-                        Some(&i) => self.conversations[i] = conversation,
+                        // A chat listed again keeps its settings: the backend read them from its
+                        // table, maybe before an answer or a pin made here was written there.
+                        // What it changes itself comes as `Event::Settings`.
+                        Some(&i) => {
+                            let settings = std::mem::take(&mut self.conversations[i].settings);
+                            self.conversations[i] = conversation;
+                            self.conversations[i].settings = settings;
+                        }
                         None => {
                             self.conversation_at
                                 .insert(conversation.id.clone(), self.conversations.len());
