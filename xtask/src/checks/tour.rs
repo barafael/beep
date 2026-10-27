@@ -832,6 +832,10 @@ impl World {
                 Step::Search { by, thread }
             }
             Kind::Block => {
+                // A third b33p's message shows when the blocked one has been dealt with.
+                if count < 3 {
+                    return None;
+                }
                 let (by, thread) = self.someone_in(true, false)?;
                 Step::Block {
                     by,
@@ -1809,6 +1813,26 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         self.open(other, thread)?;
         let ts = self.send(other, blocked_text)?;
         self.add(thread, other, ts, blocked_text).hidden.insert(by);
+        // The server took it, but `by` may not have yet, and taken after the unblock it would
+        // show, rightly; nor does `by` say it got it (no receipt to someone blocked). A third
+        // b33p writes to `by` after it: the server hands a device its messages in turn, so once
+        // `by` shows that, it has dealt with the blocked one.
+        let third = (0..self.b33ps.len())
+            .find(|&k| k != by && k != other)
+            .ok_or("a third b33p")?;
+        let beside = self
+            .world
+            .threads
+            .iter()
+            .position(|t| t.pair == Some((by.min(third), by.max(third))))
+            .ok_or("the chat of the third b33p")?;
+        let marker = self
+            .world
+            .new_text(&format!("after the blocked one, from {third}"));
+        self.open(third, beside)?;
+        let ts = self.send(third, &marker)?;
+        self.add(beside, third, ts, &marker);
+        self.converge_one(beside, by)?;
         blocked(self, false)?;
         let started = Instant::now();
         let ts = self.send(other, text)?;

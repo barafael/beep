@@ -63,6 +63,14 @@ This file is kept as the runs go. Newest entries go at the end of each section.
      - or the table is written before the UI shows the block.
    - The tour now waits for the details to load after blocking. `LoadDetails` goes through the
      same loop, so its answer comes after the block is written.
+   - **Correction (run 7):** the observed failures don't show this. Run 7, round 1 (seed
+     1793102501, step 7) failed the same way with that wait in place.
+     - The block step unblocked as soon as the server had taken the blocked message, and `by`
+       can receive it after that. A message taken after the unblock shows, rightly.
+     - The race in the code is real, but no failure so far needs it. It is unconfirmed until a
+       check shows it.
+     - The step now unblocks only once a third b33p's later message has reached `by`. The server
+       hands a device its messages in turn, and a blocked sender gets no receipt to wait for.
 6. **A request to join by link reaches no admin until they fetch the group.**
    `Manager::join_group` on the approval path (`AccessRequired::Administrator`) saves the
    request locally and sends nothing.
@@ -142,6 +150,17 @@ This file is kept as the runs go. Newest entries go at the end of each section.
      - b33p `forks-454` ac682da, a fast-forward of 940b6a9.
    - The tour, rebased onto ac682da, joins by link both ways: first-time by an open link, and as
      a rejoin with approval.
+
+10. **A rejoined member keeps a group picture removed while it was away.** Seen in run 7,
+    round 2 (seed 1793102699, step 42).
+    - presage `join_group`'s request path stores the group from the link's info, with
+      `avatar: info.avatar`, which is empty once the picture is gone. It touches the cached
+      picture only when `info.avatar` isn't empty.
+    - Every later `fetch_group` then sees the stored path `""` equal to the server's and keeps
+      the old bytes.
+    - Fix: clear the cached picture when `info.avatar` is empty, as `fetch_group` does for "none
+      any more".
+    - Reported to merge-prs-full-run (presage fork).
 
 ## Open questions
 
@@ -240,3 +259,10 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     try).
   - Fixed: when stuck, the tour draws a step that may unstick it (a leave, an add, a new group),
     and fails after eight in a row, naming the kinds that never could go.
+- **Run 7**, as `--instance tour` from local `tour-on-main` (tour merged with main, for #84),
+  beside #82's run on the default box. Records are in
+  `target/testbox-tour-record/run/1793102422/`.
+  - Round 1 failed at the block step: the delivery race in the step (see the correction to
+    finding 5).
+  - Round 2 failed at step 42 (finding 10).
+  - **Round 3 passed: the first tour with every step green.**
