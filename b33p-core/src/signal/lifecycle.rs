@@ -759,6 +759,9 @@ async fn run_linked(
     preferences: &Rc<Cell<Preferences>>,
     device_name: &RefCell<String>,
 ) -> Ended {
+    // b33p previews a link itself, and only with the user's `link_previews` on; presage would
+    // otherwise fetch the page of every message's first link.
+    manager.set_automatic_link_previews(false);
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
     let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));

@@ -37,23 +37,26 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`b664297`) | Upstream main `30ca664` (past #359, link previews) with the fork's PRs and fork-only commits, rebased 2026-10-26: our transfer-archive commit's `reqwest` line dropped for #359's, `session_lock` beside #359's `link_preview_client` | Pinned by `main` (#76) |
+| `langis/integration` (`76673f5`) | Upstream main `86a86e7` (#454 landed, its commit dropped) with the fork's PRs and fork-only commits, rebased 2026-10-27, plus #478 and #448's join request fix on top (`79ed787` before) | Pinned by `forks-454` (#82) |
+| `pr/groups` (`05bae67`) | #448 plus: asking to join (with approval) and cancelling tell the members and invitees we have stored, as Signal-Desktop's `modifyGroupV2` does, and keep them; a first-time request tells nobody, as on Desktop | whisperfish/presage#448 |
+| `pr/link-preview-setting` (`fa90b68`) | `Manager::set_automatic_link_previews`: since #359 every send without a preview fetches the page of its first link, bypassing b33p's `link_previews`; on stays upstream's default, b33p turns it off | whisperfish/presage#478 |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
-| PR branches | Rebased on upstream main `30ca664` where they conflicted: `pr/session-lock` (#473, `d17f7d0`), `pr/receive-transaction` (#476, `01ed8c3`, on it), `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). The other ten build merged with upstream main as they are | |
+| PR branches | Rebased on upstream main `86a86e7` (2026-10-27, #454 landed): `pr/session-lock` (#473, `e5efe3d`, pins lss `pr/session-lock` `d56c1ad`), `pr/receive-transaction` (#476, `8cd8bc1`, on it; its `Db` begins #454's immediate transactions; pins lss `pr/session-lock-ack` `586b5a2`), `pr/identity-change` (#449, `6237b78`), `pr/pinned-identities` (#450, `13dcb0c`). Earlier, on `30ca664`: `pr/groups` (#448, `d397146`, pinned to lss #473 rebased), `pr/transfer-archive` (#447, `a49f2e0`). `fix/list-messages-arg-group` (#477) got a rustfmt commit (`d4d2549`). The others build merged with upstream main as they are | |
 
 ## libsignal-service-rs (barafael/libsignal-service-rs)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`a32d96b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, and #489's tests | Pinned by `main` (#76) |
-| `groups-v2-changes` (`93f9dc2`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays) | Pinned by presage `pr/groups` |
+| `langis/integration` (`d1d684e`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, #488's tokio `Mutex` (gferon's review: steps wait in order), and #473's open-link join fix | Pinned by `forks-454` (#82) |
+| `pr/session-lock` (`d56c1ad`), `pr/session-lock-ack` (`586b5a2`) | #488 with the tokio `Mutex`; the same with #442 and #489 on top | whisperfish/libsignal-service-rs#488; pinned by presage #473 and #476 |
+| `groups-v2-changes` (`a725052`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays), plus: joining by an open invite link leaves `join_from_invite_link` to the server, which refused it ("Invalid field set on action"; found by the tour) | Pinned by presage `pr/groups` (`421083d`) |
 
 ## Slint (barafael/slint)
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`2aa99c5`) | Upstream master `7e32802` (2026-10-26) with merges of #13985 (`eed8be0`) and #14449 (`1f053c6`) | Pinned by `main` (#76) |
-| `pr/qt-color-bitmap-glyphs` (`1f053c6`), pushed | The emoji commit, master merged in, and `CBDT` and `sbix` in the file's spell-check words (the PR's `lint_typecheck` failed on them) | slint-ui/slint#14449 |
+| `langis/integration` (`69f78e9`) | `2aa99c5` (upstream master `7e32802` with merges of #13985 and #14449) plus a merge of #14449 as reviewed (`930ceeb`), which brings master `a63a8ed` (2026-10-27) | Pinned by `forks-454` (#82) |
+| `pr/qt-color-bitmap-glyphs` (`930ceeb`), pushed | The emoji commit, master merged in, `CBDT` and `sbix` in the spell-check words, and the review's points: a stroke draws no emoji (it drew them twice: 713 of 2499 pixels differed), the font parsed only on a cache miss, why glyphs without a bitmap are skipped, straight alpha (measured), `tests/Cargo.lock` master's plus `swash`, "color". On Debian 12's Qt 6.4.2, b33p's mock under valgrind: 0 errors; 5 invalid writes in `QFontEngineFT::loadGlyph` without the fix | slint-ui/slint#14449 |
 
 ## Testbox runs
 
@@ -70,6 +73,9 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `forks-moved` 85e2ed0 (#74: Slint and presage rebuilt on upstream) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `reconcile-upstream` 280aa2f (#76: forks and PR branches reconciled with upstream) | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | `reconcile-upstream` 280aa2f, `--optimized` | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| `forks-454` ac682da (#82: forks past presage#454, Slint #14449 as reviewed, no automatic link previews, join requests told, open-link joins) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+
+The run of ac682da also ran stress-interrupt, 1/1, beside an instance's `core` and the tour (#84).
 
 The optimized pass of 280aa2f also ran the stress phases, each 1/1: stress-volume, stress-interrupt,
 stress-content, stress-concurrency and stress-soak (30 minutes, seed 1793064895; b33p held at 70 to
