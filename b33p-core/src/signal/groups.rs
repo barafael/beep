@@ -188,6 +188,26 @@ fn own_removal(
     removed
 }
 
+/// Whether `changes` lets us into the group: adds us, or takes our request to join or our
+/// invitation (by our ACI, or by our PNI if someone had only our number). What b33p showed of
+/// the group from before, its picture, may have changed while we were out.
+pub(super) fn lets_us_in(
+    changes: &presage::libsignal_service::groups_v2::GroupChanges,
+    aci: presage::libsignal_service::protocol::Aci,
+    pni: presage::libsignal_service::protocol::Pni,
+) -> bool {
+    use presage::libsignal_service::groups_v2::GroupChange;
+    changes.changes.iter().any(|change| match change {
+        GroupChange::NewMember(member) => member.aci == aci,
+        GroupChange::PromoteRequestingMember { aci: who, .. } => *who == aci,
+        GroupChange::PromotePendingMember { address, .. } => {
+            *address == ServiceId::Aci(aci) || *address == ServiceId::Pni(pni)
+        }
+        GroupChange::PromotePendingPniAciMemberProfileKey(promoted) => promoted.aci == aci,
+        _ => false,
+    })
+}
+
 /// Whether `changes` is `sender` changing their own place in the group: leaving it as a member
 /// or an invitee, asking to join through the link or taking that back, or joining through it.
 /// The messages a non-member may still send to the group (Desktop sends its request to the
@@ -671,6 +691,48 @@ mod tests {
             own_pni,
         );
         assert_eq!(both, [Removal::Member, Removal::Invitee]);
+    }
+
+    /// A change that lets us in, however we asked or were asked, is recognised, so that the
+    /// group's picture is shown as it is now, not as it was before we were out. (libsignal-service
+    /// makes no `PromotedMember` outside it, so that way in goes untested.)
+    #[test]
+    fn a_change_that_lets_us_in_is_recognised() {
+        use presage::libsignal_service::groups_v2::{GroupChange, Member, Role};
+        use presage::libsignal_service::protocol::Pni;
+        use presage::libsignal_service::zkgroup::profiles::ProfileKey;
+        let (own, other, admin) = (aci(1), aci(2), aci(3));
+        let own_pni = Pni::from(presage::libsignal_service::prelude::Uuid::from_u128(11));
+        let profile_key = ProfileKey::create([0; 32]);
+        let member = |aci| Member {
+            aci,
+            role: Role::Default,
+            profile_key,
+            joined_at_version: 7,
+            label: None,
+            label_emoji: None,
+        };
+        let lets_in = |change| lets_us_in(&changes(admin, vec![change]), own, own_pni);
+        assert!(lets_in(GroupChange::NewMember(member(own))));
+        assert!(lets_in(GroupChange::PromoteRequestingMember {
+            aci: own,
+            role: Role::Default
+        }));
+        assert!(lets_in(GroupChange::PromotePendingMember {
+            address: ServiceId::Aci(own),
+            profile_key
+        }));
+        assert!(lets_in(GroupChange::PromotePendingMember {
+            address: ServiceId::Pni(own_pni),
+            profile_key
+        }));
+        assert!(!lets_in(GroupChange::NewMember(member(other))));
+        assert!(!lets_in(GroupChange::PromoteRequestingMember {
+            aci: other,
+            role: Role::Default
+        }));
+        assert!(!lets_in(GroupChange::DeleteMember(own)));
+        assert!(!lets_in(GroupChange::Title("hi".into())));
     }
 
     /// A group picture goes out as a square JPEG no larger than Signal's clients send,
