@@ -437,3 +437,14 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     `target/testbox-tour-record/run/1793117809/`.
 - **Merged on the user's word:** #90 (7b53abd), #89 (6ca0563), #88 (6dde8ac). Main's tree is
   byte-identical to the tested one.
+- **#91 merged** (d43fca6): `provision` waits for `cluster_state:ok`. On its branch, a tour round
+  passed (73 checks) with 18 refusals logged before the cluster formed.
+- **The remaining testbox weaknesses, fixed on main:**
+  - Desktop's pnpm is fetched in a `RUN`, taken from the cache when unchanged. The `desktop`
+    phase passed on the rebuilt image (setup 11/11, desktop 17/17). The first build fetched and
+    checked it (`pnpm-11.24.0.tgz: OK`, layer d86b05792b47); the next one reused that layer
+    without running the step and built Desktop's image in 7 s.
+  - Desktop's image is built only for a box that runs Desktop. A tour round built eight images,
+    with no Desktop, and passed 70/70.
+  - Containers log to `k8s-file`, not journald. In that tour round the record's server log
+    ended at 18:39:21, a second before the record was written (18:39:22).
