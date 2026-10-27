@@ -3,8 +3,9 @@
 # builds for the box's keys (the server image's), the agent's APK and the driver. The build
 # context is the repository, for the patches and the tools.
 
-# The version the libsignal stage's `sed` publishes the patched libsignal under; stages `signal`
-# and `app` take it.
+# The version the patched libsignal is published under (testbox/patches/libsignal-local.patch,
+# which signal-android-local.patch takes); the `verification` stage reads its artifacts by it,
+# and fails if there are none.
 ARG LIBSIGNAL_VERSION=0.105.0-testbox
 # The SDK as Signal-Android's reproducible build installs it (reproducible-builds/Dockerfile):
 # the same command-line tools, build tools and NDK, on Debian's JDK 21.
@@ -14,9 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV ANDROID_HOME=/opt/android-sdk
 ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/bin:${ANDROID_HOME}/platform-tools
-ADD --checksum=sha256:04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7 \
-    https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip /tmp/cmdline-tools.zip
-RUN unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME" && rm /tmp/cmdline-tools.zip \
+# Not `ADD <url>`: buildah fetched this archive again on every build, 20 s for its 170 MB.
+RUN curl -fsSL -o /tmp/cmdline-tools.zip \
+        https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip \
+    && echo "04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7  /tmp/cmdline-tools.zip" \
+        | sha256sum -c - \
+    && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME" && rm /tmp/cmdline-tools.zip \
     && yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null \
     && sdkmanager --sdk_root="$ANDROID_HOME" \
         "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;28.0.13004108"
@@ -40,13 +44,16 @@ RUN git init -q . \
     && git fetch -q --depth 1 https://github.com/signalapp/libsignal "$LIBSIGNAL_REV" \
     && git checkout -q FETCH_HEAD
 COPY testbox/patches/libsignal-local.patch /tmp/
-RUN git apply /tmp/libsignal-local.patch \
-    && sed -i 's/version = "0.105.0"/version = "0.105.0-testbox"/' java/build.gradle
-# No desktop library: it goes into libsignal-client's jar, which Android doesn't load.
+RUN git apply /tmp/libsignal-local.patch
+# No desktop library: it goes into libsignal-client's jar, which Android doesn't load. Kotlin
+# compiles in Gradle's own process, here and in the `app` and `agent` stages: stages that build
+# at once share /root/.gradle, where a Kotlin compile finds a daemon to use, and one stage's
+# daemon can't read another's files.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.gradle \
     --mount=type=cache,target=/opt/libsignal/target \
-    cd java && ./gradlew --no-daemon -PandroidArchs=x86_64 -x makeJniLibrariesDesktop \
+    cd java && ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        -PandroidArchs=x86_64 -x makeJniLibrariesDesktop \
         :client:publishToMavenLocal :android:publishToMavenLocal
 
 FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
@@ -71,13 +78,6 @@ RUN grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properti
     && grep -qx "Pkg.Revision=37.2.12" "$ANDROID_HOME/emulator/source.properties" \
     && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties" \
     && echo no | avdmanager create avd -n box -k "system-images;android-35;default;x86_64" -d pixel_5
-# avdmanager writes the image's path relative to /opt, as the command-line tools aren't in the
-# cmdline-tools/latest layout it expects. A hardware keyboard, so the on-screen one doesn't cover
-# what the driver taps.
-RUN sed -i -e 's|^image.sysdir.1=android-sdk/|image.sysdir.1=|' -e 's|^hw.keyboard=no$|hw.keyboard=yes|' \
-        /root/.android/avd/box.avd/config.ini \
-    && grep -q '^image.sysdir.1=system-images/' /root/.android/avd/box.avd/config.ini \
-    && grep -q '^hw.keyboard=yes$' /root/.android/avd/box.avd/config.ini
 
 # Signal-Android at the pin, patched: the app's sources, and the Gradle wrapper the agent builds with.
 FROM sdk AS signal
@@ -87,12 +87,7 @@ RUN git init -q . \
     && git fetch -q --depth 1 https://github.com/signalapp/Signal-Android "$SIGNAL_ANDROID_REV" \
     && git checkout -q FETCH_HEAD
 COPY testbox/patches/signal-android-local.patch /tmp/
-# The libsignal the libsignal stage publishes, under its version of its own (that stage's
-# `sed`; the app stage fails if the two differ).
-ARG LIBSIGNAL_VERSION
 RUN git apply /tmp/signal-android-local.patch \
-    && sed -i "s/^libsignal-client = \"0.105.0\"$/libsignal-client = \"$LIBSIGNAL_VERSION\"/" gradle/libs.versions.toml \
-    && grep -q "^libsignal-client = \"$LIBSIGNAL_VERSION\"$" gradle/libs.versions.toml \
     && mkdir -p app/src/local/res/raw /opt/testbox
 
 # The local flavor's values (`android config`, the same bytes for the same keys), from the keys
@@ -114,31 +109,27 @@ RUN mkdir /out && keytool -importcert -noprompt -alias box -file /tmp/tls-ca.pem
         -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider \
         -providerpath /usr/share/java/bcprov.jar
 
+# Signal-Android's gradle/verification-metadata.xml with the patched libsignal's checksums in
+# (`android verification`). A stage of its own, as `config`: a change to the driver's code
+# doesn't rebuild Signal-Android, new artifacts do.
+FROM sdk AS verification
+COPY --from=signal /opt/signal-android/gradle/verification-metadata.xml /in/verification-metadata.xml
+COPY --from=libsignal /root/.m2/repository/org/signal /in/org.signal
+COPY --from=tools /usr/local/bin/android /usr/local/bin/android
+ARG LIBSIGNAL_VERSION
+RUN android verification /in/verification-metadata.xml /in/org.signal "$LIBSIGNAL_VERSION" \
+        /out/verification-metadata.xml
+
 # The APK for the box's keys; the image keeps it with the values it was built with, which the
 # driver checks against the box's keys.
 FROM signal AS app
 COPY --from=libsignal /root/.m2 /root/.m2
-# The patched libsignal has no checksums in gradle/verification-metadata.xml: its artifacts'
-# sha256, as the libsignal stage built them, go in, so Gradle checks it by content like every
-# other dependency. POMs are left out: Signal-Android's own entries trust them by name.
-ARG LIBSIGNAL_VERSION
-RUN set -e; entries=""; \
-    for dir in /root/.m2/repository/org/signal/*/"$LIBSIGNAL_VERSION"; do \
-        test -d "$dir"; \
-        name="$(basename "$(dirname "$dir")")"; \
-        entries="$entries<component group=\"org.signal\" name=\"$name\" version=\"$LIBSIGNAL_VERSION\">"; \
-        for file in "$dir"/*; do \
-            case "$file" in *.pom) continue ;; esac; \
-            entries="$entries<artifact name=\"$(basename "$file")\"><sha256 value=\"$(sha256sum "$file" | cut -d' ' -f1)\" origin=\"the libsignal stage\"/></artifact>"; \
-        done; \
-        entries="$entries</component>"; \
-    done; \
-    sed -i "s|</components>|$entries</components>|" gradle/verification-metadata.xml; \
-    grep -q "version=\"$LIBSIGNAL_VERSION\"" gradle/verification-metadata.xml
+COPY --from=verification /out/verification-metadata.xml gradle/verification-metadata.xml
 COPY --from=truststore /out/whisper.store app/src/local/res/raw/whisper.store
 COPY --from=config /out/local.json /opt/testbox/signal.apk.json
 RUN --mount=type=cache,target=/root/.gradle \
-    ./gradlew --no-daemon assemblePlayLocalDebug -PsignalLocalConfig=/opt/testbox/signal.apk.json \
+    ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        assemblePlayLocalDebug -PsignalLocalConfig=/opt/testbox/signal.apk.json \
     && cp app/build/outputs/apk/playLocal/debug/*x86_64*.apk /opt/testbox/signal.apk
 
 # The agent protocol's Kotlin side, generated from its Rust (testbox/tools/src/agent.rs) by
@@ -157,7 +148,8 @@ COPY testbox/android/agent /opt/agent
 COPY --from=protocol /out/Protocol.kt \
     /opt/agent/src/main/kotlin/org/b33p/testbox/agent/protocol/Protocol.kt
 RUN --mount=type=cache,target=/root/.gradle \
-    /opt/signal-android/gradlew --no-daemon -p /opt/agent assembleDebug \
+    /opt/signal-android/gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        -p /opt/agent assembleDebug \
     && cp /opt/agent/build/outputs/apk/debug/testbox-agent-debug.apk /opt/testbox/agent.apk
 
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f

@@ -24,13 +24,13 @@ use std::time::Duration;
 
 use serde::Serialize;
 use strum::VariantArray;
-use testbox_tools::agent;
 use testbox_tools::drivers::{self, Android, Answer, ChatMenuItem, MemberChange, Numbered};
 use testbox_tools::keys::{self, DesktopConfig, KeyFile};
 use testbox_tools::process::output;
 use testbox_tools::{
-    Context, Describe, Error, Result, WithContext, read, remove_if_present, write,
+    Context, Describe, Error, Result, WithContext, env_var, read, remove_if_present, write,
 };
+use testbox_tools::{agent, avd};
 
 /// What `android config` writes for the image's `app` stage: the local flavor's values
 /// (testbox/android/Containerfile).
@@ -68,10 +68,14 @@ fn main() -> std::process::ExitCode {
     let outcome = match arguments.as_slice() {
         [] => start(),
         [command] if command == "config" => config(),
+        [command, metadata, group, version, out] if command == "verification" => {
+            verification(Path::new(metadata), Path::new(group), version, Path::new(out))
+        }
         // Beside a running driver, which serves one connection at a time: `cargo testbox qr`.
         [show, url] if show == "show-qr" => show_qr(url),
         _ => Err(Error::Failed(
-            "usage: android [config | show-qr <url>]".to_owned(),
+            "usage: android [config | verification <metadata> <group> <version> <out> | show-qr <url>]"
+                .to_owned(),
         )),
     };
     testbox_tools::exit("android", outcome)
@@ -85,6 +89,20 @@ fn config() -> Result<()> {
     let out = Path::new(CONFIG_OUT);
     std::fs::create_dir_all(out).context(CONFIG_OUT)?;
     write(&out.join(CONFIG), text)
+}
+
+/// The image's `verification` stage: Signal-Android's `metadata` with the patched libsignal's
+/// artifacts in (`testbox_tools::verification`), from `group` (a Maven repository's
+/// `org/signal`) at `version`, into `out`. The same bytes for the same artifacts, so that Gradle
+/// builds again only for new ones.
+fn verification(metadata: &Path, group: &Path, version: &str, out: &Path) -> Result<()> {
+    let components = testbox_tools::verification::components(group, version)?;
+    let patched =
+        testbox_tools::verification::with_components(&read(metadata)?, version, &components)?;
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).context(dir.display().to_string())?;
+    }
+    write(out, patched)
 }
 
 fn start() -> Result<()> {
@@ -277,8 +295,20 @@ fn localhost_port(url: &str) -> Option<u16> {
         .ok()
 }
 
+/// The device's screen: the Pixel 5's.
+const SCREEN: &str = "1080x2340";
+
+/// The AVD's hardware for the box ([`avd::Config::for_box`]).
+fn configure_avd() -> Result<()> {
+    let path = Path::new(&env_var("HOME")?).join(".android/avd/box.avd/config.ini");
+    let mut config = avd::Config::parse(&read(&path)?);
+    config.for_box(SCREEN)?;
+    write(&path, config.to_string())
+}
+
 fn boot_emulator(config: &LocalConfig) -> Result<()> {
     clear_avd_locks()?;
+    configure_avd()?;
     // The adb server first, so it finds the emulator as it comes up.
     adb(&["start-server"])?;
     let mut emulator = Command::new("emulator")

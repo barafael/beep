@@ -3,6 +3,9 @@ environments are `STAGING(0)` and `PRODUCTION(1)` only (`Network.java:25`), root
 (`rust/net/src/certs.rs:10`, `:12`). The local override is Node's only (`net.rs:152`
 `#[bridge_fn(jni = false, ffi = false)]`; `node/ts/net.ts:130` `localTestServer: true`).
 
+Published as 0.105.0-testbox (`java/build.gradle`): Maven Central comes first in
+Signal-Android's repositories and has the unpatched 0.105.0.
+
 diff --git a/java/client/src/main/java/org/signal/libsignal/net/Network.java b/java/client/src/main/java/org/signal/libsignal/net/Network.java
 index 09968ff..25de02d 100644
 --- a/java/client/src/main/java/org/signal/libsignal/net/Network.java
@@ -110,3 +113,16 @@ index 5571c77..35726ee 100644
  fn TESTING_ConnectionManager_newLocalOverride(
      userAgent: String,
      chatPort: AsType<NonZeroU16, u16>,
+diff --git a/java/build.gradle b/java/build.gradle
+index 79e45f4..ea39108 100644
+--- a/java/build.gradle
++++ b/java/build.gradle
+@@ -22,7 +22,7 @@ repositories {
+ }
+ 
+ allprojects {
+-    version = "0.105.0"
++    version = "0.105.0-testbox"
+     group   = "org.signal"
+ 
+     tasks.withType(JavaCompile) {
