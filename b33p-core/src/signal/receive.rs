@@ -40,7 +40,8 @@ use super::{
         send_conversations, sender_name, thread_of,
     },
     groups::{
-        forget_membership, is_member, own_membership_change, refresh_group, signed_group_change,
+        forget_membership, is_member, lets_us_in, own_membership_change, refresh_group,
+        signed_group_change,
     },
     history::{
         author_of, data_of, erase_deleted, is_outgoing, original, start_timers, stored_at,
@@ -631,14 +632,17 @@ async fn handle_content(
     {
         forget_membership(manager, key, context).await;
         refresh_group(manager, ctx, key).await;
-        // A new picture (presage has fetched it with the group), or none any more.
+        // A new picture (presage has fetched it with the group), or none any more; or we are let
+        // in, and the picture shown from before may have changed meanwhile.
+        let ids = &manager.registration_data().service_ids;
         if let Some(changes) = signed_group_change(manager, key, context).await
-            && changes.changes.iter().any(|change| {
-                matches!(
-                    change,
-                    presage::libsignal_service::groups_v2::GroupChange::Avatar(_)
-                )
-            })
+            && (lets_us_in(&changes, ids.aci(), ids.pni())
+                || changes.changes.iter().any(|change| {
+                    matches!(
+                        change,
+                        presage::libsignal_service::groups_v2::GroupChange::Avatar(_)
+                    )
+                }))
         {
             send_group_avatar(manager.clone(), ctx, key).await;
         }
