@@ -57,32 +57,22 @@ enum Command {
     /// Runs the phases' checks, every phase's if none is named but the stress phases'.
     ///
     /// Builds the images, the Android image while the linked box runs, each build's output in
-    /// target/testbox-build. The phases on one setup share a box: the pod plays from nothing, its
-    /// volumes removed, then the setup's checks run once and the phases one after the other. Each
-    /// box's record is in `target/testbox-record/<box>/`. A pass shows agreement with
-    /// Signal-Server's test mode at its pin, not with Signal's servers.
+    /// target/testbox-build. The phases on one setup share a box (without `--fresh`): the pod
+    /// plays from nothing, its volumes removed, then the setup's checks run once and the phases
+    /// one after the other. Each box's record is in `target/testbox-record/<box>/`. A pass shows
+    /// agreement with Signal-Server's test mode at its pin, not with Signal's servers.
     Test {
-        phases: Vec<Phase>,
-        /// Also takes each client's display after each check, into the record beside the
-        /// containers' logs.
-        #[arg(long)]
-        screenshots: bool,
         #[command(flatten)]
-        b33p: B33pOptions,
+        options: TestOptions,
     },
     /// Runs `test` in rounds and sums up; each run's records are in
     /// `target/testbox-record/run/<when it started>/<round>/`.
     Run {
-        /// The phases; all of them if none.
-        phases: Vec<Phase>,
         /// How many times.
         #[arg(long, default_value_t = 1)]
         rounds: u32,
-        /// As for `test`.
-        #[arg(long)]
-        screenshots: bool,
         #[command(flatten)]
-        b33p: B33pOptions,
+        options: TestOptions,
     },
     /// Shows the clients' displays in a window.
     Vnc {
@@ -111,6 +101,23 @@ enum Command {
         /// The containers' names in testbox/pod.yaml.
         services: Vec<String>,
     },
+}
+
+/// What `test` and `run` run, and how.
+#[derive(clap::Args)]
+pub(crate) struct TestOptions {
+    /// The phases; all but the stress phases if none.
+    pub(crate) phases: Vec<Phase>,
+    /// Also takes each client's display after each check, into the record beside the
+    /// containers' logs.
+    #[arg(long)]
+    pub(crate) screenshots: bool,
+    /// Each phase on a box of its own, as the stress phases: slower, a box's setup for each, but
+    /// no phase sees what another left.
+    #[arg(long)]
+    pub(crate) fresh: bool,
+    #[command(flatten)]
+    pub(crate) b33p: B33pOptions,
 }
 
 /// How `up` runs b33p.
@@ -150,17 +157,8 @@ fn main() -> ExitCode {
                 .collect();
             pod.holding(|| up(&pod, &clients, b33p))
         }
-        Command::Test {
-            phases,
-            screenshots,
-            b33p,
-        } => pod.holding(|| test(&pod, &repo, &phases, "", screenshots, b33p)),
-        Command::Run {
-            phases,
-            rounds,
-            screenshots,
-            b33p,
-        } => pod.holding(|| run(&pod, &repo, &phases, rounds, screenshots, b33p)),
+        Command::Test { options } => pod.holding(|| test(&pod, &repo, "", &options)),
+        Command::Run { rounds, options } => pod.holding(|| run(&pod, &repo, rounds, &options)),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod, &repo),
@@ -222,28 +220,14 @@ fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
 
 /// `test` `rounds` times, each round's records in a directory of its own; then how each went.
 /// Fails if any did.
-fn run(
-    pod: &Pod,
-    repo: &Path,
-    phases: &[Phase],
-    rounds: u32,
-    screenshots: bool,
-    b33p: B33pOptions,
-) -> Result<()> {
+fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<()> {
     // A directory of its own, by when it started: an earlier run's records stay.
     let started = process::now()?;
     let run = format!("run/{started}");
     let mut outcomes = Vec::new();
     for round in 1..=rounds {
         println!("== round {round}");
-        let outcome = test(
-            pod,
-            repo,
-            phases,
-            &format!("{run}/{round}"),
-            screenshots,
-            b33p,
-        );
+        let outcome = test(pod, repo, &format!("{run}/{round}"), options);
         if let Err(reason) = &outcome {
             println!("== round {round}: {reason}");
         }
@@ -269,15 +253,8 @@ fn run(
 
 /// The phases' checks once, each box's record in `target/testbox-record/<records>/<box>/`.
 #[cfg(unix)]
-fn test(
-    pod: &Pod,
-    repo: &Path,
-    phases: &[Phase],
-    records: &str,
-    screenshots: bool,
-    b33p: B33pOptions,
-) -> Result<()> {
-    checks::run(pod, repo, phases, records, screenshots, b33p)
+fn test(pod: &Pod, repo: &Path, records: &str, options: &TestOptions) -> Result<()> {
+    checks::run(pod, repo, records, options)
 }
 
 #[cfg(unix)]
@@ -311,13 +288,6 @@ fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn test(
-    _pod: &Pod,
-    _repo: &Path,
-    _phases: &[Phase],
-    _records: &str,
-    _screenshots: bool,
-    _b33p: B33pOptions,
-) -> Result<()> {
+fn test(_pod: &Pod, _repo: &Path, _records: &str, _options: &TestOptions) -> Result<()> {
     Err("the harness is Unix only (b33p-slint `harness` feature)".into())
 }

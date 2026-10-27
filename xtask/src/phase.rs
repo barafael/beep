@@ -51,8 +51,8 @@ pub(crate) enum StressPhase {
     Soak,
 }
 
-/// `test`'s phases, by the box they run on: the linked box's, the Android box's, then the stress
-/// phases', each on its own.
+/// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,
+/// or with `--fresh` one per phase), then the stress phases', each on a box of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
     Linked(LinkedPhase),
