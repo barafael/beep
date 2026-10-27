@@ -218,6 +218,35 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       - libsignal-service retries an idempotent GET once on a reused connection;
       - logs print an error's whole chain.
 
+14. **Under heavy disk writes, presage-cli's send died with "database is locked".** Both tour
+    rounds of the log experiment failed this way.
+    - Under that load each `INSERT INTO pre_keys` took 1–2 s, about 200 of them, each its own
+      transaction with an fsync. The other connections waited out sqlx's default 5 s busy
+      timeout.
+    - Fixed by merge-prs-full-run in #92 (merged): libsignal-service#491 and presage#483 save a
+      replenishment in one transaction, with a 30 s busy timeout. Two rounds under the same load
+      then passed (73 and 70 checks).
+15. **A group from an accepted contact was a message request in b33p.** Signal-Desktop's
+    `isConversationAccepted` accepts a group whose `addedBy` is a trusted contact (system
+    contact or profile sharing), so it shows no request.
+    - The tour's `converge_group` had been answering those requests itself, which hid this.
+    - Fixed in item 2's PR: who brought us in is the editor of the change that lets us in, or the
+      sender of a new group's announcement. When that person's chat is accepted, so is the group.
+    - With it, a chat written to from another device of ours is accepted in the table too, as
+      writing from b33p does (`conversations::wrote_to`). Before, it was accepted only in the
+      window (`written_to`), so the backend withheld receipts from it as from a request.
+16. **presage-cli's send waited 30 s for the database, then failed with "database is locked",
+    with no load** (item 2's run, round 3, setup, at 2026-10-27 23:16:21).
+    - The background receive logged "saved contact on first sight". Then nothing happened until
+      a pool connection was acquired after 29.97 s (sqlx's acquire timeout), and the send's
+      `UPDATE pinned_identities SET offered = NULL …` got `SQLITE_BUSY`.
+    - So something held the write lock and the store's three connections for 30 s: a lock-order
+      deadlock between the receive transaction (session step, then transaction) and the send
+      path, rather than a slow disk.
+    - The 5 s timeout before #92 would have ended the same deadlock sooner; the two "database
+      is locked" failures under load may have been this one too.
+    - It is once in about 40 rounds without load. Investigation: next.
+
 ## Open questions
 
 - **Answered (finding 8): step 16 of seed 1793096441 sent nothing once.** b33p 2's `Send` returned no command when it
@@ -448,3 +477,12 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     with no Desktop, and passed 70/70.
   - Containers log to `k8s-file`, not journald. In that tour round the record's server log
     ended at 18:39:21, a second before the record was written (18:39:22).
+- **Item 2: the tour without workarounds.**
+  - The setup accepts without waiting for titles; pictures are checked strictly for everyone;
+    the link-without-preview step fails itself; no group request is answered.
+  - Negative control, the strict tour on main without finding 15's fix: round 1 failed at the
+    first group, "b33p 0 shows the group as a message request". The check bites.
+  - With the fixes: rounds 1 and 2 passed (69 checks each). Round 3 failed in the primaries'
+    setup (finding 16), before any b33p step.
+  - The replay of seed 1793111125 passed strictly (68 checks).
+  - Harness tests 52/12/2; b33p-core 267.
