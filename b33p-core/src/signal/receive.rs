@@ -1,7 +1,6 @@
 //! Receiving: the connection kept open for the session, and what each incoming content does.
 
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
@@ -51,22 +50,6 @@ use super::{
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
 };
 
-/// Receives in the background (see [`receive`]), from `after` on.
-pub(super) fn start_receiving(
-    manager: &Mgr,
-    ctx: &Ctx,
-    removed: &Rc<tokio::sync::Notify>,
-    avatars: AvatarFetcher,
-    repairs: Rc<RefCell<Repairs>>,
-    after: Duration,
-) -> tokio::task::JoinHandle<()> {
-    let (manager, ctx, removed) = (manager.clone(), ctx.clone(), removed.clone());
-    tokio::task::spawn_local(async move {
-        tokio::time::sleep(after).await;
-        receive(manager, ctx, avatars, repairs, removed).await;
-    })
-}
-
 /// Whether Signal refuses this device's credentials: it was removed from the account (the
 /// server answers 403, or 401), so retrying can't help.
 fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
@@ -93,79 +76,109 @@ pub(super) struct Repairs {
 
 const SESSION_RESET_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Receives messages for the rest of the session, reconnecting with exponential backoff
-/// whenever the connection drops (sleep, network changes, server timeouts), and at once when
-/// the computer wakes from sleep: the old connection may look alive for minutes until a
-/// keepalive fails, and a pending retry may be up to a minute away.
-/// Notifies `removed` (and stops) if Signal no longer accepts this device.
-async fn receive(
-    mut manager: Mgr,
-    ctx: Ctx,
-    avatars: AvatarFetcher,
-    repairs: Rc<RefCell<Repairs>>,
-    removed: Rc<tokio::sync::Notify>,
-) {
-    const MAX_BACKOFF: Duration = Duration::from_secs(60);
-    let mut kept = Kept::default();
-    let mut backoff = Duration::from_secs(1);
-    let woke = Rc::new(tokio::sync::Notify::new());
-    let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
-    // Stops watching when receiving stops.
-    let _watching = AbortOnDrop(watching);
-    loop {
-        let mut reconnect_now = false;
-        match manager.receive_messages().await {
-            Ok(messages) => {
-                info!("connected to Signal; syncing");
-                if !ctx.events.send(Event::Connected) {
-                    return;
-                }
-                kept.receipts.live = false;
-                pin_mut!(messages);
-                loop {
-                    // Only between messages, so one is never handled halfway.
-                    let received = tokio::select! {
-                        received = messages.next() => received,
-                        () = woke.notified() => {
-                            info!("woke from sleep; reconnecting to Signal");
-                            reconnect_now = true;
-                            break;
-                        }
-                    };
-                    let Some(received) = received else {
-                        info!("connection to Signal closed");
-                        break;
-                    };
-                    // Something came through, so the connection works again.
-                    backoff = Duration::from_secs(1);
-                    let handled =
-                        handle_received(&manager, &ctx, &avatars, &mut kept, &repairs, received)
-                            .await;
-                    if !handled {
+/// What [`Receiver`] hands on to the session, in the order it happened.
+pub(super) enum Incoming {
+    Connected,
+    Reconnecting,
+    /// Receiving waits to go on until the session has dealt with it and dropped `done`: presage
+    /// stores what comes next as it decrypts it, which mustn't overtake this.
+    Received {
+        received: Received,
+        done: futures::channel::oneshot::Sender<()>,
+    },
+    /// Signal no longer accepts this device; receiving has stopped.
+    Removed,
+}
+
+/// Keeps the connection to Signal open for the rest of the session, and hands on what comes
+/// through it, as [`Incoming`]. Reconnects with exponential backoff whenever the connection
+/// drops (sleep, network changes, server timeouts), and at once when the computer wakes from
+/// sleep: the old connection may look alive for minutes until a keepalive fails, and a pending
+/// retry may be up to a minute away.
+pub(super) struct Receiver {
+    manager: Mgr,
+}
+
+impl Receiver {
+    pub(super) fn new(manager: Mgr) -> Self {
+        Self { manager }
+    }
+
+    /// Until Signal removes this device, or the session drops its end of `incoming`. Waits
+    /// `after` first.
+    pub(super) async fn event_loop(
+        mut self,
+        incoming: tokio::sync::mpsc::Sender<Incoming>,
+        after: Duration,
+    ) -> Self {
+        tokio::select! {
+            () = self.receive(&incoming, after) => {}
+            () = incoming.closed() => {}
+        }
+        self
+    }
+
+    async fn receive(&mut self, incoming: &tokio::sync::mpsc::Sender<Incoming>, after: Duration) {
+        const MAX_BACKOFF: Duration = Duration::from_secs(60);
+        tokio::time::sleep(after).await;
+        let mut backoff = Duration::from_secs(1);
+        let woke = Rc::new(tokio::sync::Notify::new());
+        let watching = tokio::task::spawn_local(watch_wakeups(woke.clone()));
+        // Stops watching when receiving stops.
+        let _watching = AbortOnDrop(watching);
+        loop {
+            let mut reconnect_now = false;
+            match self.manager.receive_messages().await {
+                Ok(messages) => {
+                    info!("connected to Signal; syncing");
+                    if incoming.send(Incoming::Connected).await.is_err() {
                         return;
                     }
+                    pin_mut!(messages);
+                    loop {
+                        let received = tokio::select! {
+                            received = messages.next() => received,
+                            () = woke.notified() => {
+                                info!("woke from sleep; reconnecting to Signal");
+                                reconnect_now = true;
+                                break;
+                            }
+                        };
+                        let Some(received) = received else {
+                            info!("connection to Signal closed");
+                            break;
+                        };
+                        // Something came through, so the connection works again.
+                        backoff = Duration::from_secs(1);
+                        let (done, handled) = futures::channel::oneshot::channel();
+                        let received = Incoming::Received { received, done };
+                        if incoming.send(received).await.is_err() {
+                            return;
+                        }
+                        let _ = handled.await;
+                    }
                 }
+                Err(error) if removed_from_account(&error) => {
+                    warn!(error = %scrubbed(&error), "Signal no longer accepts this device");
+                    let _ = incoming.send(Incoming::Removed).await;
+                    return;
+                }
+                Err(error) => warn!(error = %scrubbed(&error), "failed to connect to Signal"),
             }
-            Err(error) if removed_from_account(&error) => {
-                warn!(error = %scrubbed(&error), "Signal no longer accepts this device");
-                removed.notify_one();
+            if incoming.send(Incoming::Reconnecting).await.is_err() {
                 return;
             }
-            Err(error) => warn!(error = %scrubbed(&error), "failed to connect to Signal"),
-        }
-        if !ctx.events.send(Event::Reconnecting) {
-            return;
-        }
-        if reconnect_now {
-            backoff = Duration::from_secs(1);
-            continue;
-        }
-        debug!(?backoff, "reconnecting to Signal");
-        tokio::select! {
-            () = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
-            () = woke.notified() => {
-                info!("woke from sleep; reconnecting to Signal");
+            if reconnect_now {
                 backoff = Duration::from_secs(1);
+                continue;
+            }
+            debug!(?backoff, "reconnecting to Signal");
+            tokio::select! {
+                () = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
+                () = woke.notified() => {
+                    info!("woke from sleep; reconnecting to Signal");
+                    backoff = Duration::from_secs(1);
+                }
             }
         }
     }
@@ -216,13 +229,37 @@ async fn watch_wakeups(woke: Rc<tokio::sync::Notify>) {
 #[cfg(not(all(unix, not(target_os = "macos"))))]
 async fn watch_wakeups(_: Rc<tokio::sync::Notify>) {}
 
-/// Returns `false` once the UI has gone away.
+/// Handles what [`Receiver`] handed on. Returns `false` once the UI has gone away.
+pub(super) async fn handle_incoming(
+    manager: &Mgr,
+    ctx: &Ctx,
+    avatars: &AvatarFetcher,
+    kept: &mut Kept,
+    repairs: &mut Repairs,
+    incoming: Incoming,
+) -> bool {
+    match incoming {
+        Incoming::Connected => {
+            kept.receipts.live = false;
+            ctx.events.send(Event::Connected)
+        }
+        Incoming::Reconnecting => ctx.events.send(Event::Reconnecting),
+        Incoming::Received { received, done } => {
+            let handled = handle_received(manager, ctx, avatars, kept, repairs, received).await;
+            drop(done);
+            handled
+        }
+        // The session sees to it.
+        Incoming::Removed => true,
+    }
+}
+
 async fn handle_received(
     manager: &Mgr,
     ctx: &Ctx,
     avatars: &AvatarFetcher,
     kept: &mut Kept,
-    repairs: &Rc<RefCell<Repairs>>,
+    repairs: &mut Repairs,
     received: Received,
 ) -> bool {
     let Kept {
@@ -302,12 +339,11 @@ async fn handle_received(
             let reset = known
                 && matches!(sender, ServiceId::Aci(_))
                 && repairs
-                    .borrow()
                     .resets
                     .get(&sender)
                     .is_none_or(|last| last.elapsed() > SESSION_RESET_INTERVAL);
             if reset {
-                repairs.borrow_mut().resets.insert(sender, Instant::now());
+                repairs.resets.insert(sender, Instant::now());
                 match ctx.outbox.session_reset(sender, now_millis()).await {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
                     Err(error) => warn!(error = %scrubbed(&error), "failed to reset the session"),
@@ -362,7 +398,7 @@ async fn handle_received(
 async fn on_retry_receipt(
     manager: &Mgr,
     ctx: &Ctx,
-    repairs: &Rc<RefCell<Repairs>>,
+    repairs: &mut Repairs,
     sender: ServiceId,
     sender_device: DeviceId,
     message: &DecryptionErrorMessage,
@@ -394,7 +430,7 @@ async fn on_retry_receipt(
         );
         return;
     }
-    if repairs.borrow().resent.contains(&(sender, timestamp)) {
+    if repairs.resent.contains(&(sender, timestamp)) {
         debug!(sender = %sender.service_id_string(), timestamp, "sent again already");
         return;
     }
@@ -440,7 +476,6 @@ async fn on_retry_receipt(
     match ctx.outbox.message(sender, data, timestamp).await {
         Ok(()) => {
             info!(sender = %sender.service_id_string(), timestamp, "sent a message again");
-            let mut repairs = repairs.borrow_mut();
             // Bounded: a peer can name any number of timestamps.
             if repairs.resent.len() >= RESENT_REMEMBERED {
                 repairs.resent.clear();
@@ -1082,7 +1117,7 @@ fn from_our_account(own: ServiceId, content: &Content) -> bool {
 /// What receiving keeps from one message to the next, across reconnects: what was owed before
 /// a drop goes out once the queue drains again.
 #[derive(Default)]
-struct Kept {
+pub(super) struct Kept {
     names: Names,
     receipts: Receipts,
     decrypted: Decrypted,

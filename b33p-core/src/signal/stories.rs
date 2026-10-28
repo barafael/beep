@@ -188,13 +188,9 @@ pub(super) async fn send_viewed(manager: Mgr, outbox: Outbox, story: MessageRef,
     send_sync(&manager, &outbox, sync).await;
 }
 
-/// Takes stories off the list once their day is over, for the rest of the session.
-pub(super) async fn expire_stories(manager: Mgr, ctx: Ctx) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
-        send_stories(&manager, &ctx).await;
-    }
-}
+/// How often the stories are sent again ([`send_stories`]), so that those whose day is over
+/// come off the list.
+pub(super) const STORIES_RESENT: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
 mod tests {

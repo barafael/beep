@@ -161,54 +161,47 @@ pub(super) async fn decorate(ctx: &Ctx, id: &ConversationId, messages: &mut [Cha
     }
 }
 
-/// Deletes disappearing messages when their time is up, for the rest of the session.
-pub(super) async fn sweep_expired(ctx: Ctx) {
+/// Deletes the disappearing messages whose time is up. Returns how long until the next one
+/// is, `None` once the UI has gone away.
+pub(super) async fn sweep_expired(ctx: &Ctx) -> Option<Duration> {
     // After a failure to read or write which messages are due: they still are.
     const RETRY: Duration = Duration::from_secs(60);
-    loop {
-        let (due, next) = match ctx.tables.due(now_millis()).await {
-            Ok(found) => found,
-            Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to look for disappearing messages");
-                tokio::time::sleep(RETRY).await;
-                continue;
-            }
-        };
-        let deleted: Vec<_> = due
-            .into_iter()
-            .map(|(conversation, message)| {
-                let thread = thread_of(&conversation);
-                (conversation, message, thread)
-            })
-            .collect();
-        // All in one transaction.
-        if !deleted.is_empty()
-            && let Err(error) = ctx.tables.delete_messages(&deleted).await
-        {
-            warn!(error = %scrubbed(&error), "failed to delete disappearing messages");
-            tokio::time::sleep(RETRY).await;
-            continue;
+    let (due, next) = match ctx.tables.due(now_millis()).await {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(error = %scrubbed(&error), "failed to look for disappearing messages");
+            return Some(RETRY);
         }
-        let mut gone: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
-        for (conversation, message, _) in deleted {
-            gone.entry(conversation).or_default().push(message);
-        }
-        for (conversation, targets) in gone {
-            if !ctx.events.send(Event::Expired {
-                conversation,
-                targets,
-            }) {
-                return;
-            }
-        }
-        let wait = next.map_or(Duration::from_secs(24 * 3600), |at| {
-            Duration::from_millis(at.saturating_sub(now_millis()))
-        });
-        tokio::select! {
-            () = tokio::time::sleep(wait) => {}
-            () = ctx.expiring.notified() => {}
+    };
+    let deleted: Vec<_> = due
+        .into_iter()
+        .map(|(conversation, message)| {
+            let thread = thread_of(&conversation);
+            (conversation, message, thread)
+        })
+        .collect();
+    // All in one transaction.
+    if !deleted.is_empty()
+        && let Err(error) = ctx.tables.delete_messages(&deleted).await
+    {
+        warn!(error = %scrubbed(&error), "failed to delete disappearing messages");
+        return Some(RETRY);
+    }
+    let mut gone: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
+    for (conversation, message, _) in deleted {
+        gone.entry(conversation).or_default().push(message);
+    }
+    for (conversation, targets) in gone {
+        if !ctx.events.send(Event::Expired {
+            conversation,
+            targets,
+        }) {
+            return None;
         }
     }
+    Some(next.map_or(Duration::from_secs(24 * 3600), |at| {
+        Duration::from_millis(at.saturating_sub(now_millis()))
+    }))
 }
 
 /// Starts the timers (seconds) of disappearing messages in a conversation, as of `start`:
@@ -697,6 +690,7 @@ fn is_quoted_version(stored: &Content, quoted: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::LocalStore;
     use crate::signal::send::aci_binary;
     use presage::model::identity::OnNewIdentity;
 
@@ -907,5 +901,45 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(reaction_target(&nameless), None);
+    }
+
+    /// A sweep deletes what is due and tells the UI, and says how long until the next is.
+    #[test]
+    fn a_sweep_deletes_what_is_due() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(tmp.path().join("local.db3"))
+                .create_if_missing(true);
+            let (ctx, ui) = Ctx::for_tests(LocalStore::open(options).await.unwrap()).await;
+            let ann = ConversationId::contact("ann");
+            let message = |timestamp| MessageRef {
+                author_id: "ann".into(),
+                timestamp,
+            };
+            let now = now_millis();
+            let expiries = [(message(1), now - 1000), (message(2), now + 3_600_000)];
+            ctx.tables.set_expiries(&ann, &expiries).await.unwrap();
+
+            let wait = sweep_expired(&ctx).await.expect("the UI is there");
+            assert!(wait > Duration::from_secs(3500) && wait <= Duration::from_secs(3600));
+            let Ok(Event::Expired {
+                conversation,
+                targets,
+            }) = ui.try_recv()
+            else {
+                panic!("no expiry");
+            };
+            assert_eq!((conversation, targets), (ann, vec![message(1)]));
+            assert!(ui.try_recv().is_err(), "once only");
+
+            sweep_expired(&ctx).await;
+            assert!(ui.try_recv().is_err(), "nothing more is due");
+            ctx.tables.close().await;
+        });
     }
 }
