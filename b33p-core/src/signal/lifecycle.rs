@@ -411,7 +411,7 @@ fn unlock(
     let new = !paths.db.exists();
     let mut error = None;
     loop {
-        let _ = events.send(Event::PasswordRequired {
+        events.send(Event::PasswordRequired {
             new,
             error: error.take(),
         });
@@ -633,12 +633,12 @@ async fn session(
             None => {
                 test_servers_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
-                let _ = events.send(Event::Linked { account });
+                events.send(Event::Linked { account });
                 Some((manager, Vec::new()))
             }
             Some(marker) => {
                 unlink(manager).await;
-                let _ = events.send(Event::Error(Error::unreachable(
+                events.send(Event::Error(Error::unreachable(
                     "The message history transfer was interrupted. Scan the code to link this \
                      device again and retry.",
                 )));
@@ -706,7 +706,7 @@ async fn session(
             Ended::Unlinked => return Ok(Ending::Wipe),
             Ended::Removed => {}
         }
-        let _ = events.send(Event::Error(Error::refused(
+        events.send(Event::Error(Error::refused(
             "This device was removed from your Signal account. Scan the code to link it again; \
              the messages here are kept.",
         )));
@@ -853,7 +853,7 @@ async fn run_linked(
                     // Anything else it couldn't handle: start over, rather than look connected
                     // while nothing arrives; later and later should it keep failing.
                     warn!(error = %scrubbed(&error), "receiving failed");
-                    let _ = events.send(Event::Error(Error::unreachable(
+                    events.send(Event::Error(Error::unreachable(
                         "Receiving messages failed; trying again.",
                     )));
                     failures += 1;
@@ -950,7 +950,7 @@ async fn link_with_history(
             }
         };
         let account = display_number(&manager.registration_data().phone_number);
-        let _ = events.send(Event::Linked { account });
+        events.send(Event::Linked { account });
         let Some(key) = key else {
             return Ok(Some((manager, Vec::new())));
         };
@@ -975,7 +975,7 @@ async fn link_with_history(
                 }
             }
         };
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
         match result {
             Ok(transfer::Outcome::Imported | transfer::Outcome::WithoutHistory) => {
                 Marker::remove(paths)?;
@@ -984,7 +984,7 @@ async fn link_with_history(
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
                 warn!(error = %scrub(&error.message), kind = ?error.kind, "message history transfer failed");
-                let _ = events.send(Event::Error(Error::new(
+                events.send(Event::Error(Error::new(
                     error.kind,
                     "The message history couldn't be transferred. Scan the new code to link \
                      this device again and retry.",
@@ -1145,7 +1145,7 @@ async fn link(
                     .finish();
                 // Said rather than swallowed: otherwise the user faces a blank panel and a link
                 // that never completes.
-                let _ = events.send(match QrMatrix::encode(url.as_str()) {
+                events.send(match QrMatrix::encode(url.as_str()) {
                     Some(qr) => Event::LinkQr(qr),
                     None => Event::Error(Error::refused(
                         "The linking code couldn't be drawn. Restart b33p to try again.",

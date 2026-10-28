@@ -94,7 +94,7 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
             count = interrupted.len(),
             "messages didn't go out before b33p stopped"
         );
-        let _ = ctx.events.send(Event::Interrupted(interrupted));
+        ctx.events.send(Event::Interrupted(interrupted));
     }
 }
 
@@ -106,7 +106,7 @@ pub(super) fn command_failed(events: &Events, error: Error, command: Command) {
             warn!(error = %scrub(&error.message), kind = ?error.kind, "command failed")
         }
     }
-    let _ = events.send(Event::CommandFailed { error, command });
+    events.send(Event::CommandFailed { error, command });
 }
 
 /// Whether `command` is taken in order (`in_order` in `run_linked`): it sends something to the
@@ -289,7 +289,7 @@ async fn handle_command(
                     ..Default::default()
                 });
             }
-            let _ = events.send(Event::History {
+            events.send(Event::History {
                 conversation: id,
                 messages,
                 reactions,
@@ -320,7 +320,7 @@ async fn handle_command(
                 sender: "You".into(),
                 outgoing: true,
             };
-            let _ = events.send(Event::Reaction {
+            events.send(Event::Reaction {
                 conversation,
                 target,
                 reaction,
@@ -362,7 +362,7 @@ async fn handle_command(
                 send_new(manager, ctx, conversation.clone(), outgoing, timestamp).await
             };
             if let Err(error) = sent.await {
-                let _ = ctx.events.send(Event::SendFailed {
+                ctx.events.send(Event::SendFailed {
                     conversation,
                     timestamp,
                     retryable: error.retryable(),
@@ -480,13 +480,13 @@ async fn handle_command(
                 .await
                 .map_err(db)?;
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
-            let _ = events.send(Event::Settings {
+            events.send(Event::Settings {
                 conversation: id.clone(),
                 settings,
             });
             refresh_group(manager, ctx, key).await;
             show_stored(manager, ctx, &id, &thread, timestamp).await;
-            let _ = events.send(Event::GroupCreated(id));
+            events.send(Event::GroupCreated(id));
         }
         Command::EditGroup { conversation, edit } => {
             let Thread::Group(key) = thread(&conversation)? else {
@@ -524,7 +524,7 @@ async fn handle_command(
             let parsed = parse_group_link(&link)?;
             // A group we are in already just opens.
             if let Some(id) = member_of(manager, ctx, parsed.master_key).await {
-                let _ = events.send(Event::GroupJoined(id));
+                events.send(Event::GroupJoined(id));
                 return Ok(());
             }
             let info = manager
@@ -537,7 +537,7 @@ async fn handle_command(
                 AccessRequired::Administrator => true,
                 _ => return Err(Error::refused("This group's invite link is turned off.")),
             };
-            let _ = events.send(Event::GroupPreview(crate::GroupPreview {
+            events.send(Event::GroupPreview(crate::GroupPreview {
                 link: link.trim().to_owned(),
                 title: info.title,
                 members: info.member_count,
@@ -549,7 +549,7 @@ async fn handle_command(
             let parsed = parse_group_link(&link)?;
             let key = parsed.master_key;
             if let Some(id) = member_of(manager, ctx, key).await {
-                let _ = events.send(Event::GroupJoined(id));
+                events.send(Event::GroupJoined(id));
                 return Ok(());
             }
             let joined = ctx
@@ -566,7 +566,7 @@ async fn handle_command(
                 .update(&id, |s| s.accepted = true)
                 .await
                 .map_err(db)?;
-            let _ = events.send(Event::Settings {
+            events.send(Event::Settings {
                 conversation: id.clone(),
                 settings,
             });
@@ -576,13 +576,13 @@ async fn handle_command(
             if let presage::manager::GroupJoin::Joined { timestamp } = joined {
                 show_stored(manager, ctx, &id, &thread, timestamp).await;
             }
-            let _ = events.send(Event::GroupJoined(id));
+            events.send(Event::GroupJoined(id));
         }
         Command::LoadStickers => {
             let (manager, events) = (manager.clone(), events.clone());
             ctx.background.run(BackgroundKind::Stickers, async move {
                 let packs = sticker_packs(&manager).await;
-                let _ = events.send(Event::StickerPacks(packs));
+                events.send(Event::StickerPacks(packs));
             });
         }
         Command::SendSticker {
@@ -625,7 +625,7 @@ async fn handle_command(
         } => set_verified(manager, ctx, &conversation, verified).await?,
         Command::FindNumber { number, then } => {
             let conversation = find_number(manager, ctx, &number).await?;
-            let _ = events.send(Event::Found { conversation, then });
+            events.send(Event::Found { conversation, then });
         }
         Command::LoadDetails(conversation) => {
             let Ok(thread) = thread(&conversation) else {
@@ -635,7 +635,7 @@ async fn handle_command(
                 check_request(manager, ctx, key).await;
             }
             let stored = details(manager, &ctx.tables, &thread).await;
-            let _ = events.send(Event::Details {
+            events.send(Event::Details {
                 conversation: conversation.clone(),
                 details: stored,
             });
@@ -645,7 +645,7 @@ async fn handle_command(
                 && fetch_as_admin(manager, ctx, key).await
             {
                 let details = details(manager, &ctx.tables, &thread).await;
-                let _ = events.send(Event::Details {
+                events.send(Event::Details {
                     conversation,
                     details,
                 });
@@ -659,7 +659,7 @@ async fn handle_command(
             ctx.background.run(BackgroundKind::Media, async move {
                 match media(&manager, &thread, &conversation).await {
                     Ok(messages) => {
-                        let _ = events.send(Event::Media {
+                        events.send(Event::Media {
                             conversation,
                             messages,
                         });
@@ -680,7 +680,7 @@ async fn handle_command(
             ctx.background.run(BackgroundKind::Search, async move {
                 match search(&manager, &thread, &conversation, &query).await {
                     Ok(messages) => {
-                        let _ = events.send(Event::SearchResults {
+                        events.send(Event::SearchResults {
                             conversation,
                             query,
                             messages,
@@ -832,7 +832,7 @@ async fn handle_command(
                 edited_at: Some(timestamp),
                 ..Default::default()
             });
-            let _ = events.send(Event::Edited {
+            events.send(Event::Edited {
                 conversation,
                 target,
                 message,
@@ -952,7 +952,7 @@ async fn handle_command(
                 ..Default::default()
             };
             send_data(manager, ctx, &thread, message, timestamp).await?;
-            let _ = events.send(Event::Message(ChatMessage {
+            events.send(Event::Message(ChatMessage {
                 conversation,
                 sender_id: own_id(manager).service_id_string(),
                 sender: "You".into(),

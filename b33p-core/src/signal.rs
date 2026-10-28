@@ -79,7 +79,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
         };
         warn!(failure = ?failed.failure, reason = %scrub(&failed.detail), "the backend can't go on");
         let failure = failed.failure;
-        if !events.send(Event::Failed {
+        if !events.sent(Event::Failed {
             failure,
             message: failed.message,
         }) {
@@ -90,7 +90,7 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
             AfterFailure::StartOver => match Paths::new().and_then(|paths| wipe(&paths)) {
                 Ok(()) => use_password = false,
                 Err(message) => {
-                    let _ = events.send(Event::Error(Error::storage(message)));
+                    events.send(Event::Error(Error::storage(message)));
                 }
             },
             AfterFailure::UsePassword => use_password = true,

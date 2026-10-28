@@ -39,6 +39,7 @@ pub use error::{Error, ErrorKind};
 pub use qr::QrMatrix;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -1126,12 +1127,38 @@ impl Default for Config {
 
 /// Backend side of the event channel. It is unbounded, so sending never blocks or awaits.
 #[derive(Clone)]
-pub(crate) struct Events(async_channel::Sender<Event>);
+pub(crate) struct Events {
+    sender: async_channel::Sender<Event>,
+    /// Whether we said the UI has gone, so we say it once.
+    told_gone: Arc<AtomicBool>,
+}
 
 impl Events {
-    /// Returns `false` once the UI has gone away.
-    pub(crate) fn send(&self, event: Event) -> bool {
-        self.0.try_send(event).is_ok()
+    pub(crate) fn new(sender: async_channel::Sender<Event>) -> Self {
+        Self {
+            sender,
+            told_gone: Arc::default(),
+        }
+    }
+
+    /// Sends `event`, or drops it once the UI has gone away: nobody is left to show it.
+    pub(crate) fn send(&self, event: Event) {
+        self.try_send(event);
+    }
+
+    /// Like [`Events::send`], but returns `false` once the UI has gone away, for loops that
+    /// should stop then.
+    #[must_use]
+    pub(crate) fn sent(&self, event: Event) -> bool {
+        self.try_send(event)
+    }
+
+    fn try_send(&self, event: Event) -> bool {
+        let sent = self.sender.try_send(event).is_ok();
+        if !sent && !self.told_gone.swap(true, Ordering::Relaxed) {
+            tracing::debug!("the UI has gone; dropping events");
+        }
+        sent
     }
 }
 
@@ -1228,7 +1255,7 @@ impl Backend {
             // presage/libsignal futures are huge and the runtime is current-thread, so they all
             // live on this stack; the 2 MiB default overflows in debug builds.
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || run(Inbox(command_rx), Events(event_tx)))
+            .spawn(move || run(Inbox(command_rx), Events::new(event_tx)))
             .expect("failed to spawn backend thread");
         Self {
             commands: Commands(command_tx),

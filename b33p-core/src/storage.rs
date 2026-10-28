@@ -156,7 +156,7 @@ pub(crate) async fn sync(
     folders.sort_by_key(|(position, _)| *position);
     let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
     tables.set_folders(&folders).await.map_err(db)?;
-    let _ = events.send(Event::Folders(folders));
+    events.send(Event::Folders(folders));
     // Verifications the phone changed since last time; ours stand otherwise. The caller takes
     // them over (with notes in the chats) and then keeps what the phone said.
     let verified_before = tables.remote_verifications().await.map_err(db)?;
@@ -181,7 +181,7 @@ pub(crate) async fn sync(
         "read the storage service"
     );
     for (conversation, settings) in changed {
-        if !events.send(Event::Settings {
+        if !events.sent(Event::Settings {
             conversation,
             settings,
         }) {

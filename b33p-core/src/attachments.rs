@@ -253,7 +253,7 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
             tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::scrubbed(&error), "failed to fetch attachment")
         }
     }
-    let _ = events.send(Event::Attachment {
+    events.send(Event::Attachment {
         id: attachment.id,
         content,
     });
@@ -283,7 +283,7 @@ pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, event
         Ok(path)
     }
     .await;
-    let _ = events.send(Event::AttachmentSaved {
+    events.send(Event::AttachmentSaved {
         id: attachment.id,
         path,
     });
@@ -576,7 +576,7 @@ pub(crate) async fn open(downloads: Rc<Downloads>, attachment: Attachment, event
     }
     .await;
     if let Err(error) = opened {
-        let _ = events.send(Event::Error(error));
+        events.send(Event::Error(error));
     }
 }
 

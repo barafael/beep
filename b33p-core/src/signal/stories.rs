@@ -151,7 +151,7 @@ pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) {
             outgoing: story.outgoing,
         });
     }
-    let _ = ctx.events.send(Event::Stories(stories));
+    ctx.events.send(Event::Stories(stories));
 }
 
 /// Tells a story's author we viewed it (with `receipts`), and our other devices.

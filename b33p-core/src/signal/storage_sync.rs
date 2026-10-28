@@ -26,7 +26,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
             Ok((known, verifications)) => {
                 take_verifications(&manager, &ctx, verifications).await;
-                if known && !ctx.events.send(Event::StorageRead) {
+                if known && !ctx.events.sent(Event::StorageRead) {
                     return;
                 }
                 if known {

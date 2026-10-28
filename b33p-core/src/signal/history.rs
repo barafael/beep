@@ -194,7 +194,7 @@ pub(super) async fn sweep_expired(ctx: Ctx) {
             gone.entry(conversation).or_default().push(message);
         }
         for (conversation, targets) in gone {
-            if !ctx.events.send(Event::Expired {
+            if !ctx.events.sent(Event::Expired {
                 conversation,
                 targets,
             }) {
@@ -232,7 +232,7 @@ pub(super) async fn start_timers(
         return;
     }
     ctx.expiring.notify_one();
-    let _ = ctx.events.send(Event::Expiring {
+    ctx.events.send(Event::Expiring {
         conversation: conversation.clone(),
         expiries,
     });

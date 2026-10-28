@@ -67,7 +67,7 @@ async fn show_identity_notes(
     };
     for content in recent.iter().filter(|c| identity_note(c).is_some()) {
         if let Some(message) = to_chat_message(manager, names, id.clone(), content).await {
-            let _ = ctx.events.send(Event::Message(message));
+            ctx.events.send(Event::Message(message));
         }
     }
 }
@@ -161,7 +161,7 @@ fn trust(
 /// Tells the UI how far `who`'s safety number is trusted, if that isn't what it was last told.
 fn publish_trust(ctx: &Ctx, who: ServiceId, trust: crate::Trust) {
     if ctx.trust.borrow_mut().insert(who, trust) != Some(trust) {
-        let _ = ctx.events.send(Event::Trust {
+        ctx.events.send(Event::Trust {
             conversation: conversation_id(&Thread::Contact(who)),
             trust,
         });

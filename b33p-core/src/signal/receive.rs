@@ -117,7 +117,7 @@ async fn receive(
         match manager.receive_messages().await {
             Ok(messages) => {
                 info!("connected to Signal; syncing");
-                if !ctx.events.send(Event::Connected) {
+                if !ctx.events.sent(Event::Connected) {
                     return;
                 }
                 kept.receipts.live = false;
@@ -153,7 +153,7 @@ async fn receive(
             }
             Err(error) => warn!(error = %scrubbed(&error), "failed to connect to Signal"),
         }
-        if !ctx.events.send(Event::Reconnecting) {
+        if !ctx.events.sent(Event::Reconnecting) {
             return;
         }
         if reconnect_now {
@@ -236,7 +236,7 @@ async fn handle_received(
             info!("synced with Signal");
             receipts.live = true;
             receipts.send(&ctx.outbox).await;
-            events.send(Event::Synced)
+            events.sent(Event::Synced)
         }
         Received::Contacts => {
             names.clear();
@@ -324,7 +324,7 @@ async fn handle_received(
             } else {
                 format!("⚠ A message from {name} couldn't be decrypted.")
             };
-            events.send(Event::Message(ChatMessage {
+            events.sent(Event::Message(ChatMessage {
                 conversation,
                 sender_id: sender.service_id_string(),
                 body,
@@ -689,7 +689,7 @@ async fn handle_content(
     }
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         let target = original(ctx, &id, target).await;
-        return events.send(Event::Reaction {
+        return events.sent(Event::Reaction {
             conversation: id,
             target,
             reaction,
@@ -726,7 +726,7 @@ async fn handle_content(
             }
             Err(error) => warn!(error = %scrubbed(&error), "failed to erase a deleted message"),
         }
-        return events.send(Event::Deleted {
+        return events.sent(Event::Deleted {
             conversation: id,
             target,
         });
@@ -773,7 +773,7 @@ async fn handle_content(
         if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
             warn!(error = %scrubbed(&error), "failed to note an edited message as sent");
         }
-        return events.send(Event::Edited {
+        return events.sent(Event::Edited {
             conversation: id,
             target,
             message,
@@ -792,7 +792,7 @@ async fn handle_content(
             Err(error) => warn!(error = %scrubbed(&error), "failed to unarchive a conversation"),
         }
     }
-    events.send(Event::Message(message))
+    events.sent(Event::Message(message))
 }
 
 /// Removes what presage stored of `content`, if it is still there as its sender's.
@@ -871,7 +871,7 @@ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::
         }
     };
     for (conversation, settings) in changed {
-        let _ = ctx.events.send(Event::Settings {
+        ctx.events.send(Event::Settings {
             conversation,
             settings,
         });
@@ -907,7 +907,7 @@ async fn on_answered_elsewhere(
         })
         .await;
     if let Ok(settings) = settings {
-        let _ = ctx.events.send(Event::Settings {
+        ctx.events.send(Event::Settings {
             conversation: id.clone(),
             settings,
         });
@@ -916,7 +916,7 @@ async fn on_answered_elsewhere(
         let mut store = manager.store().clone();
         match store.clear_thread(&thread).await {
             Ok(()) => {
-                let _ = ctx.events.send(Event::Cleared(id));
+                ctx.events.send(Event::Cleared(id));
             }
             Err(error) => {
                 warn!(error = %scrubbed(&error), "failed to delete a chat deleted elsewhere")
@@ -962,7 +962,7 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     by_conversation
         .into_iter()
         .all(|(conversation, timestamps)| {
-            ctx.events.send(Event::Delivered {
+            ctx.events.sent(Event::Delivered {
                 conversation,
                 timestamps,
                 delivery,
@@ -999,7 +999,7 @@ async fn on_typing(
         return true;
     }
     let name = sender_name(manager, names, sender).await;
-    ctx.events.send(Event::Typing {
+    ctx.events.sent(Event::Typing {
         conversation,
         sender_id: sender.service_id_string(),
         sender: name,
@@ -1061,7 +1061,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
             .unwrap_or_default();
         match ctx.tables.mark_read(&conversation, newest).await {
             Ok(settings) => {
-                let _ = ctx.events.send(Event::Settings {
+                ctx.events.send(Event::Settings {
                     conversation: conversation.clone(),
                     settings,
                 });
