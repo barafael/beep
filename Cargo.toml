@@ -32,12 +32,12 @@ qrcode = { version = "0.14", default-features = false }
 # dropped from the branch: #14426 (the Qt backend draws variable fonts at their default instance,
 # not the thinnest). Rebuild the branch when master moves; drop it once these have landed upstream
 # and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "69f78e918983d0089aebe2a321dc5d1c48e3b0d6", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "69f78e918983d0089aebe2a321dc5d1c48e3b0d6" }
+slint = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "69f78e918983d0089aebe2a321dc5d1c48e3b0d6" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "69f78e918983d0089aebe2a321dc5d1c48e3b0d6" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "69f78e918983d0089aebe2a321dc5d1c48e3b0d6" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
