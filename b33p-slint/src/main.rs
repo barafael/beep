@@ -27,6 +27,7 @@ mod audio;
 mod autostart;
 mod capture;
 mod clipboard;
+mod desktop;
 mod emoji;
 mod instance;
 mod logging;
@@ -103,6 +104,8 @@ pub struct Shared {
     playback_timer: slint::Timer,
     /// For callbacks that outlive a call, like `typing_timer`'s.
     me: std::rc::Weak<Shared>,
+    /// The file dialogs and the clipboard; see `desktop.rs`.
+    desktop: desktop::Requests,
     /// Answers the agent harness's socket (`--features harness`).
     #[cfg(all(feature = "harness", target_family = "unix"))]
     agent: agent::Handle,
@@ -603,6 +606,11 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     let shutdown = shutdown::watch();
     clipboard::clean();
+    // Not joined at the end: a dialog may still be open when b33p quits.
+    let (desktop, desktop_requests) = async_channel::unbounded();
+    std::thread::spawn(move || {
+        desktop::Desktop.event_loop(desktop_requests);
+    });
 
     let config = Config {
         device_name: settings.device_name(),
@@ -635,6 +643,7 @@ fn main() -> Result<(), slint::PlatformError> {
         pending_play: RefCell::default(),
         playback_timer: slint::Timer::default(),
         me: me.clone(),
+        desktop,
         #[cfg(all(feature = "harness", target_family = "unix"))]
         agent: agent::Handle::default(),
     });
