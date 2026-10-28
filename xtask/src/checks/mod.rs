@@ -25,7 +25,7 @@ mod storage;
 mod stress;
 mod tour;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -77,6 +77,9 @@ pub(crate) fn run(
     } else {
         Some(containers.build_beside(Client::Android)?)
     };
+    // Once it failed, every box that needs it fails (with `--fresh`, each Android phase has one):
+    // the image there is an earlier build's.
+    let mut android_failed = false;
     // Desktop's image only for a box that runs Desktop: a tour's has none.
     let desktop = !linked.is_empty()
         || !android.is_empty()
@@ -85,7 +88,7 @@ pub(crate) fn run(
     containers.build_others(built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| {
         containers.fresh(clients, b33ps)?;
-        b33p.limit_memory(containers)
+        b33p.limit_memory(containers, b33ps)
     };
     let b33ps = b33p.b33ps.unwrap_or(1);
     // Only when named, as the stress phases.
@@ -132,7 +135,10 @@ pub(crate) fn run(
         &android,
         || {
             if let Some(build) = android_image.take() {
-                build.finish()?;
+                build.finish().inspect_err(|_| android_failed = true)?;
+            }
+            if android_failed {
+                return Err("the Android image didn't build (above)".into());
             }
             play(&android_clients, b33ps)
         },
@@ -205,6 +211,7 @@ fn on_own_box(
             return;
         }
     };
+    tally.reported = Reported::default();
     tally.part(name, &record, name, phase);
     record.keep_logs(tally.containers);
 }
@@ -261,6 +268,7 @@ fn on_box<Fixture, Each: Copy + Into<&'static str>>(
             return;
         }
     };
+    tally.reported = Reported::default();
     match tally.part(&name, &record, "setup", fixture) {
         Some(mut fixture) => {
             for &each in phases {
@@ -287,6 +295,7 @@ struct Tally<'run> {
     failed: Vec<String>,
     /// Phases a box that didn't come up or wasn't set up left without a box to run on.
     not_run: usize,
+    /// The current box's: each box's logs start empty.
     reported: Reported,
 }
 
@@ -378,16 +387,29 @@ impl Tally<'_> {
     }
 }
 
-/// What the checks after every part found already: a box's logs keep what its earlier parts
-/// had.
+/// What the checks after every part found already on the box, each line with how often: a box's
+/// logs keep what its earlier parts had. A line can come again, as a client killed the same way
+/// twice: then it is new again.
 #[derive(Default)]
-struct Reported(HashSet<String>);
+struct Reported(HashMap<String, usize>);
 
 impl Reported {
-    /// Fails, listing them as `what`, if `found` has lines not reported before.
+    /// Fails, listing them as `what`, if `found` has lines not reported before, or a line more
+    /// often than before.
     fn none_new(&mut self, what: &str, found: Result<Vec<String>>) -> Result<()> {
-        let mut new = found?;
-        new.retain(|line| self.0.insert(line.clone()));
+        let mut counted: HashMap<String, usize> = HashMap::new();
+        let mut new = Vec::new();
+        for line in found? {
+            let count = counted.entry(line.clone()).or_default();
+            *count += 1;
+            if *count > self.0.get(&line).copied().unwrap_or_default() {
+                new.push(line);
+            }
+        }
+        for (line, count) in counted {
+            let reported = self.0.entry(line).or_default();
+            *reported = (*reported).max(count);
+        }
         if new.is_empty() {
             return Ok(());
         }
@@ -402,6 +424,23 @@ impl Reported {
 
 /// How many lines such a failure lists.
 const LISTED: usize = 10;
+
+/// The number in the environment variable `name`, if it is set: one that doesn't parse fails
+/// rather than being passed over, as a seed mistyped to replay a run would be.
+fn env_number<T: std::str::FromStr>(name: &str) -> Result<Option<T>> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|_| Error::Failed(format!("{name}={value:?} isn't a number"))),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(source) => Err(Error::Env {
+            name: name.to_owned(),
+            source,
+        }),
+    }
+}
 
 pub(crate) struct Checks {
     passed: usize,
@@ -448,5 +487,27 @@ impl Checks {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reported;
+
+    fn lines(lines: &[&str]) -> crate::error::Result<Vec<String>> {
+        Ok(lines.iter().map(|&line| line.to_owned()).collect())
+    }
+
+    /// A line the part before reported isn't new; the same line once more is, as b33p killed
+    /// for its memory twice.
+    #[test]
+    fn a_line_again_is_new_again() {
+        let killed = "b33p: with-display: b33p exited: signal: 9 (SIGKILL)";
+        let (once, twice) = (&[killed][..], &[killed, killed][..]);
+        let mut reported = Reported::default();
+        assert!(reported.none_new("crashed", lines(once)).is_err());
+        assert!(reported.none_new("crashed", lines(once)).is_ok());
+        assert!(reported.none_new("crashed", lines(twice)).is_err());
+        assert!(reported.none_new("crashed", lines(twice)).is_ok());
     }
 }

@@ -22,7 +22,7 @@ use super::b33p::{edit, select};
 use super::rng::{self, Xorshift};
 use super::setup::{MeshB33p, MeshBox, started};
 use super::stress::{Sample, growing, no_panic, sample};
-use super::{Checks, PATIENCE};
+use super::{Checks, PATIENCE, env_number};
 use crate::Sockets;
 use crate::error::{Context, Error, Result};
 use crate::harness::Harness;
@@ -82,11 +82,8 @@ enum Kind {
 }
 
 /// `TESTBOX_TOUR_REPEAT`, or 2.
-fn repeat() -> usize {
-    std::env::var("TESTBOX_TOUR_REPEAT")
-        .ok()
-        .and_then(|repeat| repeat.parse().ok())
-        .unwrap_or(2)
+fn repeat() -> Result<usize> {
+    Ok(env_number("TESTBOX_TOUR_REPEAT")?.unwrap_or(2))
 }
 
 /// One chat as the model has it: between two b33ps, or a group.
@@ -422,9 +419,14 @@ pub(super) fn tour(
     std::fs::copy(picture, files.join(PICTURE)).context(picture.display().to_string())?;
     testbox_tools::write(&files.join(FILE), "testbox tour: a file\n")?;
     testbox_tools::write(&files.join(AUDIO), b33p_core::mock_voice_message())?;
-    let seed = rng::seed();
-    let repeat = repeat();
+    let seed = rng::seed()?;
+    let repeat = repeat()?;
     let b33ps = mesh.b33ps.len();
+    if b33ps < 2 {
+        return Err(Error::Failed(
+            "the tour needs two b33ps at least (--b33ps), to write to each other".to_owned(),
+        ));
+    }
     println!(
         "  seed {seed}, each step {repeat} times, {b33ps} b33ps (TESTBOX_SEED, TESTBOX_TOUR_REPEAT)"
     );
@@ -440,8 +442,10 @@ pub(super) fn tour(
     })?;
     tour.sample_all()?;
 
+    // A block needs a third b33p ([`World::plan`]): with two, it could never go.
     let mut left: Vec<Kind> = Kind::VARIANTS
         .iter()
+        .filter(|&&kind| kind != Kind::Block || b33ps >= 3)
         .flat_map(|&kind| std::iter::repeat_n(kind, repeat))
         .collect();
     let mut number = 0;
@@ -460,13 +464,16 @@ pub(super) fn tour(
                 fillers += 1;
                 if fillers > FILLERS {
                     let stuck: Vec<&'static str> = left.iter().map(|&kind| kind.into()).collect();
+                    tour.ended(checks, seed);
                     return checks.require("every kind of step came up", || {
                         Err(Error::Failed(format!(
                             "{stuck:?} could never go; again with TESTBOX_SEED={seed}"
                         )))
                     });
                 }
-                tour.world.filler()?
+                tour.world
+                    .filler()
+                    .inspect_err(|_| tour.ended(checks, seed))?
             }
         };
         let name = format!("step {number}: {}", tour.world.describe(&step));
@@ -485,13 +492,13 @@ pub(super) fn tour(
             .or_default()
             .push(took.as_secs_f64());
         if outcome.is_err() {
-            tour.write(checks, seed);
-            tour.keep_snapshots(checks);
+            tour.ended(checks, seed);
             println!("  the tour ended at step {number}; again with TESTBOX_SEED={seed}");
             return outcome;
         }
         if tour.sampled.elapsed() >= SAMPLE_EVERY {
-            tour.sample_all()?;
+            tour.sample_all()
+                .inspect_err(|_| tour.ended(checks, seed))?;
         }
     }
 
@@ -1496,7 +1503,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 let ts = self.send(by, &text)?;
                 self.add(thread, by, ts, &text);
                 self.converge_timed(thread, by, started)?;
-                match tries(self)? - before {
+                match tries(self)?.saturating_sub(before) {
                     0 => Ok(()),
                     tried => Err(Error::Failed(format!(
                         "b33p {by} logged {tried} tries at a preview, with link previews off"
@@ -2097,6 +2104,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         }
     }
 
+    /// What a tour that ends early leaves in the record: `tour.json` and each b33p's snapshot.
+    fn ended(&mut self, checks: &mut Checks, seed: u64) {
+        self.write(checks, seed);
+        self.keep_snapshots(checks);
+    }
+
     /// `tour.json` into the record.
     fn write(&self, checks: &mut Checks, seed: u64) {
         let samples = self
@@ -2276,9 +2289,9 @@ struct StepRecord {
 struct SampleRecord {
     /// Seconds into the tour.
     at: f64,
-    /// What b33p's container holds itself (`anon`).
+    /// What b33p's process holds itself (`RssAnon`).
     memory_mib: f64,
-    /// Its page cache (`file`), apart.
+    /// Its container's page cache (`file`), apart.
     cache_mib: f64,
     files: u64,
     answer_ms: f64,

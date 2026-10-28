@@ -11,12 +11,12 @@ default:
 # The client, against Signal.
 [group('run')]
 run:
-    cargo run --release
+    cargo run --release -p b33p-slint
 
 # The offline fake: nothing is sent.
 [group('run')]
 mock:
-    B33P_MOCK=1 cargo run
+    B33P_MOCK=1 cargo run -p b33p-slint
 
 [group('check')]
 fmt:
@@ -45,10 +45,11 @@ test:
 sqlcipher:
     cargo tree --locked -e features -i libsqlite3-sys | grep bundled-sqlcipher-custom-crypto >/dev/null
 
-# Licenses, advisories and sources (deny.toml).
+# Licenses, advisories and sources (deny.toml), with every feature, as cargo-deny-action's
+# default arguments.
 [group('check')]
 deny:
-    cargo deny --locked check
+    cargo deny --all-features --locked check
 
 # The workflows' security (zizmor, as CI runs it).
 [group('check')]
@@ -78,7 +79,8 @@ doc:
 harness:
     cargo test -p b33p-slint --features harness --locked
 
-# The test box's phases on fresh boxes, every one if none is named (testbox/README.md).
+# The test box's phases on fresh boxes, every one but the stress and mesh phases if none is
+# named (testbox/README.md).
 [group('end to end')]
 testbox *phases:
     cargo testbox run {{ phases }}

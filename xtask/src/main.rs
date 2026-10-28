@@ -59,7 +59,7 @@ enum Command {
         #[command(flatten)]
         b33p: B33pOptions,
     },
-    /// Runs the phases' checks, every phase's if none is named but the stress phases'.
+    /// Runs the phases' checks, every phase's if none is named but the stress and mesh phases'.
     ///
     /// Builds the images, the Android image while the linked box runs, each build's output in
     /// target/testbox-build. The phases on one setup share a box (without `--fresh`): the pod
@@ -74,7 +74,7 @@ enum Command {
     /// `target/testbox-record/run/<when it started>/<round>/`.
     Run {
         /// How many times.
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
         rounds: u32,
         #[command(flatten)]
         options: TestOptions,
@@ -111,7 +111,7 @@ enum Command {
 /// What `test` and `run` run, and how.
 #[derive(clap::Args)]
 pub(crate) struct TestOptions {
-    /// The phases; all but the stress phases if none.
+    /// The phases; all but the stress and mesh phases if none.
     pub(crate) phases: Vec<Phase>,
     /// Also takes each client's display after each check, into the record beside the
     /// containers' logs.
@@ -143,14 +143,13 @@ pub(crate) struct B33pOptions {
 }
 
 impl B33pOptions {
-    /// Lets each of the box's b33ps take at most `--b33p-memory`, if given.
-    fn limit_memory(&self, pod: &Pod) -> Result<()> {
+    /// Lets each of the box's `b33ps` b33ps take at most `--b33p-memory`, if given: every one
+    /// the pod played, whether it runs at this moment or not.
+    fn limit_memory(&self, pod: &Pod, b33ps: u8) -> Result<()> {
         let Some(mib) = self.b33p_memory else {
             return Ok(());
         };
-        pod.b33ps()
-            .into_iter()
-            .try_for_each(|b33p| pod.limit_memory(b33p, mib))
+        (0..b33ps.max(1)).try_for_each(|n| pod.limit_memory(pod::Service::B33p(n), mib))
     }
 }
 
@@ -243,8 +242,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
-    pod.up(clients, b33p.b33ps.unwrap_or(1), b33p.optimized)?;
-    b33p.limit_memory(pod)
+    let b33ps = b33p.b33ps.unwrap_or(1);
+    pod.up(clients, b33ps, b33p.optimized)?;
+    b33p.limit_memory(pod, b33ps)
 }
 
 /// `test` `rounds` times, each round's records in a directory of its own; then how each went.

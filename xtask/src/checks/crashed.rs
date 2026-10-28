@@ -10,7 +10,7 @@ const KILLED: &str = "exited: signal:";
 /// The lines of the clients' logs that say one ended by a signal.
 pub(super) fn found(containers: &Pod) -> Vec<String> {
     let mut crashed = Vec::new();
-    for screen in containers.screens() {
+    for screen in containers.all_screens() {
         let Ok(log) = containers.log(screen) else {
             continue;
         };

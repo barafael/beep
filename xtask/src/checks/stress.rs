@@ -17,7 +17,7 @@ use super::b33p::{
 use super::clients::desktop_shows;
 use super::presage::Presage;
 use super::setup::{PlainBox, linked_desktop, plain_box, started_b33p};
-use super::{Checks, HISTORY_PATIENCE, PATIENCE, rng};
+use super::{Checks, HISTORY_PATIENCE, PATIENCE, env_number, rng};
 use crate::Sockets;
 use crate::error::{Error, Result};
 use crate::harness::Harness;
@@ -691,8 +691,8 @@ pub(crate) fn soak(
     checks.record(
         "mixed traffic for a long while: nothing lost, and nothing keeps growing",
         || {
-            let seed = rng::seed();
-            let minutes = soak_minutes();
+            let seed = rng::seed()?;
+            let minutes = soak_minutes()?;
             println!("  seed {seed}, {minutes} minutes (TESTBOX_SEED, TESTBOX_SOAK_MINUTES)");
             let mut random = rng::Xorshift(seed);
             let picture = small_picture();
@@ -795,11 +795,8 @@ pub(crate) fn soak(
 }
 
 /// How long [`soak`] runs: `TESTBOX_SOAK_MINUTES`, or half an hour.
-fn soak_minutes() -> u64 {
-    std::env::var("TESTBOX_SOAK_MINUTES")
-        .ok()
-        .and_then(|minutes| minutes.parse().ok())
-        .unwrap_or(30)
+fn soak_minutes() -> Result<u64> {
+    Ok(env_number("TESTBOX_SOAK_MINUTES")?.unwrap_or(30))
 }
 
 /// The index of the newest message, ours or the peer's, that is neither deleted nor a notice.
@@ -818,11 +815,13 @@ fn newest(snapshot: &Snapshot, outgoing: bool) -> Option<u32> {
 
 /// What [`soak`] watches, at one moment.
 pub(super) struct Sample {
-    /// What the container's processes hold (cgroup `memory.stat` `anon`), in bytes: what a leak
-    /// grows. Not `memory.current`, which counts the page cache too, the files b33p read and
-    /// wrote, and which grows on its own after a restart (pending/tour.md).
+    /// What b33p's process holds itself (`RssAnon` in its /proc status), in bytes: what a leak
+    /// grows. Not its container's cgroup, which counts wayvnc too, and while a viewer or the
+    /// screenshots are connected that is some 150 MiB; nor `memory.current`, which counts the
+    /// page cache too, the files b33p read and wrote, and which grows on its own after a restart
+    /// (pending/tour.md).
     pub(super) memory: u64,
-    /// The page cache (`memory.stat` `file`), in bytes, beside it.
+    /// The container's page cache (cgroup `memory.stat` `file`), in bytes, beside it.
     pub(super) cache: u64,
     pub(super) files: u64,
     pub(super) answer: Duration,
@@ -847,34 +846,36 @@ pub(super) fn sample(containers: &Pod, service: Service, b33p: &mut Harness) -> 
     b33p.snapshot()?;
     let answer = started.elapsed();
     let stat = containers.exec(service, &["cat", "/sys/fs/cgroup/memory.stat"], "")?;
-    let of = |key: &str| -> Result<u64> {
-        stat.lines()
-            .find_map(|line| {
-                line.strip_prefix(key)?
-                    .strip_prefix(' ')?
-                    .trim()
-                    .parse()
-                    .ok()
-            })
-            .ok_or_else(|| Error::Failed(format!("no {key} in memory.stat")))
-    };
-    let (memory, cache) = (of("anon")?, of("file")?);
+    let cache = field(&stat, "file ", "memory.stat")?;
     // b33p isn't the container's first process (with-display is). An `if` rather than `&&`,
     // which would leave the loop failing whenever the last process isn't b33p.
     let script = r#"for p in /proc/[0-9]*; do
-  if [ "$(cat "$p/comm" 2>/dev/null)" = b33p ]; then ls "$p/fd" | wc -l; fi
+  if [ "$(cat "$p/comm" 2>/dev/null)" = b33p ]; then
+    echo "files $(ls "$p/fd" | wc -l)"
+    cat "$p/status"
+  fi
 done"#;
-    let files = containers
-        .exec(service, &["sh", "-c", script], "")?
-        .trim()
-        .parse()
-        .map_err(|_| Error::Failed("b33p's open files aren't a number".into()))?;
+    let process = containers.exec(service, &["sh", "-c", script], "")?;
     Ok(Sample {
-        memory,
+        // In kB.
+        memory: field(&process, "RssAnon:", "b33p's status")? << 10,
         cache,
-        files,
+        files: field(&process, "files ", "b33p's open files")?,
         answer,
     })
+}
+
+/// The number after `key` on its line of `text`, which is `what`.
+fn field(text: &str, key: &str, what: &str) -> Result<u64> {
+    text.lines()
+        .find_map(|line| {
+            line.strip_prefix(key)?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .ok_or_else(|| Error::Failed(format!("no {} in {what}", key.trim_end())))
 }
 
 /// Fails if the last third of `samples` is well above the first third: memory by half and

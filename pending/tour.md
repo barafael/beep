@@ -371,6 +371,9 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Run 13, round 3: b33p 1's 168 MiB was 67 MiB anon and 93 MiB file.
   - Now the samples are `memory.stat`'s `anon` (what the processes hold, what a leak grows),
     with `file` recorded beside it (`cache_mib` in `tour.json`).
+  - Then b33p's own `RssAnon` (/proc/<pid>/status): the cgroup's `anon` counts wayvnc too,
+    some 150 MiB while the screenshots connect over VNC, which failed the tour's "nothing keeps
+    growing" with `--screenshots`.
   - The soak's earlier numbers (53 to 68/77 MiB) were `memory.current`.
   - The soak again on anon (2026-10-28, seed 1793160337, optimized, 30 minutes, beside other
     boxes and disk-write load): 55 to 82 MiB anon, with 19 to 40 MiB of page cache beside it,
