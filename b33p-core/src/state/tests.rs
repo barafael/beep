@@ -3723,3 +3723,39 @@ fn stories_are_watched_in_order() {
     state.apply(Event::Stories(vec![story("bob", "g", 30, true)]));
     assert!(state.current_story().is_none());
 }
+
+/// A group's open details are read again when a change to it comes (its notice), so that a
+/// member leaving shows without opening them again (pending/tour.md, finding 3).
+#[test]
+fn a_change_to_a_group_reloads_its_open_details() {
+    let reloads = |state: &mut ChatState| {
+        state
+            .take_commands()
+            .into_iter()
+            .filter(|command| matches!(command, Command::LoadDetails(_)))
+            .count()
+    };
+    let mut state = state();
+    state.select(&id("g"));
+    assert!(matches!(
+        state.open_details(),
+        Some(Command::LoadDetails(_))
+    ));
+    let left = ChatMessage {
+        notice: true,
+        body: "Ann left the group.".into(),
+        ..message("g", "Ann", 10, false)
+    };
+    state.apply(Event::Message(left.clone()));
+    assert_eq!(reloads(&mut state), 1);
+    // Not for what someone wrote.
+    state.apply(Event::Message(message("g", "Ann", 20, false)));
+    assert_eq!(reloads(&mut state), 0);
+    // Nor once the details are closed.
+    state.close_details();
+    state.apply(Event::Message(ChatMessage {
+        timestamp: 30,
+        ..left
+    }));
+    assert_eq!(reloads(&mut state), 0);
+}

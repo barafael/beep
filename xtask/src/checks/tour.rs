@@ -1646,32 +1646,25 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             self.open(k, thread)?;
             let b33p = self.harness(k);
             let mut last = None;
-            // The details are read as they open, and not again while open (b33p-core
-            // `Command::LoadDetails`): opened again until they show the change, as a person
-            // would, since it may reach this b33p after they opened.
-            let deadline = Instant::now() + PATIENCE;
-            let shown = loop {
-                b33p.act(Action::OpenDetails)?;
-                let shown = b33p.wait_for(
-                    &format!("the group's members and description on b33p {k}"),
-                    DETAILS_AGAIN,
-                    |snapshot| {
-                        let details = snapshot.details.as_ref()?;
-                        let members: BTreeMap<String, bool> = details
-                            .members
-                            .iter()
-                            .map(|member| (member.service_id.clone(), member.admin))
-                            .collect();
-                        let matches = members == wanted && details.description == description;
-                        last = Some((members, details.description.clone()));
-                        matches.then_some(())
-                    },
-                );
-                b33p.act(Action::CloseDetails)?;
-                if shown.is_ok() || Instant::now() >= deadline {
-                    break shown;
-                }
-            };
+            // Opened once: a change that reaches this b33p while they are open reads them again
+            // (b33p-core's `ChatState`, on the change's notice).
+            b33p.act(Action::OpenDetails)?;
+            let shown = b33p.wait_for(
+                &format!("the group's members and description on b33p {k}"),
+                PATIENCE,
+                |snapshot| {
+                    let details = snapshot.details.as_ref()?;
+                    let members: BTreeMap<String, bool> = details
+                        .members
+                        .iter()
+                        .map(|member| (member.service_id.clone(), member.admin))
+                        .collect();
+                    let matches = members == wanted && details.description == description;
+                    last = Some((members, details.description.clone()));
+                    matches.then_some(())
+                },
+            );
+            b33p.act(Action::CloseDetails)?;
             shown.map_err(|error| {
                 Error::Failed(format!(
                     "{error}\nwanted {wanted:?} and {description:?}, shown {last:?}"

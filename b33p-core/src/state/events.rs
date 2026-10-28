@@ -426,6 +426,14 @@ impl ChatState {
                         self.late.entry(id.clone()).or_default().push(reference);
                     }
                 }
+                // A change to a group whose details are open: they are read again. Its notice
+                // comes once the group is stored as changed.
+                if notice
+                    && self.details.as_ref().is_some_and(|(shown, _)| *shown == id)
+                    && self.conversation(&id).is_some_and(Conversation::is_group)
+                {
+                    self.queued.push(Command::LoadDetails(id.clone()));
+                }
                 if looking {
                     self.mark_seen_later();
                 } else if !outgoing && !notice {
