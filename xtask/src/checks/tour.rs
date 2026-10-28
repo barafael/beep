@@ -376,9 +376,8 @@ enum Step {
         by: usize,
         thread: usize,
         admin: usize,
-        /// Asked for, as by one who left: told to the members they knew. One who was never in
-        /// joins by a link that needs no approval, as a first request reaches no admin until
-        /// they fetch the group (pending/tour.md).
+        /// Asked for, and approved by `admin`, who sees the request once the details fetch
+        /// the group; else by a link that needs no approval.
         approval: bool,
     },
     Story {
@@ -946,7 +945,7 @@ impl World {
                     by,
                     thread,
                     admin,
-                    approval: self.threads[thread].left.contains(&by),
+                    approval: self.below(2) == 0,
                 }
             }
             Kind::Story => {
@@ -1060,7 +1059,7 @@ impl World {
                 admin,
                 approval: true,
             } => format!(
-                "b33p {by} asks to join {} again by its link, and {admin} approves",
+                "b33p {by} asks to join {} by its link, and {admin} approves",
                 name(thread)
             ),
             Step::JoinByLink {
@@ -1900,8 +1899,8 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// `admin` turns `thread`'s link on, with `approval` or for anyone; `by` joins by it. With
-    /// approval `by`, who left, asks again; the request reaches `admin` without a fetch, as `by`
-    /// tells the members it knew, and `admin` approves. The link goes off after.
+    /// approval `by` asks, and `admin` opens the details until the request shows (they fetch the
+    /// group for an admin), and approves. The link goes off after.
     fn join_by_link(
         &mut self,
         by: usize,
