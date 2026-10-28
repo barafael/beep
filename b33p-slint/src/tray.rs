@@ -1,7 +1,7 @@
 //! The icon in the system tray, which keeps b33p running while its window is closed.
 
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use b33p_core::state::Update;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -28,7 +28,8 @@ pub fn create(shared: &Rc<Shared>) -> Result<Tray, slint::PlatformError> {
         }
     });
     tray.on_quit(|| {
-        let _ = slint::quit_event_loop();
+        // Fails only once the event loop has stopped, which is what quitting asks for.
+        slint::quit_event_loop().ok();
     });
     Ok(tray)
 }
@@ -88,19 +89,15 @@ pub fn open_unless_host_appears(shared: &Rc<Shared>, wait: Duration) {
     let spawned = std::thread::Builder::new()
         .name("b33p-tray-wait".into())
         .spawn(move || {
-            let deadline = Instant::now() + wait;
-            let mut present = host_present();
-            while !present && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(500));
-                present = host_present();
-            }
-            let _ = sender.try_send(present);
+            // The only message, so there is room for it; nobody is left to read it only if
+            // the wait below could not start.
+            sender.try_send(wait_for_host(wait)).ok();
         });
     if let Err(error) = spawned {
         tracing::warn!(%error, "can't wait for the tray");
     }
     let shared = shared.clone();
-    let _ = slint::spawn_local(async move {
+    let waiting = slint::spawn_local(async move {
         // Also when the thread didn't start.
         if appeared.recv().await != Ok(true) {
             tracing::info!("no tray showed up; opening the window");
@@ -128,6 +125,47 @@ pub fn open_unless_host_appears(shared: &Rc<Shared>, wait: Duration) {
             }
         }
     });
+    if let Err(error) = waiting {
+        tracing::warn!(%error, "can't wait for the tray; the window stays hidden");
+    }
+}
+
+/// Whether a tray host is there, or comes up within `wait`.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn wait_for_host(wait: Duration) -> bool {
+    use std::sync::{PoisonError, atomic::Ordering};
+    use std::time::Instant;
+    let deadline = Instant::now() + wait;
+    let mut changed = host::CHANGED
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if host_present() {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // Until `watch_host` runs (and if it never can), nothing says when a host comes: ask
+        // again every so often.
+        let next = if host::WATCHED.load(Ordering::Acquire) {
+            left
+        } else {
+            left.min(Duration::from_millis(500))
+        };
+        changed = host::CHANGED
+            .1
+            .wait_timeout(changed, next)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn wait_for_host(_wait: Duration) -> bool {
+    host_present()
 }
 
 /// Whether something shows tray icons right now. Without it, a closed window would leave b33p
@@ -159,10 +197,20 @@ fn query_host(property: impl Fn(&str) -> zbus::Result<zbus::zvariant::OwnedValue
 #[cfg(all(unix, not(target_os = "macos")))]
 mod host {
     use std::sync::atomic::AtomicBool;
+    use std::sync::{Condvar, Mutex, PoisonError};
 
     /// What [`super::host_present`] answers once `WATCHED`.
     pub static PRESENT: AtomicBool = AtomicBool::new(false);
     pub static WATCHED: AtomicBool = AtomicBool::new(false);
+    /// Notified when `PRESENT` or `WATCHED` may have changed, for [`super::wait_for_host`].
+    pub static CHANGED: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
+
+    /// Wakes whoever waits on `CHANGED`. Under its lock, so a waiter that just found nothing
+    /// has gone to sleep by then and is woken.
+    pub fn notify() {
+        let _held = CHANGED.0.lock().unwrap_or_else(PoisonError::into_inner);
+        CHANGED.1.notify_all();
+    }
 }
 
 /// Keeps [`host_present`]'s answer up to date on threads of its own: asked once, then again
@@ -182,6 +230,7 @@ pub fn watch_host() {
                 move || {
                     let present = query_host(|name| property_on(&connection, name));
                     host::PRESENT.store(present, Ordering::Release);
+                    host::notify();
                 }
             };
             let hosts = zbus::MatchRule::builder()
@@ -207,6 +256,7 @@ pub fn watch_host() {
             // Subscribed first, so nothing between asking and listening goes unnoticed.
             ask();
             host::WATCHED.store(true, Ordering::Release);
+            host::notify();
             let on_watcher = {
                 let ask = ask.clone();
                 move || {
@@ -215,9 +265,13 @@ pub fn watch_host() {
                     }
                 }
             };
-            let _ = std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name("b33p-tray-watcher".into())
                 .spawn(on_watcher);
+            // Tray hosts are still followed; only a restarted watcher would go unnoticed.
+            if let Err(error) = spawned {
+                tracing::warn!(%error, "can't watch for the tray watcher");
+            }
             for _ in hosts {
                 ask();
             }
