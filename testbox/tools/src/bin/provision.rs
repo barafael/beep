@@ -376,11 +376,7 @@ fn write_tls() -> Result<String> {
     server_params.subject_alt_names = vec![
         SanType::DnsName("localhost".try_into().describe("localhost")?),
         SanType::IpAddress(std::net::IpAddr::from([127, 0, 0, 1])),
-        SanType::DnsName(
-            keys::PREVIEW_HOST
-                .try_into()
-                .describe(keys::PREVIEW_HOST)?,
-        ),
+        SanType::DnsName(keys::PREVIEW_HOST.try_into().describe(keys::PREVIEW_HOST)?),
     ];
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     server_params.not_before = now;
