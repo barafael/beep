@@ -46,11 +46,13 @@ mod platform {
                 let mut signals = signals.forever();
                 if let Some(signal) = signals.next() {
                     tracing::info!(signal, "asked to quit");
-                    let _ = slint::quit_event_loop();
+                    // Fails only once the event loop has stopped: quitting already.
+                    slint::quit_event_loop().ok();
                 }
                 // Asked again while closing: whoever asks means it.
                 if let Some(signal) = signals.next() {
-                    let _ = signal_hook::low_level::emulate_default_handler(signal);
+                    // Ends the process as the signal would have; if it can't, exit does.
+                    signal_hook::low_level::emulate_default_handler(signal).ok();
                     std::process::exit(1);
                 }
             });
@@ -136,7 +138,8 @@ mod platform {
             )?;
             let mut message = MSG::default();
             while GetMessageW(&mut message, None, 0, 0).as_bool() {
-                let _ = TranslateMessage(&message);
+                // Says only whether the message was a key to translate.
+                let _translated = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
@@ -156,9 +159,15 @@ mod platform {
             // closed.
             WM_ENDSESSION if wparam.0 != 0 => {
                 tracing::info!("the session is ending");
-                let _ = slint::quit_event_loop();
+                // Fails only once the event loop has stopped: quitting already.
+                slint::quit_event_loop().ok();
                 let closed = CLOSED.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = CLOSED_CHANGED.wait_timeout_while(closed, WAIT, |closed| !*closed);
+                let (_closed, waited) = CLOSED_CHANGED
+                    .wait_timeout_while(closed, WAIT, |closed| !*closed)
+                    .unwrap_or_else(|e| e.into_inner());
+                if waited.timed_out() {
+                    tracing::warn!("the session ends before b33p has closed");
+                }
                 LRESULT(0)
             }
             _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
