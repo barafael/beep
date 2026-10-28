@@ -251,6 +251,12 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     - The 5 s timeout before #92 would have ended the same deadlock sooner; the two "database
       is locked" failures under load may have been this one too.
     - It is once in about 40 rounds without load. Investigation: next.
+    - Not seen in 15 tour rounds with presage-cli at debug under 8 fsync writers (f16 run,
+      2026-10-28): no "database is locked" at all. The logs show what held the connections:
+      two writes each waited the full 30 s busy timeout on SQLite's write lock, and a third
+      waited 30 s for a connection. So a fourth held the write lock over 30 s without
+      committing. Every store transaction read so far commits before awaiting anything else;
+      still open.
 17. **The box's server gave one one-time pre-key to two senders** (a 40-round setup run for
     finding 16, round 23). b33p 0 failed to decrypt a sealed-sender pre-key message ("no rows
     returned").
@@ -280,6 +286,18 @@ This file is kept as the runs go. Newest entries go at the end of each section.
       (`on_retry_receipt`), but it doesn't send them.
     - So a first message that fails, from someone b33p has no chat with yet, is gone with no
       reset and no resend.
+19. **An upload that got no answer counted as refused.** f16 run of 2026-10-28, round 1,
+    step 39, under 8 fsync writers. b33p 0's upload to the box's tus server got no answer within
+    the client's wait (77 s after the upload form), and b33p marked the photo `Refused`, which
+    says sending it again won't work. libsignal-service's `ServiceError::Http` wasn't among the
+    transient errors. Fixed in #97: connect, request and timeout errors are `Unreachable`, so
+    the message shows as failed, to send again. Under that load the tus stand-in took seconds per
+    upload (its last logged POST 12.5 s); without the load it doesn't come up.
+20. **A first request to join with approval failed on the requester**: "couldn't join the group:
+    … FOREIGN KEY constraint failed". presage's `join_group` saved the group's picture before the
+    group, and `group_avatars` refers to `groups`; only a rejoin had the group stored already.
+    The tour drew only rejoins until finding 7's branch. Fixed in presage pr/groups 59d958b,
+    langis/integration 881688c, taken with finding 7's PR.
 
 ## Open questions
 
