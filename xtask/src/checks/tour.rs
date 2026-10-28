@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use b33p_harness::{Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot};
+use b33p_harness::{Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot, Trust};
 use serde::Serialize;
 use strum::VariantArray;
 
@@ -79,6 +79,17 @@ enum Kind {
     /// A reply to one's own message, the message edited after, and a restart: the quote stays
     /// what it quoted.
     QuoteThenEdit,
+    /// A message found by a search in its chat, and shown.
+    ChatSearch,
+    /// Both sides of a chat of two show the same safety number; one marks it verified.
+    Verify,
+}
+
+/// What a message is searched by: the start of its text, "tour 12:", which no other message
+/// shares (`World::new_text`).
+fn search_term(text: &str) -> Option<&str> {
+    let end = text.find(':')?;
+    text.starts_with("tour ").then(|| &text[..=end])
 }
 
 /// `TESTBOX_TOUR_REPEAT`, or 2.
@@ -324,6 +335,16 @@ enum Step {
         thread: usize,
     },
     Search {
+        by: usize,
+        thread: usize,
+    },
+    ChatSearch {
+        by: usize,
+        thread: usize,
+        /// The message looked for, by its timestamp.
+        message: u64,
+    },
+    Verify {
         by: usize,
         thread: usize,
     },
@@ -834,6 +855,20 @@ impl World {
                 let (by, thread) = self.someone_in(true, true)?;
                 Step::Search { by, thread }
             }
+            Kind::ChatSearch => {
+                let (by, thread, message) = self.some_message(true, true, |_, m| {
+                    !m.deleted && search_term(&m.text).is_some()
+                })?;
+                Step::ChatSearch {
+                    by,
+                    thread,
+                    message,
+                }
+            }
+            Kind::Verify => {
+                let (by, thread) = self.someone_in(true, false)?;
+                Step::Verify { by, thread }
+            }
             Kind::Block => {
                 // A third b33p's message shows when the blocked one has been dealt with.
                 if count < 3 {
@@ -1024,6 +1059,15 @@ impl World {
             }
             Step::Search { by, thread } => {
                 format!("b33p {by} finds {} in its chat list", name(thread))
+            }
+            Step::ChatSearch { by, thread, .. } => {
+                format!("b33p {by} searches {} for a message", name(thread))
+            }
+            Step::Verify { by, thread } => {
+                format!(
+                    "b33p {by} compares the safety number of {}, and verifies it",
+                    name(thread)
+                )
             }
             Step::Block { by, thread, .. } => {
                 format!(
@@ -1376,6 +1420,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             Step::Disappearing { by, thread, text } => self.disappearing(by, thread, &text),
             Step::ChatState { by, thread } => self.chat_state(by, thread),
             Step::Search { by, thread } => self.search(by, thread),
+            Step::ChatSearch {
+                by,
+                thread,
+                message,
+            } => self.chat_search(by, thread, message),
+            Step::Verify { by, thread } => self.verify(by, thread),
             Step::Block {
                 by,
                 thread,
@@ -1807,6 +1857,86 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             text: String::new(),
         })?;
         found
+    }
+
+    /// `by` searches `thread` for `message` by the start of its text ("tour 12:"), which no
+    /// other message has; the results hold it, and every result has the term. The first is
+    /// shown, which closes the search.
+    fn chat_search(&mut self, by: usize, thread: usize, message: u64) -> Result<()> {
+        let text = self.world.threads[thread]
+            .messages
+            .iter()
+            .find(|m| m.ts == message)
+            .map(|m| m.text.clone())
+            .ok_or("the message searched for")?;
+        let term = search_term(&text).ok_or("a term to search for")?.to_owned();
+        self.open(by, thread)?;
+        let b33p = self.harness(by);
+        b33p.act(Action::OpenChatSearch)?;
+        b33p.act(Action::SearchChat { text: term.clone() })?;
+        let lower = term.to_lowercase();
+        let found = b33p.wait_for(&format!("{term:?} found"), PATIENCE, |snapshot| {
+            let results = snapshot.chat_search.as_ref()?.results.as_ref()?;
+            (results.iter().any(|result| result.timestamp == message)
+                && results
+                    .iter()
+                    .all(|result| result.text.to_lowercase().contains(&lower)))
+            .then_some(())
+        });
+        if found.is_err() {
+            b33p.act(Action::CloseChatSearch)?;
+            return found;
+        }
+        b33p.act(Action::ShowResult { index: 0 })?;
+        b33p.wait_for("the search closed", PATIENCE, |snapshot| {
+            snapshot.chat_search.is_none().then_some(())
+        })
+    }
+
+    /// `by` and the other of `thread` show the same safety number on the chat's details; `by`
+    /// marks it verified, and then not, as it was.
+    fn verify(&mut self, by: usize, thread: usize) -> Result<()> {
+        let other = self.other(thread, by)?;
+        let mut numbers = Vec::new();
+        for k in [by, other] {
+            self.open(k, thread)?;
+            let b33p = self.harness(k);
+            b33p.act(Action::OpenDetails)?;
+            let number = b33p.wait_for(
+                &format!("the safety number on b33p {k}"),
+                PATIENCE,
+                |snapshot| snapshot.details.as_ref()?.safety_number.clone(),
+            );
+            if k != by || number.is_err() {
+                b33p.act(Action::CloseDetails)?;
+            }
+            numbers.push(number?);
+        }
+        if numbers[0] != numbers[1] {
+            self.harness(by).act(Action::CloseDetails)?;
+            return Err(Error::Failed(format!(
+                "b33p {by} shows the safety number {}, b33p {other} {}",
+                numbers[0], numbers[1]
+            )));
+        }
+        let id = self.world.threads[thread].id_on(by, self.b33ps);
+        let b33p = self.harness(by);
+        for (verified, trust) in [(true, Trust::Verified), (false, Trust::Unverified)] {
+            b33p.act(Action::SetVerified { verified })?;
+            let marked = b33p.wait_for(&format!("the chat {trust:?}"), PATIENCE, |snapshot| {
+                snapshot
+                    .conversations
+                    .iter()
+                    .any(|chat| chat.id == id && chat.trust == trust)
+                    .then_some(())
+            });
+            if marked.is_err() {
+                b33p.act(Action::CloseDetails)?;
+                return marked;
+            }
+        }
+        b33p.act(Action::CloseDetails)?;
+        Ok(())
     }
 
     /// `by` blocks the other of `thread`, which writes `blocked_text`; `by` unblocks it, and it
@@ -2385,6 +2515,18 @@ mod tests {
             messages: Vec::new(),
         });
         world
+    }
+
+    /// A message is searched by its "tour N:", which no other message's text has.
+    #[test]
+    fn a_message_is_searched_by_its_number() {
+        assert_eq!(
+            search_term("tour 12: a link, plain words"),
+            Some("tour 12:")
+        );
+        assert!(!"tour 120: later".contains(search_term("tour 12: a").unwrap()));
+        assert_eq!(search_term("hello: there"), None);
+        assert_eq!(search_term("tour without a colon"), None);
     }
 
     /// With a message and a group there, every kind of step can be drawn.

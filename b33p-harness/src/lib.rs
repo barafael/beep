@@ -188,6 +188,20 @@ mod core_enums {
         b33p_core::settings::NotificationContent => NotificationContent: NameAndMessage, NameOnly, Nothing
     );
     same_variants!(b33p_core::InviteLinkAccess => InviteLinkAccess: Off, Anyone, Approval);
+    same_variants!(b33p_core::Trust => Trust: Unverified, Verified, Changed);
+}
+
+/// How far the safety number with a contact is trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trust {
+    /// Not compared, or cleared; groups and Note to Self too.
+    #[default]
+    Unverified,
+    /// Compared and marked verified, for the key they have now.
+    Verified,
+    /// Verified before, and their key changed since: nothing goes to them until confirmed.
+    Changed,
 }
 
 /// How far a message of ours got.
@@ -354,6 +368,10 @@ pub enum Action {
     },
     OpenDetails,
     CloseDetails,
+    /// Marks the safety number on the open details page verified, or clears that.
+    SetVerified {
+        verified: bool,
+    },
     OpenMedia,
     CloseMedia,
     /// The sticker picker's ▦: gathers the installed packs, the first time.
@@ -545,6 +563,23 @@ pub struct Snapshot {
     pub folders: Vec<FolderSnapshot>,
     /// The open conversation's details, once `OpenDetails` has loaded them.
     pub details: Option<DetailsSnapshot>,
+    /// The search in the open conversation, while open (`OpenChatSearch`).
+    pub chat_search: Option<ChatSearchSnapshot>,
+}
+
+/// A search in the open conversation: what is looked for, and what was found, in the order
+/// `ShowResult` takes them; `None` while looking.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChatSearchSnapshot {
+    pub query: String,
+    pub results: Option<Vec<SearchResultSnapshot>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SearchResultSnapshot {
+    pub sender: String,
+    pub text: String,
+    pub timestamp: u64,
 }
 
 /// What a conversation's details page shows, for a group most of it.
@@ -557,6 +592,9 @@ pub struct DetailsSnapshot {
     pub invite_link_access: InviteLinkAccess,
     /// Who asked to join through the link (service IDs).
     pub requests: Vec<String>,
+    /// A chat of two's safety number (60 digits), once there is a session.
+    pub safety_number: Option<String>,
+    pub trust: Trust,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -687,6 +725,8 @@ pub struct ConversationSnapshot {
     pub typing: Vec<String>,
     /// Whether a picture shows for it: a profile or group avatar, downloaded and decoded.
     pub avatar: bool,
+    /// How far the safety number is trusted; a changed one keeps the composer closed.
+    pub trust: Trust,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
