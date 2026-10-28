@@ -30,6 +30,8 @@
           "s3.box", "prekeys.s3.box",
         ],
       },
+      # The link preview page's name, at its address (testbox/tools keys.rs `PREVIEW_HOST`).
+      { ip: "192.88.99.1", hostnames: ["preview.b33p-tour.org"] },
     ],
     # The keys, made in the server image's build, before anything else (testbox/tools `provision`).
     initContainers: [
@@ -39,6 +41,18 @@
         args: ["keys"],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
         volumeMounts: [{ name: "keys", mountPath: "/keys" }],
+      },
+      # The preview page's address on the pod's loopback, before anything listens on it: an
+      # address of the internet's, which b33p's previews fetch from (testbox/tools keys.rs
+      # `PREVIEW_ADDRESS`). The pod's network is its own, and goes nowhere (--internal).
+      {
+        name: "address",
+        image: "localhost/@POD@-cdn0",
+        command: ["ip", "addr", "replace", "192.88.99.1/32", "dev", "lo"],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+        },
       },
     ],
     containers: [
@@ -141,6 +155,14 @@
           { name: "keys", mountPath: "/keys", readOnly: true },
           { name: "cdn0-data", mountPath: "/data" },
         ],
+      },
+      # The page link previews are made of (testbox/tools `preview`).
+      {
+        name: "preview",
+        image: "localhost/@POD@-cdn0",
+        command: ["preview"],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [{ name: "keys", mountPath: "/keys", readOnly: true }],
       },
       # The storage service on the Bigtable emulator.
       {

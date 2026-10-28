@@ -14,7 +14,11 @@ pub enum KeyFile {
     /// trust store from it too).
     #[strum(serialize = "tls-ca.pem")]
     TlsCa,
-    /// The keys' certificate for `localhost`, in PEM.
+    /// The CA again, alone in a directory: what b33p's link previews trust beside the system's
+    /// (`SSL_CERT_DIR`, testbox/b33p/pod.yaml), which reads every file in it.
+    #[strum(serialize = "trusted/tls-ca.pem")]
+    TrustedCa,
+    /// The keys' certificate for `localhost`, and for [`PREVIEW_HOST`], in PEM.
     #[strum(serialize = "tls.crt")]
     TlsCertificate,
     #[strum(serialize = "tls.key")]
@@ -63,6 +67,19 @@ pub const OMNIBUS_PORT: u16 = 8445;
 pub const CDN3_PORT: u16 = 8446;
 /// Garage behind the `cdn0` tool.
 pub const CDN0_PORT: u16 = 8447;
+
+/// The page link previews are made of (testbox/tools `preview`): a name of the internet's at an
+/// address of the internet's, as b33p fetches previews from nothing else (b33p-core preview.rs
+/// `PublicOnly`). testbox/pod.yaml puts the address on the pod's loopback and the name on it;
+/// 192.88.99.0/24 was the 6to4 relays' anycast block, given up (RFC 7526) and routed nowhere.
+pub const PREVIEW_HOST: &str = "preview.b33p-tour.org";
+pub const PREVIEW_ADDRESS: [u8; 4] = [192, 88, 99, 1];
+pub const PREVIEW_PORT: u16 = 8450;
+
+/// A page of the preview server, at `path` ("/page/3").
+pub fn preview_url(path: &str) -> String {
+    format!("https://{PREVIEW_HOST}:{PREVIEW_PORT}{path}")
+}
 
 /// storage-service (testbox/storage/Containerfile), for the storage service and groups.
 pub const STORAGE_PORT: u16 = 8448;

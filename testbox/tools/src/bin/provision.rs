@@ -172,18 +172,30 @@ const BUILT_KEYS: &str = "/opt/testbox/keys";
 
 /// The image's keys into the volume, `complete` last: a copy cut short is written again.
 fn copy_built_keys() -> Result<()> {
-    for entry in std::fs::read_dir(BUILT_KEYS).context(BUILT_KEYS)? {
-        let from = entry.context(BUILT_KEYS)?.path();
+    copy_dir(Path::new(BUILT_KEYS), Path::new(keys::DIR))?;
+    write(&KeyFile::Complete.path(), "")
+}
+
+/// The files of `from` into `to`, and its directories with theirs (`trusted/`), but `complete`.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(from).context(from.display().to_string())? {
+        let from = entry.context(from.display().to_string())?.path();
         let name = from
             .file_name()
             .ok_or_else(|| Error::Failed(format!("{} has no name", from.display())))?;
-        if name != <&str>::from(KeyFile::Complete) {
-            let to = Path::new(keys::DIR).join(name);
+        if name == <&str>::from(KeyFile::Complete) {
+            continue;
+        }
+        let to = to.join(name);
+        if from.is_dir() {
+            std::fs::create_dir_all(&to).context(to.display().to_string())?;
+            copy_dir(&from, &to)?;
+        } else {
             std::fs::copy(&from, &to)
                 .with_context(|| format!("{} to {}", from.display(), to.display()))?;
         }
     }
-    write(&KeyFile::Complete.path(), "")
+    Ok(())
 }
 
 fn write_keys() -> Result<()> {
@@ -303,13 +315,23 @@ fn write_keys() -> Result<()> {
     write_keystore(password)?;
     write_storage_service_config(&secrets, &cdn0, password)?;
 
-    // Readable by every client container, whichever user it runs as.
-    for entry in std::fs::read_dir(keys::DIR).context(keys::DIR)? {
-        let path = entry.context(keys::DIR)?.path();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-            .context(path.display().to_string())?;
-    }
+    readable(Path::new(keys::DIR))?;
     write(&KeyFile::Complete.path(), "")
+}
+
+/// Every file in `directory` readable by every client container, whichever user it runs as, and
+/// its directories open to them.
+fn readable(directory: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(directory).context(directory.display().to_string())? {
+        let path = entry.context(directory.display().to_string())?.path();
+        let mode = if path.is_dir() { 0o755 } else { 0o644 };
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .context(path.display().to_string())?;
+        if path.is_dir() {
+            readable(&path)?;
+        }
+    }
+    Ok(())
 }
 
 /// CDN0: Garage behind testbox/tools `cdn0`. CDN2: the server's own. CDN3: tus-server under
@@ -354,6 +376,11 @@ fn write_tls() -> Result<String> {
     server_params.subject_alt_names = vec![
         SanType::DnsName("localhost".try_into().describe("localhost")?),
         SanType::IpAddress(std::net::IpAddr::from([127, 0, 0, 1])),
+        SanType::DnsName(
+            keys::PREVIEW_HOST
+                .try_into()
+                .describe(keys::PREVIEW_HOST)?,
+        ),
     ];
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     server_params.not_before = now;
@@ -365,6 +392,11 @@ fn write_tls() -> Result<String> {
 
     let ca_pem = ca.pem();
     write(&KeyFile::TlsCa.path(), &ca_pem)?;
+    let trusted = KeyFile::TrustedCa.path();
+    if let Some(directory) = trusted.parent() {
+        std::fs::create_dir_all(directory).context(directory.display().to_string())?;
+    }
+    write(&trusted, &ca_pem)?;
     write(&KeyFile::TlsCertificate.path(), server.pem())?;
     write(&KeyFile::TlsKey.path(), server_key.serialize_pem())?;
     Ok(ca_pem)
