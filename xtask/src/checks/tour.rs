@@ -1927,7 +1927,9 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         })?;
         chat(b33p, "as it was", &|chat| {
             !chat.pinned && !chat.muted && !chat.marked_unread && !chat.archived
-        })
+        })?;
+        // Back in the chat, read again by then: what the step's screenshot shows.
+        self.open(by, thread)
     }
 
     /// Searches `by`'s chat list for `thread`'s title as it shows it: it is among what is found,
@@ -1956,7 +1958,9 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         b33p.act(Action::Search {
             text: String::new(),
         })?;
-        found
+        found?;
+        // The chat found, open: what the step's screenshot shows.
+        self.open(by, thread)
     }
 
     /// `by` sends a sticker to `thread`; every other member shows it.
