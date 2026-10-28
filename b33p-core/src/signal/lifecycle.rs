@@ -2,14 +2,13 @@
 
 use std::{
     cell::{Cell, RefCell},
-    panic::AssertUnwindSafe,
     path::PathBuf,
     rc::Rc,
     sync::mpsc,
     time::Duration,
 };
 
-use futures::{FutureExt as _, channel::oneshot, future, pin_mut};
+use futures::{channel::oneshot, future, pin_mut};
 use presage::{
     Error as PresageError, Manager,
     libsignal_service::configuration::SignalServers,
@@ -38,13 +37,12 @@ use crate::{
 use super::{
     Background, Ctx, GroupIds, Mgr,
     avatars::AvatarFetcher,
-    commands::{handle, outgoing, send_interrupted},
+    commands::{handle, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
-    history::sweep_expired,
-    receive::{Incoming, Kept, Receiver, Repairs, handle_incoming},
     send::request_sync,
+    session::{Ended, Session},
     storage_sync::follow_storage,
-    stories::{STORIES_RESENT, send_stories},
+    stories::send_stories,
 };
 
 /// How an [`attempt`] ended, other than failing.
@@ -150,7 +148,7 @@ pub(super) fn attempt(
 }
 
 /// The backend side of the command bridge (see [`run`]).
-type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
+pub(super) type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
 
 pub(super) enum AfterFailure {
     Retry,
@@ -739,20 +737,10 @@ async fn has_contents(store: &SqliteStore) -> bool {
             .is_ok_and(|mut groups| groups.next().is_some())
 }
 
-/// How [`run_linked`] ended.
-enum Ended {
-    /// The UI went away.
-    Gone,
-    /// Signal removed this device; it has to be linked again.
-    Removed,
-    /// [`Command::Unlink`]: removed from the account here; the data is to be deleted.
-    Unlinked,
-}
-
 /// Runs a linked session: syncs, receives and handles commands, until the UI goes away, this
 /// device is unlinked, or Signal removes it.
 async fn run_linked(
-    mut manager: Mgr,
+    manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
     tables: &LocalStore,
@@ -810,19 +798,6 @@ async fn run_linked(
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
-    // Kept across restarts of receiving: the limits it keeps must outlive one.
-    let mut repairs = Repairs::default();
-    let mut kept = Kept::default();
-    let (mut incoming, mut receiving) = start_receiving(&manager, Duration::ZERO);
-    let mut failures = 0u32;
-    // Disappearing messages are deleted when due, and stories come off the list after their
-    // day, in between what else the session does.
-    let sweep = tokio::time::sleep(Duration::ZERO);
-    pin_mut!(sweep);
-    let mut stories_due =
-        tokio::time::interval_at(tokio::time::Instant::now() + STORIES_RESENT, STORIES_RESENT);
-    stories_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
     // What the other side sees, one command at a time and in order; see `outgoing`. Their
     // sends then go through the outbox, with everyone else's.
     let (in_order, mut ordered) = tokio::sync::mpsc::unbounded_channel::<Command>();
@@ -835,117 +810,16 @@ async fn run_linked(
         }
     });
 
-    let mut pending = pending.into_iter();
-    let ended = loop {
-        let command = match pending.next() {
-            Some(command) => command,
-            None => tokio::select! {
-                // Commands first, then what is due: neither is held up by catching up.
-                biased;
-                command = command_rx.recv() => match command {
-                    Some(command) => command,
-                    None => break Ended::Gone,
-                },
-                () = &mut sweep => match sweep_expired(&ctx).await {
-                    Some(wait) => {
-                        sweep.as_mut().reset(tokio::time::Instant::now() + wait);
-                        continue;
-                    }
-                    None => break Ended::Gone,
-                },
-                () = ctx.expiring.notified() => {
-                    sweep.as_mut().reset(tokio::time::Instant::now());
-                    continue;
-                }
-                _ = stories_due.tick() => {
-                    send_stories(&manager, &ctx).await;
-                    continue;
-                }
-                arrived = incoming.recv() => match arrived {
-                    Some(Incoming::Removed) => break Ended::Removed,
-                    Some(arrived) => {
-                        let handling = handle_incoming(
-                            &manager, &ctx, &avatars, &mut kept, &mut repairs, arrived,
-                        );
-                        // Something it couldn't handle stops only this, as it did when it was
-                        // handled where it was received.
-                        match AssertUnwindSafe(handling).catch_unwind().await {
-                            Ok(true) => {}
-                            Ok(false) => break Ended::Gone,
-                            Err(_) => {
-                                warn!("handling what was received failed");
-                                let _ = events.send(Event::Error(Error::unreachable(
-                                    "Receiving messages failed; trying again.",
-                                )));
-                            }
-                        }
-                        continue;
-                    }
-                    // `Receiver` ends on its own only after `Removed`, else it failed.
-                    None => {
-                        let error = match (&mut receiving).await {
-                            Ok(_) => break Ended::Removed,
-                            Err(error) => error,
-                        };
-                        // Start over, rather than look connected while nothing arrives; later
-                        // and later should it keep failing.
-                        warn!(error = %scrubbed(&error), "receiving failed");
-                        let _ = events.send(Event::Error(Error::unreachable(
-                            "Receiving messages failed; trying again.",
-                        )));
-                        failures += 1;
-                        let after = Duration::from_secs(5 << failures.min(6));
-                        (incoming, receiving) = start_receiving(&manager, after);
-                        continue;
-                    }
-                },
-            },
-        };
-        if let Command::Unlink = command {
-            info!("unlinking this device");
-            // Receiving stops with its channel closed.
-            incoming.close();
-            unlink(manager.clone()).await;
-            break Ended::Unlinked;
-        }
-        if let Command::SetDeviceName(name) = command {
-            // For the next link; the account keeps the name it was linked with.
-            *device_name.borrow_mut() = name;
-            continue;
-        }
-        if outgoing(&command) {
-            // Kept from here until it went out: should b33p stop before, it shows as failed.
-            if let Err(error) = ctx.tables.keep_unsent(&command).await {
-                warn!(%error, "failed to keep a message until it is sent");
-            }
-            let _ = in_order.send(command);
-            continue;
-        }
-        handle(&mut manager, &ctx, &downloads, command).await;
-    };
+    let session = Session::new(manager, ctx.clone(), downloads, avatars, in_order);
+    let (_, ended) = session.event_loop(pending, command_rx, device_name).await;
     ctx.background.stop();
     ordering.abort();
     latest.abort();
     following.abort();
-    // Receiving stops with its channel closed.
-    incoming.close();
     // Not drained: after an unlink there is nobody to send to, and a session after this one
     // must not send alongside it.
     sending.abort();
     ended
-}
-
-/// Starts a [`Receiver`] for the session, after `after`.
-fn start_receiving(
-    manager: &Mgr,
-    after: Duration,
-) -> (
-    tokio::sync::mpsc::Receiver<Incoming>,
-    tokio::task::JoinHandle<Receiver>,
-) {
-    let (incoming, arrived) = tokio::sync::mpsc::channel(1);
-    let receiver = Receiver::new(manager.clone()).event_loop(incoming, after);
-    (arrived, tokio::task::spawn_local(receiver))
 }
 
 /// Links this device and, if the user chose so on the phone, transfers the message history.
@@ -1042,7 +916,7 @@ async fn link_with_history(
 
 /// Removes this device from the account before linking again, so the phone's list of linked
 /// devices doesn't fill up with dead entries. Best effort: linking again works regardless.
-async fn unlink(manager: Mgr) {
+pub(super) async fn unlink(manager: Mgr) {
     if let Err(error) = manager.unlink_self().await {
         warn!(error = %scrubbed(&error), "failed to remove this device from the account");
     }
