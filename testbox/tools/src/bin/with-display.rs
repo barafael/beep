@@ -80,6 +80,9 @@ fn serve(
         testbox_tools::remove_if_present(&directory.join(name))?;
     }
     std::fs::create_dir_all(RUNTIME).context(RUNTIME)?;
+    // The application's pid, likewise when the container was killed with it: until the session
+    // writes the new one, a stop signal would go to whatever has that pid now.
+    testbox_tools::remove_if_present(&Path::new(RUNTIME).join(APPLICATION))?;
     let this = std::env::current_exe().context("with-display's path")?;
     let mut cage = Command::new("cage")
         .arg("-d")

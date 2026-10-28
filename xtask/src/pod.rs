@@ -4,7 +4,7 @@
 use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 use crate::error::{Context, Error, Result, WithContext};
 use crate::process::{self, Heard};
 use testbox_tools::View;
+use testbox_tools::process::describe;
 
 /// The pod's name without an instance (`--instance`); an instance's is `<POD>.<instance>`, which
 /// no `b33p-testbox-` prefix matches (an older xtask wipes the volumes by it) and no other
@@ -248,7 +249,10 @@ impl Building {
             .wait()
             .context(format!("podman build {}", self.name))?;
         if !status.success() {
-            let output = testbox_tools::read(&self.log).unwrap_or_default();
+            // Lossy: a build's output needn't be UTF-8, and its end is what tells why.
+            let output = std::fs::read(&self.log)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
             let lines: Vec<&str> = output.lines().collect();
             let tail = lines[lines.len().saturating_sub(BUILD_TAIL)..].join("\n");
             return Err(Error::Failed(format!(
@@ -551,9 +555,14 @@ impl Pod {
         quietly(play)
     }
 
-    /// [`Self::play`] from nothing: the pod and every volume removed first.
+    /// [`Self::play`] from nothing: the pod and every volume removed first, and what
+    /// [`Self::note_lost`] noted of the box before.
     pub fn fresh(&self, clients: &[Client], b33ps: u8) -> Result<()> {
         self.down(true)?;
+        self.lost
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         self.play(clients, b33ps)
     }
 
@@ -599,12 +608,20 @@ impl Pod {
 
     /// The clients with a display that run, as [`Self::containers`] says.
     pub fn screens(&self) -> Vec<Service> {
+        self.all_screens()
+            .into_iter()
+            .filter(|screen| self.running(*screen))
+            .collect()
+    }
+
+    /// The clients with a display, as [`Self::containers`] says, stopped ones too: one between
+    /// a crash and its restart (`restartPolicy: Always`) still has its log.
+    pub fn all_screens(&self) -> Vec<Service> {
         let prefix = format!("{}-", self.name);
         let mut screens: Vec<Service> = self
             .containers()
             .iter()
             .filter_map(|name| Service::screen(name.strip_prefix(&prefix)?))
-            .filter(|screen| self.running(*screen))
             .collect();
         screens.sort_by_key(|screen| match screen {
             Service::B33p(n) => u16::from(*n),
@@ -613,9 +630,9 @@ impl Pod {
         screens
     }
 
-    /// The b33ps that run: [`Self::screens`]' b33ps.
+    /// The b33ps, stopped ones too: [`Self::all_screens`]' b33ps.
     pub fn b33ps(&self) -> Vec<Service> {
-        self.screens()
+        self.all_screens()
             .into_iter()
             .filter(|screen| matches!(screen, Service::B33p(_)))
             .collect()
@@ -900,9 +917,24 @@ impl Pod {
 }
 
 /// Runs `command` to success, what it printed logged rather than shown: podman's account of what
-/// it did would break up a run's report.
-fn quietly(command: Command) -> Result<()> {
-    let printed = process::output(command, "")?;
+/// it did would break up a run's report. Its warnings too, which go to stderr, such as `stop`'s
+/// that it had to kill.
+fn quietly(mut command: Command) -> Result<()> {
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .context(describe(&command))?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return Err(Error::Command {
+            command: describe(&command),
+            output: format!(" ({})\n{printed}", output.status),
+        });
+    }
     let printed = printed.trim_end();
     if !printed.is_empty() {
         debug!("{printed}");

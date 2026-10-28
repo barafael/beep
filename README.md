@@ -89,9 +89,9 @@ On Windows (x86_64) you also need CMake and NASM, which BoringSSL (contact disco
 `scoop install cmake nasm` or `winget install Kitware.CMake NASM.NASM`, with both on `PATH`.
 
 ```sh
-cargo run --release            # the real client
-cargo run                      # the same, unoptimized
-B33P_MOCK=1 cargo run          # an offline fake, for trying the UI: nothing is sent
+cargo run --release -p b33p-slint    # the real client
+cargo run -p b33p-slint              # the same, unoptimized
+B33P_MOCK=1 cargo run -p b33p-slint  # an offline fake, for trying the UI: nothing is sent
 ```
 
 `B33P_MOCK` only works in debug builds — a stray variable in the environment must not turn a
@@ -137,7 +137,7 @@ The harness never exists in a release build:
 
 ```sh
 B33P_MOCK=1 B33P_AGENT_SOCKET="$XDG_RUNTIME_DIR/b33p-agent.sock" \
-    cargo run --features harness
+    cargo run -p b33p-slint --features harness
 ```
 
 The screenshots above were taken that way: a script opened the mock, clicked around, and

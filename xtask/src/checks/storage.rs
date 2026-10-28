@@ -49,6 +49,12 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     })?;
     // TESTPLAN.md §1.1 item 2.
     checks.record("Desktop's read receipt shows on b33p as read", || {
+        // Desktop reads only for 15 s after a click or key (ActiveWindowService.std.ts
+        // `ACTIVE_TIMEOUT`), and under load the message can come later than that after the click
+        // above: a click on the chat once it shows, as for the edit below.
+        desktop.call(drivers::Desktop::OpenConversation {
+            aci: android_aci.clone(),
+        })?;
         read(b33p, row)
     });
     // From here on the chat isn't open in b33p: an open chat is read, which would undo a mark.
