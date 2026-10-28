@@ -70,6 +70,11 @@ impl<'a> Rows<'a> {
             } else {
                 &message.styles
             },
+            mentions: if message.deleted || full_text.is_some() {
+                &[]
+            } else {
+                &message.mentions
+            },
             day: (before != date).then(|| day_label(message.timestamp, &self.now)),
             first_of_run,
             last_of_run: next.is_none_or(|n| !same_run(message, n, date == after)),

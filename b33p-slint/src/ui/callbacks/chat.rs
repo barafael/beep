@@ -319,8 +319,12 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
     window.global::<OpenChat>().on_open_link({
         let shared = shared.clone();
         move |link| {
+            // A mention opens the chat with whom it mentions, if there is one.
+            if let Some(service_id) = link.strip_prefix(crate::markdown::MENTION) {
+                let id = ConversationId::contact(service_id);
+                shared.act(|chat| (chat.select(&id), Update::reset()));
             // A group's invite link is for joining here, not for the browser.
-            if link.starts_with("https://signal.group/#")
+            } else if link.starts_with("https://signal.group/#")
                 || link.starts_with("sgnl://signal.group/#")
             {
                 shared.command(|chat| chat.open_join(Some(&link)));

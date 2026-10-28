@@ -867,6 +867,7 @@ impl Images {
         &self,
         body: &str,
         styles: &[b33p_core::StyleRange],
+        mentions: &[b33p_core::Mention],
         revealed: bool,
     ) -> slint::StyledText {
         /// About a long chat's worth; beyond it, the cache starts again.
@@ -878,11 +879,14 @@ impl Images {
         for style in styles {
             (style.start, style.end, style.style).hash(&mut hasher);
         }
+        for mention in mentions {
+            (mention.start, mention.end, &mention.service_id).hash(&mut hasher);
+        }
         let key = hasher.finish();
         if let Some(text) = self.texts.borrow().get(&key) {
             return text.clone();
         }
-        let text = rich_text(body, styles, revealed);
+        let text = rich_text(body, styles, mentions, revealed);
         let mut texts = self.texts.borrow_mut();
         if texts.len() >= KEPT {
             texts.clear();

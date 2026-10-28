@@ -261,6 +261,8 @@ pub struct MessageView<'a> {
     pub body: &'a str,
     /// The formatting of `body` (none for a fetched long text).
     pub styles: &'a [StyleRange],
+    /// Whom `body` mentions, where (none for a fetched long text).
+    pub mentions: &'a [Mention],
     /// "Today", "Yesterday", "Monday", "Oct 2": set on the first message of each day.
     pub day: Option<String>,
     /// Messages by the same person within a few minutes form a run, drawn close together.
