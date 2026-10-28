@@ -362,11 +362,17 @@ export component Bubble inherits Rectangle {
                                 VerticalLayout {
                                     padding: Theme.space-s;
                                     spacing: 3px;
-                                    if item.has-preview-image: AttachmentView {
-                                        item: item.preview-image;
-                                        outgoing: item.outgoing;
-                                        fetch(id) => { root.fetch-attachment(id); }
-                                        open(id) => { root.open-link(item.preview-url); }
+                                    // The picture's fixed width would cap the card's, and with it the
+                                    // bubble's: the text wrapped at the picture's width. The space
+                                    // beside it lets the bubble grow as its text needs.
+                                    if item.has-preview-image: HorizontalLayout {
+                                        AttachmentView {
+                                            item: item.preview-image;
+                                            outgoing: item.outgoing;
+                                            fetch(id) => { root.fetch-attachment(id); }
+                                            open(id) => { root.open-link(item.preview-url); }
+                                        }
+                                        Rectangle { }
                                     }
                                     if item.preview-title != "": Text {
                                         text: item.preview-title;
@@ -384,6 +390,7 @@ export component Bubble inherits Rectangle {
                                     }
                                     Caption {
                                         text: item.preview-site;
+                                        overflow: elide;
                                         color: root.faint;
                                     }
                                 }
