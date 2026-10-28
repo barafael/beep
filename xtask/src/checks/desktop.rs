@@ -50,9 +50,7 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         delivered(b33p, b33p_text)
     });
 
-    // Read receipts are checked in `storage`: Desktop sends one only with the account's
-    // read-receipt setting on, which a linked device takes from the storage service or the
-    // primary's configuration sync, and presage-cli sends no such sync.
+    // Read receipts are checked in `storage`.
 
     // TESTPLAN.md §1.4 and §1.6, b33p to Desktop. Desktop's selectors as its own mock tests use
     // them (ts/test-mock/messaging/edit_test.node.ts `.module-message__text`; deleted messages
