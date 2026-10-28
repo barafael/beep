@@ -69,17 +69,29 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
 /// files other programs have read by now), or this run's own.
 pub fn clean(name: &str) {
     if let Some(base) = runtime_dir() {
-        let _ = fs::remove_dir_all(base.join(name));
+        remove(&base.join(name));
     }
     let mut per_run = PER_RUN.lock().unwrap_or_else(|e| e.into_inner());
     per_run.retain(|(n, path)| {
         if n == name {
-            let _ = fs::remove_dir_all(path);
+            remove(path);
             false
         } else {
             true
         }
     });
+}
+
+/// Removes the directory `path`, if it is there; saying so if it can't.
+fn remove(path: &Path) {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => tracing::warn!(
+            error = %crate::scrub::scrubbed(&error),
+            path = %crate::scrub::scrubbed(&path.display()),
+            "failed to remove a scratch directory"
+        ),
+        _ => {}
+    }
 }
 
 /// Restricts the directory `path` to its owner. Here rather than `vault`'s, so that the mock
@@ -138,10 +150,10 @@ mod tests {
     #[test]
     fn never_uses_what_someone_else_put_there() {
         let planted = std::env::temp_dir().join(format!("b33p-planted-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&planted);
+        remove(&planted);
         fs::create_dir(&planted).unwrap();
         fs::write(planted.join("theirs"), b"").unwrap();
         assert!(create_private(&planted).is_err());
-        let _ = fs::remove_dir_all(&planted);
+        fs::remove_dir_all(&planted).unwrap();
     }
 }

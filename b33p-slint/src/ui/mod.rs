@@ -304,7 +304,13 @@ fn read_settings(window: &AppWindow) -> Settings {
 fn open_folder(dir: Option<std::path::PathBuf>) {
     let Some(dir) = dir else { return };
     // The log folder only exists once something was logged to it.
-    let _ = std::fs::create_dir_all(&dir);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            error = %b33p_core::scrub::scrubbed(&error),
+            path = %b33p_core::scrub::scrubbed(&dir.display()),
+            "could not make a folder"
+        );
+    }
     if let Err(error) = open::that_detached(&dir) {
         tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a folder");
     }

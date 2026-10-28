@@ -110,7 +110,14 @@ struct RemoveOnDrop(PathBuf);
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        match std::fs::remove_file(&self.0) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => warn!(
+                error = %crate::scrub::scrubbed(&error),
+                path = %crate::scrub::scrubbed(&self.0.display()),
+                "failed to remove the message history archive"
+            ),
+            _ => {}
+        }
     }
 }
 
@@ -322,7 +329,7 @@ mod tests {
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            std::fs::remove_dir_all(&self.dir).ok();
         }
     }
 
