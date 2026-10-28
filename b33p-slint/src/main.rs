@@ -1,5 +1,7 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Every outcome is handled: a discarded `Result` would hide a failure.
+#![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -39,6 +41,8 @@ use markdown::{highlighted, rich_text};
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`): in the native style for the app,
 /// in Fluent for the tests, which run without Qt. `ui.rs` builds on whichever it is.
+// Slint's code, not ours, discards what it likes.
+#[allow(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 mod generated {
     #[cfg(not(test))]
     include!(concat!(env!("OUT_DIR"), "/app_native.rs"));

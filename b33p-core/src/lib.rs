@@ -5,6 +5,9 @@
 //! ever blocks the other. All types here are plain data so any toolkit can
 //! render them.
 
+// Every outcome is handled: a discarded `Result` would hide a failure.
+#![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
+
 #[cfg(feature = "signal")]
 mod attachments;
 mod error;

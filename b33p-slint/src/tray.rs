@@ -8,6 +8,8 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::Shared;
 
+// Slint's code, not ours, discards what it likes.
+#[allow(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/tray.rs"));
 }
