@@ -83,6 +83,8 @@ enum Kind {
     ChatSearch,
     /// Both sides of a chat of two show the same safety number; one marks it verified.
     Verify,
+    /// A picture's or file's caption edited: the text changes, the attachment stays.
+    EditCaption,
 }
 
 /// What a message is searched by: the start of its text, "tour 12:", which no other message
@@ -764,6 +766,17 @@ impl World {
                     thread,
                     message,
                     text: self.new_text(&format!("edited by {by}")),
+                }
+            }
+            Kind::EditCaption => {
+                let (by, thread, message) = self.some_message(true, true, |k, m| {
+                    m.from == k && !m.deleted && !m.attachments.is_empty()
+                })?;
+                Step::Edit {
+                    by,
+                    thread,
+                    message,
+                    text: self.new_text(&format!("caption edited by {by}")),
                 }
             }
             Kind::DeleteForEveryone => {
@@ -2493,6 +2506,18 @@ mod tests {
             hidden: BTreeSet::new(),
             audience: BTreeSet::from([0, 1]),
         });
+        world.threads[0].messages.push(Expected {
+            ts: 2,
+            from: 0,
+            text: "tour 1: a picture".to_owned(),
+            edited: false,
+            deleted: false,
+            reactions: BTreeMap::new(),
+            quote: None,
+            attachments: vec![AttachmentKind::Image],
+            hidden: BTreeSet::new(),
+            audience: BTreeSet::from([0, 1]),
+        });
         world.threads.push(Thread {
             pair: None,
             group: Some("g".to_owned()),
@@ -2521,7 +2546,7 @@ mod tests {
         assert_eq!(search_term("tour without a colon"), None);
     }
 
-    /// With a message and a group there, every kind of step can be drawn.
+    /// With a message, a picture and a group there, every kind of step can be drawn.
     #[test]
     fn every_kind_of_step_can_go() {
         for &kind in Kind::VARIANTS {
