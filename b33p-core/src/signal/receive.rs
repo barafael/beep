@@ -27,7 +27,7 @@ use presage::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, ConversationId, Delivery, Event, MessageRef, attachments, now_millis,
+    ChatMessage, ConversationId, Delivery, Event, MessageRef, now_millis,
     outbox::{Outbox, Sends as _},
     scrub::scrubbed,
 };
@@ -40,8 +40,8 @@ use super::{
         send_conversations, sender_name, thread_of, wrote_to,
     },
     groups::{
-        accept_from_trusted, forget_membership, is_member, lets_us_in, own_membership_change,
-        refresh_group, signed_group_change,
+        accept_from_trusted, forget_membership, is_announcement, is_member, lets_us_in,
+        own_membership_change, refresh_group, signed_group_change,
     },
     history::{
         author_of, data_of, erase_deleted, is_outgoing, original, start_timers, stored_at,
@@ -627,13 +627,10 @@ async fn handle_content(
     // Brought in by someone we accepted: no message request (Signal-Desktop's rule).
     if let Thread::Group(key) = thread
         && !is_outgoing(manager, content)
-        && let Some((data, _)) = data_of(content)
+        && let Some((data, edited)) = data_of(content)
         && let Some(context) = data.group_v2.as_ref()
     {
-        let announcement = context.revision == Some(0)
-            && context.group_change.is_none()
-            && data.body.is_none()
-            && attachments::of_message(data).is_empty();
+        let announcement = !edited && is_announcement(data);
         accept_from_trusted(
             manager,
             ctx,
