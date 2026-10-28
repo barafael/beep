@@ -671,6 +671,13 @@ impl ChatState {
             Event::StickerPacks(packs) => {
                 self.sticker_packs = Some(Some(packs));
             }
+            // Gathered again only once asked for (the picker shown): those shown stay until the
+            // answer replaces them, and an answer already on its way may be from before.
+            Event::StickerPacksChanged => {
+                if self.sticker_packs.is_some() {
+                    self.queued.push(Command::LoadStickers);
+                }
+            }
             Event::StorageRead => {
                 self.requests_known = true;
                 update.conversations = true;

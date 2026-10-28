@@ -568,6 +568,13 @@ async fn handle_content(
             }
             return true;
         }
+        // A pack removed on another device: presage has removed it by now, so the packs gathered
+        // again leave it out. One installed there presage downloads in a task of its own, which
+        // says nothing when it is done (#53): gathered now, the packs may not have it yet.
+        ContentBody::SynchronizeMessage(sync) if !sync.sticker_pack_operation.is_empty() => {
+            let _ = ctx.events.send(Event::StickerPacksChanged);
+            return true;
+        }
         // The storage key arrives with it (presage has kept it by now), so the storage
         // service can be read: `follow_storage` may be waiting for exactly this.
         ContentBody::SynchronizeMessage(SyncMessage {
