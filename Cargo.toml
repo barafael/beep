@@ -73,6 +73,13 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 #        and the error logged with its causes
 #   #483 a replenishment's pre-keys saved in one transaction, one sync to disk instead of
 #        about 200, and the write lock waited for 30 s, not 5 (needs libsignal-service-rs#491)
+#   #484 the group sync from the storage service takes its key from the account entropy pool
+#   #485 `identified_push_service` is public (testbox/stickers asks for upload forms with it)
+#   (on #473) `session_lock()` is public, for b33p's own session steps
+#   (no PR yet) `Received::StickerPackInstalled` once a pack installed elsewhere is stored
+#   (no PR yet) `refresh_profile`: a contact's profile fetched even when one is cached, as a new
+#        picture keeps the profile key
+#   (no PR yet) a linked secondary starts with read receipts on (needs libsignal-service-rs#492)
 # Rebuilt on upstream main past #454, 2026-10-27.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
@@ -80,11 +87,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "a9891bc1e2578fea5053c9556bc11ce9058f2070" }
+presage = { git = "https://github.com/barafael/presage", rev = "e81ac0b3cada5bd936755f3ccf961baa74b763f1" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "a9891bc1e2578fea5053c9556bc11ce9058f2070", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "e81ac0b3cada5bd936755f3ccf961baa74b763f1", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -113,12 +120,13 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # presage's integration branch follows) and #490 (idle connections dropped before the servers drop
 # them, and a GET that meets one closing under it sent again (a group fetch failed so, 30 s after
 # the last)) and #491 (a replenishment's pre-keys handed to the store at once, so that it can save
-# them in one transaction). Landed upstream and dropped from the branch: #474 (drop sync messages from other
+# them in one transaction) and #492 (the account's read-receipt setting in the provision message).
+# Landed upstream and dropped from the branch: #474 (drop sync messages from other
 # accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "bdad8d953c3e7b55ff28d0fd1b8bdf027dc752ce" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "cddb0bc8bf276a20a9351c8d51887fb27f83a749" }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

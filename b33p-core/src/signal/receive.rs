@@ -238,6 +238,7 @@ async fn handle_received(
             receipts.send(&ctx.outbox).await;
             events.send(Event::Synced)
         }
+        Received::StickerPackInstalled { .. } => events.send(Event::StickerPacksChanged),
         Received::Contacts => {
             names.clear();
             send_conversations(manager, ctx).await;
@@ -454,10 +455,12 @@ async fn on_retry_receipt(
 /// How many messages sent again on a retry receipt are remembered; see [`Repairs`].
 const RESENT_REMEMBERED: usize = 1024;
 
-/// Archives the session with `sender`'s device `device` if `key` is its current ratchet key.
+/// Archives the session with `sender`'s device `device` if `key` is its current ratchet key: a
+/// session step, under presage's lock, so that no decryption or send changes it meanwhile.
 async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId, key: &PublicKey) {
     use presage::libsignal_service::protocol::SessionStore;
     let address = ProtocolAddress::new(sender.service_id_string(), device);
+    let _step = manager.session_lock().step().await;
     let mut sessions = manager.store().aci_protocol_store();
     let Ok(Some(mut session)) = sessions.load_session(&address).await else {
         return;
@@ -569,10 +572,17 @@ async fn handle_content(
             return true;
         }
         // A pack removed on another device: presage has removed it by now, so the packs gathered
-        // again leave it out. One installed there presage downloads in a task of its own, which
-        // says nothing when it is done (#53): gathered now, the packs may not have it yet.
+        // again leave it out. One installed there presage downloads in a task of its own, and
+        // says when it is stored (`Received::StickerPackInstalled`).
         ContentBody::SynchronizeMessage(sync) if !sync.sticker_pack_operation.is_empty() => {
-            let _ = ctx.events.send(Event::StickerPacksChanged);
+            use sync_message::sticker_pack_operation::Type;
+            if sync
+                .sticker_pack_operation
+                .iter()
+                .any(|operation| operation.r#type() == Type::Remove)
+            {
+                let _ = ctx.events.send(Event::StickerPacksChanged);
+            }
             return true;
         }
         // The storage key arrives with it (presage has kept it by now), so the storage
