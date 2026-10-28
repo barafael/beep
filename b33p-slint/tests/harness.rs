@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
-    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme,
+    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme, Trust,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -633,4 +633,49 @@ fn the_device_can_be_renamed() {
         name: String::new(),
     });
     assert_eq!(agent.snapshot().settings.device_name, default);
+}
+
+/// A contact's safety number is on the details page, and marking it verified shows on the chat;
+/// a search in the chat lists what it found, and showing a result closes it.
+#[test]
+fn a_safety_number_is_verified_and_a_chat_searched() {
+    let (_app, mut agent) = app("trust");
+    let chats = wait_for_chats(&mut agent);
+    let alice = id_of(&chats, "Alice");
+    agent.select(&alice);
+    agent.wait_for("Alice selected", |s| selected_is(s, &alice));
+    assert!(agent.act(Action::OpenDetails));
+    let shown = agent.wait_for("the safety number", |s| {
+        s.details
+            .as_ref()
+            .is_some_and(|details| details.safety_number.is_some())
+    });
+    assert_eq!(conversation(&shown, "Alice").trust, Trust::Unverified);
+    assert!(agent.act(Action::SetVerified { verified: true }));
+    agent.wait_for("Alice verified", |s| {
+        conversation(s, "Alice").trust == Trust::Verified
+    });
+    agent.act(Action::CloseDetails);
+
+    agent.act(Action::OpenChatSearch);
+    assert!(agent.act(Action::SearchChat {
+        text: "rust".into()
+    }));
+    let found = agent.wait_for("the results", |s| {
+        s.chat_search
+            .as_ref()
+            .and_then(|search| search.results.as_ref())
+            .is_some_and(|results| !results.is_empty())
+    });
+    let search = found.chat_search.unwrap();
+    assert_eq!(search.query, "rust");
+    let results = search.results.unwrap();
+    assert!(
+        results
+            .iter()
+            .all(|result| result.text.to_lowercase().contains("rust")),
+        "{results:?}"
+    );
+    agent.act(Action::ShowResult { index: 0 });
+    agent.wait_for("the search closed", |s| s.chat_search.is_none());
 }

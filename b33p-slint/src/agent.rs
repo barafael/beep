@@ -35,11 +35,12 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use b33p_harness::{
-    Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ConversationSnapshot,
-    Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot, MemberSnapshot,
-    MessageSnapshot, Outcome, Pong, Pushed, PushedEvent, QuoteSnapshot, ReactionSnapshot, Reply,
-    Request, Saved, ScreenSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
-    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
+    ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
+    MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent, QuoteSnapshot,
+    ReactionSnapshot, Reply, Request, Saved, ScreenSnapshot, SearchResultSnapshot,
+    SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot, StickersSnapshot,
+    StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -437,6 +438,9 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
             chat.close_details();
             (None, Update::default())
         }),
+        Action::SetVerified { verified } => {
+            shared.act(|chat| (chat.set_verified(verified), Update::default()))
+        }
         Action::OpenMedia => shared.act(|chat| (chat.open_media(), Update::default())),
         // As ui.rs `on_open_stickers` and `on_send_sticker`.
         Action::OpenStickers => shared.act(|chat| (chat.load_stickers(), Update::default())),
@@ -780,6 +784,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             last_delivery: view.last_message.filter(|m| m.outgoing).map(delivery),
             typing: view.typing.iter().map(|name| name.to_string()).collect(),
             avatar: view.avatar.is_some(),
+            trust: view.conversation.trust.into(),
         })
         .collect();
     let messages = (0u32..)
@@ -940,7 +945,24 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                 .iter()
                 .map(|person| person.service_id.clone())
                 .collect(),
+            safety_number: details.safety_number.clone(),
+            trust: details.trust.into(),
         }),
+        chat_search: chat
+            .chat_search()
+            .map(|(query, results)| ChatSearchSnapshot {
+                query: query.to_owned(),
+                results: results.map(|results| {
+                    results
+                        .iter()
+                        .map(|message| SearchResultSnapshot {
+                            sender: message.sender.clone(),
+                            text: message.body.clone(),
+                            timestamp: message.timestamp,
+                        })
+                        .collect()
+                }),
+            }),
         folders: chat
             .folders()
             .iter()
