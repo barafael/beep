@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use b33p_harness::{Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot, Trust};
+use b33p_harness::{
+    Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot, StickersSnapshot, Trust,
+};
 use serde::Serialize;
 use strum::VariantArray;
 
@@ -85,6 +87,8 @@ enum Kind {
     Verify,
     /// A picture's or file's caption edited: the text changes, the attachment stays.
     EditCaption,
+    /// A sticker from the pack the sender's primary installed.
+    Sticker,
 }
 
 /// What a message is searched by: the start of its text, "tour 12:", which no other message
@@ -347,6 +351,10 @@ enum Step {
         message: u64,
     },
     Verify {
+        by: usize,
+        thread: usize,
+    },
+    Sticker {
         by: usize,
         thread: usize,
     },
@@ -770,8 +778,12 @@ impl World {
                 }
             }
             Kind::EditCaption => {
+                // Not a sticker: Signal's apps edit no stickers.
                 let (by, thread, message) = self.some_message(true, true, |k, m| {
-                    m.from == k && !m.deleted && !m.attachments.is_empty()
+                    m.from == k
+                        && !m.deleted
+                        && !m.attachments.is_empty()
+                        && !m.attachments.contains(&AttachmentKind::Sticker)
                 })?;
                 Step::Edit {
                     by,
@@ -881,6 +893,10 @@ impl World {
             Kind::Verify => {
                 let (by, thread) = self.someone_in(true, false)?;
                 Step::Verify { by, thread }
+            }
+            Kind::Sticker => {
+                let (by, thread) = self.someone_in(true, true)?;
+                Step::Sticker { by, thread }
             }
             Kind::Block => {
                 // A third b33p's message shows when the blocked one has been dealt with.
@@ -1076,6 +1092,9 @@ impl World {
             Step::ChatSearch { by, thread, .. } => {
                 format!("b33p {by} searches {} for a message", name(thread))
             }
+            Step::Sticker { by, thread } => {
+                format!("b33p {by} sends a sticker in {}", name(thread))
+            }
             Step::Verify { by, thread } => {
                 format!(
                     "b33p {by} compares the safety number of {}, and verifies it",
@@ -1158,6 +1177,8 @@ struct Tour<'run, 'pod> {
     delivered: Vec<f64>,
     /// From a b33p killed to its chats shown again, in seconds.
     restarts: Vec<f64>,
+    /// The pack each b33p's primary installed, and a sticker of it: seeded at its first sticker.
+    stickers: Vec<Option<(String, u32)>>,
     /// Each b33p's samples, with when they were taken (seconds into the tour).
     samples: Vec<Vec<Sample>>,
     sampled_at: Vec<Vec<f64>>,
@@ -1189,6 +1210,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             durations: BTreeMap::new(),
             delivered: Vec::new(),
             restarts: Vec::new(),
+            stickers: vec![None; count],
             samples: (0..count).map(|_| Vec::new()).collect(),
             sampled_at: (0..count).map(|_| Vec::new()).collect(),
             started: Instant::now(),
@@ -1439,6 +1461,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 message,
             } => self.chat_search(by, thread, message),
             Step::Verify { by, thread } => self.verify(by, thread),
+            Step::Sticker { by, thread } => self.sticker(by, thread),
             Step::Block {
                 by,
                 thread,
@@ -1870,6 +1893,61 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             text: String::new(),
         })?;
         found
+    }
+
+    /// `by` sends a sticker to `thread`; every other member shows it.
+    fn sticker(&mut self, by: usize, thread: usize) -> Result<()> {
+        let (pack, sticker) = self.sticker_pack(by)?;
+        self.open(by, thread)?;
+        let before = now_ms();
+        let started = Instant::now();
+        let b33p = self.harness(by);
+        if !b33p.act(Action::SendSticker { pack, sticker })? {
+            return Err(Error::Failed(format!("b33p {by} sent no sticker")));
+        }
+        let ts = sent_since(b33p, by, before)?;
+        self.add(thread, by, ts, "").attachments = vec![AttachmentKind::Sticker];
+        self.converge_timed(thread, by, started)
+    }
+
+    /// The pack `k`'s primary installed, and a sticker of it; at the first, the pack is seeded
+    /// on CDN0 and installed on the primary, and b33p's picker shows it, as in the attachments
+    /// phase (checks/attachments.rs): the primary takes in what waits for it first, and the pack
+    /// is b33p's once it fetched the last sticker, after the tool did.
+    fn sticker_pack(&mut self, k: usize) -> Result<(String, u32)> {
+        if let Some(installed) = &self.stickers[k] {
+            return Ok(installed.clone());
+        }
+        let primary = &self.b33ps[k].primary;
+        primary.sync()?;
+        let since = process::now()?;
+        let pack = primary.seed_stickers()?;
+        let last = testbox_tools::STICKERS - 1;
+        self.containers.await_logs(
+            Service::Cdn0,
+            &testbox_tools::cdn0_request_line("GET", &format!("/stickers/{pack}/full/{last}"), 200),
+            2,
+            Some(since),
+            PATIENCE,
+        )?;
+        let b33p = self.harness(k);
+        b33p.act(Action::OpenStickers)?;
+        let sticker = b33p.wait_for(
+            &format!("the pack in b33p {k}'s picker"),
+            PATIENCE,
+            |snapshot| {
+                let StickersSnapshot::Installed(packs) = &snapshot.stickers else {
+                    return None;
+                };
+                packs
+                    .iter()
+                    .find(|installed| installed.id == pack)
+                    .and_then(|installed| installed.stickers.first())
+                    .map(|sticker| sticker.id)
+            },
+        )?;
+        self.stickers[k] = Some((pack.clone(), sticker));
+        Ok((pack, sticker))
     }
 
     /// `by` searches `thread` for `message` by the start of its text ("tour 12:"), which no
