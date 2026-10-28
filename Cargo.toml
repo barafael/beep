@@ -45,8 +45,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "69
 #   #447 wait for the history archive
 #   #448 create and change groups, accept or decline invitations, retry a clashing change,
 #        the group picture, invite links and join requests, a request told to the members we
-#        know, as Signal-Desktop does, and its group without a stale picture (needs
-#        libsignal-service-rs#473)
+#        know, as Signal-Desktop does, and its group without a stale picture, saved before the
+#        picture, which a first request has no group for yet (needs libsignal-service-rs#473)
 #   #449 report only real identity changes, and note them in the contact's thread
 #   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
 #        the key a pin refused, so that it can be shown and taken over
@@ -80,11 +80,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "69
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "fe47d77227c275fc5830c7fbfbd041b109937d03" }
+presage = { git = "https://github.com/barafael/presage", rev = "881688c09ee995443ebc63ff1d92cd0799dcb666" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "fe47d77227c275fc5830c7fbfbd041b109937d03", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "881688c09ee995443ebc63ff1d92cd0799dcb666", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
