@@ -11,14 +11,15 @@ use tracing::warn;
 use crate::{Event, Preferences, local::AccountPreferences};
 
 use super::{
-    Ctx, Mgr,
+    Ctx, ForSession, Mgr, Ports,
     send::send_sync,
     trust::{Verifier, remember_verification},
 };
 
 /// Takes over chat settings from the phone's storage service now, and each time the phone
-/// says they changed, for the rest of the session.
-pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
+/// says they changed, for the rest of the session. The verifications it reads go to the session
+/// to take over.
+pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
     const RETRY: Duration = Duration::from_secs(5 * 60);
     // Changes made here come in bursts (pinning, reordering); write them together.
     const SETTLE: Duration = Duration::from_secs(2);
@@ -26,7 +27,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
             Ok(synced) => {
                 let known = synced.known;
-                take_verifications(&manager, &ctx, synced.verifications).await;
+                hand_over(&ctx, synced.verifications);
                 take_preferences(&ctx, synced.preferences);
                 if known && !ctx.events.sent(Event::StorageRead) {
                     return;
@@ -65,7 +66,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
 /// Takes over the account's settings the phone changed, for the UI to keep. Link previews only
 /// turn off from there: Signal's apps have them on by default, and b33p only if they were turned
 /// on here, since the linked site sees our address.
-fn take_preferences(ctx: &Ctx, account: Option<AccountPreferences>) {
+fn take_preferences(ctx: &Ports, account: Option<AccountPreferences>) {
     let Some(account) = account else {
         return;
     };
@@ -86,16 +87,22 @@ fn taken(before: Preferences, account: AccountPreferences) -> Preferences {
     }
 }
 
+/// Hands the verifications read to the session, which takes them over.
+fn hand_over(ctx: &Ports, verifications: Option<crate::storage::Verifications>) {
+    if let Some(verifications) = verifications {
+        ctx.session
+            .send(ForSession::Verifications(verifications))
+            .ok();
+    }
+}
+
 /// Takes over the verifications the storage service says the phone changed (quietly on the
 /// first read, which brings what was set before), then keeps what it said.
-async fn take_verifications(
+pub(super) async fn take_verifications(
     manager: &Mgr,
     ctx: &Ctx,
-    verifications: Option<crate::storage::Verifications>,
+    verifications: crate::storage::Verifications,
 ) {
-    let Some(verifications) = verifications else {
-        return;
-    };
     for (who, verification) in &verifications.changed {
         let Ok(key) =
             presage::libsignal_service::protocol::IdentityKey::decode(&verification.identity_key)
@@ -124,14 +131,14 @@ async fn take_verifications(
 
 /// Writes what changed here to the storage service, reading first when the phone changed
 /// something meanwhile; then tells our other devices to fetch it.
-async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
+async fn write_storage(manager: &mut Mgr, ctx: &Ports) {
     use crate::storage::Written;
     for _ in 0..3 {
         match crate::storage::push(manager, &ctx.tables).await {
             Ok(Written::Stale) => {
                 match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
                     Ok(synced) => {
-                        take_verifications(manager, ctx, synced.verifications).await;
+                        hand_over(ctx, synced.verifications);
                         take_preferences(ctx, synced.preferences);
                     }
                     Err(error) => {
