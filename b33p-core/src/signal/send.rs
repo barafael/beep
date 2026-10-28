@@ -359,7 +359,7 @@ pub(super) async fn send_new(
         author_id: own.clone(),
         timestamp,
     };
-    let _ = ctx.events.send(Event::Message(ChatMessage {
+    ctx.events.send(Event::Message(ChatMessage {
         conversation: conversation.clone(),
         sender_id: own,
         sender: "You".into(),
@@ -566,7 +566,7 @@ pub(super) async fn respond(
                 .clear_thread(thread)
                 .await
                 .map_err(store_failed("failed to delete the chat"))?;
-            let _ = ctx.events.send(Event::Cleared(conversation.clone()));
+            ctx.events.send(Event::Cleared(conversation.clone()));
             Type::Delete
         }
         RequestResponse::Block => {

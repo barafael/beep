@@ -65,11 +65,11 @@ mod platform {
     #[zbus::interface(name = "org.freedesktop.Application")]
     impl Application {
         fn activate(&self, platform_data: HashMap<String, OwnedValue>) {
-            let _ = self.0.try_send(activation_token(&platform_data));
+            self.show(&platform_data);
         }
 
         fn open(&self, _uris: Vec<String>, platform_data: HashMap<String, OwnedValue>) {
-            let _ = self.0.try_send(activation_token(&platform_data));
+            self.show(&platform_data);
         }
 
         fn activate_action(
@@ -78,6 +78,13 @@ mod platform {
             _parameter: Vec<OwnedValue>,
             _platform_data: HashMap<String, OwnedValue>,
         ) {
+        }
+    }
+
+    impl Application {
+        fn show(&self, platform_data: &HashMap<String, OwnedValue>) {
+            // Unbounded, so it fails only once b33p is ending, when there is nothing to show.
+            self.0.try_send(activation_token(platform_data)).ok();
         }
     }
 
@@ -143,15 +150,13 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use std::time::Duration;
-
     use windows::Win32::Foundation::{
         ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError, HANDLE,
     };
     use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_REJECT_REMOTE_CLIENTS,
-        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     use windows::core::HSTRING;
@@ -220,19 +225,29 @@ mod platform {
             if activations.try_send(None).is_err() {
                 return;
             }
-            let _ = unsafe { DisconnectNamedPipe(pipe) };
+            // Still connected, the pipe would take no one else.
+            if let Err(error) = unsafe { DisconnectNamedPipe(pipe) } {
+                tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "later starts can't show b33p");
+                return;
+            }
         }
     }
 
     fn activate_running(name: &str) {
-        // This process was just started by the user, so it may hand the foreground on.
-        let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+        // This process was just started by the user, so it may hand the foreground on; if it
+        // can't, b33p still shows, only maybe not in front.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) }.ok();
         // Busy only between two connections; a few tries are plenty.
-        for _ in 0..20 {
+        for _ in 0..3 {
             match std::fs::OpenOptions::new().write(true).open(name) {
                 Ok(_) => return,
                 Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) => {
-                    std::thread::sleep(Duration::from_millis(50));
+                    // Until the running b33p waits for the next one (or another start got in
+                    // first, and it is tried again).
+                    let waited = unsafe { WaitNamedPipeW(&HSTRING::from(name), 1000) };
+                    if !waited.as_bool() {
+                        break;
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "b33p is already running but didn't answer");
@@ -240,6 +255,7 @@ mod platform {
                 }
             }
         }
+        tracing::warn!("b33p is already running but didn't answer");
     }
 }
 

@@ -12,7 +12,7 @@ default = ["signal"]
 # Real Signal backend (presage + libsignal). Without it only the mock backend is available,
 # which keeps UI iteration fast and builds without the libsignal toolchain.
 signal = [
-    "dep:tracing", "dep:presage", "dep:presage-store-sqlite", "dep:tokio", "dep:futures",
+    "dep:presage", "dep:presage-store-sqlite", "dep:tokio", "dep:futures",
     "dep:hex", "dep:sqlx", "dep:argon2", "dep:getrandom",
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store", "dep:xattr",
@@ -26,7 +26,7 @@ test-servers = ["signal", "dep:toml"]
 crossbeam-channel.workspace = true
 qrcode.workspace = true
 zeroize = "1"
-tracing = { version = "0.1", optional = true }
+tracing = "0.1"
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }

@@ -34,7 +34,7 @@ pub(super) fn or_logged<T: Default>(result: Result<T, sqlx::Error>, what: &'stat
 /// Part of the chat list couldn't be read: said, so it isn't taken for an empty account.
 fn unreadable(ctx: &Ctx, what: &'static str, error: &impl std::fmt::Display) {
     warn!(what, error = %scrubbed(error), "failed to read the chat list");
-    let _ = ctx.events.send(Event::Error(Error::storage(
+    ctx.events.send(Event::Error(Error::storage(
         "Some chats couldn't be read from the stored data. Restart b33p to try again.",
     )));
 }
@@ -269,10 +269,10 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
         Err(error) => unreadable(ctx, "groups", &error),
     }
     with_settings(manager, ctx, &mut all).await;
-    let _ = ctx.events.send(Event::Conversations(all));
+    ctx.events.send(Event::Conversations(all));
     match ctx.tables.folders().await {
         Ok(folders) => {
-            let _ = ctx.events.send(Event::Folders(folders));
+            ctx.events.send(Event::Folders(folders));
         }
         Err(error) => warn!(error = %scrubbed(&error), "failed to read the chat folders"),
     }
@@ -295,7 +295,7 @@ pub(super) async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
         let Some(latest) = latest_message(&manager, &mut names, &id, &thread).await else {
             continue;
         };
-        if !ctx.events.send(Event::Latest(latest)) {
+        if !ctx.events.sent(Event::Latest(latest)) {
             return;
         }
     }
@@ -327,7 +327,7 @@ pub(super) async fn send_unread(manager: &Mgr, ctx: &Ctx) {
             unread.push((id, count));
         }
     }
-    let _ = ctx.events.send(Event::Unread(unread));
+    ctx.events.send(Event::Unread(unread));
 }
 
 /// A conversation's newest stored message.
@@ -412,7 +412,7 @@ pub(super) async fn wrote_to(ctx: &Ctx, id: &ConversationId) {
         .flatten()
         .is_some_and(|s| s.accepted);
     if !accepted && let Ok(settings) = ctx.tables.update(id, |s| s.accepted = true).await {
-        let _ = ctx.events.send(Event::Settings {
+        ctx.events.send(Event::Settings {
             conversation: id.clone(),
             settings,
         });
@@ -661,7 +661,7 @@ pub(super) async fn find_number(
             .ok()
             .flatten()
             .unwrap_or_default();
-        let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+        ctx.events.send(Event::Conversations(vec![conversation]));
     }
     Ok(id)
 }
@@ -709,10 +709,11 @@ mod tests {
             let (events, _ui) = async_channel::unbounded();
             let ctx = Ctx {
                 threads: Rc::default(),
-                events: Events(events),
+                events: Events::new(events),
                 tables: LocalStore::open(options).await.unwrap(),
                 preferences: Rc::new(Cell::new(Preferences::default())),
                 expiring: Rc::default(),
+                story_kept: Rc::default(),
                 storage_changed: Rc::default(),
                 storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
                 trust: Rc::default(),
@@ -764,10 +765,11 @@ mod tests {
             let (events, _ui) = async_channel::unbounded();
             let ctx = Ctx {
                 threads: Rc::default(),
-                events: Events(events),
+                events: Events::new(events),
                 tables: LocalStore::open(options).await.unwrap(),
                 preferences: Rc::new(Cell::new(Preferences::default())),
                 expiring: Rc::default(),
+                story_kept: Rc::default(),
                 storage_changed: Rc::default(),
                 storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
                 trust: Rc::default(),

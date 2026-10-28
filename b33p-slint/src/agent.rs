@@ -60,7 +60,7 @@ pub fn start(shared: &Rc<Shared>) {
     let path = PathBuf::from(path);
     let path_for_log = path.display().to_string();
     // A socket left over from a run that died would keep `bind` from working.
-    let _ = std::fs::remove_file(&path);
+    remove_socket(&path);
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
@@ -82,13 +82,25 @@ pub fn start(shared: &Rc<Shared>) {
         .name("b33p-agent".into())
         .spawn(move || {
             accept(listener, jobs.0);
-            let _ = std::fs::remove_file(&path);
+            remove_socket(&path);
         });
     if let Err(error) = spawned {
         tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't start the agent listener");
         return;
     }
     tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "{}", b33p_harness::LISTENING);
+}
+
+/// Removes the socket at `path`, if it is there.
+fn remove_socket(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => tracing::warn!(
+            error = %b33p_core::scrub::scrubbed(&error),
+            path = %b33p_core::scrub::scrubbed(&path.display()),
+            "can't remove the agent socket"
+        ),
+        _ => {}
+    }
 }
 
 /// What a connection asks, on its way to the UI thread. `request` is `None` once the
@@ -112,12 +124,18 @@ fn accept(listener: UnixListener, jobs: async_channel::Sender<Job>) {
         };
         let jobs = jobs.clone();
         let (out, for_writer) = async_channel::unbounded();
-        let _ = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name(format!("b33p-agent-out-{connection}"))
-            .spawn(move || write_out(stream, for_writer));
-        let _ = std::thread::Builder::new()
-            .name(format!("b33p-agent-in-{connection}"))
-            .spawn(move || read_requests(reader, connection as u64, out, jobs));
+            .spawn(move || write_out(stream, for_writer))
+            .and_then(|_| {
+                std::thread::Builder::new()
+                    .name(format!("b33p-agent-in-{connection}"))
+                    .spawn(move || read_requests(reader, connection as u64, out, jobs))
+            });
+        // The connection is dropped then: without its threads, nobody would answer it.
+        if let Err(error) = spawned {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't serve an agent connection");
+        }
     }
 }
 
@@ -148,7 +166,9 @@ fn read_requests(
                     outcome: Outcome::Err(format!("not a request: {error}")),
                 };
                 let line = serde_json::to_string(&reply).expect("replies always serialize");
-                let _ = out.send_blocking(line);
+                if out.send_blocking(line).is_err() {
+                    break; // The connection is gone.
+                }
                 continue;
             }
         };
@@ -163,12 +183,14 @@ fn read_requests(
             return; // The app is shutting down.
         }
     }
-    // The connection went away; the pump takes down its subscription.
-    let _ = jobs.send_blocking(Job {
+    // The connection went away; the pump takes down its subscription, unless the app is
+    // shutting down, which takes it down anyway.
+    jobs.send_blocking(Job {
         connection,
         reply: out,
         request: None,
-    });
+    })
+    .ok();
 }
 
 fn write_out(mut stream: UnixStream, out: async_channel::Receiver<String>) {
@@ -251,7 +273,8 @@ fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, String>) {
         outcome: result.into(),
     };
     let line = serde_json::to_string(&reply_line).expect("replies always serialize");
-    let _ = reply.send_blocking(line);
+    // Nobody to tell if the connection is gone.
+    reply.send_blocking(line).ok();
 }
 
 /// The app's window, which exists before the agent starts (main.rs).

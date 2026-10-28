@@ -100,7 +100,7 @@ pub fn run(commands: Inbox, events: Events) {
             Some("link-failed") => Failure::LinkFailed,
             _ => Failure::Other,
         };
-        let _ = events.send(Event::Failed {
+        events.send(Event::Failed {
             failure,
             message: format!("This is a pretend failure ({failure:?}) of the mock backend."),
         });
@@ -127,7 +127,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             error: None,
         };
         loop {
-            let _ = events.send(request);
+            events.send(request);
             match commands.iter().find_map(|c| {
                 if let Command::Unlock(p) = c {
                     Some(p)
@@ -148,9 +148,9 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     }
 
     let url = "sgnl://linkdevice?uuid=mock&pub_key=mock";
-    let _ = events.send(Event::LinkQr(QrMatrix::encode(url).unwrap()));
+    events.send(Event::LinkQr(QrMatrix::encode(url).unwrap()));
     std::thread::sleep(Duration::from_secs(2));
-    let _ = events.send(Event::Linked {
+    events.send(Event::Linked {
         account: "+49 151 0000000 (mock)".into(),
     });
     // `B33P_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
@@ -158,7 +158,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     // Commands that arrive meanwhile are handled afterwards, as in the real backend.
     let mut queued = std::collections::VecDeque::new();
     if std::env::var_os("B33P_MOCK_TRANSFER").is_some() {
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
         let until = std::time::Instant::now() + Duration::from_secs(6);
         let mut skipped = false;
         while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
@@ -178,24 +178,24 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 HistoryTransfer::Importing { messages: 500 },
                 HistoryTransfer::Importing { messages: 1000 },
             ] {
-                let _ = events.send(Event::HistoryTransfer(stage));
+                events.send(Event::HistoryTransfer(stage));
                 std::thread::sleep(Duration::from_secs(2));
             }
         }
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
     }
     let conversations = CONVERSATIONS
         .iter()
         .map(|&(id, title, is_group)| conversation(id, title, is_group))
         .collect();
-    let _ = events.send(Event::Conversations(conversations));
-    let _ = events.send(Event::Avatar {
+    events.send(Event::Conversations(conversations));
+    events.send(Event::Avatar {
         conversation: chat_id("alice"),
         avatar: Some(Arc::new(gradient(96))),
     });
-    let _ = events.send(Event::Connected);
-    let _ = events.send(Event::Synced);
-    let _ = events.send(Event::StorageRead);
+    events.send(Event::Connected);
+    events.send(Event::Synced);
+    events.send(Event::StorageRead);
     // Two stories from Alice (a picture, then text) and one in the group.
     let mut stories = vec![
         crate::Story {
@@ -240,8 +240,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             outgoing: false,
         },
     ];
-    let _ = events.send(Event::Stories(stories.clone()));
-    let _ = events.send(Event::Folders(vec![
+    events.send(Event::Stories(stories.clone()));
+    events.send(Event::Folders(vec![
         crate::ChatFolder {
             name: "Friends".into(),
             included: vec![chat_id("alice"), chat_id("bob")],
@@ -260,7 +260,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     // Like the real backend: each conversation's newest message, for sorting and previews.
     for &(id, _, _) in CONVERSATIONS {
         if let Some(latest) = history(&chat_id(id), started).pop() {
-            let _ = events.send(Event::Latest(latest));
+            events.send(Event::Latest(latest));
         }
     }
 
@@ -307,7 +307,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         true,
                     )
                 };
-                let _ = events.send(Event::Edited {
+                events.send(Event::Edited {
                     conversation,
                     target,
                     message,
@@ -318,7 +318,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 target,
                 for_everyone: true,
             }) => {
-                let _ = events.send(Event::Deleted {
+                events.send(Event::Deleted {
                     conversation,
                     target,
                 });
@@ -336,7 +336,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     sender: "You".into(),
                     outgoing: true,
                 };
-                let _ = events.send(Event::Reaction {
+                events.send(Event::Reaction {
                     conversation,
                     target,
                     reaction,
@@ -356,7 +356,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     }
                     _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
                 };
-                let _ = events.send(Event::Attachment {
+                events.send(Event::Attachment {
                     id: attachment.id,
                     content,
                 });
@@ -364,7 +364,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::SaveAttachment(attachment)) => {
                 let path = Ok(std::env::temp_dir()
                     .join(attachment.file_name.unwrap_or_else(|| "attachment".into())));
-                let _ = events.send(Event::AttachmentSaved {
+                events.send(Event::AttachmentSaved {
                     id: attachment.id,
                     path,
                 });
@@ -382,7 +382,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 let older = (!messages.is_empty())
                     .then(|| page.first().map(|m| m.timestamp))
                     .flatten();
-                let _ = events.send(Event::History {
+                events.send(Event::History {
                     conversation,
                     messages: page,
                     reactions: Vec::new(),
@@ -398,7 +398,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         s.viewed = true;
                     }
                 }
-                let _ = events.send(Event::Stories(stories.clone()));
+                events.send(Event::Stories(stories.clone()));
             }
             Ok(Command::SendStory {
                 conversation,
@@ -427,7 +427,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     viewed: true,
                     outgoing: true,
                 });
-                let _ = events.send(Event::Stories(stories.clone()));
+                events.send(Event::Stories(stories.clone()));
             }
             Ok(Command::CreateGroup { title, members }) => {
                 let id = chat_id(&format!("group-{}", now_millis()));
@@ -450,9 +450,9 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     },
                     ..Conversation::default()
                 };
-                let _ = events.send(Event::Conversations(vec![conversation]));
-                let _ = events.send(Event::GroupCreated(id.clone()));
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Conversations(vec![conversation]));
+                events.send(Event::GroupCreated(id.clone()));
+                events.send(Event::Message(ChatMessage {
                     notice: true,
                     ..message(
                         chat_name(&id),
@@ -503,7 +503,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                             self::conversation(chat_name(&conversation), "Climbing crew", true);
                         now.left = true;
                         now.subtitle = "You aren't a member of this group.".into();
-                        let _ = events.send(Event::Conversations(vec![now]));
+                        events.send(Event::Conversations(vec![now]));
                         "You took back the request to join.".into()
                     }
                     crate::GroupEdit::AcceptInvitation | crate::GroupEdit::DeclineInvitation => {
@@ -521,7 +521,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         } else {
                             "You aren't a member of this group.".into()
                         };
-                        let _ = events.send(Event::Conversations(vec![now]));
+                        events.send(Event::Conversations(vec![now]));
                         if accept {
                             "You joined the group.".into()
                         } else {
@@ -529,7 +529,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         }
                     }
                 };
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Message(ChatMessage {
                     notice: true,
                     ..message(chat_name(&conversation), "You", &notice, now_millis(), true)
                 }));
@@ -545,14 +545,14 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         picture: Arc::new(gradient(64)),
                     })
                     .collect();
-                let _ = events.send(Event::StickerPacks(vec![crate::StickerPack {
+                events.send(Event::StickerPacks(vec![crate::StickerPack {
                     id: "mock".into(),
                     title: "Gradients".into(),
                     stickers,
                 }]));
             }
             Ok(Command::SendSticker { conversation, .. }) => {
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Message(ChatMessage {
                     attachments: vec![attachment(
                         &format!("sticker-{}", now_millis()),
                         AttachmentKind::Sticker,
@@ -568,14 +568,14 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 response,
             }) => {
                 if response == crate::RequestResponse::Delete {
-                    let _ = events.send(Event::Cleared(conversation));
+                    events.send(Event::Cleared(conversation));
                 }
             }
             Ok(Command::SetVerified {
                 conversation,
                 verified,
             }) => {
-                let _ = events.send(Event::Trust {
+                events.send(Event::Trust {
                     conversation: conversation.clone(),
                     trust: if verified {
                         crate::Trust::Verified
@@ -588,7 +588,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     .find(|(id, _, _)| *id == chat_name(&conversation))
                     .map_or("them", |(_, name, _)| *name);
                 let state = if verified { "verified" } else { "unverified" };
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Message(ChatMessage {
                     notice: true,
                     ..message(
                         chat_name(&conversation),
@@ -603,12 +603,12 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::FindNumber { number, then }) => {
                 let digits: String = number.chars().filter(char::is_ascii_digit).collect();
                 if digits.ends_with("7700900123") {
-                    let _ = events.send(Event::Found {
+                    events.send(Event::Found {
                         conversation: chat_id("stranger"),
                         then,
                     });
                 } else {
-                    let _ = events.send(Event::Error(Error::refused(format!(
+                    events.send(Event::Error(Error::refused(format!(
                         "Nobody on Signal has the number {number}."
                     ))));
                 }
@@ -619,19 +619,19 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::PreviewGroupLink(link)) => {
                 let link = link.trim().to_owned();
                 if !link.starts_with("https://signal.group/#") {
-                    let _ = events.send(Event::Error(Error::refused(
+                    events.send(Event::Error(Error::refused(
                         "That isn't a Signal group link.",
                     )));
                     continue;
                 }
                 if link.ends_with("offline") {
-                    let _ = events.send(Event::CommandFailed {
+                    events.send(Event::CommandFailed {
                         error: Error::unreachable("couldn't look the group up: mock timeout"),
                         command: Command::PreviewGroupLink(link),
                     });
                     continue;
                 }
-                let _ = events.send(Event::GroupPreview(crate::GroupPreview {
+                events.send(Event::GroupPreview(crate::GroupPreview {
                     approval: link.ends_with("approve"),
                     link,
                     title: "Climbing crew".into(),
@@ -652,9 +652,9 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 } else {
                     "13 members".into()
                 };
-                let _ = events.send(Event::Conversations(vec![group]));
+                events.send(Event::Conversations(vec![group]));
                 if !requested {
-                    let _ = events.send(Event::Message(ChatMessage {
+                    events.send(Event::Message(ChatMessage {
                         notice: true,
                         ..message(
                             chat_name(&id),
@@ -665,7 +665,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         )
                     }));
                 }
-                let _ = events.send(Event::GroupJoined(id));
+                events.send(Event::GroupJoined(id));
             }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match chat_name(&conversation) {
@@ -703,7 +703,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         ..Default::default()
                     },
                 };
-                let _ = events.send(Event::Details {
+                events.send(Event::Details {
                     conversation,
                     details,
                 });
@@ -719,7 +719,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     })
                     .collect();
                 messages.reverse();
-                let _ = events.send(Event::Media {
+                events.send(Event::Media {
                     conversation,
                     messages,
                 });
@@ -734,7 +734,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     .filter(|m| !wanted.is_empty() && m.body.to_lowercase().contains(&wanted))
                     .collect();
                 messages.reverse();
-                let _ = events.send(Event::SearchResults {
+                events.send(Event::SearchResults {
                     conversation,
                     query,
                     messages,
@@ -747,7 +747,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 attachments,
                 ..
             }) => {
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Message(ChatMessage {
                     attachments,
                     styles,
                     ..message(chat_name(&conversation), "You", &body, now_millis(), true)
@@ -784,7 +784,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     } else {
                         Error::refused("failed to send: recipient is not registered")
                     };
-                    let _ = events.send(Event::SendFailed {
+                    events.send(Event::SendFailed {
                         conversation: conversation.clone(),
                         timestamp,
                         retryable: error.retryable(),
@@ -798,12 +798,12 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         styles,
                         mentions,
                     };
-                    let _ = events.send(Event::CommandFailed { error, command });
+                    events.send(Event::CommandFailed { error, command });
                     continue;
                 }
                 let echo = format!("You said: {body}");
                 let sent = timestamp;
-                let _ = events.send(Event::Message(ChatMessage {
+                events.send(Event::Message(ChatMessage {
                     quote,
                     attachments,
                     styles,
@@ -817,15 +817,15 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 };
                 for (delivery, wait) in [(Delivery::Delivered, 300), (Delivery::Read, 300)] {
                     std::thread::sleep(Duration::from_millis(wait));
-                    let _ = events.send(Event::Delivered {
+                    events.send(Event::Delivered {
                         conversation: conversation.clone(),
                         timestamps: vec![sent],
                         delivery,
                     });
                 }
-                let _ = events.send(typing(true));
+                events.send(typing(true));
                 std::thread::sleep(Duration::from_millis(1500));
-                let _ = events.send(Event::Message(message(
+                events.send(Event::Message(message(
                     chat_name(&conversation),
                     "Echo",
                     &echo,
@@ -834,7 +834,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 )));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                let _ = events.send(Event::Message(message(
+                events.send(Event::Message(message(
                     "bob",
                     "Bob",
                     "ping",

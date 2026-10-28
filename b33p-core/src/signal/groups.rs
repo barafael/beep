@@ -84,7 +84,7 @@ pub(super) async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
     let id = conversation.id.clone();
     // A group that is new here has nothing unread yet.
     conversation.settings = first_settings(ctx, &id, 0).await;
-    let _ = ctx.events.send(Event::Conversations(vec![conversation]));
+    ctx.events.send(Event::Conversations(vec![conversation]));
 }
 
 /// The group change a message carries, decrypted with the group's key, if the server signed
@@ -290,7 +290,7 @@ pub(super) async fn accept_from_trusted(
     }
     match ctx.tables.update(id, |s| s.accepted = true).await {
         Ok(settings) => {
-            let _ = ctx.events.send(Event::Settings {
+            ctx.events.send(Event::Settings {
                 conversation: id.clone(),
                 settings,
             });
@@ -561,7 +561,7 @@ pub(super) async fn show_stored(
         && let Some(message) =
             to_chat_message(manager, &mut Names::new(), conversation.clone(), &content).await
     {
-        let _ = ctx.events.send(Event::Message(message));
+        ctx.events.send(Event::Message(message));
     }
 }
 

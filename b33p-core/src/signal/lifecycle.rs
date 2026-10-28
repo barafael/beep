@@ -37,7 +37,7 @@ use crate::{
 use super::{
     Background, Ctx, GroupIds, Mgr,
     avatars::AvatarFetcher,
-    commands::{handle, outgoing, send_interrupted},
+    commands::{command_failed, handle, outgoing, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
     history::sweep_expired,
     receive::{Repairs, start_receiving},
@@ -142,8 +142,11 @@ pub(super) fn attempt(
         drop(local);
     }
     drop(runtime);
-    if let Some(closed) = closed {
-        let _ = closed.recv_timeout(Duration::from_secs(5));
+    // Nothing is sent on `closed`: it disconnects once the database is closed.
+    if let Some(closed) = closed
+        && let Err(mpsc::RecvTimeoutError::Timeout) = closed.recv_timeout(Duration::from_secs(5))
+    {
+        warn!("the database did not close within 5 s");
     }
     result
 }
@@ -411,7 +414,7 @@ fn unlock(
     let new = !paths.db.exists();
     let mut error = None;
     loop {
-        let _ = events.send(Event::PasswordRequired {
+        events.send(Event::PasswordRequired {
             new,
             error: error.take(),
         });
@@ -583,7 +586,7 @@ fn open_store(
         // never reach the log, whatever RUST_LOG says.
         .disable_statement_logging()
         .collation("b33p_close_guard", move |a, b| {
-            let _ = &open;
+            let _open = &open;
             a.cmp(b)
         });
     let store = local
@@ -633,12 +636,12 @@ async fn session(
             None => {
                 test_servers_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
-                let _ = events.send(Event::Linked { account });
+                events.send(Event::Linked { account });
                 Some((manager, Vec::new()))
             }
             Some(marker) => {
                 unlink(manager).await;
-                let _ = events.send(Event::Error(Error::unreachable(
+                events.send(Event::Error(Error::unreachable(
                     "The message history transfer was interrupted. Scan the code to link this \
                      device again and retry.",
                 )));
@@ -706,7 +709,7 @@ async fn session(
             Ended::Unlinked => return Ok(Ending::Wipe),
             Ended::Removed => {}
         }
-        let _ = events.send(Event::Error(Error::refused(
+        events.send(Event::Error(Error::refused(
             "This device was removed from your Signal account. Scan the code to link it again; \
              the messages here are kept.",
         )));
@@ -771,6 +774,7 @@ async fn run_linked(
         tables: tables.clone(),
         preferences: preferences.clone(),
         expiring: Rc::default(),
+        story_kept: Rc::default(),
         storage_changed: Rc::default(),
         storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
         trust: Rc::default(),
@@ -801,12 +805,13 @@ async fn run_linked(
     send_unread(&manager, &ctx).await;
     send_interrupted(&manager, &ctx).await;
 
-    send_stories(&manager, &ctx).await;
+    let story_over = send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
     let sweeping = tokio::task::spawn_local(sweep_expired(ctx.clone()));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
-    let stories = tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone()));
+    let stories =
+        tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone(), story_over));
 
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
@@ -853,7 +858,7 @@ async fn run_linked(
                     // Anything else it couldn't handle: start over, rather than look connected
                     // while nothing arrives; later and later should it keep failing.
                     warn!(error = %scrubbed(&error), "receiving failed");
-                    let _ = events.send(Event::Error(Error::unreachable(
+                    events.send(Event::Error(Error::unreachable(
                         "Receiving messages failed; trying again.",
                     )));
                     failures += 1;
@@ -886,7 +891,28 @@ async fn run_linked(
             if let Err(error) = ctx.tables.keep_unsent(&command).await {
                 warn!(%error, "failed to keep a message until it is sent");
             }
-            let _ = in_order.send(command);
+            // It fails only if the task taking them in order panicked: then say the message
+            // failed rather than show it as on its way. It is kept, so it shows as failed at
+            // the next start too.
+            if let Err(tokio::sync::mpsc::error::SendError(command)) = in_order.send(command) {
+                if let Command::Send {
+                    conversation,
+                    timestamp,
+                    ..
+                } = &command
+                {
+                    events.send(Event::SendFailed {
+                        conversation: conversation.clone(),
+                        timestamp: *timestamp,
+                        retryable: false,
+                    });
+                }
+                command_failed(
+                    &events,
+                    Error::storage("the task sending messages in order has stopped"),
+                    command,
+                );
+            }
             continue;
         }
         handle(&mut manager, &ctx, &downloads, command).await;
@@ -950,7 +976,7 @@ async fn link_with_history(
             }
         };
         let account = display_number(&manager.registration_data().phone_number);
-        let _ = events.send(Event::Linked { account });
+        events.send(Event::Linked { account });
         let Some(key) = key else {
             return Ok(Some((manager, Vec::new())));
         };
@@ -975,7 +1001,7 @@ async fn link_with_history(
                 }
             }
         };
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
         match result {
             Ok(transfer::Outcome::Imported | transfer::Outcome::WithoutHistory) => {
                 Marker::remove(paths)?;
@@ -984,7 +1010,7 @@ async fn link_with_history(
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
                 warn!(error = %scrub(&error.message), kind = ?error.kind, "message history transfer failed");
-                let _ = events.send(Event::Error(Error::new(
+                events.send(Event::Error(Error::new(
                     error.kind,
                     "The message history couldn't be transferred. Scan the new code to link \
                      this device again and retry.",
@@ -1145,7 +1171,7 @@ async fn link(
                     .finish();
                 // Said rather than swallowed: otherwise the user faces a blank panel and a link
                 // that never completes.
-                let _ = events.send(match QrMatrix::encode(url.as_str()) {
+                events.send(match QrMatrix::encode(url.as_str()) {
                     Some(qr) => Event::LinkQr(qr),
                     None => Event::Error(Error::refused(
                         "The linking code couldn't be drawn. Restart b33p to try again.",
@@ -1248,7 +1274,11 @@ pub(super) mod tests {
             drop(local);
         }
         drop(runtime);
-        let _ = closed.recv_timeout(Duration::from_secs(5));
+        assert_eq!(
+            closed.recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected),
+            "the database did not close"
+        );
         Ok(())
     }
 

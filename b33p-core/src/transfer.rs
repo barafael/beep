@@ -75,13 +75,13 @@ pub(crate) async fn receive_history(
     // However this ends, even if the caller drops it midway (skip, quit), the archive goes.
     let _cleanup = RemoveOnDrop(path.clone());
     async {
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Waiting));
         let (cdn, cdn_key) = match wait_for_archive(manager).await? {
             TransferArchive::Uploaded { cdn, key } => (cdn, key),
             TransferArchive::ContinueWithoutUpload => return Ok(Outcome::WithoutHistory),
             TransferArchive::RelinkRequested => return Ok(Outcome::Relink),
         };
-        let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Downloading));
+        events.send(Event::HistoryTransfer(HistoryTransfer::Downloading));
         // A dropped connection shouldn't cost the link (which starts over without the
         // history): a few more tries, from the start.
         let mut attempt = 1;
@@ -110,7 +110,14 @@ struct RemoveOnDrop(PathBuf);
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        match std::fs::remove_file(&self.0) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => warn!(
+                error = %crate::scrub::scrubbed(&error),
+                path = %crate::scrub::scrubbed(&self.0.display()),
+                "failed to remove the message history archive"
+            ),
+            _ => {}
+        }
     }
 }
 
@@ -240,7 +247,7 @@ where
         let messages = importer.stats().messages;
         if messages >= reported + 500 {
             reported = messages;
-            let _ = events.send(Event::HistoryTransfer(HistoryTransfer::Importing {
+            events.send(Event::HistoryTransfer(HistoryTransfer::Importing {
                 messages,
             }));
         }
@@ -322,13 +329,13 @@ mod tests {
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            std::fs::remove_dir_all(&self.dir).ok();
         }
     }
 
     /// Progress events go nowhere in tests.
     fn events() -> Events {
-        Events(async_channel::unbounded().0)
+        Events::new(async_channel::unbounded().0)
     }
 
     fn block_on<F: std::future::Future>(future: F) -> F::Output {

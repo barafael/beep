@@ -43,7 +43,7 @@ pub(super) async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]
             return;
         }
     };
-    let _ = ctx.events.send(Event::Avatar {
+    ctx.events.send(Event::Avatar {
         conversation: conversation_id(&Thread::Group(key)),
         avatar,
     });
@@ -60,7 +60,7 @@ pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
             return;
         }
     };
-    let _ = ctx.events.send(Event::Avatar {
+    ctx.events.send(Event::Avatar {
         conversation: conversation_id(&Thread::Contact(ServiceId::Aci(aci))),
         avatar,
     });
@@ -190,7 +190,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             Ok(Some(bytes)) => match decode_avatar(bytes).await {
                 Some(avatar) => {
                     found += 1;
-                    if !events.send(Event::Avatar {
+                    if !events.sent(Event::Avatar {
                         conversation: id,
                         avatar: Some(Arc::new(avatar)),
                     }) {

@@ -5,6 +5,9 @@
 //! ever blocks the other. All types here are plain data so any toolkit can
 //! render them.
 
+// Every outcome is handled: a discarded `Result` would hide a failure.
+#![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
+
 #[cfg(feature = "signal")]
 mod attachments;
 mod error;
@@ -39,6 +42,7 @@ pub use error::{Error, ErrorKind};
 pub use qr::QrMatrix;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -1129,12 +1133,39 @@ impl Default for Config {
 
 /// Backend side of the event channel. It is unbounded, so sending never blocks or awaits.
 #[derive(Clone)]
-pub(crate) struct Events(async_channel::Sender<Event>);
+pub(crate) struct Events {
+    sender: async_channel::Sender<Event>,
+    /// Whether we said the UI has gone, so we say it once.
+    told_gone: Arc<AtomicBool>,
+}
 
 impl Events {
-    /// Returns `false` once the UI has gone away.
-    pub(crate) fn send(&self, event: Event) -> bool {
-        self.0.try_send(event).is_ok()
+    pub(crate) fn new(sender: async_channel::Sender<Event>) -> Self {
+        Self {
+            sender,
+            told_gone: Arc::default(),
+        }
+    }
+
+    /// Sends `event`, or drops it once the UI has gone away: nobody is left to show it.
+    pub(crate) fn send(&self, event: Event) {
+        self.try_send(event);
+    }
+
+    /// Like [`Events::send`], but returns `false` once the UI has gone away, for loops that
+    /// should stop then.
+    #[cfg(feature = "signal")]
+    #[must_use]
+    pub(crate) fn sent(&self, event: Event) -> bool {
+        self.try_send(event)
+    }
+
+    fn try_send(&self, event: Event) -> bool {
+        let sent = self.sender.try_send(event).is_ok();
+        if !sent && !self.told_gone.swap(true, Ordering::Relaxed) {
+            tracing::debug!("the UI has gone; dropping events");
+        }
+        sent
     }
 }
 
@@ -1180,7 +1211,7 @@ impl Commands {
     pub fn send(&self, command: Command) {
         // The backend only goes away when it has failed fatally, which it reports as an event,
         // or when it was shut down.
-        let _ = self.0.send(Request::Command(Box::new(command)));
+        self.0.send(Request::Command(Box::new(command))).ok();
     }
 }
 
@@ -1219,7 +1250,7 @@ impl Backend {
         if !Self::mock_requested() {
             return Self::start(config);
         }
-        let _ = config;
+        drop(config);
         Self::mock()
     }
 
@@ -1231,7 +1262,7 @@ impl Backend {
             // presage/libsignal futures are huge and the runtime is current-thread, so they all
             // live on this stack; the 2 MiB default overflows in debug builds.
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || run(Inbox(command_rx), Events(event_tx)))
+            .spawn(move || run(Inbox(command_rx), Events::new(event_tx)))
             .expect("failed to spawn backend thread");
         Self {
             commands: Commands(command_tx),
@@ -1257,9 +1288,12 @@ impl Backend {
 
 impl Drop for Backend {
     fn drop(&mut self) {
-        let _ = self.commands.0.send(Request::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        // Gone already if it failed fatally.
+        self.commands.0.send(Request::Shutdown).ok();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("the backend thread panicked");
         }
     }
 }

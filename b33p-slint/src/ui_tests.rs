@@ -62,7 +62,7 @@ fn message(text: &str) -> MessageItem {
 /// visited each round instead, which makes lists create the rows they show.
 fn settle(window: &AppWindow) {
     for _ in 0..20 {
-        let _ = ElementHandle::find_by_accessible_label(window, "").count();
+        let _visited = ElementHandle::find_by_accessible_label(window, "").count();
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
         slint::platform::update_timers_and_animations();
     }

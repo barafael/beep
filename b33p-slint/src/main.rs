@@ -1,5 +1,7 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Every outcome is handled: a discarded `Result` would hide a failure.
+#![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -39,6 +41,8 @@ use markdown::{highlighted, rich_text};
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`): in the native style for the app,
 /// in Fluent for the tests, which run without Qt. `ui.rs` builds on whichever it is.
+// Slint's code, not ours, discards what it likes.
+#[allow(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 mod generated {
     #[cfg(not(test))]
     include!(concat!(env!("OUT_DIR"), "/app_native.rs"));
@@ -398,7 +402,8 @@ impl Shared {
     /// that is turned off or nothing shows tray icons.
     fn close_requested(&self) -> slint::CloseRequestResponse {
         if !self.in_tray() {
-            let _ = slint::quit_event_loop();
+            // Fails only once the event loop has stopped: quitting already.
+            slint::quit_event_loop().ok();
         }
         slint::CloseRequestResponse::HideWindow
     }
@@ -424,7 +429,7 @@ impl Shared {
             unsafe { std::env::set_var("XDG_ACTIVATION_TOKEN", token) };
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
-        let _ = token;
+        drop(token);
         ui.raise();
     }
 
@@ -782,9 +787,11 @@ fn main() -> Result<(), slint::PlatformError> {
 async fn next_turn() {
     let (done, turned) = async_channel::bounded::<()>(1);
     slint::Timer::single_shot(Duration::ZERO, move || {
-        let _ = done.try_send(());
+        // The only message: there is room for it, and we are waiting.
+        done.try_send(()).ok();
     });
-    let _ = turned.recv().await;
+    // Fails only if the timer was dropped unrun, which is a turn too.
+    turned.recv().await.ok();
 }
 
 fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {

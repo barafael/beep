@@ -351,13 +351,16 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                     .iter()
                     .map(|f| f.to_string_lossy().as_ref().into())
                     .collect();
-                let _ = window.upgrade_in_event_loop(move |window| {
-                    if Some(window.global::<ChatList>().get_selected_id()) == chat {
-                        window
-                            .global::<Composer>()
-                            .invoke_stage_files(ModelRc::new(VecModel::from(files)));
-                    }
-                });
+                // Fails only once b33p is quitting.
+                window
+                    .upgrade_in_event_loop(move |window| {
+                        if Some(window.global::<ChatList>().get_selected_id()) == chat {
+                            window
+                                .global::<Composer>()
+                                .invoke_stage_files(ModelRc::new(VecModel::from(files)));
+                        }
+                    })
+                    .ok();
             });
         }
     });
@@ -373,14 +376,17 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                         .map(|f| f.to_string_lossy().as_ref().into())
                         .collect()
                 });
-                let _ = window.upgrade_in_event_loop(move |window| match files {
-                    Some(files) => window
-                        .global::<Composer>()
-                        .invoke_stage_files(ModelRc::new(VecModel::from(files))),
-                    None => window.global::<Composer>().set_paste_text(
-                        window.global::<Composer>().get_paste_text().wrapping_add(1),
-                    ),
-                });
+                // Fails only once b33p is quitting.
+                window
+                    .upgrade_in_event_loop(move |window| match files {
+                        Some(files) => window
+                            .global::<Composer>()
+                            .invoke_stage_files(ModelRc::new(VecModel::from(files))),
+                        None => window.global::<Composer>().set_paste_text(
+                            window.global::<Composer>().get_paste_text().wrapping_add(1),
+                        ),
+                    })
+                    .ok();
             });
         }
     });

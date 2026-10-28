@@ -30,7 +30,10 @@ fn client() -> Option<reqwest::Client> {
         .get_or_init(|| {
             // As libsignal-service does, unless something installed one already.
             if rustls::crypto::CryptoProvider::get_default().is_none() {
-                let _ = rustls::crypto::ring::default_provider().install_default();
+                // Fails only if another thread installed one meanwhile, which does as well.
+                rustls::crypto::ring::default_provider()
+                    .install_default()
+                    .ok();
             }
             let redirect = reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {

@@ -1764,10 +1764,15 @@ mod tests {
                             other.mark_read(&a, 50).await.unwrap();
                             other.close().await;
                         });
-                        let _ = done.send(());
+                        done.send(()).unwrap();
                     }));
-                    // Done by now if nothing held it back.
-                    let _ = finished.recv_timeout(std::time::Duration::from_millis(500));
+                    // Done by now if nothing held it back. Nothing says it is held back, so
+                    // this can only give it the time to get through, and check it didn't.
+                    assert_eq!(
+                        finished.recv_timeout(std::time::Duration::from_millis(500)),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                        "marked read in the middle of a change"
+                    );
                     s.set_archived(true);
                 })
                 .await
