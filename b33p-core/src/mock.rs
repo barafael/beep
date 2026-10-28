@@ -745,6 +745,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 body,
                 styles,
                 attachments,
+                ..
             }) => {
                 let _ = events.send(Event::Message(ChatMessage {
                     attachments,

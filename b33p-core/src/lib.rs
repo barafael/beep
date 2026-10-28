@@ -1047,6 +1047,9 @@ pub enum Command {
         body: String,
         styles: Vec<StyleRange>,
         attachments: Vec<Attachment>,
+        /// The message forwarded: its conversation and timestamp. A sticker goes on as the
+        /// sticker it is, which only the stored message knows.
+        original: (ConversationId, u64),
     },
     /// Downloads an attachment and opens it with the desktop's default app for its type.
     OpenAttachment(Attachment),

@@ -98,6 +98,7 @@ impl ChatState {
             self.changed_rows.get_mut().note(unpicked);
         }
         let mut commands = messages.into_iter().map(|message| {
+            let original = (message.conversation.clone(), message.timestamp);
             // A long message's full text, once fetched, goes as the body; until then, the
             // attachment holding it goes along.
             let (body, styles, attachments) = match self.full_text(&message) {
@@ -117,6 +118,7 @@ impl ChatState {
                 body,
                 styles,
                 attachments,
+                original,
             }
         });
         let first = commands.next();
