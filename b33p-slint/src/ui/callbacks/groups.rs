@@ -54,19 +54,15 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         move |text| edit(text, false)
     });
     window.global::<Groups>().on_change_group_picture({
+        let shared = shared.clone();
         let window = window.as_weak();
         move || {
             let window = window.clone();
-            std::thread::spawn(move || {
-                let picked = rfd::FileDialog::new()
-                    .set_title("Choose the group's picture")
-                    .add_filter("Pictures", &["jpg", "jpeg", "png", "webp", "gif"])
-                    .pick_file();
-                if let Some(path) = picked {
+            let title = "Choose the group's picture";
+            crate::desktop::pick(&shared.desktop, title, Pick::Picture, move |picked| {
+                if let (Some(window), Some(path)) = (window.upgrade(), picked.first()) {
                     let path: SharedString = path.to_string_lossy().as_ref().into();
-                    let _ = window.upgrade_in_event_loop(move |window| {
-                        window.global::<Groups>().invoke_group_picture_chosen(path)
-                    });
+                    window.global::<Groups>().invoke_group_picture_chosen(path);
                 }
             });
         }
