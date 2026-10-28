@@ -33,8 +33,8 @@ use super::{
         own_id, thread_of,
     },
     groups::{
-        PHONE_NUMBER_ONLY, check_request, group_edit, member_aci, member_of, only_admin_check,
-        parse_group_link, refresh_group, show_stored,
+        PHONE_NUMBER_ONLY, check_request, fetch_as_admin, group_edit, member_aci, member_of,
+        only_admin_check, parse_group_link, refresh_group, show_stored,
     },
     history::{
         data_of, decorate, erase_deleted, history_page, is_outgoing, media, original, search,
@@ -613,11 +613,22 @@ async fn handle_command(
             if let Thread::Group(key) = thread {
                 check_request(manager, ctx, key).await;
             }
-            let details = details(manager, &ctx.tables, &thread).await;
+            let stored = details(manager, &ctx.tables, &thread).await;
             let _ = events.send(Event::Details {
-                conversation,
-                details,
+                conversation: conversation.clone(),
+                details: stored,
             });
+            // The stored group shows at once; an admin's again once fetched, with the requests
+            // to join that came meanwhile.
+            if let Thread::Group(key) = thread
+                && fetch_as_admin(manager, ctx, key).await
+            {
+                let details = details(manager, &ctx.tables, &thread).await;
+                let _ = events.send(Event::Details {
+                    conversation,
+                    details,
+                });
+            }
         }
         Command::LoadMedia(conversation) => {
             let Ok(thread) = thread(&conversation) else {
