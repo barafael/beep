@@ -305,6 +305,20 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 22. **A forwarded link lost its preview.** b33p's forward sent `preview: None`; Signal-Desktop
     forwards the original's previews (`maybeForwardMessages`, `draft.previews`). Fixed in #105,
     from the code: no tour run has drawn a forward of a message with a preview yet.
+23. **From full run 2's screenshots (2026-10-28), checked against the code:**
+    - A link preview made its bubble narrow: the picture's fixed width capped the bubble's.
+      Fixed in #112.
+    - Mentions showed as plain text. They are bold links to the person now (#113). A mention
+      of yourself isn't drawn on a filled background as Signal does, because Slint's styled
+      text has no background colour.
+    - Not bugs: a preview bubble drawn paler with an empty picture was caught in its 240 ms fade
+      from sending to sent. The read tick is a filled pill and the delivered one plain ticks,
+      on purpose (bubble.slint). CJK as boxes and "@You" with two spaces came from the testbox
+      (#111).
+    - **To do, a feature:** the day chip ("Today") is part of each day's first row and scrolls
+      off with it. Signal keeps the topmost visible row's day floating over the list while
+      scrolling. That needs the first visible row's day, from the list's `viewport-y` and row
+      heights or from Rust.
 
 ## Open questions
 
