@@ -2736,7 +2736,10 @@ fn forwarding_sends_a_copy_to_the_chosen_chat() {
     assert_eq!(state.forward_targets("G").len(), 1);
     assert_eq!(state.forwarded().as_deref(), Some("Ann at 10\nsecond line"));
     let Some(Command::Forward {
-        conversation, body, ..
+        conversation,
+        body,
+        original,
+        ..
     }) = state.forward_to(&id("g"))
     else {
         panic!("forwards");
@@ -2745,6 +2748,8 @@ fn forwarding_sends_a_copy_to_the_chosen_chat() {
         (conversation, body),
         (id("g"), "Ann at 10\nsecond line".into())
     );
+    // Where the message is, for what only the stored one has (a sticker's pack).
+    assert_eq!(original, (id("a"), 10));
     assert!(!state.forwarding());
     assert!(state.forward_to(&id("g")).is_none(), "once");
     assert!(state.forwarded().is_none());
