@@ -749,6 +749,13 @@ impl Driver {
     fn chat_menu_offers(&mut self, text: &str, items: &[ChatMenuItem]) -> Result<()> {
         let menu = self.open_chat_menu(text)?;
         adb(&["shell", "input", "keyevent", "KEYCODE_BACK"])?;
+        // Gone before whatever comes next: relaunching on a cleared task while the menu closes
+        // crashes Signal-Android ("ConversationListFragment … is not currently in the
+        // FragmentManager", from Compose disposing the menu's content).
+        self.agent.act(agent::Call::WaitGone {
+            wanted: vec![agent::Wanted::label("Delete")],
+            timeout_ms: timeout_ms(PATIENCE),
+        })?;
         let offered: Vec<ChatMenuItem> = ChatMenuItem::VARIANTS
             .iter()
             .copied()

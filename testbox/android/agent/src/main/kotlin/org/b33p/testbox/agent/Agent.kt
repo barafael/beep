@@ -139,6 +139,10 @@ private class Session(private val screen: Screen) {
       val looked: Look? =
         when (val call = request.call) {
           is Call.WaitFor -> screen.waitFor(call.params.wanted, call.params.timeout_ms.toLong())
+          is Call.WaitGone -> {
+            screen.waitGone(call.params.wanted, call.params.timeout_ms.toLong())
+            null
+          }
           is Call.SetText -> {
             screen.setText(call.params.text, call.params.echo, call.params.timeout_ms.toLong())
             null
@@ -259,6 +263,11 @@ private class Screen(private val device: Device, private val owner: Long) {
       wanted.withIndex().firstNotNullOfOrNull { (which, one) ->
         screen.firstOrNull(one::matches)?.let { Look(Found(which.toUInt(), it, screen), infos) }
       }
+    }
+
+  fun waitGone(wanted: List<Wanted>, timeoutMs: Long) =
+    await(timeoutMs, { "still one of $wanted" }) { _, screen ->
+      Unit.takeIf { screen.none { node -> wanted.any { it.matches(node) } } }
     }
 
   /** Taps (or long-presses) node `handle` of the last answered screen at its current bounds, with a
