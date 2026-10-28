@@ -225,6 +225,28 @@ pub(super) fn added_by(
     }
 }
 
+/// Whether `data` is a new group's announcement, as [`added_by`] takes it: at revision 0, without
+/// a change, and nothing else in it but what any message carries (the sender's profile key, the
+/// chat's timer). Not a member's reaction, delete or profile key update (which accepting the
+/// group sends) while the group is still at revision 0: that member didn't bring us in.
+pub(super) fn is_announcement(data: &presage::libsignal_service::content::DataMessage) -> bool {
+    let Some(context) = &data.group_v2 else {
+        return false;
+    };
+    let rest = presage::libsignal_service::content::DataMessage {
+        group_v2: None,
+        profile_key: None,
+        timestamp: None,
+        expire_timer: None,
+        expire_timer_version: None,
+        required_protocol_version: None,
+        ..data.clone()
+    };
+    context.revision == Some(0)
+        && context.group_change.is_none()
+        && rest == presage::libsignal_service::content::DataMessage::default()
+}
+
 /// A group isn't a message request when whoever brought us into it is someone we accepted (or
 /// wrote to): Signal-Desktop's `isConversationAccepted`, by `isFromOrAddedByTrustedContact` and
 /// `isTrustedContact` (profile sharing, which accepting or writing to someone gives). Accepts the
@@ -888,5 +910,42 @@ mod tests {
             Error::refused("that file isn't a picture")
         );
         assert!(group_picture(&dir.path().join("missing.png")).is_err());
+    }
+
+    /// The message presage's `create_group` sends is the announcement; a member's profile key
+    /// update or reaction at revision 0, such as accepting the group sends, isn't.
+    #[test]
+    fn only_a_bare_message_at_revision_0_announces_a_group() {
+        use presage::libsignal_service::content::DataMessage;
+        use presage::proto::data_message::{Flags, Reaction};
+        let created = DataMessage {
+            group_v2: Some(GroupContextV2 {
+                master_key: Some(vec![1; 32]),
+                revision: Some(0),
+                ..Default::default()
+            }),
+            profile_key: Some(vec![2; 32]),
+            timestamp: Some(1),
+            ..Default::default()
+        };
+        assert!(is_announcement(&created));
+        let accepted = DataMessage {
+            flags: Some(Flags::ProfileKeyUpdate as u32),
+            ..created.clone()
+        };
+        assert!(!is_announcement(&accepted));
+        let reacted = DataMessage {
+            reaction: Some(Reaction::default()),
+            ..created.clone()
+        };
+        assert!(!is_announcement(&reacted));
+        let later = DataMessage {
+            group_v2: Some(GroupContextV2 {
+                revision: Some(1),
+                ..created.group_v2.clone().unwrap()
+            }),
+            ..created
+        };
+        assert!(!is_announcement(&later));
     }
 }
