@@ -298,6 +298,10 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     group, and `group_avatars` refers to `groups`; only a rejoin had the group stored already.
     The tour drew only rejoins until finding 7's branch. Fixed in presage pr/groups 59d958b,
     langis/integration 881688c, taken with finding 7's PR.
+21. **A forwarded sticker arrived as a picture.** b33p forwarded a sticker's picture as an image
+    attachment, with no pack (`Command::Forward` sent `sticker: None`). Signal-Desktop forwards
+    the original's sticker (`maybeForwardMessages`). Found by the tour's sticker step (#102),
+    seed 1793169709, step 30; fixed in #101, and the seed passes with it.
 
 ## Open questions
 
@@ -342,12 +346,14 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 - **There is no contact discovery in the box.** The mesh bootstraps by having each primary write
   first to every later one's account.
 - **b33p previews its own messages as `You: <text>`.** The first mesh setup check missed that.
-- **Things the harness can't show:**
+- **Things the harness can't show** (in #99: trust, safety numbers and in-chat search, with the
+  tour's ChatSearch and Verify steps):
   - In-chat search results (`SearchChat`/`ShowResult`) aren't in the snapshot, so only the
     chat-list search is checked.
   - Trust and safety-number state isn't in the snapshot, so a safety-number change can't be
     checked.
-- **Steps not in the tour yet:**
+- **Steps not in the tour yet** (caption edits in #100, stickers in #102; a nightly run on main
+  in testbox/nightly):
   - Stickers: the pack has to be seeded per primary, then CDN0 has to be waited for.
   - Voice notes: b33p can't record one.
   - Invitations: everyone in the mesh knows everyone's profile key, so adds are direct.
