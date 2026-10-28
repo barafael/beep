@@ -9,6 +9,9 @@
           { name: "HOME", value: "/home/b33p" },
           # The box's servers (testbox/tools `provision` writes the file).
           { name: "B33P_SIGNAL_SERVERS", value: "/keys/servers.toml" },
+          # Link previews trust the keys' CA beside the system's, for the box's preview page
+          # (testbox/tools `preview`); the Signal servers' CA is libsignal-service's own.
+          { name: "SSL_CERT_DIR", value: "/etc/ssl/certs:/keys/trusted" },
           { name: "B33P_AGENT_SOCKET", value: "/run/b33p/@AGENT@" },
           { name: "QT_QPA_PLATFORM", value: "wayland" },
           # Drawn larger: the viewers show the display shrunk beside the others.

@@ -41,6 +41,19 @@ pub fn cdn0_request_line(method: &str, path: &str, status: u16) -> String {
     format!("cdn0: {method} {path} {status}")
 }
 
+/// What the `preview` tool logs once it serves.
+pub const PREVIEW_READY: &str = "preview: serving";
+
+/// The line the `preview` tool logs for each request, which the checks can wait on.
+pub fn preview_request_line(path: &str, status: u16) -> String {
+    format!("preview: GET {path} {status}")
+}
+
+/// The title of the preview server's page `n` (`/page/<n>`), which a preview of it shows.
+pub fn preview_title(n: u32) -> String {
+    format!("b33p tour page {n}")
+}
+
 /// What the `storage` tool logs once storage-service serves on its tables.
 pub const STORAGE_READY: &str = "storage: storage-service serves";
 

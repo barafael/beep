@@ -23,6 +23,7 @@ cdn0 = [
     "dep:toml",
 ]
 foundationdb = ["async"]
+preview = ["async", "dep:axum", "dep:axum-server", "dep:rustls"]
 android = ["dep:hex", "dep:sha2"]
 # `with-display`: the compositor's protocols, the umask for its sockets, the stop signals.
 display = ["dep:wayland-client", "dep:rustix", "dep:signal-hook"]
@@ -46,6 +47,10 @@ provision = [
 [[bin]]
 name = "cdn0"
 required-features = ["cdn0"]
+
+[[bin]]
+name = "preview"
+required-features = ["preview"]
 
 [[bin]]
 name = "foundationdb"
