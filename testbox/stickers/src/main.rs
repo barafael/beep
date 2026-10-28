@@ -20,20 +20,15 @@
 use std::io::Cursor;
 
 use presage::Manager;
-use presage::libsignal_service::configuration::{Endpoint, ServiceCredentials};
+use presage::libsignal_service::configuration::Endpoint;
 use presage::libsignal_service::prelude::ProtobufMessage;
 use presage::libsignal_service::proto::{Pack, pack};
-use presage::libsignal_service::protocol::DeviceId;
-use presage::libsignal_service::push_service::{
-    AttachmentV2UploadAttributes, HttpAuthOverride, PushService,
-};
+use presage::libsignal_service::push_service::{AttachmentV2UploadAttributes, HttpAuthOverride};
 use presage::libsignal_service::sticker_cipher::{derive_key, encrypt_in_place};
-use presage::libsignal_service::utils::TryIntoE164;
-use presage::manager::RegistrationData;
 use presage::model::identity::OnNewIdentity;
 use presage_store_sqlite::SqliteStore;
 use serde::Deserialize;
-use testbox_tools::{Context, Describe, Error, Result, WithContext};
+use testbox_tools::{Describe, Error, Result, WithContext};
 
 const TITLE: &str = "testbox stickers";
 const AUTHOR: &str = "b33p testbox";
@@ -74,15 +69,6 @@ struct StickerForm {
     form: AttachmentV2UploadAttributes,
 }
 
-/// The account's password, which presage keeps to itself (`RegistrationData::password` is
-/// `pub(crate)`), from the form presage stores it in: its serialized registration data. Not
-/// needed once presage makes `identified_push_service` public (barafael/presage
-/// `registered.rs:124`).
-#[derive(Deserialize)]
-struct Password {
-    password: String,
-}
-
 async fn seed(db: &str) -> Result<()> {
     let store = SqliteStore::open(db, OnNewIdentity::Trust)
         .await
@@ -90,7 +76,7 @@ async fn seed(db: &str) -> Result<()> {
     let mut manager = Manager::load_registered(store)
         .await
         .describe("the registered account")?;
-    let push = push_service(manager.registration_data())?;
+    let push = manager.identified_push_service();
 
     let response = push
         .request(
@@ -165,32 +151,6 @@ async fn seed(db: &str) -> Result<()> {
         .describe("installing the pack")?;
     println!("{}", forms.pack_id);
     Ok(())
-}
-
-/// A push service with the account's credentials, as presage builds one
-/// (`Registered::credentials`).
-fn push_service(data: &RegistrationData) -> Result<PushService> {
-    let Password { password } =
-        serde_json::from_str(&serde_json::to_string(data).context("the registration data")?)
-            .context("the registration data")?;
-    let credentials = ServiceCredentials {
-        aci: Some(data.service_ids.aci),
-        pni: Some(data.service_ids.pni),
-        phonenumber: (&data.phone_number)
-            .try_into_e164()
-            .describe("the account's number")?,
-        password: Some(password),
-        device_id: data
-            .device_id
-            .map(DeviceId::try_from)
-            .transpose()
-            .describe("the account's device id")?,
-    };
-    Ok(PushService::new(
-        data.signal_servers.clone(),
-        Some(credentials),
-        "testbox-stickers",
-    ))
 }
 
 /// A square of `colour`, as a PNG.
