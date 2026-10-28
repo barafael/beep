@@ -1148,6 +1148,7 @@ impl Events {
 
     /// Like [`Events::send`], but returns `false` once the UI has gone away, for loops that
     /// should stop then.
+    #[cfg(feature = "signal")]
     #[must_use]
     pub(crate) fn sent(&self, event: Event) -> bool {
         self.try_send(event)
