@@ -41,10 +41,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compil
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY testbox/tools testbox/tools
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built; the sources touched first, as
+# cargo goes by modification times, and another tree's later build would look newer than these.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/testbox/tools/target \
-    cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
+    --mount=type=cache,target=/src/testbox/tools/target,sharing=locked \
+    find testbox/tools -path testbox/tools/target -prune -o -type f -exec touch {} + \
+    && cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
         --features provision,display --bin provision --bin with-display \
     && cp testbox/tools/target/release/provision testbox/tools/target/release/with-display \
         /usr/local/bin/

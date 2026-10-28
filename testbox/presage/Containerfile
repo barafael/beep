@@ -21,9 +21,11 @@ RUN git init -q /opt/presage && cd /opt/presage \
 # Its lock as that patch has it (testbox/presage/presage-cli.lock: presage's own, updated only for
 # the patch, `cargo metadata` with the same `--config`), so the build is `--locked` too.
 COPY testbox/presage/presage-cli.lock /opt/presage/Cargo.lock
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/opt/presage/target \
+    --mount=type=cache,target=/opt/presage/target,sharing=locked \
     cd /opt/presage \
     && cargo build --release --locked -p presage-cli \
         --config 'patch."https://github.com/whisperfish/libsignal-service-rs".libsignal-service.git="https://github.com/barafael/libsignal-service-rs"' \
@@ -36,10 +38,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # presage-cli's target directory, so that what both compile alike is compiled once.
 COPY testbox/tools /src/testbox/tools
 COPY testbox/stickers /src/testbox/stickers
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built; the sources touched first, as
+# cargo goes by modification times, and another tree's later build would look newer than these.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/opt/presage/target \
-    cargo build --release --locked --manifest-path /src/testbox/stickers/Cargo.toml \
+    --mount=type=cache,target=/opt/presage/target,sharing=locked \
+    find /src/testbox/tools /src/testbox/stickers -path '*/target' -prune -o -type f -exec touch {} + \
+    && cargo build --release --locked --manifest-path /src/testbox/stickers/Cargo.toml \
         --target-dir /opt/presage/target \
     && cp /opt/presage/target/release/testbox-stickers /usr/local/bin/
 

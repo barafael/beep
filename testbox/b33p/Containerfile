@@ -20,11 +20,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # `dev` as the checks' own builds, or `testbox` (`cargo testbox up --optimized`): optimized as b33p
 # ships, with the debug assertions `test-servers` needs (Cargo.toml).
 ARG PROFILE=dev
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built; the sources touched first, as
+# cargo goes by modification times, and another tree's later build would look newer than these.
 RUN --network=none \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo build --offline --locked --profile "$PROFILE" -p b33p-slint \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    find . -path ./target -prune -o -type f -exec touch {} + \
+    && cargo build --offline --locked --profile "$PROFILE" -p b33p-slint \
         --features harness,test-servers \
     && cp "target/$([ "$PROFILE" = dev ] && echo debug || echo "$PROFILE")/b33p" /usr/local/bin/b33p
 
