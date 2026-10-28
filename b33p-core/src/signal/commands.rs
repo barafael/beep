@@ -45,7 +45,7 @@ use super::{
         send_data, send_edit, send_new, send_read, send_sync, send_typing, sticker_message,
         sticker_packs,
     },
-    stories::{STORY_BACKGROUND, STORY_FOREGROUND, send_stories, send_viewed},
+    stories::{STORY_BACKGROUND, STORY_FOREGROUND, keep_story, send_stories, send_viewed},
     trust::{refresh_trust, set_verified},
 };
 
@@ -447,7 +447,7 @@ async fn handle_command(
                 .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
                 .map_err(send_failed("failed to post the story"))?;
-            ctx.tables.add_story(&stored).await.map_err(db)?;
+            keep_story(ctx, &stored).await.map_err(db)?;
             send_stories(manager, ctx).await;
             // Sending tells our other devices of data messages only; this one they hear of here.
             let sync = SyncMessage {

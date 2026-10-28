@@ -774,6 +774,7 @@ async fn run_linked(
         tables: tables.clone(),
         preferences: preferences.clone(),
         expiring: Rc::default(),
+        story_kept: Rc::default(),
         storage_changed: Rc::default(),
         storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
         trust: Rc::default(),
@@ -804,12 +805,13 @@ async fn run_linked(
     send_unread(&manager, &ctx).await;
     send_interrupted(&manager, &ctx).await;
 
-    send_stories(&manager, &ctx).await;
+    let story_over = send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
     let sweeping = tokio::task::spawn_local(sweep_expired(ctx.clone()));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
-    let stories = tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone()));
+    let stories =
+        tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone(), story_over));
 
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());

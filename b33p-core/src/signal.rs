@@ -109,6 +109,8 @@ struct Ctx {
     preferences: Rc<Cell<Preferences>>,
     /// Woken when a disappearing message starts counting down, for `sweep_expired`.
     expiring: Rc<tokio::sync::Notify>,
+    /// Woken when a story is kept, for `expire_stories`.
+    story_kept: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
     storage_changed: Rc<tokio::sync::Notify>,
     /// Whether the phone's settings (who was accepted, who is blocked) have been read from the

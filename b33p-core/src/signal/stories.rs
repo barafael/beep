@@ -25,6 +25,9 @@ use super::{
 /// Stories last a day.
 const STORY_LIFETIME: u64 = 24 * 60 * 60 * 1000;
 
+/// How soon stories that couldn't be read are read again.
+const RETRY: Duration = Duration::from_secs(5 * 60);
+
 /// Whether a story of `timestamp` is one to show at `now`: not expired, and not dated so far
 /// ahead (beyond clocks differing) that it would never expire.
 fn story_is_current(now: u64, timestamp: u64) -> bool {
@@ -103,19 +106,38 @@ pub(super) async fn on_story(
         }
         None => return,
     }
-    if let Err(error) = ctx.tables.add_story(&stored).await {
+    if let Err(error) = keep_story(ctx, &stored).await {
         warn!(error = %scrubbed(&error), "failed to keep a story");
         return;
     }
     send_stories(manager, ctx).await;
 }
 
-/// Tells the UI the stories of the last day.
-pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) {
+/// Keeps `story`, and has [`expire_stories`] take it off the list once its day is over.
+pub(super) async fn keep_story(
+    ctx: &Ctx,
+    story: &crate::local::StoredStory,
+) -> Result<(), sqlx::Error> {
+    ctx.tables.add_story(story).await?;
+    ctx.story_kept.notify_one();
+    Ok(())
+}
+
+/// Tells the UI the stories of the last day. Returns when that list changes by itself next:
+/// when its first story is over, or, if the stories couldn't be read, when to try again.
+pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) -> Option<u64> {
     let since = now_millis().saturating_sub(STORY_LIFETIME);
-    let Ok(stored) = ctx.tables.stories(since).await else {
-        return;
+    let stored = match ctx.tables.stories(since).await {
+        Ok(stored) => stored,
+        Err(error) => {
+            warn!(error = %scrubbed(&error), "failed to read the stories");
+            return Some(now_millis() + RETRY.as_millis() as u64);
+        }
     };
+    // Oldest first; it is gone once more than a day old.
+    let next = stored
+        .first()
+        .map(|story| story.timestamp + STORY_LIFETIME + 1);
     let mut names = Names::new();
     let mut stories = Vec::new();
     for story in stored {
@@ -152,6 +174,7 @@ pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) {
         });
     }
     ctx.events.send(Event::Stories(stories));
+    next
 }
 
 /// Tells a story's author we viewed it (with `receipts`), and our other devices.
@@ -188,11 +211,26 @@ pub(super) async fn send_viewed(manager: Mgr, outbox: Outbox, story: MessageRef,
     send_sync(&manager, &outbox, sync).await;
 }
 
-/// Takes stories off the list once their day is over, for the rest of the session.
-pub(super) async fn expire_stories(manager: Mgr, ctx: Ctx) {
+/// Takes stories off the list once their day is over, for the rest of the session. `next` is
+/// when that is for the first of them, as [`send_stories`] said.
+pub(super) async fn expire_stories(manager: Mgr, ctx: Ctx, mut next: Option<u64>) {
     loop {
-        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
-        send_stories(&manager, &ctx).await;
+        let over = async {
+            match next {
+                Some(at) => {
+                    let wait = Duration::from_millis(at.saturating_sub(now_millis()));
+                    tokio::time::sleep(wait).await;
+                }
+                // Until a story is kept.
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            () = over => {}
+            // It may be over before the first one known, or be the first one.
+            () = ctx.story_kept.notified() => {}
+        }
+        next = send_stories(&manager, &ctx).await;
     }
 }
 
