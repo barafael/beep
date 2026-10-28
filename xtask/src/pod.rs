@@ -790,11 +790,11 @@ impl Pod {
     /// Freezes `service` until [`Self::unpause`]: its connections stay open, and nothing answers
     /// on them, as when a network goes away without a word.
     pub fn pause(&self, service: Service) -> Result<()> {
-        process::run(podman(&["pause", &self.container(service)]))
+        quietly(podman(&["pause", &self.container(service)]))
     }
 
     pub fn unpause(&self, service: Service) -> Result<()> {
-        process::run(podman(&["unpause", &self.container(service)]))
+        quietly(podman(&["unpause", &self.container(service)]))
     }
 
     pub fn restart(&self, service: Service) -> Result<()> {
@@ -803,17 +803,17 @@ impl Pod {
 
     /// Stops `service` as `podman stop` does: its stop signal, then SIGKILL after the timeout.
     pub fn stop(&self, service: Service) -> Result<()> {
-        process::run(podman(&["stop", &self.container(service)]))
+        quietly(podman(&["stop", &self.container(service)]))
     }
 
     pub fn start(&self, service: Service) -> Result<()> {
-        process::run(podman(&["start", &self.container(service)]))
+        quietly(podman(&["start", &self.container(service)]))
     }
 
     /// Ends every process in `service` at once, as a power cut would: nothing gets to flush or
     /// close. `with-display` goes with its client, so the crash check doesn't count it.
     pub fn kill(&self, service: Service) -> Result<()> {
-        process::run(podman(&[
+        quietly(podman(&[
             "kill",
             "--signal",
             "KILL",
@@ -836,7 +836,7 @@ impl Pod {
     /// Lets `service` take at most `mib` MiB, swap included: past it, the kernel kills it.
     pub fn limit_memory(&self, service: Service, mib: u64) -> Result<()> {
         let limit = format!("{mib}m");
-        process::run(podman(&[
+        quietly(podman(&[
             "update",
             "--memory",
             &limit,

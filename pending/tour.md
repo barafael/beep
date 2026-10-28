@@ -356,7 +356,9 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Editing a picture's caption.
 - **Noise in every b33p log:** cage's "Cannot find Xwayland binary", since the image removes
   Xwayland on purpose, and Qt's "Detected locale C …" on every start.
-- **`kill` and `start` print the container's name** (podman's output) into the run's stdout.
+- **Fixed: `kill` and `start` printed the container's name** (podman's output) into the run's
+  stdout. `stop`, `start`, `kill`, `pause`, `unpause` and `update` now log it at debug, as
+  `restart` did.
 - **Memory samples counted the page cache.** The soak's and the tour's samples read cgroup
   `memory.current`, which includes the page cache: the files read and written, and what a
   restarted b33p reads again. So "memory grew" could mean nothing.
