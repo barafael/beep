@@ -37,8 +37,8 @@ use std::rc::{Rc, Weak};
 use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
-    MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent, QuoteSnapshot,
-    ReactionSnapshot, Reply, Request, Saved, ScreenSnapshot, SearchResultSnapshot,
+    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent,
+    QuoteSnapshot, ReactionSnapshot, Reply, Request, Saved, ScreenSnapshot, SearchResultSnapshot,
     SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot, StickersSnapshot,
     StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
@@ -847,6 +847,16 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                 .iter()
                 .map(|mention| mention.service_id.clone())
                 .collect(),
+            link_preview: view
+                .message
+                .preview
+                .as_ref()
+                .map(|preview| LinkPreviewSnapshot {
+                    url: preview.url.clone(),
+                    title: preview.title.clone(),
+                    description: preview.description.clone(),
+                    image: preview.image.is_some(),
+                }),
         })
         .collect();
     Snapshot {

@@ -30,6 +30,7 @@ use crate::error::{Context, Error, Result};
 use crate::harness::Harness;
 use crate::pod::{Pod, Service};
 use crate::process;
+use testbox_tools::keys;
 
 /// How long a message with a disappearing timer may take to go, past its timer.
 const EXPIRY_PATIENCE: Duration = Duration::from_secs(90);
@@ -89,6 +90,32 @@ enum Kind {
     EditCaption,
     /// A sticker from the pack the sender's primary installed.
     Sticker,
+    /// A link sent with link previews on: every member shows the box's page as its preview,
+    /// title and picture (testbox/tools `preview`).
+    LinkPreview,
+}
+
+/// Turns b33p's link previews on or off, as its settings switch does.
+fn link_previews(b33p: &mut Harness, on: bool) -> Result<()> {
+    b33p.act(Action::SetSettings {
+        theme: None,
+        style: None,
+        text_size: None,
+        animations: None,
+        show_avatars: None,
+        notifications: None,
+        notification_content: None,
+        show_activity: None,
+        show_calendar: None,
+        close_to_tray: None,
+        read_receipts: None,
+        typing_indicators: None,
+        link_previews: Some(on),
+        sync_to_phone: None,
+    })?;
+    b33p.wait_for("b33p's link previews", PATIENCE, |snapshot| {
+        (snapshot.settings.link_previews == on).then_some(())
+    })
 }
 
 /// What a message is searched by: the start of its text, "tour 12:", which no other message
@@ -172,6 +199,7 @@ impl Thread {
                         reactions,
                         quote: message.quote.clone(),
                         attachments: message.attachments.clone(),
+                        preview: message.preview.clone(),
                     }
                 }
             })
@@ -194,6 +222,8 @@ struct Expected {
     reactions: BTreeMap<usize, String>,
     quote: Option<String>,
     attachments: Vec<AttachmentKind>,
+    /// Its link's preview: the page's title, and whether it came with the picture.
+    preview: Option<(String, bool)>,
     /// Who deleted it for themselves, or blocked its sender when it came.
     hidden: BTreeSet<usize>,
     /// Who it went to, its sender too.
@@ -211,6 +241,7 @@ struct Seen {
     reactions: Vec<(String, bool)>,
     quote: Option<String>,
     attachments: Vec<AttachmentKind>,
+    preview: Option<(String, bool)>,
 }
 
 impl Seen {
@@ -225,6 +256,7 @@ impl Seen {
             reactions: Vec::new(),
             quote: None,
             attachments: Vec::new(),
+            preview: None,
         }
     }
 }
@@ -266,6 +298,10 @@ fn seen(snapshot: &Snapshot, k: usize, acis: &[String], since: u64) -> Vec<Seen>
                     .iter()
                     .map(|attachment| attachment.kind)
                     .collect(),
+                preview: message
+                    .link_preview
+                    .as_ref()
+                    .map(|preview| (preview.title.clone(), preview.image)),
             }
         })
         .collect();
@@ -276,6 +312,13 @@ fn seen(snapshot: &Snapshot, k: usize, acis: &[String], since: u64) -> Vec<Seen>
 /// A step drawn, with what it acts on.
 #[derive(Clone, Debug)]
 enum Step {
+    LinkPreview {
+        by: usize,
+        thread: usize,
+        text: String,
+        /// The box's page the text links to (`/page/<n>`).
+        page: u32,
+    },
     Text {
         by: usize,
         thread: usize,
@@ -875,6 +918,17 @@ impl World {
                 let (by, thread) = self.someone_in(true, true)?;
                 Step::ChatState { by, thread }
             }
+            Kind::LinkPreview => {
+                let (by, thread) = self.someone_in(true, true)?;
+                let text = self.new_text(&format!("a link with its preview from {by}"));
+                let page = u32::try_from(self.texts).ok()?;
+                Step::LinkPreview {
+                    by,
+                    thread,
+                    text: format!("{text} {}", keys::preview_url(&format!("/page/{page}"))),
+                    page,
+                }
+            }
             Kind::Search => {
                 let (by, thread) = self.someone_in(true, true)?;
                 Step::Search { by, thread }
@@ -1088,6 +1142,12 @@ impl World {
             Step::Search { by, thread } => {
                 format!("b33p {by} finds {} in its chat list", name(thread))
             }
+            Step::LinkPreview { by, thread, .. } => {
+                format!(
+                    "b33p {by} sends a link with its preview in {}",
+                    name(thread)
+                )
+            }
             Step::ChatSearch { by, thread, .. } => {
                 format!("b33p {by} searches {} for a message", name(thread))
             }
@@ -1285,6 +1345,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             reactions: BTreeMap::new(),
             quote: None,
             attachments: Vec::new(),
+            preview: None,
             hidden: BTreeSet::new(),
             audience,
         });
@@ -1351,6 +1412,8 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 let edited = self.message(thread, message)?;
                 edited.text = text;
                 edited.edited = true;
+                // The preview follows the text, which has no link now (b33p-core `Command::Edit`).
+                edited.preview = None;
                 self.converge(thread)
             }
             Step::DeleteForEveryone {
@@ -1400,7 +1463,10 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 })?;
                 select(b33p, &target)?;
                 let ts = sent_since(b33p, by, before)?;
-                self.add(to, by, ts, &original.text).attachments = original.attachments;
+                let forwarded = self.add(to, by, ts, &original.text);
+                forwarded.attachments = original.attachments;
+                // With its preview, as Signal's apps forward (b33p-core `Command::Forward`).
+                forwarded.preview = original.preview;
                 self.converge_timed(to, by, started)
             }
             Step::Attachment {
@@ -1461,6 +1527,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             } => self.chat_search(by, thread, message),
             Step::Verify { by, thread } => self.verify(by, thread),
             Step::Sticker { by, thread } => self.sticker(by, thread),
+            Step::LinkPreview {
+                by,
+                thread,
+                text,
+                page,
+            } => self.link_preview(by, thread, &text, page),
             Step::Block {
                 by,
                 thread,
@@ -2022,6 +2094,21 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         Ok(())
     }
 
+    /// `by` turns link previews on, sends `text`, which links to the box's page `page`, and turns
+    /// them off again (b33p's default, which the other steps go by): every member shows the
+    /// page's title and picture as the preview.
+    fn link_preview(&mut self, by: usize, thread: usize, text: &str, page: u32) -> Result<()> {
+        link_previews(self.harness(by), true)?;
+        self.open(by, thread)?;
+        let started = Instant::now();
+        let sent = self.send(by, text);
+        let off = link_previews(self.harness(by), false);
+        let ts = sent?;
+        off?;
+        self.add(thread, by, ts, text).preview = Some((testbox_tools::preview_title(page), true));
+        self.converge_timed(thread, by, started)
+    }
+
     /// `by` blocks the other of `thread`, which writes `blocked_text`; `by` unblocks it, and it
     /// writes `text`: `by` shows only the second.
     fn block(&mut self, by: usize, thread: usize, blocked_text: &str, text: &str) -> Result<()> {
@@ -2557,6 +2644,7 @@ mod tests {
                 reactions: BTreeMap::from([(1, "👍".to_owned())]),
                 quote: None,
                 attachments: Vec::new(),
+                preview: None,
                 hidden: BTreeSet::from([0]),
                 audience: BTreeSet::from([0, 1]),
             }],
@@ -2581,6 +2669,7 @@ mod tests {
             reactions: BTreeMap::new(),
             quote: None,
             attachments: Vec::new(),
+            preview: None,
             hidden: BTreeSet::new(),
             audience: BTreeSet::from([0, 1]),
         });
@@ -2593,6 +2682,7 @@ mod tests {
             reactions: BTreeMap::new(),
             quote: None,
             attachments: vec![AttachmentKind::Image],
+            preview: None,
             hidden: BTreeSet::new(),
             audience: BTreeSet::from([0, 1]),
         });
