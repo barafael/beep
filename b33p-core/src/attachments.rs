@@ -272,6 +272,7 @@ fn shown_text(data: &[u8]) -> String {
 /// Downloads an attachment into the downloads folder and reports where as
 /// [`Event::AttachmentSaved`].
 pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
+    tracing::debug!(kind = ?attachment.kind, size = attachment.size, "saving attachment");
     let path = async {
         let _permit = downloads.limit.acquire().await.map_err(stopped)?;
         let data = download(&downloads.cdn, &attachment).await?;
@@ -283,6 +284,14 @@ pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, event
         Ok(path)
     }
     .await;
+    match &path {
+        Ok(_) => {
+            tracing::debug!(kind = ?attachment.kind, size = attachment.size, "saved attachment")
+        }
+        Err(error) => {
+            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::scrubbed(&error), "failed to save attachment")
+        }
+    }
     events.send(Event::AttachmentSaved {
         id: attachment.id,
         path,
