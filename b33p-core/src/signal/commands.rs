@@ -130,14 +130,13 @@ pub(super) fn outgoing(command: &Command) -> bool {
     )
 }
 
-/// The sticker of the message `original` names (its conversation and timestamp), as stored:
-/// its pack, key and picture, to forward it as a sticker. `None` if it isn't stored, or not a
-/// sticker.
-async fn forwarded_sticker(
+/// The message `original` names (its conversation and timestamp), as stored: what only it
+/// has of what is forwarded, a sticker's pack and a link's preview. `None` if it isn't stored.
+async fn forwarded_original(
     manager: &Mgr,
     ctx: &Ctx,
     original: &(ConversationId, u64),
-) -> Option<presage::proto::data_message::Sticker> {
+) -> Option<presage::proto::DataMessage> {
     let thread = ctx.threads.borrow().get(&original.0).cloned()?;
     let stored = manager
         .store()
@@ -145,7 +144,7 @@ async fn forwarded_sticker(
         .await
         .ok()
         .flatten()?;
-    data_of(&stored)?.0.sticker.clone()
+    data_of(&stored).map(|(data, _)| data.clone())
 }
 
 pub(super) async fn handle(
@@ -705,16 +704,32 @@ async fn handle_command(
             attachments,
             original,
         } => {
-            // A sticker goes on as a sticker, as Signal's apps forward one (Signal-Desktop's
-            // `maybeForwardMessages`), not as a picture: its pack is in the stored message.
-            let sticker = if attachments
+            // As Signal's apps forward (Signal-Desktop's `maybeForwardMessages`): a sticker as
+            // the sticker it is, not as a picture, and a link with its preview, while the text
+            // still has the link. Both are in the stored message only.
+            let stored = forwarded_original(manager, ctx, &original).await;
+            let sticker = stored
+                .as_ref()
+                .and_then(|data| data.sticker.clone())
+                .filter(|_| {
+                    attachments
+                        .iter()
+                        .any(|a| a.kind == AttachmentKind::Sticker)
+                });
+            let links = format::links(&body);
+            let preview = stored
                 .iter()
-                .any(|a| a.kind == AttachmentKind::Sticker)
-            {
-                forwarded_sticker(manager, ctx, &original).await
-            } else {
-                None
-            };
+                .flat_map(|data| data.preview.iter())
+                .find(|preview| preview.url.as_ref().is_some_and(|url| links.contains(url)))
+                .map(|preview| {
+                    let shown = crate::LinkPreview {
+                        url: preview.url.clone().unwrap_or_default(),
+                        title: preview.title.clone().unwrap_or_default(),
+                        description: preview.description.clone().unwrap_or_default(),
+                        image: preview.image.as_ref().map(attachments::describe_preview),
+                    };
+                    (preview.clone(), shown)
+                });
             let pointers = attachments
                 .iter()
                 .filter(|a| sticker.is_none() || a.kind != AttachmentKind::Sticker)
@@ -726,7 +741,7 @@ async fn handle_command(
                 mentions: Vec::new(),
                 quote: None,
                 pointers,
-                preview: None,
+                preview,
                 sticker,
             };
             send_new(manager, ctx, conversation, outgoing, now_millis()).await?;
