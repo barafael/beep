@@ -47,6 +47,11 @@ const config = {
   buildExpiration: Date.now() + 30 * 24 * 60 * 60 * 1000,
 };
 
+/** How long a step may wait, as the checks' (xtask/src/checks/mod.rs `PATIENCE_MS`): also what
+ * Playwright waits without a timeout of its own, rather than its 30 s, which Desktop overruns
+ * under heavy disk writes (its composer took longer than that to show after a send). */
+const PATIENCE_MS = 120_000;
+
 /** The window, once `launch` has started Desktop. */
 let window: Page | undefined;
 
@@ -82,6 +87,7 @@ async function launch(): Promise<void> {
   app.process().stdout?.pipe(process.stdout);
   app.process().stderr?.pipe(process.stderr);
   window = await app.firstWindow();
+  window.setDefaultTimeout(PATIENCE_MS);
   // The microphone, for voice messages: Desktop grants it only with `mediaPermissions` in its user
   // config (app/permissions.std.ts; Settings, "Allow access to the microphone"), which SignalCI
   // sets as Desktop's own tests do (ts/CI.preload.ts `setMediaPermissions`).
@@ -270,7 +276,7 @@ const methods = {
     }
     await item.click({ timeout: 60_000 });
     if (!open) {
-      await signalCiEvent('conversation:open', 120_000);
+      await signalCiEvent('conversation:open', PATIENCE_MS);
     }
     await acceptIfRequest();
     return null;
