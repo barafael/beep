@@ -266,7 +266,7 @@ const methods = {
    * Desktop read (ActiveWindowService.std.ts); Desktop opens nothing then, and says nothing. */
   open_conversation: async ({ aci }: { aci: string }) => {
     const item = leftPane().getByTestId(aci);
-    await item.waitFor({ timeout: 60_000 });
+    await item.waitFor();
     const open = ((await item.getAttribute('class')) ?? '').includes(
       'module-conversation-list__item--contact-or-conversation--is-selected',
     );
@@ -274,7 +274,7 @@ const methods = {
     while ((await signalCiPending('conversation:open')) > 0) {
       await signalCiEvent('conversation:open', 1_000);
     }
-    await item.click({ timeout: 60_000 });
+    await item.click();
     if (!open) {
       await signalCiEvent('conversation:open', PATIENCE_MS);
     }
@@ -418,7 +418,7 @@ const methods = {
   open_titled: async ({ title }: { title: string }) => {
     const name = rendered(title, true);
     try {
-      await leftPane().getByText(name).first().click({ timeout: 60_000 });
+      await leftPane().getByText(name).first().click();
     } catch (error) {
       // The rows the left pane lists, for the error.
       const listed = await leftPane().locator('[data-testid]').allInnerTexts();
@@ -500,7 +500,7 @@ const methods = {
     await page().evaluate((url) => globalThis.SignalCI.openSignalRoute(url), link);
     await page()
       .getByRole('button', { name: /^(Request to Join|Join)$/ })
-      .click({ timeout: 60_000 });
+      .click();
     return null;
   },
   /** Edits the open group's name, description or both, as send_gv2_invite_test.node.ts renames
