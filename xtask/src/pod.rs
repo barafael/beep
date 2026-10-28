@@ -727,6 +727,25 @@ impl Pod {
         Ok(log)
     }
 
+    /// The `cpu.stat` of the container `name`'s cgroup, read from the host: the CPU time it had,
+    /// and how often and how long it was throttled.
+    pub fn cpu_stat_named(&self, name: &str) -> Result<String> {
+        let cgroup = process::output(
+            podman(&[
+                "container",
+                "inspect",
+                "--format",
+                "{{.State.CgroupPath}}",
+                name,
+            ]),
+            "",
+        )?;
+        let stat = Path::new("/sys/fs/cgroup")
+            .join(cgroup.trim().trim_start_matches('/'))
+            .join("cpu.stat");
+        std::fs::read_to_string(&stat).context(stat.display().to_string())
+    }
+
     /// Notes `line` as telling of a lost message: for what only a command's output says, such
     /// as presage-cli's.
     pub fn note_lost(&self, line: String) {

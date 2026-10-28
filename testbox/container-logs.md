@@ -60,8 +60,14 @@ builds and three b33ps running on the host.
 - It needs nothing of journald's.
 
 It doesn't solve the record missing lines, though. Lines still sitting in a service's own queue
-when the record is taken are lost with either driver. A record that holds everything has to stop
-the containers first, so that they flush, and that is still to do.
+when the record is taken are lost with either driver. So the record stops Signal-Server before it
+takes the logs, and starts it again after (checks/record.rs `keep_logs`). On SIGTERM, Jetty stops,
+and Dropwizard's `ServerCommand` then stops its logging, which waits for the async appenders to
+drain (`DefaultLoggingFactory.stop`, `flushAppender`, in dropwizard 5.0.2, the version the server
+runs). The other services log straight to their output.
+
+The record also keeps the host's load average and pressure and each container's `cpu.stat`
+(`load.txt`), so a late line can be put down to a loaded host, or not.
 
 ## What it costs
 

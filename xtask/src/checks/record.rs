@@ -1,7 +1,7 @@
 //! What a box leaves behind for looking into it once it is wiped: `target/testbox-record/<box>/`,
-//! with every container's log, Desktop's own logs and Android's logcat at the box's end, and
-//! with `--screenshots` each client's display after each check (testbox/shot), in a directory
-//! for each part (the box's setup, each phase).
+//! with every container's log, Desktop's own logs, Android's logcat and the host's load at the
+//! box's end, and with `--screenshots` each client's display after each check (testbox/shot), in
+//! a directory for each part (the box's setup, each phase).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -97,14 +97,28 @@ impl Record {
         }
     }
 
-    /// Every container's log, Desktop's own logs and Android's logcat into the record; says
-    /// where it is. What can't be had is noted in its file instead.
+    /// Every container's log, Desktop's own logs and Android's logcat into the record, and the
+    /// host's load (`load.txt`); says where it is. What can't be had is noted in its file
+    /// instead.
+    ///
+    /// Signal-Server's lines go through Dropwizard's queue, which drains late on a loaded host
+    /// (testbox/container-logs.md), so its log is taken with the server stopped: stopping, it
+    /// writes out the queue before it exits. Then it starts again, and the box stays up to be
+    /// looked at.
     pub(super) fn keep_logs(&self, pod: &Pod) {
+        self.write("load.txt", &load(pod));
+        let server = pod.running(Service::Server);
+        if server && let Err(error) = pod.stop(Service::Server) {
+            println!("record: stopping the server: {error}");
+        }
         for service in pod.containers() {
             let log = pod
                 .log_named(&service)
                 .unwrap_or_else(|error| error.to_string());
             self.write(&format!("{service}.log"), &log);
+        }
+        if server && let Err(error) = pod.start(Service::Server) {
+            println!("record: starting the server again: {error}");
         }
         if pod.running(Service::Desktop) {
             let logs = pod.exec(Service::Desktop, &["sh", "-c", DESKTOP_LOGS], "");
@@ -130,6 +144,28 @@ impl Record {
             println!("record: {}: {error}", path.display());
         }
     }
+}
+
+/// The host's load average and pressure, and each container's `cpu.stat`, as they are at the
+/// box's end: whether the host was loaded when a line came late or went missing.
+fn load(pod: &Pod) -> String {
+    let mut load = String::new();
+    for file in [
+        "/proc/loadavg",
+        "/proc/pressure/cpu",
+        "/proc/pressure/io",
+        "/proc/pressure/memory",
+    ] {
+        let read = std::fs::read_to_string(file).unwrap_or_else(|error| format!("{error}\n"));
+        load.push_str(&format!("== {file}\n{read}"));
+    }
+    for name in pod.containers() {
+        let stat = pod
+            .cpu_stat_named(&name)
+            .unwrap_or_else(|error| format!("{error}\n"));
+        load.push_str(&format!("== {name}: cpu.stat\n{stat}"));
+    }
+    load
 }
 
 /// A check's name as part of a file name: lowercase letters and digits, the rest one dash.

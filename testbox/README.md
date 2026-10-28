@@ -173,7 +173,8 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 - Every box leaves a record in `target/testbox-record/<box>/` (`run`'s in
   `target/testbox-record/run/<when it started>/<round>/<box>/`): each container's log,
   Desktop's own logs and Android's logcat as they were at the box's end, so they outlast the
-  next `down --wipe`.
+  next `down --wipe`, and the host's load then (`load.txt`). Signal-Server is stopped for its
+  log and started again, so that its queued lines are in it (testbox/container-logs.md).
 - `test --screenshots` (and `run --screenshots`) also takes each client's display after each
   check into the record, in a directory for each part (`setup`, then each phase), numbered in
   the order of the checks and named after them
