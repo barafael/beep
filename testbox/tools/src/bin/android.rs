@@ -199,6 +199,24 @@ fn percent_encoded(text: &str) -> String {
         .collect()
 }
 
+/// What adb and the device say of themselves, to the log: after adb failed in a way that doesn't
+/// explain itself. Each part as far as it goes.
+fn print_device_state() {
+    let parts: [&[&str]; 5] = [
+        &["devices", "-l"],
+        &["shell", "getprop", "sys.boot_completed"],
+        &["shell", "getprop", "init.svc.adbd"],
+        &["shell", "id"],
+        &["logcat", "-d", "-t", "300"],
+    ];
+    for part in parts {
+        match adb(part) {
+            Ok(said) => println!("adb {}:\n{said}", part.join(" ")),
+            Err(error) => println!("adb {}: {error}", part.join(" ")),
+        }
+    }
+}
+
 fn adb(args: &[&str]) -> Result<String> {
     let mut command = Command::new("adb");
     command.args(args);
@@ -212,7 +230,12 @@ fn adb(args: &[&str]) -> Result<String> {
 /// (its sepolicy: `(typepermissive su)`); the emulator's `-prop` takes only `qemu.*`. The
 /// framework reads it as it starts, so this restarts it.
 fn raise_anr_timeouts() -> Result<()> {
-    adb(&["root"])?;
+    if let Err(error) = adb(&["root"]) {
+        // Seen once, right after boot, without an account of why ("unable to connect for
+        // root: closed"): what the device says, for the next time.
+        print_device_state();
+        return Err(error);
+    }
     adb(&["wait-for-device"])?;
     adb(&[
         "shell",
