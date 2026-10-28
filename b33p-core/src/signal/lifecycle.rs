@@ -37,7 +37,7 @@ use crate::{
 use super::{
     Background, Ctx, GroupIds, Mgr,
     avatars::AvatarFetcher,
-    commands::{handle, outgoing, send_interrupted},
+    commands::{command_failed, handle, outgoing, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
     history::sweep_expired,
     receive::{Repairs, start_receiving},
@@ -142,8 +142,11 @@ pub(super) fn attempt(
         drop(local);
     }
     drop(runtime);
-    if let Some(closed) = closed {
-        let _ = closed.recv_timeout(Duration::from_secs(5));
+    // Nothing is sent on `closed`: it disconnects once the database is closed.
+    if let Some(closed) = closed
+        && let Err(mpsc::RecvTimeoutError::Timeout) = closed.recv_timeout(Duration::from_secs(5))
+    {
+        warn!("the database did not close within 5 s");
     }
     result
 }
@@ -583,7 +586,7 @@ fn open_store(
         // never reach the log, whatever RUST_LOG says.
         .disable_statement_logging()
         .collation("b33p_close_guard", move |a, b| {
-            let _ = &open;
+            let _open = &open;
             a.cmp(b)
         });
     let store = local
@@ -886,7 +889,28 @@ async fn run_linked(
             if let Err(error) = ctx.tables.keep_unsent(&command).await {
                 warn!(%error, "failed to keep a message until it is sent");
             }
-            let _ = in_order.send(command);
+            // It fails only if the task taking them in order panicked: then say the message
+            // failed rather than show it as on its way. It is kept, so it shows as failed at
+            // the next start too.
+            if let Err(tokio::sync::mpsc::error::SendError(command)) = in_order.send(command) {
+                if let Command::Send {
+                    conversation,
+                    timestamp,
+                    ..
+                } = &command
+                {
+                    events.send(Event::SendFailed {
+                        conversation: conversation.clone(),
+                        timestamp: *timestamp,
+                        retryable: false,
+                    });
+                }
+                command_failed(
+                    &events,
+                    Error::storage("the task sending messages in order has stopped"),
+                    command,
+                );
+            }
             continue;
         }
         handle(&mut manager, &ctx, &downloads, command).await;
@@ -1248,7 +1272,11 @@ pub(super) mod tests {
             drop(local);
         }
         drop(runtime);
-        let _ = closed.recv_timeout(Duration::from_secs(5));
+        assert_eq!(
+            closed.recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected),
+            "the database did not close"
+        );
         Ok(())
     }
 
