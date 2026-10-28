@@ -21,8 +21,8 @@ use presage::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    ChatMessage, Command, ConversationId, Event, Events, Reaction, apply_reaction, attachments,
-    format, now_millis, scrub::scrub,
+    AttachmentKind, ChatMessage, Command, ConversationId, Event, Events, Reaction, apply_reaction,
+    attachments, format, now_millis, scrub::scrub,
 };
 
 use super::{
@@ -128,6 +128,24 @@ pub(super) fn outgoing(command: &Command) -> bool {
             | Command::Respond { .. }
             | Command::SetTimer { .. }
     )
+}
+
+/// The sticker of the message `original` names (its conversation and timestamp), as stored:
+/// its pack, key and picture, to forward it as a sticker. `None` if it isn't stored, or not a
+/// sticker.
+async fn forwarded_sticker(
+    manager: &Mgr,
+    ctx: &Ctx,
+    original: &(ConversationId, u64),
+) -> Option<presage::proto::data_message::Sticker> {
+    let thread = ctx.threads.borrow().get(&original.0).cloned()?;
+    let stored = manager
+        .store()
+        .message(&thread, original.1)
+        .await
+        .ok()
+        .flatten()?;
+    data_of(&stored)?.0.sticker.clone()
 }
 
 pub(super) async fn handle(
@@ -685,9 +703,21 @@ async fn handle_command(
             body,
             styles,
             attachments,
+            original,
         } => {
+            // A sticker goes on as a sticker, as Signal's apps forward one (Signal-Desktop's
+            // `maybeForwardMessages`), not as a picture: its pack is in the stored message.
+            let sticker = if attachments
+                .iter()
+                .any(|a| a.kind == AttachmentKind::Sticker)
+            {
+                forwarded_sticker(manager, ctx, &original).await
+            } else {
+                None
+            };
             let pointers = attachments
                 .iter()
+                .filter(|a| sticker.is_none() || a.kind != AttachmentKind::Sticker)
                 .filter_map(attachments::pointer)
                 .collect();
             let outgoing = Outgoing {
@@ -697,7 +727,7 @@ async fn handle_command(
                 quote: None,
                 pointers,
                 preview: None,
-                sticker: None,
+                sticker,
             };
             send_new(manager, ctx, conversation, outgoing, now_millis()).await?;
         }
