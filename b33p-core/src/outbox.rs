@@ -6,8 +6,8 @@
 //! as "message with old counter". So every send of b33p's goes through one actor, [`Sending`],
 //! which owns a manager and works through its [`Outbox`] in order.
 //!
-//! This covers b33p's own sends only: presage also sends from tasks of its own while receiving,
-//! and decrypting changes sessions too (#51); that needs the same in presage.
+//! Encrypting is one session step under presage's session lock, which decrypting and presage's
+//! own sends take too (#51); this keeps b33p's sends in order besides.
 
 use futures::channel::oneshot;
 use presage::libsignal_service::protocol::ServiceId;

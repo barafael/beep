@@ -278,7 +278,6 @@ async fn take_over(
     key: &presage::libsignal_service::protocol::IdentityKey,
 ) -> Result<(), Error> {
     use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
-    use presage::libsignal_service::session_store::SessionStoreExt;
     use presage::store::Store as _;
     let address = ProtocolAddress::new(
         who.service_id_string(),
@@ -290,7 +289,8 @@ async fn take_over(
         .save_identity(&address, key)
         .await
         .map_err(store_failed("failed to take their new key"))?;
-    if let Err(error) = store.delete_all_sessions(&who).await {
+    // Under presage's session lock, so that no decryption or send runs into it.
+    if let Err(error) = manager.clear_sessions(&who).await {
         warn!(error = %scrubbed(&error), "failed to drop the sessions on their old key");
     }
     show_identity_notes(manager, ctx, &mut Names::new(), who, since).await;

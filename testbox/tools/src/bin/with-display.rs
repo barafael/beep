@@ -155,15 +155,25 @@ fn session(
         .iter()
         .map(|&view| wayvnc(directory, view))
         .collect::<Result<Vec<Child>>>()?;
+    // A group of its own: what it leaves running when it exits goes with it below.
     let mut application = Command::new(program)
         .args(program_arguments)
         .env(testbox_tools::DISPLAY_SIZE, geometry)
+        .process_group(0)
         .spawn()
         .context(program)?;
     let pid = Path::new(RUNTIME).join(APPLICATION);
     testbox_tools::write(&pid, application.id().to_string())?;
     let status = application.wait().context(program)?;
     testbox_tools::remove_if_present(&pid)?;
+    // Left running, its children (the Android driver's emulator) keep cage, and so the
+    // container, up: it would look alive to whatever waits for it, doing nothing.
+    if let Some(group) = i32::try_from(application.id()).ok().and_then(Pid::from_raw) {
+        match rustix::process::kill_process_group(group, Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+            Err(error) => eprintln!("with-display: what {program} left running: {error}"),
+        }
+    }
     for mut server in servers {
         server.kill().context("wayvnc")?;
         server.wait().context("wayvnc")?;

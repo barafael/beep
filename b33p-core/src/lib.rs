@@ -888,6 +888,9 @@ pub enum Event {
     Folders(Vec<ChatFolder>),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
     StickerPacks(Vec<StickerPack>),
+    /// A sticker pack was installed or removed on another device: the packs, if gathered,
+    /// are gathered again.
+    StickerPacksChanged,
     /// A conversation's stored messages were deleted (here, or on another device).
     Cleared(ConversationId),
     /// What the phone keeps in the storage service has been read, so chats it didn't accept

@@ -2,7 +2,7 @@
 
 use super::errors::{db, failed, send_failed, store_failed};
 use crate::outbox::Sends as _;
-use crate::{Error, ErrorKind};
+use crate::{Error, ErrorKind, scrub::scrubbed};
 use std::rc::Rc;
 
 use presage::libsignal_service::prelude::ProtobufMessage as _;
@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     BackgroundKind, Ctx, Mgr,
-    avatars::send_group_avatar,
+    avatars::{send_contact_avatar, send_group_avatar},
     conversations::{
         Names, conversation_id, details, display_name, ensure_conversation, find_number, or_logged,
         own_id, thread_of,
@@ -639,6 +639,23 @@ async fn handle_command(
                 conversation: conversation.clone(),
                 details: stored,
             });
+            // A contact's profile again from the server, then their details and picture: a new
+            // picture or about doesn't change their profile key, which presage caches it by.
+            if let Thread::Contact(ServiceId::Aci(aci)) = thread
+                && let Ok(Some(key)) = manager.store().profile_key(&ServiceId::Aci(aci)).await
+            {
+                match manager.refresh_profile(aci, key).await {
+                    Ok(_) => {
+                        let details = details(manager, &ctx.tables, &thread).await;
+                        let _ = events.send(Event::Details {
+                            conversation: conversation.clone(),
+                            details,
+                        });
+                        send_contact_avatar(manager.clone(), ctx, aci).await;
+                    }
+                    Err(error) => debug!(error = %scrubbed(&error), "couldn't refresh a profile"),
+                }
+            }
             // The stored group shows at once; an admin's again once fetched, with the requests
             // to join that came meanwhile.
             if let Thread::Group(key) = thread

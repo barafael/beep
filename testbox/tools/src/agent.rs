@@ -26,6 +26,12 @@ pub enum Call {
         wanted: Vec<Wanted>,
         timeout_ms: u32,
     },
+    /// Until none of `wanted` shows, on the settled screen: a menu or dialog gone, its closing
+    /// animation over.
+    WaitGone {
+        wanted: Vec<Wanted>,
+        timeout_ms: u32,
+    },
     /// Sets the text of the field with input focus, once one has it (accessibility's
     /// ACTION_SET_TEXT: no keys, so nothing goes astray while the keyboard binds to the field),
     /// and answers once it reads as `echo` says.
