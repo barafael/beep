@@ -3723,3 +3723,22 @@ fn stories_are_watched_in_order() {
     state.apply(Event::Stories(vec![story("bob", "g", 30, true)]));
     assert!(state.current_story().is_none());
 }
+
+/// Blocking shows at once, while the backend takes the block in turn, after the commands ahead
+/// of it: a message it receives in between still comes, and isn't shown (pending/tour.md,
+/// finding 5). What we send from another device still is, as the backend has it.
+#[test]
+fn a_message_after_blocking_isnt_shown() {
+    let mut state = state();
+    state.select(&id("a"));
+    state.apply(Event::Message(message("a", "Ann", 10, false)));
+    state.block(&id("a"), true);
+    state.apply(Event::Message(message("a", "Ann", 20, false)));
+    state.apply(Event::Message(message("a", "Me", 30, true)));
+    let stamps =
+        |state: &ChatState| -> Vec<u64> { state.messages().map(|m| m.message.timestamp).collect() };
+    assert_eq!(stamps(&state), [10, 30]);
+    state.block(&id("a"), false);
+    state.apply(Event::Message(message("a", "Ann", 40, false)));
+    assert_eq!(stamps(&state), [10, 30, 40]);
+}
