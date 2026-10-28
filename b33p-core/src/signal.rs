@@ -9,6 +9,7 @@ mod history;
 mod lifecycle;
 mod receive;
 mod send;
+mod session;
 mod storage_sync;
 mod stories;
 mod trust;
