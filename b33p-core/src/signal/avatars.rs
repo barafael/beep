@@ -4,9 +4,14 @@ use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use presage::{
     Error as PresageError,
-    libsignal_service::{content::GroupContextV2, protocol::ServiceId, push_service::ServiceError},
+    libsignal_service::{
+        content::GroupContextV2,
+        protocol::{Aci, ServiceId},
+        push_service::ServiceError,
+    },
     store::{ContentsStore, Thread},
 };
+use presage_store_sqlite::SqliteStoreError;
 use tracing::{debug, warn};
 
 use crate::{Event, Events, Picture, attachments, scrub::scrubbed};
@@ -42,6 +47,54 @@ pub(super) async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]
         conversation: conversation_id(&Thread::Group(key)),
         avatar,
     });
+}
+
+/// Sends a contact's picture as presage has it now (see [`contact_picture`]), or that they have
+/// none.
+pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
+    let avatar = match contact_picture(&mut manager, aci).await {
+        Ok(Some(bytes)) => decode_avatar(bytes).await.map(Arc::new),
+        Ok(None) => None,
+        Err(error) => {
+            warn!(error = %scrubbed(&error), "failed to fetch a contact's picture");
+            return;
+        }
+    };
+    let _ = ctx.events.send(Event::Avatar {
+        conversation: conversation_id(&Thread::Contact(ServiceId::Aci(aci))),
+        avatar,
+    });
+}
+
+/// A contact's profile picture. It needs their profile key, which only arrives with their
+/// messages (the contact sync no longer carries it); until then, or without one, the picture
+/// from the contact sync, i.e. what the phone shows, stands in.
+#[expect(
+    clippy::result_large_err,
+    reason = "presage's own error, as the group picture's fetch returns it"
+)]
+async fn contact_picture(
+    manager: &mut Mgr,
+    aci: Aci,
+) -> Result<Option<Vec<u8>>, PresageError<SqliteStoreError>> {
+    let id = ServiceId::Aci(aci);
+    let profile = match manager.store().profile_key(&id).await {
+        Ok(Some(key)) => {
+            manager
+                .retrieve_profile_avatar_by_uuid(aci.into(), key)
+                .await
+        }
+        _ => Ok(None),
+    };
+    match profile {
+        Ok(None) => {
+            let contact = manager.store().contact_by_id(&id).await.ok().flatten();
+            Ok(contact
+                .and_then(|c| c.avatar)
+                .map(|avatar| avatar.reader.to_vec()))
+        }
+        profile => profile,
+    }
 }
 
 /// Side of decoded avatars: a 40 px circle at up to 3x scaling.
@@ -103,11 +156,8 @@ impl AvatarFetcher {
 }
 
 /// Sends each conversation's profile or group picture. presage caches them in the store, so
-/// only the first run downloads them, one at a time to stay clear of rate limits.
-///
-/// A profile picture needs the contact's profile key, which only arrives with their messages
-/// (the contact sync no longer carries it). Until then the picture from the contact sync, i.e.
-/// what the phone shows, stands in.
+/// only the first run downloads them, one at a time to stay clear of rate limits; a contact's
+/// is fetched again when their details are opened (`Command::LoadDetails`).
 async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
     let threads: Vec<_> = threads
         .borrow()
@@ -117,26 +167,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
     let (mut found, mut none, mut failed) = (0, 0, 0);
     for (id, thread) in threads {
         let picture = match thread {
-            Thread::Contact(ServiceId::Aci(aci)) => {
-                let id = ServiceId::Aci(aci);
-                let profile = match manager.store().profile_key(&id).await {
-                    Ok(Some(key)) => {
-                        manager
-                            .retrieve_profile_avatar_by_uuid(aci.into(), key)
-                            .await
-                    }
-                    _ => Ok(None),
-                };
-                match profile {
-                    Ok(None) => {
-                        let contact = manager.store().contact_by_id(&id).await.ok().flatten();
-                        Ok(contact
-                            .and_then(|c| c.avatar)
-                            .map(|avatar| avatar.reader.to_vec()))
-                    }
-                    profile => profile,
-                }
-            }
+            Thread::Contact(ServiceId::Aci(aci)) => contact_picture(&mut manager, aci).await,
             Thread::Contact(_) => continue,
             Thread::Group(key) => {
                 // presage only refetches the group if this revision is newer than the cached one.

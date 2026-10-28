@@ -3783,3 +3783,26 @@ fn a_change_to_a_group_reloads_its_open_details() {
     }));
     assert_eq!(reloads(&mut state), 0);
 }
+
+/// A pack installed or removed on another device has the packs gathered again, once they were
+/// asked for; the ones shown stay until the answer (#56).
+#[test]
+fn a_sticker_pack_changed_elsewhere_gathers_the_packs_again() {
+    let loads = |state: &mut ChatState| {
+        state
+            .take_commands()
+            .into_iter()
+            .filter(|command| matches!(command, Command::LoadStickers))
+            .count()
+    };
+    let mut state = state();
+    // Never shown: gathered when first shown, as before.
+    state.apply(Event::StickerPacksChanged);
+    assert_eq!(loads(&mut state), 0);
+    assert!(state.sticker_packs().is_none());
+    assert!(matches!(state.load_stickers(), Some(Command::LoadStickers)));
+    state.apply(Event::StickerPacks(Vec::new()));
+    state.apply(Event::StickerPacksChanged);
+    assert_eq!(loads(&mut state), 1);
+    assert_eq!(state.sticker_packs(), Some(Some(&[][..])));
+}

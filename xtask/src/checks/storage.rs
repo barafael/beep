@@ -25,18 +25,8 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         ..
     } = fixture;
 
-    // Desktop sends read receipts only with the setting on, which presage-cli, its primary,
-    // links it without (libsignal-service-rs `ProvisionMessage` `read_receipts: None`). Desktop
-    // then writes it to the account record.
-    checks.require(
-        "Desktop writes its read-receipt setting to the storage service",
-        || {
-            desktop.call(drivers::Desktop::SetReadReceipts {
-                on: true,
-                timeout_ms: PATIENCE_MS,
-            })
-        },
-    )?;
+    // Desktop sends read receipts only with the setting on, which it takes from the provision
+    // message: presage-cli, its primary, links it with them on, as Signal's apps do (beep #50).
     desktop.call(drivers::Desktop::OpenConversation {
         aci: android_aci.clone(),
     })?;
