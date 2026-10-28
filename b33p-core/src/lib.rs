@@ -1204,7 +1204,7 @@ impl Commands {
     pub fn send(&self, command: Command) {
         // The backend only goes away when it has failed fatally, which it reports as an event,
         // or when it was shut down.
-        let _ = self.0.send(Request::Command(Box::new(command)));
+        self.0.send(Request::Command(Box::new(command))).ok();
     }
 }
 
@@ -1243,7 +1243,7 @@ impl Backend {
         if !Self::mock_requested() {
             return Self::start(config);
         }
-        let _ = config;
+        drop(config);
         Self::mock()
     }
 
@@ -1281,9 +1281,12 @@ impl Backend {
 
 impl Drop for Backend {
     fn drop(&mut self) {
-        let _ = self.commands.0.send(Request::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        // Gone already if it failed fatally.
+        self.commands.0.send(Request::Shutdown).ok();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            tracing::error!("the backend thread panicked");
         }
     }
 }
