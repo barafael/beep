@@ -751,6 +751,17 @@ pub struct MessageSnapshot {
     /// Who it mentions, by service id. Absent in a b33p built before it.
     #[serde(default)]
     pub mentions: Vec<String>,
+    /// The preview of a link in it, as the sender made it.
+    pub link_preview: Option<LinkPreviewSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkPreviewSnapshot {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    /// Whether it came with a picture.
+    pub image: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
