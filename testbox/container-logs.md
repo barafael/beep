@@ -21,7 +21,8 @@ of it wasn't.
 ## Measured
 
 The time from a line's own timestamp to the moment the driver took it, on this 32-core host with
-NVMe storage.
+NVMe storage. The scripts are in testbox/logexp: `drivers.sh` for experiment A, `server.sh` and
+`lag.py` for B, under `with-io-load.sh`'s disk writes. `TESTBOX_LOG_DRIVER` sets the pod's driver.
 
 **Experiment A: the drivers alone.** A container writes 3000 lines, each stamped with its own
 clock (`date +%s%N`).

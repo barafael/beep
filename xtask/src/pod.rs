@@ -535,14 +535,15 @@ impl Pod {
         }
         testbox_tools::write(&self.rendered, self.render(clients, b33ps)?)?;
         // Each container's log in a file conmon writes as it comes (k8s-file), not journald's,
-        // which a loaded host fed late (a minute behind) or not at all (its rate limit): a box's
-        // record, taken at its end, missed the end of a log (testbox/container-logs.md).
+        // which falls up to a second behind under heavy disk writes (testbox/container-logs.md).
+        // TESTBOX_LOG_DRIVER picks another, for testbox/logexp's comparison.
+        let driver = std::env::var("TESTBOX_LOG_DRIVER").unwrap_or_else(|_| "k8s-file".to_owned());
         let mut play = podman(&[
             "kube",
             "play",
             "--replace",
             "--log-driver",
-            "k8s-file",
+            &driver,
             "--network",
             network,
         ]);
