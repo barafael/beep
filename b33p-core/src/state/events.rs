@@ -373,6 +373,16 @@ impl ChatState {
             Event::Message(message) => {
                 let id = message.conversation.clone();
                 let outgoing = message.outgoing;
+                // Blocking shows here at once; the backend drops a blocked chat's messages
+                // once it takes the block, after the commands ahead of it. What it received in
+                // between isn't shown either. What we send from another device still is.
+                if !outgoing
+                    && self
+                        .conversation(&id)
+                        .is_some_and(|chat| chat.settings.blocked)
+                {
+                    return update;
+                }
                 if outgoing {
                     self.written_to.insert(id.clone());
                 }
