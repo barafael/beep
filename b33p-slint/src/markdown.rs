@@ -1,19 +1,31 @@
 //! Message text as Slint styled text: Slint parses Markdown, so whatever a sender typed is
-//! escaped, and only the formatting Signal sends along (and web addresses) becomes Markdown.
+//! escaped, and only the formatting Signal sends along (and web addresses and mentions) becomes
+//! Markdown.
 
 use std::ops::Range;
 
 use b33p_core::format::{find_url, link_target};
-use b33p_core::{Style, StyleRange};
+use b33p_core::{Mention, Style, StyleRange};
 
 /// Message text as Slint styled text: everything escaped, so nothing a sender types is taken as
-/// formatting, except web addresses, which become links.
-pub fn rich_text(body: &str, styles: &[StyleRange], revealed: bool) -> slint::StyledText {
-    slint::StyledText::from_markdown(&markdown(body, styles, revealed)).unwrap_or_else(|error| {
-        tracing::warn!(%error, "message text that doesn't parse as Markdown");
-        slint::StyledText::from_plain_text(&masked(body, styles, revealed))
-    })
+/// formatting, except web addresses, which become links, and mentions, which become bold links
+/// to [`MENTION`] and the person's service ID.
+pub fn rich_text(
+    body: &str,
+    styles: &[StyleRange],
+    mentions: &[Mention],
+    revealed: bool,
+) -> slint::StyledText {
+    slint::StyledText::from_markdown(&markdown(body, styles, mentions, revealed)).unwrap_or_else(
+        |error| {
+            tracing::warn!(%error, "message text that doesn't parse as Markdown");
+            slint::StyledText::from_plain_text(&masked(body, styles, revealed))
+        },
+    )
 }
+
+/// What a mention's link leads to, before the service ID: the person's chat, not the browser.
+pub const MENTION: &str = "mention:";
 
 /// `body` with its spoilers hidden, unless `revealed`.
 fn masked(body: &str, styles: &[StyleRange], revealed: bool) -> String {
@@ -101,7 +113,7 @@ fn breakable(c: char, run: &mut usize, out: &mut String) {
 }
 
 /// See [`rich_text`].
-fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
+fn markdown(body: &str, styles: &[StyleRange], mentions: &[Mention], revealed: bool) -> String {
     /// Between markers and text, so emphasis opens and closes whatever the neighbouring
     /// characters are (CommonMark's flanking rules); invisible.
     const JOIN: char = '\u{2060}';
@@ -118,6 +130,16 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             && body.is_char_boundary(s.start)
             && body.is_char_boundary(s.end)
     };
+    let mut mentions: Vec<&Mention> = mentions
+        .iter()
+        .filter(|m| {
+            m.start < m.end
+                && m.end <= body.len()
+                && body.is_char_boundary(m.start)
+                && body.is_char_boundary(m.end)
+        })
+        .collect();
+    mentions.sort_unstable_by_key(|m| m.start);
     // Found in the whole text: styles cutting an address into pieces mustn't change where its
     // pieces lead.
     let mut urls = Vec::new();
@@ -131,6 +153,7 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
     cuts.extend(styles.iter().filter(valid).flat_map(|s| [s.start, s.end]));
     cuts.extend(body.match_indices('\n').flat_map(|(i, _)| [i, i + 1]));
     cuts.extend(urls.iter().flat_map(|url| [url.start, url.end]));
+    cuts.extend(mentions.iter().flat_map(|m| [m.start, m.end]));
     cuts.sort_unstable();
     cuts.dedup();
     // How many ranges of each style cover each piece, counted in one pass rather than by
@@ -147,6 +170,9 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
     }
     let mut active = [0i32; STYLES.len()];
     let mut urls = urls.into_iter().peekable();
+    // The mention a piece is in: the last one starting at or before it, if it reaches that far.
+    let mut mentions = mentions.into_iter().peekable();
+    let mut mention: Option<&Mention> = None;
     let mut markdown = String::with_capacity(body.len() + 16);
     for (index, bounds) in cuts.windows(2).enumerate() {
         for (count, change) in active.iter_mut().zip(covering[index]) {
@@ -168,6 +194,10 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             .peek()
             .filter(|url| url.start <= start)
             .map(|url| &body[url.clone()]);
+        while let Some(m) = mentions.next_if(|m| m.start <= start) {
+            mention = Some(m);
+        }
+        let mention = mention.filter(|m| end <= m.end);
         // Leading spaces would start a code block; keep them as non-breaking spaces.
         let line_start = start == 0 || body.as_bytes()[start - 1] == b'\n';
         let text = if line_start {
@@ -201,7 +231,8 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             (Style::Strikethrough, "~~"),
         ]
         .into_iter()
-        .filter(|(style, _)| has(*style))
+        // A mention stands out as bold.
+        .filter(|(style, _)| has(*style) || *style == Style::Bold && mention.is_some())
         .map(|(_, marker)| marker)
         .collect();
         // Apart from the previous piece's closing markers, which would otherwise run into these.
@@ -240,6 +271,15 @@ fn markdown(body: &str, styles: &[StyleRange], revealed: bool) -> String {
             }
             markdown.push_str(pad);
             markdown.push_str(&fence);
+        } else if let Some(mention) = mention {
+            // Before an address: a name that reads like one leads to the person all the same.
+            markdown.push('[');
+            escape(text, &mut markdown);
+            markdown.push_str("](<");
+            for c in MENTION.chars().chain(mention.service_id.chars()) {
+                push_escaped(c, &mut markdown);
+            }
+            markdown.push_str(">)");
         } else if let Some(url) = url {
             // The whole address, escaped too: destinations decode escapes and entities, which
             // would make it lead somewhere other than what it shows.
@@ -294,16 +334,21 @@ mod tests {
             "    indented",
             "two\nlines",
         ] {
-            let shown = raw(&rich_text(text, &[], false));
+            let shown = raw(&rich_text(text, &[], &[], false));
             assert_eq!(shown.replace('\u{a0}', " "), text, "{text:?}");
         }
     }
 
     #[test]
     fn links_keep_their_text() {
-        let shown = raw(&rich_text("look: https://example.org/x_y*z ok", &[], false));
+        let shown = raw(&rich_text(
+            "look: https://example.org/x_y*z ok",
+            &[],
+            &[],
+            false,
+        ));
         assert_eq!(shown, "look: https://example.org/x_y*z ok");
-        let shown = raw(&rich_text("or example.org/x.", &[], false));
+        let shown = raw(&rich_text("or example.org/x.", &[], &[], false));
         assert_eq!(shown, "or example.org/x.");
     }
 
@@ -320,7 +365,7 @@ mod tests {
         ];
         // Parsed, not the plain-text fallback: the markers are gone.
         let parse = |styles: &[StyleRange], revealed| {
-            let markdown = markdown(text, styles, revealed);
+            let markdown = markdown(text, styles, &[], revealed);
             raw(&slint::StyledText::from_markdown(&markdown).expect("valid markdown"))
                 .replace('\u{2060}', "")
         };
@@ -427,21 +472,41 @@ mod tests {
         prop::collection::vec(any::<(Index, Index, usize)>(), 0..4)
     }
 
+    /// Mentions over ranges of `body` as [`styled`] picks them, overlapping or not.
+    fn mentioned(body: &str, picks: &[(Index, Index, usize)]) -> Vec<Mention> {
+        styled(body, picks)
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| Mention {
+                start: range.start,
+                end: range.end,
+                service_id: format!("aci-{i}"),
+            })
+            .collect()
+    }
+
     proptest! {
         /// Whatever arrives parses: otherwise it shows as plain text, without its formatting
         /// and links.
         #[test]
-        fn any_text_parses(body in typed(), picks in picks(), revealed: bool) {
+        fn any_text_parses(
+            body in typed(),
+            picks in picks(),
+            mention_picks in picks(),
+            revealed: bool,
+        ) {
             let styles = styled(&body, &picks);
-            let markdown = markdown(&body, &styles, revealed);
+            let mentions = mentioned(&body, &mention_picks);
+            let markdown = markdown(&body, &styles, &mentions, revealed);
             prop_assert!(parse(&markdown).is_ok(), "{body:?} {styles:?}\n{markdown:?}");
         }
 
         /// It shows as typed, whatever looks like formatting; only spoilers are hidden.
         #[test]
-        fn text_shows_as_typed(body in typed(), picks in picks()) {
+        fn text_shows_as_typed(body in typed(), picks in picks(), mention_picks in picks()) {
             let styles = styled(&body, &picks);
-            let markdown = markdown(&body, &styles, true);
+            let mentions = mentioned(&body, &mention_picks);
+            let markdown = markdown(&body, &styles, &mentions, true);
             let paragraphs = parse(&markdown).unwrap();
             let typed = tidy(&body.chars().map(markdown_char).collect::<String>());
             prop_assert_eq!(shown(&paragraphs), typed, "{:?}", markdown);
@@ -451,7 +516,7 @@ mod tests {
         #[test]
         fn links_lead_where_they_show(body in typed(), picks in picks()) {
             let styles = styled(&body, &picks);
-            let markdown = markdown(&body, &styles, true);
+            let markdown = markdown(&body, &styles, &[], true);
             let shown: String = body.chars().map(markdown_char).collect();
             let urls = b33p_core::format::links(&shown);
             for paragraph in parse(&markdown).unwrap() {
@@ -470,7 +535,7 @@ mod tests {
             let body = format!("{before}{secret}{after}");
             let start = before.len();
             let styles = [StyleRange { start, end: start + secret.len(), style: Style::Spoiler }];
-            let markdown = markdown(&body, &styles, false);
+            let markdown = markdown(&body, &styles, &[], false);
             prop_assert!(!shown(&parse(&markdown).unwrap()).contains(&secret));
             prop_assert!(!masked(&body, &styles, false).contains(&secret));
         }
@@ -502,7 +567,7 @@ mod tests {
             end: 6,
             style: Style::Monospace,
         }];
-        let markdown = markdown(&body, &mono, true);
+        let markdown = markdown(&body, &mono, &[], true);
         let paragraphs = parse(&markdown).unwrap();
         let text = &paragraphs[0].text;
         assert!(text.contains('\u{200b}'));
@@ -525,7 +590,7 @@ mod tests {
             ("https://bank.com/login", vec![range(15, 22, Style::Italic)]),
             ("use https:// or see https://example.org/x", vec![]),
         ] {
-            let markdown = markdown(body, &styles, true);
+            let markdown = markdown(body, &styles, &[], true);
             let urls = b33p_core::format::links(body);
             assert!(!urls.is_empty(), "{body:?}");
             for paragraph in parse(&markdown).unwrap() {
@@ -536,6 +601,63 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A mention is a bold link to whom it mentions, its name shown as it was: in any script,
+    /// next to formatting, and when the name reads like a web address.
+    #[test]
+    fn mentions_lead_to_the_person() {
+        use i_slint_common::styled_text::Style as Shown;
+        let body = "hi @Zoë 李, *see* @Ann and @https://evil.example";
+        let at = |name: &str| body.find(name).expect("in the body");
+        let mention = |name: &str, service_id: &str| Mention {
+            start: at(name),
+            end: at(name) + name.len(),
+            service_id: service_id.into(),
+        };
+        let mentions = [
+            mention("@Zoë 李", "aci-1"),
+            mention("@Ann", "PNI:2"),
+            mention("@https://evil.example", "aci-3"),
+        ];
+        let italic = [StyleRange {
+            start: at("*see* @Ann"),
+            end: body.len(),
+            style: Style::Italic,
+        }];
+        let markdown = markdown(body, &italic, &mentions, true);
+        let paragraphs = parse(&markdown).unwrap();
+        assert_eq!(shown(&paragraphs), body, "{markdown:?}");
+        let paragraph = &paragraphs[0];
+        // By whom they lead to: a name reading like an address is cut where the address starts.
+        let mut links: Vec<(String, &str)> = Vec::new();
+        for (range, target) in &paragraph.links {
+            let label = tidy(&paragraph.text[range.clone()]);
+            match links.last_mut() {
+                Some((shown, to)) if to == target => shown.push_str(&label),
+                _ => links.push((label, target)),
+            }
+        }
+        assert_eq!(
+            links,
+            [
+                ("@Zoë 李".to_owned(), "mention:aci-1"),
+                ("@Ann".to_owned(), "mention:PNI:2"),
+                ("@https://evil.example".to_owned(), "mention:aci-3"),
+            ],
+            "{markdown:?}"
+        );
+        for (range, _) in &paragraph.links {
+            assert!(
+                paragraph
+                    .formatting
+                    .iter()
+                    .any(|span| span.style == Shown::Strong
+                        && span.range.start <= range.start
+                        && range.end <= span.range.end),
+                "{markdown:?}"
+            );
         }
     }
 }

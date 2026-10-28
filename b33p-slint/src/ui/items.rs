@@ -177,7 +177,7 @@ pub(super) fn message_item(
     MessageItem {
         key: format!("{}:{}", m.timestamp, m.sender_id).into(),
         sender: m.sender.as_str().into(),
-        body: images.text(view.body, view.styles, view.revealed),
+        body: images.text(view.body, view.styles, view.mentions, view.revealed),
         selected: view.selected,
         has_body: !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
