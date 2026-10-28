@@ -238,7 +238,7 @@ async fn handle_received(
             receipts.send(&ctx.outbox).await;
             events.sent(Event::Synced)
         }
-        Received::StickerPackInstalled { .. } => events.send(Event::StickerPacksChanged),
+        Received::StickerPackInstalled { .. } => events.sent(Event::StickerPacksChanged),
         Received::Contacts => {
             names.clear();
             send_conversations(manager, ctx).await;
@@ -581,7 +581,7 @@ async fn handle_content(
                 .iter()
                 .any(|operation| operation.r#type() == Type::Remove)
             {
-                let _ = ctx.events.send(Event::StickerPacksChanged);
+                ctx.events.send(Event::StickerPacksChanged);
             }
             return true;
         }

@@ -647,7 +647,7 @@ async fn handle_command(
                 match manager.refresh_profile(aci, key).await {
                     Ok(_) => {
                         let details = details(manager, &ctx.tables, &thread).await;
-                        let _ = events.send(Event::Details {
+                        events.send(Event::Details {
                             conversation: conversation.clone(),
                             details,
                         });

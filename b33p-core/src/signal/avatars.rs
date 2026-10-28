@@ -60,7 +60,7 @@ pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
             return;
         }
     };
-    let _ = ctx.events.send(Event::Avatar {
+    ctx.events.send(Event::Avatar {
         conversation: conversation_id(&Thread::Contact(ServiceId::Aci(aci))),
         avatar,
     });
