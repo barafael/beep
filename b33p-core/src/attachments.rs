@@ -525,7 +525,7 @@ fn mark_downloaded(path: &std::path::Path) {
     };
     #[cfg(not(any(windows, target_os = "macos")))]
     let marked: std::io::Result<()> = {
-        let _ = path;
+        let _unmarked: &std::path::Path = path;
         Ok(())
     };
     if let Err(error) = marked {

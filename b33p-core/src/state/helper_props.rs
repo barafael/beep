@@ -160,12 +160,15 @@ proptest! {
 
     #[test]
     fn formatting_never_panics(t in any::<u64>(), now in any::<u64>(), len in any::<usize>(), id in ".*") {
-        let _ = format_size(t);
-        let _ = format_remaining(t, now);
-        let _ = format_list_time(t);
-        let _ = format_time(t);
-        let _ = format_clock(t);
-        let _ = looks_like_number(&id);
+        // Whatever they say, as long as they don't panic.
+        drop((
+            format_size(t),
+            format_remaining(t, now),
+            format_list_time(t),
+            format_time(t),
+            format_clock(t),
+            looks_like_number(&id),
+        ));
         let index = avatar_index(&ConversationId(id), len);
         prop_assert!(index < len.max(1));
     }
@@ -175,8 +178,7 @@ proptest! {
         let now = jiff::Timestamp::from_millisecond(n.rem_euclid(253_402_207_200_000 - 86_400_000))
             .unwrap()
             .to_zoned(jiff::tz::TimeZone::system());
-        let _ = format_list_time_at(t, &now);
-        let _ = day_label(t, &now);
+        drop((format_list_time_at(t, &now), day_label(t, &now)));
     }
 
     #[test]
@@ -194,7 +196,7 @@ proptest! {
         };
         prop_assert_eq!(n * size, u64::from(seconds), "{}", text);
         prop_assert_eq!(n == 1, !unit.ends_with('s'), "{}", text);
-        let _ = crate::timer_notice("You", seconds);
+        drop(crate::timer_notice("You", seconds));
     }
 
     #[test]
