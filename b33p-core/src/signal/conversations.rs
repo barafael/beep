@@ -669,10 +669,7 @@ pub(super) async fn find_number(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::{Background, GroupIds};
-    use crate::{Events, Preferences};
     use sqlx::sqlite::SqliteConnectOptions;
-    use std::{cell::Cell, rc::Rc};
 
     #[test]
     fn numbers_are_read_the_way_our_country_writes_them() {
@@ -706,20 +703,7 @@ mod tests {
             let options = SqliteConnectOptions::new()
                 .filename(dir.join("local.db3"))
                 .create_if_missing(true);
-            let (events, _ui) = async_channel::unbounded();
-            let ctx = Ctx {
-                threads: Rc::default(),
-                events: Events(events),
-                tables: LocalStore::open(options).await.unwrap(),
-                preferences: Rc::new(Cell::new(Preferences::default())),
-                expiring: Rc::default(),
-                storage_changed: Rc::default(),
-                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
-                trust: Rc::default(),
-                group_ids: GroupIds::default(),
-                background: Background::default(),
-                outbox: tokio::sync::mpsc::channel(1).0,
-            };
+            let (ctx, _ui) = Ctx::for_tests(LocalStore::open(options).await.unwrap()).await;
             let (ann, bob) = (
                 ConversationId::contact("ann"),
                 ConversationId::contact("bob"),
@@ -761,20 +745,7 @@ mod tests {
             let options = SqliteConnectOptions::new()
                 .filename(dir.join("local.db3"))
                 .create_if_missing(true);
-            let (events, _ui) = async_channel::unbounded();
-            let ctx = Ctx {
-                threads: Rc::default(),
-                events: Events(events),
-                tables: LocalStore::open(options).await.unwrap(),
-                preferences: Rc::new(Cell::new(Preferences::default())),
-                expiring: Rc::default(),
-                storage_changed: Rc::default(),
-                storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
-                trust: Rc::default(),
-                group_ids: GroupIds::default(),
-                background: Background::default(),
-                outbox: tokio::sync::mpsc::channel(1).0,
-            };
+            let (ctx, _ui) = Ctx::for_tests(LocalStore::open(options).await.unwrap()).await;
             let ann = ConversationId::contact("ann");
             assert_eq!(first_settings(&ctx, &ann, 10).await.last_read, 10);
             ctx.tables
