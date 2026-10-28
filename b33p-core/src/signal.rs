@@ -250,26 +250,47 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        /// What should happen at once, or not at all; given a while, so as not to hang.
+        async fn soon<T>(what: impl Future<Output = T>) -> T {
+            tokio::time::timeout(Duration::from_secs(5), what)
+                .await
+                .expect("it didn't happen")
+        }
         LocalSet::new().block_on(&runtime, async {
             let background = Background::default();
-            let finished = Rc::new(RefCell::new(Vec::new()));
-            let task = |name: &'static str, millis: u64| {
-                let finished = finished.clone();
-                async move {
-                    tokio::time::sleep(Duration::from_millis(millis)).await;
-                    finished.borrow_mut().push(name);
-                }
+            let (done, mut finished) = tokio::sync::mpsc::unbounded_channel();
+            // Each task finishes when told to, and says so. One that was stopped is gone, and
+            // with it its end of `go`.
+            let task = |name: &'static str| {
+                let (go, told) = tokio::sync::oneshot::channel::<()>();
+                let done = done.clone();
+                let run = async move {
+                    if told.await.is_ok() {
+                        done.send(name).unwrap();
+                    }
+                };
+                (go, run)
             };
-            background.run(BackgroundKind::Search, task("old search", 50));
-            background.run(BackgroundKind::Media, task("media", 50));
+            let (mut old_search, run) = task("old search");
+            background.run(BackgroundKind::Search, run);
+            let (media, run) = task("media");
+            background.run(BackgroundKind::Media, run);
             tokio::task::yield_now().await;
-            background.run(BackgroundKind::Search, task("new search", 10));
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            assert_eq!(*finished.borrow(), ["new search", "media"]);
-            background.run(BackgroundKind::Stickers, task("stickers", 10));
+            let (new_search, run) = task("new search");
+            background.run(BackgroundKind::Search, run);
+            soon(old_search.closed()).await;
+            new_search.send(()).unwrap();
+            media.send(()).unwrap();
+            let mut names = [
+                soon(finished.recv()).await.unwrap(),
+                soon(finished.recv()).await.unwrap(),
+            ];
+            names.sort_unstable();
+            assert_eq!(names, ["media", "new search"]);
+            let (mut stickers, run) = task("stickers");
+            background.run(BackgroundKind::Stickers, run);
             background.stop();
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            assert_eq!(finished.borrow().len(), 2);
+            soon(stickers.closed()).await;
         });
     }
 
