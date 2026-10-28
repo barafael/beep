@@ -2,13 +2,14 @@
 
 use std::{
     cell::{Cell, RefCell},
+    panic::AssertUnwindSafe,
     path::PathBuf,
     rc::Rc,
     sync::mpsc,
     time::Duration,
 };
 
-use futures::{channel::oneshot, future, pin_mut};
+use futures::{FutureExt as _, channel::oneshot, future, pin_mut};
 use presage::{
     Error as PresageError, Manager,
     libsignal_service::configuration::SignalServers,
@@ -40,7 +41,7 @@ use super::{
     commands::{handle, outgoing, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
     history::sweep_expired,
-    receive::{Repairs, start_receiving},
+    receive::{Incoming, Kept, Receiver, Repairs, handle_incoming},
     send::request_sync,
     storage_sync::follow_storage,
     stories::{expire_stories, send_stories},
@@ -781,7 +782,7 @@ async fn run_linked(
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
-        // The answer arrives through `receive` as `Received::Contacts`.
+        // The answer arrives through receiving, as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
         if let Err(error) = ctx.outbox.request_contacts().await {
             warn!(error = %scrubbed(&error), "failed to request contacts");
@@ -811,18 +812,10 @@ async fn run_linked(
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
-    let removed = Rc::new(tokio::sync::Notify::new());
-    // Shared by every start of receiving: the limits it keeps must outlive a restart, and a
-    // second avatar fetcher would send the first one's requests again, alongside.
-    let repairs = Rc::new(RefCell::new(Repairs::default()));
-    let mut receiving = start_receiving(
-        &manager,
-        &ctx,
-        &removed,
-        avatars.clone(),
-        repairs.clone(),
-        Duration::ZERO,
-    );
+    // Kept across restarts of receiving: the limits it keeps must outlive one.
+    let mut repairs = Repairs::default();
+    let mut kept = Kept::default();
+    let (mut incoming, mut receiving) = start_receiving(&manager, Duration::ZERO);
     let mut failures = 0u32;
 
     // What the other side sees, one command at a time and in order; see `outgoing`. Their
@@ -842,37 +835,56 @@ async fn run_linked(
         let command = match pending.next() {
             Some(command) => command,
             None => tokio::select! {
+                // Commands first: what the user does isn't held up by catching up.
+                biased;
                 command = command_rx.recv() => match command {
                     Some(command) => command,
                     None => break Ended::Gone,
                 },
-                () = removed.notified() => break Ended::Removed,
-                finished = &mut receiving => {
-                    // `receive` ends on its own only once the device was removed.
-                    let Err(error) = finished else { break Ended::Removed };
-                    // Anything else it couldn't handle: start over, rather than look connected
-                    // while nothing arrives; later and later should it keep failing.
-                    warn!(error = %scrubbed(&error), "receiving failed");
-                    let _ = events.send(Event::Error(Error::unreachable(
-                        "Receiving messages failed; trying again.",
-                    )));
-                    failures += 1;
-                    let after = Duration::from_secs(5 << failures.min(6));
-                    receiving = start_receiving(
-                        &manager,
-                        &ctx,
-                        &removed,
-                        avatars.clone(),
-                        repairs.clone(),
-                        after,
-                    );
-                    continue;
-                }
+                arrived = incoming.recv() => match arrived {
+                    Some(Incoming::Removed) => break Ended::Removed,
+                    Some(arrived) => {
+                        let handling = handle_incoming(
+                            &manager, &ctx, &avatars, &mut kept, &mut repairs, arrived,
+                        );
+                        // Something it couldn't handle stops only this, as it did when it was
+                        // handled where it was received.
+                        match AssertUnwindSafe(handling).catch_unwind().await {
+                            Ok(true) => {}
+                            Ok(false) => break Ended::Gone,
+                            Err(_) => {
+                                warn!("handling what was received failed");
+                                let _ = events.send(Event::Error(Error::unreachable(
+                                    "Receiving messages failed; trying again.",
+                                )));
+                            }
+                        }
+                        continue;
+                    }
+                    // `Receiver` ends on its own only after `Removed`, else it failed.
+                    None => {
+                        let error = match (&mut receiving).await {
+                            Ok(_) => break Ended::Removed,
+                            Err(error) => error,
+                        };
+                        // Start over, rather than look connected while nothing arrives; later
+                        // and later should it keep failing.
+                        warn!(error = %scrubbed(&error), "receiving failed");
+                        let _ = events.send(Event::Error(Error::unreachable(
+                            "Receiving messages failed; trying again.",
+                        )));
+                        failures += 1;
+                        let after = Duration::from_secs(5 << failures.min(6));
+                        (incoming, receiving) = start_receiving(&manager, after);
+                        continue;
+                    }
+                },
             },
         };
         if let Command::Unlink = command {
             info!("unlinking this device");
-            receiving.abort();
+            // Receiving stops with its channel closed.
+            incoming.close();
             unlink(manager.clone()).await;
             break Ended::Unlinked;
         }
@@ -897,11 +909,25 @@ async fn run_linked(
     sweeping.abort();
     following.abort();
     stories.abort();
-    receiving.abort();
+    // Receiving stops with its channel closed.
+    incoming.close();
     // Not drained: after an unlink there is nobody to send to, and a session after this one
     // must not send alongside it.
     sending.abort();
     ended
+}
+
+/// Starts a [`Receiver`] for the session, after `after`.
+fn start_receiving(
+    manager: &Mgr,
+    after: Duration,
+) -> (
+    tokio::sync::mpsc::Receiver<Incoming>,
+    tokio::task::JoinHandle<Receiver>,
+) {
+    let (incoming, arrived) = tokio::sync::mpsc::channel(1);
+    let receiver = Receiver::new(manager.clone()).event_loop(incoming, after);
+    (arrived, tokio::task::spawn_local(receiver))
 }
 
 /// Links this device and, if the user chose so on the phone, transfers the message history.
