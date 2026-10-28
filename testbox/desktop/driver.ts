@@ -47,6 +47,11 @@ const config = {
   buildExpiration: Date.now() + 30 * 24 * 60 * 60 * 1000,
 };
 
+/** How long a step may wait, as the checks' (xtask/src/checks/mod.rs `PATIENCE_MS`): also what
+ * Playwright waits without a timeout of its own, rather than its 30 s, which Desktop overruns
+ * under heavy disk writes (its composer took longer than that to show after a send). */
+const PATIENCE_MS = 120_000;
+
 /** The window, once `launch` has started Desktop. */
 let window: Page | undefined;
 
@@ -82,6 +87,7 @@ async function launch(): Promise<void> {
   app.process().stdout?.pipe(process.stdout);
   app.process().stderr?.pipe(process.stderr);
   window = await app.firstWindow();
+  window.setDefaultTimeout(PATIENCE_MS);
   // The microphone, for voice messages: Desktop grants it only with `mediaPermissions` in its user
   // config (app/permissions.std.ts; Settings, "Allow access to the microphone"), which SignalCI
   // sets as Desktop's own tests do (ts/CI.preload.ts `setMediaPermissions`).
@@ -260,7 +266,7 @@ const methods = {
    * Desktop read (ActiveWindowService.std.ts); Desktop opens nothing then, and says nothing. */
   open_conversation: async ({ aci }: { aci: string }) => {
     const item = leftPane().getByTestId(aci);
-    await item.waitFor({ timeout: 60_000 });
+    await item.waitFor();
     const open = ((await item.getAttribute('class')) ?? '').includes(
       'module-conversation-list__item--contact-or-conversation--is-selected',
     );
@@ -268,9 +274,9 @@ const methods = {
     while ((await signalCiPending('conversation:open')) > 0) {
       await signalCiEvent('conversation:open', 1_000);
     }
-    await item.click({ timeout: 60_000 });
+    await item.click();
     if (!open) {
-      await signalCiEvent('conversation:open', 120_000);
+      await signalCiEvent('conversation:open', PATIENCE_MS);
     }
     await acceptIfRequest();
     return null;
@@ -412,7 +418,7 @@ const methods = {
   open_titled: async ({ title }: { title: string }) => {
     const name = rendered(title, true);
     try {
-      await leftPane().getByText(name).first().click({ timeout: 60_000 });
+      await leftPane().getByText(name).first().click();
     } catch (error) {
       // The rows the left pane lists, for the error.
       const listed = await leftPane().locator('[data-testid]').allInnerTexts();
@@ -494,7 +500,7 @@ const methods = {
     await page().evaluate((url) => globalThis.SignalCI.openSignalRoute(url), link);
     await page()
       .getByRole('button', { name: /^(Request to Join|Join)$/ })
-      .click({ timeout: 60_000 });
+      .click();
     return null;
   },
   /** Edits the open group's name, description or both, as send_gv2_invite_test.node.ts renames
