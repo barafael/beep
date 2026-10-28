@@ -18,7 +18,7 @@ use presage::{
     },
     store::{ContentsStore, Thread},
 };
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     ChatMessage, Command, ConversationId, Event, Events, Reaction, apply_reaction, attachments,
@@ -33,8 +33,8 @@ use super::{
         own_id, thread_of,
     },
     groups::{
-        PHONE_NUMBER_ONLY, check_request, group_edit, member_aci, member_of, only_admin_check,
-        parse_group_link, refresh_group, show_stored,
+        PHONE_NUMBER_ONLY, check_request, edit_kind, group_edit, member_aci, member_of,
+        only_admin_check, parse_group_link, refresh_group, show_stored,
     },
     history::{
         data_of, decorate, erase_deleted, history_page, is_outgoing, media, original, search,
@@ -480,6 +480,7 @@ async fn handle_command(
                     .cancel_join_request(&key)
                     .await
                     .map_err(failed("failed to take the request back"))?;
+                debug!("took a request to join back");
                 refresh_group(manager, ctx, key).await;
                 return Ok(());
             }
@@ -488,11 +489,14 @@ async fn handle_command(
                 only_admin_check(manager, key).await?;
             }
             let picture = matches!(edit, presage::manager::GroupEdit::Avatar(_));
+            let kind = edit_kind(&edit);
+            debug!(kind, "changing a group");
             let timestamp = ctx
                 .outbox
                 .change_group(key, edit)
                 .await
                 .map_err(send_failed("failed to change the group"))?;
+            debug!(kind, timestamp, "changed a group, and sent the change");
             refresh_group(manager, ctx, key).await;
             if picture {
                 send_group_avatar(manager.clone(), ctx, key).await;
