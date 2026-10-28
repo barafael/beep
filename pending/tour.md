@@ -302,6 +302,9 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     attachment, with no pack (`Command::Forward` sent `sticker: None`). Signal-Desktop forwards
     the original's sticker (`maybeForwardMessages`). Found by the tour's sticker step (#102),
     seed 1793169709, step 30; fixed in #101, and the seed passes with it.
+22. **A forwarded link lost its preview.** b33p's forward sent `preview: None`; Signal-Desktop
+    forwards the original's previews (`maybeForwardMessages`, `draft.previews`). Fixed in #105,
+    from the code: no tour run has drawn a forward of a message with a preview yet.
 
 ## Open questions
 
@@ -357,8 +360,8 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Stickers: the pack has to be seeded per primary, then CDN0 has to be waited for.
   - Voice notes: b33p can't record one.
   - Invitations: everyone in the mesh knows everyone's profile key, so adds are direct.
-  - Link previews: possible now that the image has CA certificates, but they need a local page
-    to preview.
+  - Link previews: in #105, with a page of the box's own (testbox/tools `preview`) at a public
+    address on the pod's loopback, which b33p's previews fetch from unchanged.
   - Editing a picture's caption.
 - **Noise in every b33p log:** cage's "Cannot find Xwayland binary", since the image removes
   Xwayland on purpose, and Qt's "Detected locale C …" on every start.
