@@ -148,7 +148,8 @@ pub(super) async fn on_story(
     send_stories(manager, ctx).await;
 }
 
-/// Keeps `story`, and has [`expire_stories`] take it off the list once its day is over.
+/// Keeps `story`, and has the session take it off the list once its day is over
+/// ([`stories_over`]).
 pub(super) async fn keep_story(
     ctx: &Ctx,
     story: &crate::local::StoredStory,
@@ -246,27 +247,13 @@ pub(super) async fn send_viewed(manager: Mgr, outbox: Outbox, story: MessageRef,
     send_sync(&manager, &outbox, sync).await;
 }
 
-/// Takes stories off the list once their day is over, for the rest of the session. `next` is
-/// when that is for the first of them, as [`send_stories`] said.
-pub(super) async fn expire_stories(manager: Mgr, ctx: Ctx, mut next: Option<u64>) {
-    loop {
-        let over = async {
-            match next {
-                Some(at) => {
-                    let wait = Duration::from_millis(at.saturating_sub(now_millis()));
-                    tokio::time::sleep(wait).await;
-                }
-                // Until a story is kept.
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            () = over => {}
-            // It may be over before the first one known, or be the first one.
-            () = ctx.story_kept.notified() => {}
-        }
-        next = send_stories(&manager, &ctx).await;
-    }
+/// When the first of the stories [`send_stories`] sent is over (`next`, as it said), for the
+/// session to send them again then; far ahead with none, as a kept story wakes it anyway.
+pub(super) fn stories_over(next: Option<u64>) -> tokio::time::Instant {
+    let wait = next.map_or(Duration::from_secs(24 * 3600), |at| {
+        Duration::from_millis(at.saturating_sub(now_millis()))
+    });
+    tokio::time::Instant::now() + wait
 }
 
 #[cfg(test)]

@@ -43,7 +43,7 @@ use super::{
     receive::{Incoming, Kept, Receiver, Repairs, handle_incoming},
     send::request_sync,
     storage_sync::follow_storage,
-    stories::{expire_stories, send_stories},
+    stories::{send_stories, stories_over},
 };
 
 /// How an [`attempt`] ended, other than failing.
@@ -948,10 +948,7 @@ async fn run_linked(
     let story_over = send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
-    let sweeping = tokio::task::spawn_local(sweep_expired(ctx.clone()));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
-    let stories =
-        tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone(), story_over));
 
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
@@ -961,6 +958,12 @@ async fn run_linked(
     let mut kept = Kept::default();
     let (mut incoming, mut receiving) = start_receiving(&manager, Duration::ZERO);
     let mut failures = 0u32;
+    // Disappearing messages are deleted when due, and stories come off the list after their
+    // day, in between what else the session does.
+    let sweep = tokio::time::sleep(Duration::ZERO);
+    pin_mut!(sweep);
+    let stories_due = tokio::time::sleep_until(stories_over(story_over));
+    pin_mut!(stories_due);
 
     // What the other side sees, one command at a time and in order; see `outgoing`. Their
     // sends then go through the outbox, with everyone else's.
@@ -979,12 +982,33 @@ async fn run_linked(
         let command = match pending.next() {
             Some(command) => command,
             None => tokio::select! {
-                // Commands first: what the user does isn't held up by catching up.
+                // Commands first, then what is due: neither is held up by catching up.
                 biased;
                 command = command_rx.recv() => match command {
                     Some(command) => command,
                     None => break Ended::Gone,
                 },
+                () = &mut sweep => match sweep_expired(&ctx).await {
+                    Some(wait) => {
+                        sweep.as_mut().reset(tokio::time::Instant::now() + wait);
+                        continue;
+                    }
+                    None => break Ended::Gone,
+                },
+                () = ctx.expiring.notified() => {
+                    sweep.as_mut().reset(tokio::time::Instant::now());
+                    continue;
+                }
+                () = &mut stories_due => {
+                    let next = send_stories(&manager, &ctx).await;
+                    stories_due.as_mut().reset(stories_over(next));
+                    continue;
+                }
+                // It may be over before the first one known, or be the first one.
+                () = ctx.story_kept.notified() => {
+                    stories_due.as_mut().reset(tokio::time::Instant::now());
+                    continue;
+                }
                 arrived = incoming.recv() => match arrived {
                     Some(Incoming::Removed) => break Ended::Removed,
                     Some(arrived) => {
@@ -1063,9 +1087,7 @@ async fn run_linked(
     ctx.background.stop();
     ordering.abort();
     latest.abort();
-    sweeping.abort();
     following.abort();
-    stories.abort();
     // Receiving stops with its channel closed.
     incoming.close();
     // Not drained: after an unlink there is nobody to send to, and a session after this one
