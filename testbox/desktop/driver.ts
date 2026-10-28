@@ -253,9 +253,25 @@ const methods = {
     return null;
   },
   /** Opens the conversation with `aci` from the left pane (helpers.node.ts
-   * `clickOnConversationWithAci`), accepting it if it is a message request. */
+   * `clickOnConversationWithAci`), accepting it if it is a message request. Returns once Desktop
+   * has opened it, as its own tests wait (test-mock/playwright.node.ts `waitForConversationOpen`):
+   * the open takes a while after the click, 25 s under heavy disk writes, and until then there is
+   * no composer for a send. One already open is clicked all the same, as the checks' way to make
+   * Desktop read (ActiveWindowService.std.ts); Desktop opens nothing then, and says nothing. */
   open_conversation: async ({ aci }: { aci: string }) => {
-    await leftPane().getByTestId(aci).click({ timeout: 60_000 });
+    const item = leftPane().getByTestId(aci);
+    await item.waitFor({ timeout: 60_000 });
+    const open = ((await item.getAttribute('class')) ?? '').includes(
+      'module-conversation-list__item--contact-or-conversation--is-selected',
+    );
+    // `conversation:open` names no conversation, and SignalCI hands out the oldest it holds.
+    while ((await signalCiPending('conversation:open')) > 0) {
+      await signalCiEvent('conversation:open', 1_000);
+    }
+    await item.click({ timeout: 60_000 });
+    if (!open) {
+      await signalCiEvent('conversation:open', 120_000);
+    }
     await acceptIfRequest();
     return null;
   },
