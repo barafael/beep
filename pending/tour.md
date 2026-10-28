@@ -254,8 +254,8 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     - Not seen in 15 tour rounds with presage-cli at debug under 8 fsync writers (f16 run,
       2026-10-28): no "database is locked" at all. The logs show what held the connections:
       two writes each waited the full 30 s busy timeout on SQLite's write lock, and a third
-      waited 30 s for a connection. So a fourth held the write lock over 30 s without
-      committing. Every store transaction read so far commits before awaiting anything else;
+      waited 30 s for a connection. So the pool's third connection held the write lock over
+      30 s without committing. Every store transaction read so far commits before awaiting anything else;
       still open.
 17. **The box's server gave one one-time pre-key to two senders** (a 40-round setup run for
     finding 16, round 23). b33p 0 failed to decrypt a sealed-sender pre-key message ("no rows
