@@ -1,0 +1,13 @@
+[Unit]
+Description=b33p testbox: a tour run on main
+
+[Service]
+Type=oneshot
+# The repository's own path: `install` below writes it in.
+ExecStart=@REPO@/testbox/nightly/nightly.sh
+# A user service gets no login shell's PATH: cargo from rustup, podman from the system.
+Environment=PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin
+# Below the session's other work: a box is CPU, memory and disk.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=4h

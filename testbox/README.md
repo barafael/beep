@@ -199,4 +199,6 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |
 | `vnc/`, `viewer/`, `web/`, `shot/` | The displays: the VNC client, the window, the page, the screenshots |
 | `presage/`, `stickers/` | presage-cli at b33p's pin, and the tool that seeds a sticker pack |
+| `nightly/` | A tour run on main in a worktree and box of its own, and the systemd units to run it nightly |
+| `logexp/` | The log-driver measurements behind `container-logs.md` |
 | `../xtask` | `cargo testbox` itself: bringing the pod up and down, and the phases' checks |

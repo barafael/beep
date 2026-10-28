@@ -1,0 +1,10 @@
+[Unit]
+Description=b33p testbox: a tour run on main, nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
