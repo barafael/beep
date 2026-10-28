@@ -35,13 +35,14 @@ RUN --network=none \
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 # What b33p links against, and Qt's Wayland platform plugin (QT_QPA_PLATFORM); cage, wayvnc and
 # wlr-randr for its display (testbox/tools `with-display`). An emoji font, as a desktop has, for
-# reactions in screenshots. The CA certificates a desktop has: without them reqwest's verifier
+# reactions in screenshots, and a small CJK one for the tour's Chinese text (Noto CJK is twenty
+# times its size). The CA certificates a desktop has: without them reqwest's verifier
 # (rustls-platform-verifier) finds no roots and no client builds, so b33p's and presage's link
 # previews never get as far as the network.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libqt6core6t64 libqt6gui6 libqt6widgets6 libqt6dbus6 qt6-qpa-plugins qt6-wayland \
         libasound2t64 libfontconfig1 libwayland-client0 libxkbcommon0 fonts-dejavu-core \
-        fonts-noto-color-emoji cage wayvnc wlr-randr \
+        fonts-noto-color-emoji fonts-wqy-microhei cage wayvnc wlr-randr \
     && rm -rf /var/lib/apt/lists/* \
     && rm /usr/bin/Xwayland
 COPY --from=build /usr/local/bin/b33p /usr/local/bin/b33p

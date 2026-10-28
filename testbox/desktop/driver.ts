@@ -442,7 +442,7 @@ const methods = {
   },
   /** Sends `text` after a mention of `member`: "@" and the name typed into the composer, its
    * suggestion shown (CompositionInput's `module-composition-input__suggestions__row--mention`),
-   * Enter taking the highlighted one, the first. */
+   * Enter taking the highlighted one, the first, and a space after it, as Desktop puts one there. */
   send_mention: async ({ member, text }: { member: string; text: string }) => {
     const composition = enabledComposition();
     await composition.waitFor();
@@ -453,7 +453,7 @@ const methods = {
       .filter({ hasText: rendered(member, false) })
       .waitFor();
     await composer.press('Enter');
-    await composer.pressSequentially(` ${text}`);
+    await composer.pressSequentially(text);
     await composer.press('Enter');
     return null;
   },

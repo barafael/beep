@@ -419,6 +419,11 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   (`stories::on_story`). The first story step opened the author's chat, which was my mistake
   (run 4, round 2).
 
+- **The search steps' screenshots show no search.** `Action::Search` sets only the agent's filter
+  (b33p-slint list.rs), never the chat list's search field, and the step clears it before the
+  screenshot. The step now ends with the chat it found open. A screenshot of the search itself
+  would need the harness to fill the field, and a screenshot taken in the middle of the step.
+
 ## Notes on the tour itself
 
 - **Seeds and order.** Each kind of step comes up `TESTBOX_TOUR_REPEAT` times (2), in a
