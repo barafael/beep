@@ -181,7 +181,8 @@ impl<W: Write> Write for ScrubbingWriter<W> {
 
 impl<W: Write> Drop for ScrubbingWriter<W> {
     fn drop(&mut self) {
-        let _ = self.flush();
+        // Nowhere left to say it failed.
+        self.flush().ok();
     }
 }
 

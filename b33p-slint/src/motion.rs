@@ -15,7 +15,9 @@ pub fn watch() -> SystemMotion {
     let (sender, reduced) = async_channel::unbounded();
     let subscription =
         mundy::Preferences::subscribe(mundy::Interest::ReducedMotion, move |preferences| {
-            let _ = sender.try_send(preferences.reduced_motion == mundy::ReducedMotion::Reduce);
+            // Unbounded, so it fails only once nobody listens.
+            let reduced = preferences.reduced_motion == mundy::ReducedMotion::Reduce;
+            sender.try_send(reduced).ok();
         });
     SystemMotion {
         _subscription: subscription,

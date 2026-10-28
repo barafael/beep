@@ -57,9 +57,12 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                     .pick_file();
                 if let Some(path) = picked {
                     let path: SharedString = path.to_string_lossy().as_ref().into();
-                    let _ = window.upgrade_in_event_loop(move |window| {
-                        window.global::<Panels>().invoke_story_photo_chosen(path)
-                    });
+                    // Fails only once b33p is quitting.
+                    window
+                        .upgrade_in_event_loop(move |window| {
+                            window.global::<Panels>().invoke_story_photo_chosen(path)
+                        })
+                        .ok();
                 }
             });
         }
