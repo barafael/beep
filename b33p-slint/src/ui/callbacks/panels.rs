@@ -47,19 +47,15 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         }
     });
     window.global::<Panels>().on_post_story_photo({
+        let shared = shared.clone();
         let window = window.as_weak();
         move || {
             let window = window.clone();
-            std::thread::spawn(move || {
-                let picked = rfd::FileDialog::new()
-                    .set_title("Post a photo as a story")
-                    .add_filter("Pictures", &["jpg", "jpeg", "png", "webp", "gif"])
-                    .pick_file();
-                if let Some(path) = picked {
+            let title = "Post a photo as a story";
+            crate::desktop::pick(&shared.desktop, title, Pick::Picture, move |picked| {
+                if let (Some(window), Some(path)) = (window.upgrade(), picked.first()) {
                     let path: SharedString = path.to_string_lossy().as_ref().into();
-                    let _ = window.upgrade_in_event_loop(move |window| {
-                        window.global::<Panels>().invoke_story_photo_chosen(path)
-                    });
+                    window.global::<Panels>().invoke_story_photo_chosen(path);
                 }
             });
         }

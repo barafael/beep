@@ -17,6 +17,7 @@ use b33p_core::{
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use crate::desktop::Pick;
 use crate::rows::Rows;
 
 use crate::generated::*;

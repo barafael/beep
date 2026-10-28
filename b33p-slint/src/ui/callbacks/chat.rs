@@ -330,53 +330,38 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         }
     });
     window.global::<Composer>().on_attach({
+        let shared = shared.clone();
         let window = window.as_weak();
         move || {
             // The files go to the chat they were picked for: not to another one opened meanwhile.
             let chat = window
                 .upgrade()
                 .map(|window| window.global::<ChatList>().get_selected_id());
-            // The dialog blocks until the user is done, so it gets its own thread.
-            let window = window.clone();
-            std::thread::spawn(move || {
-                let files = rfd::FileDialog::new()
-                    .set_title("Attach files")
-                    .pick_files()
-                    .unwrap_or_default();
-                let files: Vec<SharedString> = files
-                    .iter()
-                    .map(|f| f.to_string_lossy().as_ref().into())
-                    .collect();
-                let _ = window.upgrade_in_event_loop(move |window| {
-                    if Some(window.global::<ChatList>().get_selected_id()) == chat {
-                        window
-                            .global::<Composer>()
-                            .invoke_stage_files(ModelRc::new(VecModel::from(files)));
-                    }
-                });
+            let (window, then) = (window.clone(), shared.clone());
+            crate::desktop::pick(&shared.desktop, "Attach files", Pick::Files, move |files| {
+                let still = window
+                    .upgrade()
+                    .map(|window| window.global::<ChatList>().get_selected_id());
+                if still.is_some() && still == chat {
+                    then.edit(|chat| chat.stage_files(files));
+                }
             });
         }
     });
     window.global::<Composer>().on_paste({
+        let shared = shared.clone();
         let window = window.as_weak();
         move || {
-            // Not here: the window may own what was copied, and has to be free to hand it over.
-            let window = window.clone();
-            std::thread::spawn(move || {
-                let files: Option<Vec<SharedString>> = crate::clipboard::pasted().map(|files| {
-                    files
-                        .iter()
-                        .map(|f| f.to_string_lossy().as_ref().into())
-                        .collect()
-                });
-                let _ = window.upgrade_in_event_loop(move |window| match files {
-                    Some(files) => window
-                        .global::<Composer>()
-                        .invoke_stage_files(ModelRc::new(VecModel::from(files))),
-                    None => window.global::<Composer>().set_paste_text(
-                        window.global::<Composer>().get_paste_text().wrapping_add(1),
-                    ),
-                });
+            let (window, then) = (window.clone(), shared.clone());
+            crate::desktop::paste(&shared.desktop, move |files| match files {
+                Some(files) => then.edit(|chat| chat.stage_files(files)),
+                // Text, which the composer pastes itself.
+                None => {
+                    if let Some(window) = window.upgrade() {
+                        let composer = window.global::<Composer>();
+                        composer.set_paste_text(composer.get_paste_text().wrapping_add(1));
+                    }
+                }
             });
         }
     });

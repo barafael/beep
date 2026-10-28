@@ -850,6 +850,7 @@ dependencies = [
  "directories",
  "embed-resource",
  "emojis",
+ "futures-channel",
  "i-slint-backend-testing",
  "i-slint-common",
  "i-slint-core",
