@@ -295,6 +295,19 @@ This file is kept as the runs go. Newest entries go at the end of each section.
 
 ## Testbox: observations and improvements
 
+- **Images could hold another worktree's build** (fixed on main, f4976cd). The cargo target
+  directories in the Containerfiles are cache mounts, which every worktree and every box share.
+  - cargo goes by modification times: a tree whose sources are older than another tree's last
+    build into the cache got that tree's artifacts. b33p-testbox.f4-b33p had none of f4's log
+    lines in its binary.
+  - Two builds at once wrote one target directory and each copied out what was there last: the
+    f3 and f4 images, built together, held the same b33p.
+  - Now the mounts are `sharing=locked` (two concurrent builds take turns, tested), and each build
+    touches the sources it copied. Built at once again, with f4's files all dated back, f4's image
+    held its own code, and f3's the same binary as before (dev builds are reproducible here).
+  - Earlier runs from different worktrees may have tested another tree's b33p. The PRs of
+    2026-10-28 (#94, #95, findings 3 and 7) were run again after the fix.
+
 - **`cargo testbox test` reuses one record directory per box** (`target/testbox-record/mesh`),
   so the next `test` wipes the last one's logs. That cost the step 16 evidence. Use `run`,
   which records by start time, or let `test` keep the previous record.
@@ -333,6 +346,10 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Now the samples are `memory.stat`'s `anon` (what the processes hold, what a leak grows),
     with `file` recorded beside it (`cache_mib` in `tour.json`).
   - The soak's earlier numbers (53 to 68/77 MiB) were `memory.current`.
+  - The soak again on anon (2026-10-28, seed 1793160337, optimized, 30 minutes, beside other
+    boxes and disk-write load): 55 to 82 MiB anon, with 19 to 40 MiB of page cache beside it,
+    47 open files, snapshots within 106 ms. Most of the rise is in the first ten minutes; the
+    last twenty stayed between 68 and 82 MiB. The check found nothing that keeps growing.
 - **Signal-Server can start before the Redis cluster has formed, and then fail requests.**
   - Run 17, round 1: the redis nodes came up 35 s apart on a loaded host
     (`redis-1` 16:05:51, `redis-0` 16:06:22, `redis-2` 16:06:25).
