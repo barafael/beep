@@ -108,6 +108,11 @@ This file is kept as the runs go. Newest entries go at the end of each section.
      as `check_request` does for a request of ours. That is when an admin looks for requests.
      Then the tour can check a first-time request with approval: the admin opens the details
      until it shows. To check against Signal-Android and Signal-Desktop: when do they fetch?
+   - A rejoin isn't enough either. Run 18, round 2 (seed 1793157181, step 51): b33p 2 asked to
+     rejoin, and b33p 1 was to approve. b33p 2 had left at step 32, when b33p 1 wasn't a
+     member, so it told only b33p 0 (`send_message_to_group` with 1 recipient). b33p 1 never
+     saw the request. The tour's rule that approval joins are rejoins assumes the requester
+     knows the admin; it doesn't hold after the member list changed.
 
 8. **An accepted message request can turn back into one.** This explains the "sent nothing"
    failures: run 2 step 16, and run 5 round 3 (seed 1793099053) step 3. Both times it was
@@ -246,6 +251,35 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     - The 5 s timeout before #92 would have ended the same deadlock sooner; the two "database
       is locked" failures under load may have been this one too.
     - It is once in about 40 rounds without load. Investigation: next.
+17. **The box's server gave one one-time pre-key to two senders** (a 40-round setup run for
+    finding 16, round 23). b33p 0 failed to decrypt a sealed-sender pre-key message ("no rows
+    returned").
+    - b33p 1 and b33p 2 fetched b33p 0's bundle 0.35 ms apart, and both got one-time pre-key 2.
+      The first session used it up, so the second one's message found no key.
+    - Fetching one account's bundle from two accounts at once got the same one-time key in 3 of
+      6 trials.
+    - Signal-Server's `SingleUseECPreKeyStore.take` queries for the first key, then deletes it
+      with `ReturnValues: ALL_OLD`; whoever gets the old item back has the key. That relies on
+      an atomic DeleteItem. In DynamoDB Local, of 8 simultaneous deletes of one item, more than
+      one got it back for 40 of 40 items. With `ConditionExpression: attribute_exists(k)` it was
+      0 of 40. The KEM store's conditional UpdateItem counter
+      (`PagedSingleUseKEMPreKeyStore.take`) gave no index twice either, 0 of 40.
+    - Real DynamoDB is atomic here, so this is the box's. Fixed in the box: the server is built
+      with testbox/patches/signal-server-atomic-take.patch, a conditional delete in `take`.
+    - With the patch (run 18): two accounts fetching b33p 0's bundle at once got different
+      one-time keys in 6 of 6 trials (before, the same key in 3 of 6). The server's rate limit
+      ends each such test after about 6 trials. Three tour rounds: two passed, and one failed
+      on finding 7.
+18. **b33p doesn't ask for a message it couldn't decrypt to be sent again.** Seen through
+    finding 17: b33p 0 lost b33p 2's first message for good.
+    - presage hands b33p `Received::DecryptionError`. b33p resets the session, at most hourly,
+      and only with someone it has a chat with, and it shows a notice
+      (b33p-core receive.rs, `Received::DecryptionError`).
+    - It never sends a retry receipt (`DecryptionErrorMessage`). The Signal apps send one, and
+      the sender resends the message on a fresh session. b33p already answers retry receipts
+      (`on_retry_receipt`), but it doesn't send them.
+    - So a first message that fails, from someone b33p has no chat with yet, is gone with no
+      reset and no resend.
 
 ## Open questions
 
@@ -486,3 +520,8 @@ This file is kept as the runs go. Newest entries go at the end of each section.
     setup (finding 16), before any b33p step.
   - The replay of seed 1793111125 passed strictly (68 checks).
   - Harness tests 52/12/2; b33p-core 267.
+- **Run 18: the server with signal-server-atomic-take.patch** (finding 17), on main at 87d90ae,
+  3 rounds, records in target/testbox-tour-record/run/1793156891.
+  - Rounds 1 and 3 passed (68 checks each).
+  - Round 2 failed at step 51 on finding 7: b33p 2's request to rejoin reached only b33p 0,
+    and b33p 1 was to approve it.

@@ -20,6 +20,9 @@ WORKDIR /src
 RUN git init -q . \
     && git fetch -q --depth 1 https://github.com/signalapp/Signal-Server "$SIGNAL_SERVER_REV" \
     && git checkout -q FETCH_HEAD
+# DynamoDB Local's DeleteItem isn't atomic, which `take` relies on for one-time pre-keys.
+COPY testbox/patches/signal-server-atomic-take.patch /tmp/
+RUN git apply /tmp/signal-server-atomic-take.patch
 
 # exclude-spam-filter: the spam filter is the server's closed component (.github/workflows/test.yml).
 # One reactor run: the parent pom skips `install` (pom.xml maven-install-plugin `<skip>true</skip>`),

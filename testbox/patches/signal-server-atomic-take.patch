@@ -1,0 +1,43 @@
+Signal-Server takes a one-time EC pre-key with a query for the first key and a DeleteItem
+returning ALL_OLD (`SingleUseECPreKeyStore.take`). Whoever gets the old item back has the key,
+which relies on DynamoDB applying the delete atomically. Real DynamoDB does; DynamoDB Local
+doesn't. Two simultaneous deletes of one item both get it back, so two senders fetching a
+bundle at once get the same one-time key, and the second session's pre-key message fails to
+decrypt (pending/tour.md, finding 17). DynamoDB Local's conditional writes are atomic, so the
+delete here only goes through while the key exists, and a delete that loses counts as no key,
+as an empty ALL_OLD does: `take` moves on to the next one. Against real DynamoDB this changes
+nothing.
+
+diff --git a/service/src/main/java/org/whispersystems/textsecuregcm/storage/SingleUseECPreKeyStore.java b/service/src/main/java/org/whispersystems/textsecuregcm/storage/SingleUseECPreKeyStore.java
+index a3f1e24..6c5309a 100644
+--- a/service/src/main/java/org/whispersystems/textsecuregcm/storage/SingleUseECPreKeyStore.java
++++ b/service/src/main/java/org/whispersystems/textsecuregcm/storage/SingleUseECPreKeyStore.java
+@@ -25,11 +25,13 @@ import org.signal.libsignal.protocol.InvalidKeyException;
+ import org.signal.libsignal.protocol.ecc.ECPublicKey;
+ import org.whispersystems.textsecuregcm.entities.ECPreKey;
+ import org.whispersystems.textsecuregcm.util.AttributeValues;
++import org.whispersystems.textsecuregcm.util.ExceptionUtils;
+ import org.whispersystems.textsecuregcm.util.Util;
+ import reactor.core.publisher.Flux;
+ import reactor.core.publisher.Mono;
+ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
++import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
+ import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+ import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
+ import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+@@ -155,9 +157,13 @@ public class SingleUseECPreKeyStore {
+             .key(Map.of(
+                 KEY_ACCOUNT_UUID, partitionKey,
+                 KEY_DEVICE_ID_KEY_ID, item.get(KEY_DEVICE_ID_KEY_ID)))
++            .conditionExpression("attribute_exists(#sort)")
++            .expressionAttributeNames(Map.of("#sort", KEY_DEVICE_ID_KEY_ID))
+             .returnValues(ReturnValue.ALL_OLD)
+             .build())
+-        .concatMap(deleteItemRequest -> Mono.fromFuture(() -> dynamoDbAsyncClient.deleteItem(deleteItemRequest)))
++        .concatMap(deleteItemRequest -> Mono.fromFuture(() -> dynamoDbAsyncClient.deleteItem(deleteItemRequest)
++            .exceptionally(ExceptionUtils.exceptionallyHandler(ConditionalCheckFailedException.class,
++                _ -> DeleteItemResponse.builder().build()))))
+         .doOnNext(_ -> deletionAttempts.incrementAndGet())
+         .filter(DeleteItemResponse::hasAttributes)
+         .filter(item -> {

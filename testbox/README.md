@@ -193,7 +193,7 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 |---|---|
 | `pod.yaml` | The pod for `podman kube play`; `desktop/pod.yaml` and `android/pod.yaml` are the clients' containers, put in when asked for |
 | `<service>/Containerfile` | Each image, built at pinned revisions |
-| `patches/` | What libsignal and Signal-Android need to run against a local server |
+| `patches/` | What libsignal and Signal-Android need to run against a local server, and what Signal-Server needs on DynamoDB Local |
 | `tools/` | The containers' entrypoints (`provision` makes the box's keys and servers file), the Android driver, and the drivers' protocol |
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |
 | `vnc/`, `viewer/`, `web/`, `shot/` | The displays: the VNC client, the window, the page, the screenshots |
