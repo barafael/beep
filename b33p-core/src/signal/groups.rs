@@ -399,6 +399,27 @@ pub(super) async fn group_edit(
     })
 }
 
+/// What kind of change `edit` is, for the log: not what it says, nor who it names.
+pub(super) fn edit_kind(edit: &presage::manager::GroupEdit) -> &'static str {
+    use presage::manager::GroupEdit as Edit;
+    match edit {
+        Edit::Title(_) => "title",
+        Edit::Description(_) => "description",
+        Edit::Avatar(_) => "picture",
+        Edit::Timer(_) => "timer",
+        Edit::AddMembers(_) => "add members",
+        Edit::RemoveMember(_) => "remove a member",
+        Edit::SetAdmin(..) => "admin rights",
+        Edit::Leave => "leave",
+        Edit::AcceptInvitation => "accept an invitation",
+        Edit::DeclineInvitation => "decline an invitation",
+        Edit::InviteLinkAccess(_) => "invite link access",
+        Edit::ResetInviteLink => "reset the invite link",
+        Edit::ApproveRequest(_) => "approve a request",
+        Edit::DenyRequest(_) => "deny a request",
+    }
+}
+
 pub(super) fn parse_group_link(
     link: &str,
 ) -> Result<presage::libsignal_service::groups_v2::GroupInviteLink, Error> {

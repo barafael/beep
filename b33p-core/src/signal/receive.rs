@@ -648,12 +648,19 @@ async fn handle_content(
             .and_then(|(data, _)| data.group_v2.as_ref())
             .filter(|context| context.group_change.is_some())
     {
+        let changes = signed_group_change(manager, key, context).await;
+        debug!(
+            revision = context.revision,
+            signed = changes.is_some(),
+            changes = changes.as_ref().map_or(0, |changes| changes.changes.len()),
+            "a group change came"
+        );
         forget_membership(manager, key, context).await;
         refresh_group(manager, ctx, key).await;
         // A new picture (presage has fetched it with the group), or none any more; or we are let
         // in, and the picture shown from before may have changed meanwhile.
         let ids = &manager.registration_data().service_ids;
-        if let Some(changes) = signed_group_change(manager, key, context).await
+        if let Some(changes) = changes
             && (lets_us_in(&changes, ids.aci(), ids.pni())
                 || changes.changes.iter().any(|change| {
                     matches!(
