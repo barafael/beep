@@ -37,7 +37,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`45b2365`) | Upstream main `86a86e7` (#454 landed, its commit dropped) with the fork's PRs and fork-only commits, rebased 2026-10-27, plus #478 and #448's join request fixes on top (`79ed787` before) | Pinned by `presage-picture` |
+| `langis/integration` (`a9891bc`) | `881688c` (upstream main `86a86e7` with the fork's PRs and fork-only commits) with upstream main `aeaedf9` merged in (2026-10-28: #459 `update_device_name`, #469 groups synced from the storage service, its `left_groups` migration) | Pinned by `main` |
 | `pr/groups` (`1873f8b`) | #448 plus: asking to join (with approval) and cancelling tell the members and invitees we have stored, as Signal-Desktop's `modifyGroupV2` does, and keep them (a first-time request tells nobody, as on Desktop); a group asked to join without a picture drops the one cached from before (found by the tour); pins libsignal-service #473 as fixed (`421083d`) | whisperfish/presage#448 |
 | `pr/link-preview-setting` (`fa90b68`) | `Manager::set_automatic_link_previews`: since #359 every send without a preview fetches the page of its first link, bypassing b33p's `link_previews`; on stays upstream's default, b33p turns it off | whisperfish/presage#478 |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
