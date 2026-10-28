@@ -51,6 +51,12 @@ pub(crate) fn service_kind(error: &ServiceError) -> ErrorKind {
         ServiceError::UnhandledResponseCode { status, .. } if status.is_server_error() => {
             ErrorKind::Unreachable
         }
+        // No answer: not connected, the request cut off, or too slow (an upload to the CDN).
+        ServiceError::Http(error)
+            if error.is_connect() || error.is_request() || error.is_timeout() =>
+        {
+            ErrorKind::Unreachable
+        }
         _ => ErrorKind::Refused,
     }
 }
@@ -157,5 +163,20 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// An upload that gets no answer (here, nothing listens) may go through later: it is no
+    /// refusal (pending/tour.md, finding 19).
+    #[tokio::test]
+    async fn no_answer_over_http_may_pass() {
+        let error = reqwest::Client::new()
+            .get("http://127.0.0.1:1/")
+            .send()
+            .await
+            .expect_err("nothing listens on port 1");
+        let upload = presage::libsignal_service::sender::AttachmentUploadError::ServiceError(
+            ServiceError::Http(error),
+        );
+        assert_eq!(upload_kind(&upload), ErrorKind::Unreachable);
     }
 }
