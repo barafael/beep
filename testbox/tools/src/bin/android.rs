@@ -143,8 +143,8 @@ struct LocalConfig {
     captcha_url: String,
 }
 
-/// Desktop's values (testbox/tools `provision`), with the omnibus port for the chat: Desktop's
-/// URLs name Jetty's HTTP/2 port, which the app's REST requests take too.
+/// Desktop's values (testbox/tools `provision`), but Jetty's HTTP/2 port for the app's REST
+/// requests; the chat takes the omnibus port, as Desktop's does.
 fn local_config() -> Result<LocalConfig> {
     let desktop_path = KeyFile::Desktop.path();
     let desktop: DesktopConfig =
@@ -152,7 +152,7 @@ fn local_config() -> Result<LocalConfig> {
     let der = keys::pem_body(&read(&KeyFile::TlsCa.path())?, "CERTIFICATE")
         .ok_or_else(|| Error::Failed(format!("{} has no certificate", KeyFile::TlsCa)))?;
     Ok(LocalConfig {
-        service_url: desktop.server_url,
+        service_url: keys::localhost(keys::LIBSIGNAL_NET_PORT),
         storage_url: desktop.storage_url,
         cdn0_url: desktop.cdn.cdn0,
         cdn2_url: desktop.cdn.cdn2,

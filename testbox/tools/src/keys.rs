@@ -57,11 +57,11 @@ impl KeyFile {
     }
 }
 
-/// Jetty's HTTP/2 port, for libsignal-net (Desktop, Android's REST).
+/// Jetty's HTTP/2 port: Android's REST, Desktop's resources, CDN2 and CDSI.
 pub const LIBSIGNAL_NET_PORT: u16 = 8443;
 /// Jetty's HTTP/1.1 port, for libsignal-service (b33p, presage-cli).
 pub const LIBSIGNAL_SERVICE_PORT: u16 = 8444;
-/// Signal-Server's omnibus port: websocket and gRPC (Android's chat).
+/// Signal-Server's omnibus port: websocket and gRPC (Android's and Desktop's chat).
 pub const OMNIBUS_PORT: u16 = 8445;
 /// tus-server under `wrangler dev` (testbox/tus/Containerfile).
 pub const CDN3_PORT: u16 = 8446;

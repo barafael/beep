@@ -284,9 +284,13 @@ fn write_keys() -> Result<()> {
     // (ts/textsecure/preconnect.preload.ts `isMockServer`). The generic parameters are the public
     // halves of the secrets the server uses for call links (callingZkConfig, CallLinkController)
     // and backups (chatZkConfig, BackupAuthManager).
+    // Desktop's chat goes to the omnibus port, as Android's does: libsignal-net takes the chat's
+    // port from `serverUrl` (preconnect.preload.ts `TESTING_localServer_chatPort`), and sends
+    // some requests only as gRPC (`Devices/GetDevices`), which Jetty answers 404. Desktop's
+    // requests outside the chat use the other URLs.
     let libsignal_net_url = keys::localhost(keys::LIBSIGNAL_NET_PORT);
     let desktop = DesktopConfig {
-        server_url: libsignal_net_url.clone(),
+        server_url: keys::localhost(keys::OMNIBUS_PORT),
         storage_url: keys::localhost(keys::STORAGE_PORT),
         resources_url: libsignal_net_url.clone(),
         sfu_url: libsignal_net_url.clone(),
