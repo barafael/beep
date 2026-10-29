@@ -105,14 +105,17 @@ cddb0bc, Signal-Server ccc22f9a.
 
 ## Findings in the testbox
 
-1. **Desktop's `Devices/GetDevices` over gRPC gets a 404 from Jetty on 8443.** The 404 comes
-   back three times in each box.
+1. **Fixed** (#123). **Desktop's `Devices/GetDevices` over gRPC got a 404 from Jetty on 8443**, three
+   times in each box.
    - There is no remote config key to switch it to the websocket: libsignal 0.105 sends
      GetDevices over gRPC only (`require_grpc`).
-   - Desktop's chat reaches Jetty, which serves no gRPC. Desktop calls it only to sync device
+   - Desktop's chat reached Jetty, which serves no gRPC. Desktop calls it only to sync device
      names (onDeviceNameChangeSync).
-   - Left open: pointing Desktop at the omnibus port would move its plain REST requests there
-     too.
+   - Desktop's `serverUrl` now names the omnibus port. libsignal-net takes the chat's port from
+     it, and every request Desktop makes through `chatService` goes over the chat; its own
+     requests use the resources, CDN and storage URLs, which stay where they were.
+   - 2026-10-29: GetDevices answers gRPC status 0 in both boxes; the desktop, android and groups
+     phases pass, and Desktop links through the omnibus port.
 2. With the tap, the server sees every client as 127.0.0.2, the tap's address. Without it,
    every client already came from 127.0.0.1, so per-IP limits change nothing.
 
@@ -128,8 +131,10 @@ cddb0bc, Signal-Server ccc22f9a.
    - Right after boot the emulator's transport was `offline` for a moment, and `adb root`
      answered "closed".
    - #121: `adb root` is tried again once `adb wait-for-device` sees the device.
-   - Left open: the xtask waits `START` (an hour) for a driver whose process has already exited.
-     It could stop at the driver's exit line instead.
+   - **Fixed** (#123): the xtask waited `START` (an hour) for a driver whose process had already
+     exited. `with-display` now says "the application failed" when its application exits
+     non-zero on its own, and the wait stops there with the application's last lines. A driver
+     forced to fail ended the Android box in 13 s.
 
 ## Still open, from these findings
 
