@@ -89,8 +89,29 @@ pub(super) fn b33p_shows(
     what: &str,
     matches: impl Fn(&MessageSnapshot) -> bool,
 ) -> Result<()> {
-    b33p.wait_for(&format!("{what} in b33p"), PATIENCE, |snapshot| {
+    let waited = b33p.wait_for(&format!("{what} in b33p"), PATIENCE, |snapshot| {
         snapshot.messages.iter().any(&matches).then_some(())
+    });
+    // What it showed instead: which chat was open, and its last messages.
+    waited.map_err(|error| {
+        let shown = b33p.snapshot().map_or_else(
+            |snapshot_error| format!("no snapshot: {snapshot_error}"),
+            |snapshot| {
+                let last: Vec<String> = snapshot
+                    .messages
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .map(|message| format!("{:?}", message.text))
+                    .collect();
+                format!(
+                    "open {:?}, its last messages {}",
+                    snapshot.selected,
+                    last.join(", ")
+                )
+            },
+        );
+        Error::Failed(format!("{error}; {shown}"))
     })
 }
 
