@@ -1,0 +1,11 @@
+# `--capture` (testbox/tools `tap`): the redirect of the clients' TLS connections to the tap,
+# before anything connects; for pod.yaml's init containers, in place of its `@TAP_INIT@` line.
+      {
+        name: "tap-redirect",
+        image: "localhost/@POD@-cdn0",
+        command: ["tap", "redirect"],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+        },
+      },

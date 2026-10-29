@@ -19,6 +19,8 @@ mod pod;
 mod process;
 #[cfg(unix)]
 mod vnc;
+#[cfg(unix)]
+mod wire;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -101,6 +103,12 @@ enum Command {
         #[arg(long)]
         wipe: bool,
     },
+    /// Decodes what `--capture`'s tap wrote down in a box's record again (its `wire/raw/`),
+    /// into its `wire/`: the events, a transcript per client, and the comparison.
+    Wire {
+        /// The box's record: `target/testbox-record/<box>`.
+        record: PathBuf,
+    },
     /// Prints containers' logs.
     Logs {
         /// The containers' names in testbox/pod.yaml.
@@ -121,6 +129,11 @@ pub(crate) struct TestOptions {
     /// no phase sees what another left.
     #[arg(long)]
     pub(crate) fresh: bool,
+    /// Relays what the clients say to the servers over TLS through the tap, which writes it
+    /// down into each box's record (`wire/`), for comparing Signal's own clients with b33p. Not
+    /// with the stress phases: the relay is a hop more, and their volume would fill the disk.
+    #[arg(long)]
+    pub(crate) capture: bool,
     #[command(flatten)]
     pub(crate) b33p: B33pOptions,
 }
@@ -190,6 +203,7 @@ fn main() -> ExitCode {
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod),
         Command::Down { wipe } => pod.holding(|| pod.down(wipe)),
+        Command::Wire { record } => wire::decode(&record),
         Command::Logs { services } => {
             let services: Vec<&str> = services.iter().map(String::as_str).collect();
             pod.logs(&services)

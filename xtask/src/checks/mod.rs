@@ -18,7 +18,7 @@ mod desktop;
 mod groups;
 mod lost;
 mod presage;
-mod record;
+pub(crate) mod record;
 mod rng;
 mod setup;
 mod storage;
@@ -27,7 +27,7 @@ mod tour;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
@@ -59,8 +59,20 @@ pub(crate) fn run(
         phases,
         screenshots,
         fresh,
+        capture,
         b33p,
     } = options;
+    if *capture
+        && let Some(stress) = phases.iter().find_map(|phase| match phase {
+            Phase::Stress(stress) => Some(<&'static str>::from(*stress)),
+            _ => None,
+        })
+    {
+        return Err(Error::Failed(format!(
+            "--capture is not for the stress phases ({stress})"
+        )));
+    }
+    containers.capture(*capture);
     let sockets = Sockets::new(containers);
     let files = containers.files_dir();
     let linked = chosen(phases, Phase::Linked);
@@ -472,8 +484,11 @@ impl Checks {
         check: impl FnOnce() -> Result<Found>,
     ) -> Option<Found> {
         let started = Instant::now();
+        let started_at = SystemTime::now();
         let outcome = check();
         let took = started.elapsed().as_secs_f64();
+        self.kept
+            .span(name, started_at, SystemTime::now(), outcome.is_ok());
         self.kept.shoot(name);
         match outcome {
             Ok(found) => {

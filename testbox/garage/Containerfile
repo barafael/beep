@@ -2,9 +2,10 @@
 # git.deuxfleurs.fr), Signal-Server's policies (`PostPolicyGenerator`) among them given the
 # `bucket` field `cdn0` adds. The binary from its image on Debian, behind the front in
 # testbox/tools (`cdn0`), which terminates TLS and maps the CDN's paths onto the `cdn` bucket. The
-# image also serves the page link previews are made of (testbox/tools `preview`), and puts its
-# address on the pod's loopback (`ip`, testbox/pod.yaml). The build context is the repository, for
-# the tools' sources.
+# image also serves the page link previews are made of (testbox/tools `preview`), puts its
+# address on the pod's loopback (`ip`, testbox/pod.yaml), and with `--capture` relays the clients'
+# TLS (testbox/tools `tap`, its redirect through `nft`; testbox/tap). The build context is the
+# repository, for the tools' sources.
 FROM docker.io/dxflrs/garage:v2.1.0@sha256:850490b7aef237f30859c7deeae8a7c99121cccbdf13dc57d6d10ae6e3e3694d AS garage
 
 FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
@@ -18,12 +19,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/testbox/tools/target,sharing=locked \
     find testbox/tools -path testbox/tools/target -prune -o -type f -exec touch {} + \
     && cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
-        --features cdn0,preview --bin cdn0 --bin preview \
-    && cp testbox/tools/target/release/cdn0 testbox/tools/target/release/preview /usr/local/bin/
+        --features cdn0,preview,tap --bin cdn0 --bin preview --bin tap \
+    && cp testbox/tools/target/release/cdn0 testbox/tools/target/release/preview \
+        testbox/tools/target/release/tap /usr/local/bin/
 
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=garage /garage /usr/local/bin/garage
-COPY --from=tools /usr/local/bin/cdn0 /usr/local/bin/preview /usr/local/bin/
+COPY --from=tools /usr/local/bin/cdn0 /usr/local/bin/preview /usr/local/bin/tap /usr/local/bin/
 ENTRYPOINT ["cdn0"]

@@ -182,6 +182,16 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
   the state the check left (its display catches up only later, often a check late; popups,
   windows of their own, aren't in it); `testbox/shot` takes Desktop's and Android's over the
   displays' sockets.
+- `test --capture` (and `run --capture`) also writes down what every client says to the servers
+  over TLS, for comparing Signal's own clients with b33p. An init container (`tap redirect`,
+  with NET_ADMIN) has nftables send the pod's connections to the TLS ports (8443–8448) to the
+  `tap` relay instead; the tap shows the keys' certificate, opens its own connection to the
+  server the client meant, offering what the client offered (so h2 stays h2, and extended
+  CONNECT and gRPC pass as they are), and copies the plaintext both ways into
+  `target/testbox-tap`. At the box's end the record gets it in `wire/raw/`, decoded beside it
+  (xtask/src/wire): `events.jsonl`, a transcript per client under each check's name, and
+  `compare.md`, the clients side by side. `cargo testbox wire <record>` decodes it again. Not
+  for the stress phases.
 - `cargo testbox logs b33p server` prints those containers' logs; the names are those in
   `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The last box
   stays up after `test`, so a failure on it can be looked at as it was.

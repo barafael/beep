@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{Context, Result};
 use crate::harness::Harness;
@@ -24,10 +24,22 @@ const DRAWING: Duration = Duration::from_secs(30);
 /// Where the run directory ([`Pod::run_dir`]) is in a b33p's container (testbox/b33p/pod.yaml).
 const B33P_RUN: &str = "/run/b33p";
 
+/// A check as `spans.jsonl` has it ([`Record::span`]): its name, when it started and ended
+/// (nanoseconds since the epoch, as the tap's records), and whether it passed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Span {
+    pub(crate) check: String,
+    pub(crate) started: u128,
+    pub(crate) ended: u128,
+    pub(crate) passed: bool,
+}
+
 /// A box's record, or a part's within it.
 pub(crate) struct Record {
     directory: PathBuf,
     shots: Option<Shots>,
+    /// With `--capture`: the checks' spans are written down ([`Self::span`]).
+    capture: bool,
 }
 
 /// The screenshots: the tool, the displays it takes (`<name>=<socket>`), the b33ps, and how
@@ -117,7 +129,11 @@ impl Record {
         } else {
             None
         };
-        Ok(Self { directory, shots })
+        Ok(Self {
+            directory,
+            shots,
+            capture: pod.capturing(),
+        })
     }
 
     /// The record of the part `name` within this one, its screenshots numbered from 1.
@@ -125,7 +141,45 @@ impl Record {
         let directory = self.directory.join(name);
         std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
         let shots = self.shots.clone().map(|shots| Shots { taken: 0, ..shots });
-        Ok(Self { directory, shots })
+        Ok(Self {
+            directory,
+            shots,
+            capture: self.capture,
+        })
+    }
+
+    /// With `--capture`, when the check `name` ran and how it went, as a line of `spans.jsonl`:
+    /// what the tap wrote down in that time is the check's (xtask/src/wire).
+    pub(super) fn span(&self, name: &str, started: SystemTime, ended: SystemTime, passed: bool) {
+        if !self.capture {
+            return;
+        }
+        let nanos = |at: SystemTime| {
+            at.duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos())
+        };
+        let span = Span {
+            check: name.to_owned(),
+            started: nanos(started),
+            ended: nanos(ended),
+            passed,
+        };
+        let path = self.directory.join("spans.jsonl");
+        let appended = serde_json::to_string(&span)
+            .map_err(std::io::Error::other)
+            .and_then(|line| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut file| {
+                        use std::io::Write as _;
+                        writeln!(file, "{line}")
+                    })
+            });
+        if let Err(error) = appended {
+            println!("record: {}: {error}", path.display());
+        }
     }
 
     /// With `--screenshots`, each display as it is after the check `name`. A screenshot that
@@ -189,7 +243,31 @@ impl Record {
                 &logcat.unwrap_or_else(|error| error.to_string()),
             );
         }
+        if pod.capturing() {
+            self.keep_capture(pod);
+        }
         println!("record: {}", self.directory.display());
+    }
+
+    /// What the tap wrote down into the record's `wire/raw/`. A connection still open goes on
+    /// writing to its file there: moved, it is the same file.
+    fn keep_capture(&self, pod: &Pod) {
+        let raw = self.directory.join("wire/raw");
+        let moved = std::fs::create_dir_all(&raw)
+            .and_then(|()| std::fs::read_dir(pod.tap_dir()))
+            .and_then(|entries| {
+                entries.into_iter().try_for_each(|entry| {
+                    let entry = entry?;
+                    std::fs::rename(entry.path(), raw.join(entry.file_name()))
+                })
+            });
+        if let Err(error) = moved {
+            println!("record: the tap's files into {}: {error}", raw.display());
+            return;
+        }
+        if let Err(error) = crate::wire::decode(&self.directory) {
+            println!("record: decoding the tap's files: {error}");
+        }
     }
 
     /// `contents` as the file `name` in the record; a failure is said, and fails nothing.

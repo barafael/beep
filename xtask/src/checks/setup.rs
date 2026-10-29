@@ -270,7 +270,14 @@ fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<()> {
     checks.require("the server is healthy", || server_healthy(containers))?;
     checks.require("the storage service serves", || {
         containers.await_ready(Ready::Storage, None, START)
-    })
+    })?;
+    // Before any client connects: the redirect sends them to it from the start.
+    if containers.capturing() {
+        checks.require("the tap relays the clients' TLS", || {
+            containers.await_ready(Ready::Tap, None, START)
+        })?;
+    }
+    Ok(())
 }
 
 fn server_healthy(containers: &Pod) -> Result<()> {

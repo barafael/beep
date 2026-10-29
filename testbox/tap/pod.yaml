@@ -1,0 +1,12 @@
+# `--capture` (testbox/tools `tap`): the relay that writes down what the clients and the servers
+# say, into the host's target/testbox-tap; for pod.yaml's containers, in place of its `@TAP@` line.
+      {
+        name: "tap",
+        image: "localhost/@POD@-cdn0",
+        command: ["tap"],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "tap", mountPath: "/tap" },
+        ],
+      },
