@@ -1177,7 +1177,10 @@ mod tests {
         ];
         let plain = pod.render(&[], 1).expect("a pod");
         for part in tapped {
-            assert!(!plain.contains(part), "{part} without --capture in\n{plain}");
+            assert!(
+                !plain.contains(part),
+                "{part} without --capture in\n{plain}"
+            );
         }
         pod.capture(true);
         let captured = pod.render(&[], 1).expect("a pod that captures");
