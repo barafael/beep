@@ -217,6 +217,32 @@ fn print_device_state() {
     }
 }
 
+/// How often `adb root` is tried, each time once the device is back.
+const ROOT_TRIES: u32 = 5;
+
+/// `adb root`, once adb reaches the device. Right after boot the emulator's transport can go
+/// offline for a moment (`adb devices`: `offline`; the emulator's own `adb shell` fails then too),
+/// and `adb root` answers "unable to connect for root: closed": tried again once it is back.
+fn root() -> Result<()> {
+    let mut tries = 0;
+    loop {
+        // `wait-for-device` waits for the `device` state, past `offline`.
+        adb(&["wait-for-device"])?;
+        match adb(&["root"]) {
+            Ok(_) => return Ok(()),
+            Err(error) if tries + 1 < ROOT_TRIES => {
+                tries += 1;
+                println!("android: adb root: {error}; again once the device is back");
+            }
+            Err(error) => {
+                // What the device says, for the next time.
+                print_device_state();
+                return Err(error);
+            }
+        }
+    }
+}
+
 fn adb(args: &[&str]) -> Result<String> {
     let mut command = Command::new("adb");
     command.args(args);
@@ -230,12 +256,7 @@ fn adb(args: &[&str]) -> Result<String> {
 /// (its sepolicy: `(typepermissive su)`); the emulator's `-prop` takes only `qemu.*`. The
 /// framework reads it as it starts, so this restarts it.
 fn raise_anr_timeouts() -> Result<()> {
-    if let Err(error) = adb(&["root"]) {
-        // Seen once, right after boot, without an account of why ("unable to connect for
-        // root: closed"): what the device says, for the next time.
-        print_device_state();
-        return Err(error);
-    }
+    root()?;
     adb(&["wait-for-device"])?;
     adb(&[
         "shell",
@@ -847,11 +868,61 @@ impl Driver {
             .max_by_key(|node| node.y)
             .ok_or("no \"Group link\" row")?;
         self.tap_at(row)?;
+        // On once the app has turned the link on with the server: a tap on the approval before
+        // that was lost, and the link stayed open to anyone.
+        self.switch_on("Group link")?;
         if approval {
-            // Enabled once the link is on.
             self.tap("Require admin approval", PATIENCE)?;
+            self.switch_on("Require admin approval")?;
         }
         Ok(())
+    }
+
+    /// Waits until the switch of the lowest row labelled `row` is on. The rows are Compose's
+    /// (core/ui Rows.ToggleRow): its Switch is a node of its own, `android.view.View` with the
+    /// role of a switch, checked when on, level with the row's text; while the row's change is
+    /// under way, a progress indicator stands in its place. Each look waits for the screen to
+    /// settle.
+    fn switch_on(&mut self, row: &str) -> Result<()> {
+        /// How far a row's switch may sit from its text, in pixels.
+        const LEVEL: u32 = 100;
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            let shown = self.element(row, PATIENCE)?;
+            let label = shown
+                .screen
+                .iter()
+                .filter(|node| node.labelled(row))
+                .max_by_key(|node| node.y)
+                .ok_or_else(|| Error::Failed(format!("no {row:?} row")))?;
+            let level: Vec<&agent::Node> = shown
+                .screen
+                .iter()
+                .filter(|node| node.y.abs_diff(label.y) <= LEVEL)
+                .collect();
+            if level.iter().any(|node| node.checked) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                let nodes: Vec<String> = level
+                    .iter()
+                    .map(|node| {
+                        format!(
+                            "{:?}/{:?} {} checked {} enabled {}",
+                            node.text,
+                            node.content_desc,
+                            node.class_name,
+                            node.checked,
+                            node.enabled
+                        )
+                    })
+                    .collect();
+                return Err(Error::Failed(format!(
+                    "the switch of {row:?} isn't on; level with it: {}",
+                    nodes.join("; ")
+                )));
+            }
+        }
     }
 
     /// The request among "Requests & invites" (PendingMembersActivity, strings.xml

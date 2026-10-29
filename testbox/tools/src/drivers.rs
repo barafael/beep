@@ -154,6 +154,12 @@ pub enum Desktop {
         member: String,
         text: String,
     },
+    /// Posts a text story with `text` to the group `group` names, from the Stories tab; back to
+    /// the chats after.
+    PostStory {
+        group: String,
+        text: String,
+    },
     /// Waits up to `timeout_ms` for a story with `text` posted to the group `from` names, in the
     /// Stories tab; back to the chats after.
     StoryShows {
