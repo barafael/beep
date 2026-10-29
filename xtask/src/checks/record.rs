@@ -243,10 +243,31 @@ impl Record {
                 &logcat.unwrap_or_else(|error| error.to_string()),
             );
         }
+        self.keep_contents(pod);
         if pod.capturing() {
             self.keep_capture(pod);
         }
         println!("record: {}", self.directory.display());
+    }
+
+    /// The b33ps' content logs (b33p-core content_log.rs) into the record's `content/`, for
+    /// the wire comparison: moved, so that the next box's b33ps start new ones.
+    fn keep_contents(&self, pod: &Pod) {
+        let kept = self.directory.join(crate::wire::content::DIRECTORY);
+        let moved = std::fs::read_dir(pod.run_dir()).and_then(|entries| {
+            entries.into_iter().try_for_each(|entry| {
+                let entry = entry?;
+                let name = entry.file_name();
+                if !name.to_string_lossy().starts_with(pod::CONTENT_LOG_PREFIX) {
+                    return Ok(());
+                }
+                std::fs::create_dir_all(&kept)?;
+                std::fs::rename(entry.path(), kept.join(name))
+            })
+        });
+        if let Err(error) = moved {
+            println!("record: the content logs into {}: {error}", kept.display());
+        }
     }
 
     /// What the tap wrote down into the record's `wire/raw/`. A connection still open goes on
