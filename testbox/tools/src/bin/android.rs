@@ -870,45 +870,56 @@ impl Driver {
         self.tap_at(row)?;
         // On once the app has turned the link on with the server: a tap on the approval before
         // that was lost, and the link stayed open to anyone.
-        self.switch_shows("Group link", true)?;
+        self.switch_on("Group link")?;
         if approval {
-            let shown = self.switch_shows("Require admin approval", false)?;
-            let approval_row = shown
-                .screen
-                .iter()
-                .find(|node| node.labelled("Require admin approval"))
-                .ok_or("no \"Require admin approval\" row")?;
-            self.tap_at(approval_row)?;
-            self.switch_shows("Require admin approval", true)?;
+            self.tap("Require admin approval", PATIENCE)?;
+            self.switch_on("Require admin approval")?;
         }
         Ok(())
     }
 
-    /// Waits until the switch beside the lowest row labelled `row` is enabled and `checked`,
-    /// and answers with that screen. Each look waits for the screen to settle.
-    fn switch_shows(&mut self, row: &str, checked: bool) -> Result<agent::Found> {
+    /// Waits until the switch of the lowest row labelled `row` is on. The rows are Compose's
+    /// (core/ui Rows.ToggleRow): its Switch is a node of its own, `android.view.View` with the
+    /// role of a switch, checked when on, level with the row's text; while the row's change is
+    /// under way, a progress indicator stands in its place. Each look waits for the screen to
+    /// settle.
+    fn switch_on(&mut self, row: &str) -> Result<()> {
+        /// How far a row's switch may sit from its text, in pixels.
+        const LEVEL: u32 = 100;
         let deadline = std::time::Instant::now() + PATIENCE;
         loop {
             let shown = self.element(row, PATIENCE)?;
-            let state = shown
+            let label = shown
                 .screen
                 .iter()
                 .filter(|node| node.labelled(row))
                 .max_by_key(|node| node.y)
-                .and_then(|label| {
-                    shown
-                        .screen
-                        .iter()
-                        .filter(|node| node.class_name == "android.widget.Switch")
-                        .min_by_key(|switch| switch.y.abs_diff(label.y))
-                })
-                .map(|switch| (switch.enabled, switch.checked));
-            if state == Some((true, checked)) {
-                return Ok(shown);
+                .ok_or_else(|| Error::Failed(format!("no {row:?} row")))?;
+            let level: Vec<&agent::Node> = shown
+                .screen
+                .iter()
+                .filter(|node| node.y.abs_diff(label.y) <= LEVEL)
+                .collect();
+            if level.iter().any(|node| node.checked) {
+                return Ok(());
             }
             if std::time::Instant::now() >= deadline {
+                let nodes: Vec<String> = level
+                    .iter()
+                    .map(|node| {
+                        format!(
+                            "{:?}/{:?} {} checked {} enabled {}",
+                            node.text,
+                            node.content_desc,
+                            node.class_name,
+                            node.checked,
+                            node.enabled
+                        )
+                    })
+                    .collect();
                 return Err(Error::Failed(format!(
-                    "the switch beside {row:?} is (enabled, checked) {state:?}, not (true, {checked})"
+                    "the switch of {row:?} isn't on; level with it: {}",
+                    nodes.join("; ")
                 )));
             }
         }
