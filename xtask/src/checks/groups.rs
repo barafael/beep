@@ -2,7 +2,7 @@ use b33p_harness::{Action, InviteLinkAccess};
 
 use super::b33p::{
     accept_request, b33p_chat, b33p_details, b33p_shows, b33p_title, chat_previewing, select,
-    type_and_send,
+    story_shows, type_and_send,
 };
 use super::clients::{Android, android_containing, android_shows, desktop_shows, desktop_text};
 use super::presage::{Account, Presage};
@@ -329,6 +329,16 @@ pub(super) fn groups(
             text: story.to_owned(),
             timeout_ms: PATIENCE_MS,
         })
+    });
+    // The other way: Signal's apps send a story flagged as one (`?story=true`), which the
+    // server delivers only to a device that asked for stories (`X-Signal-Receive-Stories`).
+    let desktop_story = "testbox groups: a story from Desktop";
+    checks.record("a story Desktop posts to the group shows on b33p", || {
+        desktop.call(drivers::Desktop::PostStory {
+            group: by_desktop.to_owned(),
+            text: desktop_story.to_owned(),
+        })?;
+        story_shows(b33p, &group, desktop_story)
     });
 
     // b33p's own changes to the group. Android was left elsewhere (the request it approved), so

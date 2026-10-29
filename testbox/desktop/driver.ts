@@ -181,6 +181,18 @@ function rendered(text: string, whole: boolean): RegExp {
   return new RegExp(whole ? `^${marks}${pattern}${marks}$` : pattern);
 }
 
+/** Leaves a story half made, its editor and its send dialog, so that the next call finds the
+ * chats: best effort, each step only if it is there. */
+async function discardStory(): Promise<void> {
+  const escape = () => page().keyboard.press('Escape');
+  const discard = () =>
+    page().getByRole('button', { name: 'Discard', exact: true }).first().click({ timeout: 5_000 });
+  const steps = [escape, escape, discard, discard];
+  for (const step of steps) {
+    await step().catch(() => {});
+  }
+}
+
 /** The open group's "Edit group" dialog, from its settings' header: its title, `old_title`. */
 async function openEditGroup(old_title: string): Promise<Locator> {
   await openGroupSettings();
@@ -462,6 +474,50 @@ const methods = {
     await composer.pressSequentially(text);
     await composer.press('Enter');
     return null;
+  },
+  /** Posts a text story with `text` to the group `group`, as Desktop's own test does
+   * (ts/test-mock/messaging/stories_test.node.ts, "allows replies to groups"). A group that
+   * never had a story isn't offered: it is added through "New", "New group story", where it is
+   * chosen and confirmed (SendStoryModal.dom.tsx, Page.ChooseGroups). */
+  post_story: async ({ group, text }: { group: string; text: string }) => {
+    await navTab('Stories');
+    try {
+      await page()
+        .locator('.Stories__pane__list')
+        .getByRole('button', { name: 'Add a story' })
+        .click();
+      await page().getByRole('button', { name: 'Text story' }).click();
+      // Its text is a textarea disabled until the text control is on (TextStoryCreator.dom.tsx,
+      // `StoryCreator__control--text`).
+      await page().getByRole('button', { name: 'Add story text' }).click();
+      await page().locator('.TextAttachment__text__textarea').fill(text);
+      await page().getByRole('button', { name: 'Next' }).click();
+      const offered = page()
+        .locator('.Checkbox__container')
+        .filter({ hasText: rendered(group, false) });
+      if (await offered.isVisible()) {
+        // Its label, as Desktop's test clicks it: the box itself is drawn over.
+        await offered.getByText(rendered(group, false)).click();
+      } else {
+        // Chosen there, it comes back ticked.
+        await page().getByRole('button', { name: 'New', exact: true }).click();
+        await page().getByText('New group story', { exact: true }).click();
+        await page()
+          .locator('.SendStoryModal .Checkbox__container')
+          .filter({ hasText: rendered(group, false) })
+          .getByText(rendered(group, false))
+          .click();
+        await page().getByRole('button', { name: 'OK', exact: true }).click();
+      }
+      await page().getByRole('button', { name: 'Send story' }).click();
+      await page().locator('.SendStoryModal').waitFor({ state: 'detached' });
+      return null;
+    } catch (error) {
+      await discardStory();
+      throw error;
+    } finally {
+      await navTab('Chats');
+    }
   },
   /** Waits for a story with `text` posted to the group `from`: its row in the Stories tab
    * (StoryListItem), opened. */

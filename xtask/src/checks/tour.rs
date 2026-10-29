@@ -20,7 +20,7 @@ use b33p_harness::{
 use serde::Serialize;
 use strum::VariantArray;
 
-use super::b33p::{edit, select};
+use super::b33p::{edit, select, story_shows};
 use super::rng::{self, Xorshift};
 use super::setup::{MeshB33p, MeshBox, started};
 use super::stress::{Sample, growing, no_panic, sample};
@@ -2336,30 +2336,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             .filter(|&k| k != by)
             .collect();
         for k in others {
-            let b33p = self.harness(k);
-            // Opened again until it shows: before the story came, there was none to open.
-            let deadline = Instant::now() + PATIENCE;
-            let shown = loop {
-                b33p.act(Action::OpenStory {
-                    conversation: author.clone(),
-                })?;
-                let shown = b33p.wait_for(
-                    &format!("the story on b33p {k}"),
-                    Duration::from_secs(5),
-                    |snapshot| {
-                        snapshot
-                            .story
-                            .as_ref()
-                            .is_some_and(|story| story.text.as_deref() == Some(text))
-                            .then_some(())
-                    },
-                );
-                if shown.is_ok() || Instant::now() >= deadline {
-                    break shown;
-                }
-            };
-            b33p.act(Action::CloseStory)?;
-            shown?;
+            story_shows(self.harness(k), &author, text)?;
         }
         Ok(())
     }
