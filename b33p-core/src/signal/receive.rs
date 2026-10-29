@@ -239,6 +239,10 @@ async fn handle_received(
             events.sent(Event::Synced)
         }
         Received::StickerPackInstalled { .. } => events.sent(Event::StickerPacksChanged),
+        Received::MissedGroupChanges {
+            master_key,
+            changes,
+        } => super::groups::on_missed_changes(manager, ctx, names, master_key, changes).await,
         Received::Contacts => {
             names.clear();
             send_conversations(manager, ctx).await;

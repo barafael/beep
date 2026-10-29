@@ -53,6 +53,8 @@ const PACKAGE_PREFIX: &str = "org.thoughtcrime.securesms";
 /// How long a step waits for what it wants, unless it takes [`SLOW`].
 const PATIENCE: Duration = Duration::from_secs(30);
 const SLOW: Duration = Duration::from_secs(60);
+/// How long a look at the screen takes to see what it settled on.
+const GLANCE: Duration = Duration::from_secs(2);
 /// The on-device agent (testbox/android/agent), its instrumentation, and the socket it listens on,
 /// which `am instrument -r` prints once it does (Agent.kt `sendStatus`).
 const AGENT_APK: &str = "/opt/testbox/agent.apk";
@@ -918,9 +920,21 @@ impl Driver {
         self.tap_at(confirm)
     }
 
-    /// The app from its launcher entry, on a fresh task: its main screen, not whatever was last
-    /// open (FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK).
-    fn launch(&self) -> Result<()> {
+    /// The app on its chat list. If it shows another screen, or isn't running, from its launcher
+    /// entry on a fresh task: its main screen, not whatever was last open
+    /// (FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK). Not when it is on its chat list
+    /// already: clearing the task while Compose still disposes what the list showed (a row's
+    /// menu, closing) crashes Signal-Android now and then ("ConversationListFragment … is not
+    /// currently in the FragmentManager"), and the list's controls going away doesn't say when
+    /// that is done.
+    fn launch(&mut self) -> Result<()> {
+        // The chat list's own button (strings.xml `conversation_list_fragment__fab_content_description`).
+        if self
+            .first_shown(vec![agent::Wanted::control("New chat")], GLANCE)
+            .is_ok()
+        {
+            return Ok(());
+        }
         adb(&[
             "shell",
             "am",

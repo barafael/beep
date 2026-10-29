@@ -4,12 +4,15 @@ use super::b33p::{
     accept_request, b33p_chat, b33p_details, b33p_shows, b33p_title, chat_previewing, select,
     type_and_send,
 };
-use super::clients::{android_containing, android_shows, desktop_shows, desktop_text};
+use super::clients::{Android, android_containing, android_shows, desktop_shows, desktop_text};
 use super::presage::{Account, Presage};
-use super::setup::AndroidBox;
+use super::setup::{AndroidBox, started_b33p};
 use super::{Checks, PATIENCE, PATIENCE_MS};
+use crate::Sockets;
 use crate::error::{Error, Result};
-use crate::pod::Pod;
+use crate::harness::Harness;
+use crate::pod::{B33P, Pod};
+use crate::process;
 use testbox_tools::drivers::{self, MemberChange};
 
 /// A group b33p makes of its account (A, with Android) and the peer (B, with Desktop) and a
@@ -19,6 +22,7 @@ pub(super) fn groups(
     checks: &mut Checks,
     fixture: &mut AndroidBox<'_>,
     containers: &Pod,
+    sockets: &Sockets,
 ) -> Result<()> {
     let AndroidBox {
         peer,
@@ -155,7 +159,7 @@ pub(super) fn groups(
     // `icu:GroupV2--member-privilege--promote--other--other`, `--demote--other--other`,
     // `icu:GroupV2--member-remove--other--other`). The member's place in b33p's details: an
     // admin or not, or gone.
-    for (name, change, b33p_says, desktop_says, admin) in [
+    let members = [
         (
             "the member Android makes an admin is one on b33p and Desktop",
             MemberChange::MakeAdmin,
@@ -177,23 +181,56 @@ pub(super) fn groups(
             "removed Member",
             None,
         ),
-    ] {
+    ];
+    let [made_admin, took_admin, removed] = &members;
+    for (name, change, b33p_says, desktop_says, admin) in [made_admin, took_admin] {
         checks.record(name, || {
-            android.call(drivers::Android::GroupMember {
-                group: by_desktop.to_owned(),
-                member: Account::Member.name().into_owned(),
-                change,
-            })?;
-            b33p_details(b33p, b33p_says, "the member's place", |details| {
-                let member = details
-                    .members
-                    .iter()
-                    .find(|member| member.name == Account::Member.name());
-                (member.map(|member| member.admin) == admin).then_some(())
-            })?;
+            member_change(android, b33p, by_desktop, *change, b33p_says, *admin)?;
             desktop_text(desktop, desktop_says)
         });
     }
+
+    // What changes while b33p is stopped waits on the server, a message for each change; b33p
+    // takes each change from its message, once it starts, in turn (presage `Group::apply`).
+    checks.record(
+        "two changes Android makes while b33p is stopped show on b33p once it starts",
+        || {
+            containers.stop(B33P)?;
+            for change in [made_admin.1, took_admin.1] {
+                android.call(drivers::Android::GroupMember {
+                    group: by_desktop.to_owned(),
+                    member: Account::Member.name().into_owned(),
+                    change,
+                })?;
+            }
+            let since = process::now()?;
+            containers.start(B33P)?;
+            *b33p = started_b33p(containers, &sockets.b33p, since)?;
+            select(b33p, &group)?;
+            // Each said once before.
+            for notice in [made_admin.2, took_admin.2] {
+                b33p.wait_for(
+                    &format!("{notice:?} a second time in b33p"),
+                    PATIENCE,
+                    |snapshot| {
+                        let said = snapshot
+                            .messages
+                            .iter()
+                            .filter(|message| message.notice && message.text == notice)
+                            .count();
+                        (said >= 2).then_some(())
+                    },
+                )?;
+            }
+            member_change_shown(b33p, took_admin.2, took_admin.4)
+        },
+    );
+
+    let (name, change, b33p_says, desktop_says, admin) = removed;
+    checks.record(name, || {
+        member_change(android, b33p, by_desktop, *change, b33p_says, *admin)?;
+        desktop_text(desktop, desktop_says)
+    });
 
     // The invite link, and a request to join by it: Desktop's account leaves and asks back in,
     // Android approves. One an admin removed may not rejoin by the link (Desktop's messages.json
@@ -333,4 +370,33 @@ pub(super) fn groups(
     );
 
     Ok(())
+}
+
+/// Android makes `change` to the member of the group Desktop named `group`, and b33p says so.
+fn member_change(
+    android: &mut Android,
+    b33p: &mut Harness,
+    group: &str,
+    change: MemberChange,
+    b33p_says: &str,
+    admin: Option<bool>,
+) -> Result<()> {
+    android.call(drivers::Android::GroupMember {
+        group: group.to_owned(),
+        member: Account::Member.name().into_owned(),
+        change,
+    })?;
+    member_change_shown(b33p, b33p_says, admin)
+}
+
+/// b33p says `notice`, and its details show the member an admin or not as `admin` says, or
+/// gone.
+fn member_change_shown(b33p: &mut Harness, notice: &str, admin: Option<bool>) -> Result<()> {
+    b33p_details(b33p, notice, "the member's place", |details| {
+        let member = details
+            .members
+            .iter()
+            .find(|member| member.name == Account::Member.name());
+        (member.map(|member| member.admin) == admin).then_some(())
+    })
 }
