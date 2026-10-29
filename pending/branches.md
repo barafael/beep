@@ -47,7 +47,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`ab23dc4`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, #488's tokio `Mutex` (gferon's review: steps wait in order), #473's open-link join fix, #490 and #491 (`bdad8d9`), and #492 (`ProvisioningSecrets::read_receipts`, beep #50), and from the wire comparison #493 (stories sent with `?story=true`, and sealed) and #494 (a keepalive every 30 s); a fast-forward of `cddb0bc` | Pinned by `story-pins` |
+| `langis/integration` (`f53533a`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, #488's tokio `Mutex` (gferon's review: steps wait in order), #473's open-link join fix, #490 and #491 (`bdad8d9`), and #492 (`ProvisioningSecrets::read_receipts`, beep #50), and from the wire comparison #493 (stories sent with `?story=true`, and sealed, and no error logged for their transcript) and #494 (a keepalive every 30 s); a fast-forward of `cddb0bc` | Pinned by `story-pins` |
 | `pr/session-lock` (`d56c1ad`), `pr/session-lock-ack` (`586b5a2`) | #488 with the tokio `Mutex`; the same with #442 and #489 on top | whisperfish/libsignal-service-rs#488; pinned by presage #473 and #476 |
 | `groups-v2-changes` (`a725052`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays), plus: joining by an open invite link leaves `join_from_invite_link` to the server, which refused it ("Invalid field set on action"; found by the tour) | Pinned by presage `pr/groups` (`421083d`) |
 
