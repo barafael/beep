@@ -503,9 +503,20 @@ pub(super) async fn link_preview(
 
 /// Tells our other devices about something done here.
 pub(super) async fn send_sync(manager: &Mgr, outbox: &Outbox, sync: SyncMessage) {
+    send_sync_at(manager, outbox, sync, now_millis()).await;
+}
+
+/// [`send_sync`], sent at `timestamp`: that of what it tells of, where the other devices take
+/// the envelope's.
+pub(super) async fn send_sync_at(
+    manager: &Mgr,
+    outbox: &Outbox,
+    sync: SyncMessage,
+    timestamp: u64,
+) {
     let own = own_id(manager);
     if let Err(error) = outbox
-        .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
+        .message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
     {
         warn!(error = %scrubbed(&error), "failed to tell our other devices");

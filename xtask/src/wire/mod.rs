@@ -705,6 +705,9 @@ fn chat(
             }),
         );
         chat_event.noted.extend(issued);
+        chat_event
+            .noted
+            .extend(sent_at(&verb, &path, &request_body).map(|at| format!("timestamp={at}")));
         found.push(chat_event);
     }
 }
@@ -724,6 +727,23 @@ fn issued(path: &str, body: Option<&[u8]>) -> Option<String> {
     serde_json::from_slice::<Credential>(body?)
         .ok()
         .map(|credential| credential.username)
+}
+
+/// A message send's body: what it says it was sent at.
+#[derive(serde::Deserialize)]
+struct Sending {
+    timestamp: u64,
+}
+
+/// The time a message send gives its messages (`PUT /v1/messages/<to>`): the envelope's
+/// timestamp, which a receiver may take as the message's.
+fn sent_at(verb: &str, path: &str, body: &[u8]) -> Option<u64> {
+    if verb != "PUT" || !path.starts_with("/v1/messages/") {
+        return None;
+    }
+    serde_json::from_slice::<Sending>(body)
+        .ok()
+        .map(|sending| sending.timestamp)
 }
 
 /// A chat response, waiting for its request.
