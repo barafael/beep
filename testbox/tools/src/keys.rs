@@ -86,6 +86,29 @@ pub const STORAGE_PORT: u16 = 8448;
 /// storage-service's admin port: Dropwizard's default, 8081, is Signal-Server's in the pod.
 pub const STORAGE_ADMIN_PORT: u16 = 8449;
 
+/// The ports the clients reach the servers on over TLS, which `--capture` relays through the `tap`
+/// tool to see what they say: Signal-Server's three, the CDNs' and the storage service's.
+pub const TAPPED_PORTS: [u16; 6] = [
+    LIBSIGNAL_NET_PORT,
+    LIBSIGNAL_SERVICE_PORT,
+    OMNIBUS_PORT,
+    CDN3_PORT,
+    CDN0_PORT,
+    STORAGE_PORT,
+];
+
+/// Where `tap` listens for what was bound for `port`, one of [`TAPPED_PORTS`].
+pub const fn tap_port(port: u16) -> u16 {
+    port + 1000
+}
+
+/// The address `tap` reaches the servers from, on the pod's loopback: the redirect to it passes
+/// what comes from here by.
+pub const TAP_SOURCE: [u8; 4] = [127, 0, 0, 2];
+
+/// Where `tap` writes what it relays (testbox/tap/pod.yaml).
+pub const TAP_DIR: &str = "/tap";
+
 /// An S3 bucket, by its name and region.
 #[derive(Clone, Copy)]
 pub struct Bucket {

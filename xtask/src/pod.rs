@@ -5,6 +5,7 @@ use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,11 @@ const CLIENTS: &str = "# @CLIENTS@";
 /// (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml).
 const B33PS: &str = "# @B33PS@";
 const B33P_VOLUMES: &str = "# @B33P_VOLUMES@";
+/// The lines of pod.yaml's init containers, containers and volumes the tap's go in, with
+/// `--capture` (testbox/tap); without, nothing.
+const TAP_INIT: &str = "# @TAP_INIT@";
+const TAP: &str = "# @TAP@";
+const TAP_VOLUMES: &str = "# @TAP_VOLUMES@";
 /// The most b33ps a box has (`--b33ps`).
 pub const MAX_B33PS: u8 = 16;
 /// The longest instance name: the names podman gives the pod's parts stay short.
@@ -45,6 +51,8 @@ pub enum Service {
     B33p(u8),
     Desktop,
     Android,
+    /// With `--capture`, the relay of the clients' TLS (testbox/tap).
+    Tap,
 }
 
 /// The b33p every box has.
@@ -62,6 +70,7 @@ impl Service {
             Self::B33p(n) => format!("b33p-{n}"),
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
+            Self::Tap => "tap".to_owned(),
         }
     }
 
@@ -92,6 +101,7 @@ pub enum Ready {
     B33p(u8),
     Desktop,
     Android,
+    Tap,
 }
 
 impl Ready {
@@ -102,6 +112,7 @@ impl Ready {
             Self::B33p(n) => Service::B33p(n),
             Self::Desktop => Service::Desktop,
             Self::Android => Service::Android,
+            Self::Tap => Service::Tap,
         }
     }
 
@@ -113,6 +124,7 @@ impl Ready {
             Self::Storage => testbox_tools::STORAGE_READY,
             Self::B33p(_) => b33p_harness::LISTENING,
             Self::Desktop | Self::Android => testbox_tools::drivers::LISTENING,
+            Self::Tap => testbox_tools::TAP_READY,
         }
     }
 }
@@ -300,6 +312,8 @@ pub struct Pod {
     rendered: PathBuf,
     /// What tells of a lost message, from outside the containers' logs ([`Self::note_lost`]).
     lost: Mutex<Vec<String>>,
+    /// Whether the boxes it plays relay the clients' TLS through the tap ([`Self::capture`]).
+    capture: AtomicBool,
 }
 
 impl Pod {
@@ -332,6 +346,7 @@ impl Pod {
             name,
             target,
             lost: Mutex::default(),
+            capture: AtomicBool::new(false),
         })
     }
 
@@ -344,6 +359,22 @@ impl Pod {
     /// as the clients' side and the xtask's are both the user's.
     pub fn run_dir(&self) -> PathBuf {
         self.target("run")
+    }
+
+    /// With `capture`, the boxes played from now on relay what the clients say to the servers
+    /// over TLS through the tap, which writes it down in [`Self::tap_dir`] (testbox/tap).
+    pub fn capture(&self, capture: bool) {
+        self.capture.store(capture, Ordering::Relaxed);
+    }
+
+    pub fn capturing(&self) -> bool {
+        self.capture.load(Ordering::Relaxed)
+    }
+
+    /// What the tap wrote down (testbox/tap/volumes.yaml), the box's since it played from
+    /// nothing ([`Self::fresh`]).
+    pub fn tap_dir(&self) -> PathBuf {
+        self.target("tap")
     }
 
     /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
@@ -537,6 +568,12 @@ impl Pod {
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
                 .context(directory.display().to_string())?;
         }
+        if self.capturing() {
+            let tap = self.tap_dir();
+            std::fs::create_dir_all(&tap).context(tap.display().to_string())?;
+            std::fs::set_permissions(&tap, std::fs::Permissions::from_mode(0o700))
+                .context(tap.display().to_string())?;
+        }
         testbox_tools::write(&self.rendered, self.render(clients, b33ps)?)?;
         // Each container's log in a file conmon writes as it comes (k8s-file), not journald's,
         // which falls up to a second behind under heavy disk writes (testbox/container-logs.md).
@@ -559,6 +596,11 @@ impl Pod {
     /// [`Self::note_lost`] noted of the box before.
     pub fn fresh(&self, clients: &[Client], b33ps: u8) -> Result<()> {
         self.down(true)?;
+        // The box before's capture went into its record ([`crate::checks`]' `keep_logs`).
+        let tap = self.tap_dir();
+        if tap.exists() {
+            std::fs::remove_dir_all(&tap).context(tap.display().to_string())?;
+        }
         self.lost
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -567,8 +609,9 @@ impl Pod {
     }
 
     /// pod.yaml with this box's names (`@POD@`) and directories (`@TARGET@`) filled in, the
-    /// clients' containers in its [`CLIENTS`] line, and each b33p's container and volumes in its
-    /// [`B33PS`] and [`B33P_VOLUMES`] lines.
+    /// clients' containers in its [`CLIENTS`] line, each b33p's container and volumes in its
+    /// [`B33PS`] and [`B33P_VOLUMES`] lines, and with `--capture` the tap's in its [`TAP_INIT`],
+    /// [`TAP`] and [`TAP_VOLUMES`] lines.
     fn render(&self, clients: &[Client], b33ps: u8) -> Result<String> {
         let read = |path: &str| testbox_tools::read(&self.repo.join(path));
         let containers = clients
@@ -587,12 +630,27 @@ impl Pod {
         };
         let b33p_containers = each_b33p("testbox/b33p/pod.yaml")?;
         let b33p_volumes = each_b33p("testbox/b33p/volumes.yaml")?;
+        let tap = |path: &str| {
+            if self.capturing() {
+                read(path)
+            } else {
+                Ok(String::new())
+            }
+        };
+        let (tap_init, tap_container, tap_volumes) = (
+            tap("testbox/tap/init.yaml")?,
+            tap("testbox/tap/pod.yaml")?,
+            tap("testbox/tap/volumes.yaml")?,
+        );
         let pod: String = read("testbox/pod.yaml")?
             .lines()
             .map(|line| match line.trim() {
                 CLIENTS => containers.clone(),
                 B33PS => b33p_containers.clone(),
                 B33P_VOLUMES => b33p_volumes.clone(),
+                TAP_INIT => tap_init.clone(),
+                TAP => tap_container.clone(),
+                TAP_VOLUMES => tap_volumes.clone(),
                 _ => format!("{line}\n"),
             })
             .collect();

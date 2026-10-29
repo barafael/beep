@@ -54,6 +54,7 @@
           capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
         },
       },
+      # @TAP_INIT@
     ],
     containers: [
       # The stores Signal-Server's test factories would start through Testcontainers, at the
@@ -185,6 +186,7 @@
       },
       # @B33PS@
       # @CLIENTS@
+      # @TAP@
     ],
     volumes: [
       { name: "keys", persistentVolumeClaim: { claimName: "@POD@-keys" } },
@@ -200,6 +202,7 @@
       # Each client's display socket, in a directory only that client mounts.
       { name: "view-desktop", hostPath: { path: "@TARGET@-view/desktop", type: "Directory" } },
       { name: "view-android", hostPath: { path: "@TARGET@-view/android", type: "Directory" } },
+      # @TAP_VOLUMES@
     ],
   },
 }

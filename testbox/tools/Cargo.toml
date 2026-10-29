@@ -24,6 +24,8 @@ cdn0 = [
 ]
 foundationdb = ["async"]
 preview = ["async", "dep:axum", "dep:axum-server", "dep:rustls"]
+# `--capture`'s TLS relay.
+tap = ["async", "tokio/net", "tokio/rt-multi-thread", "dep:rustls", "dep:tokio-rustls"]
 android = ["dep:hex", "dep:sha2"]
 # `with-display`: the compositor's protocols, the umask for its sockets, the stop signals.
 display = ["dep:wayland-client", "dep:rustix", "dep:signal-hook"]
@@ -51,6 +53,10 @@ required-features = ["cdn0"]
 [[bin]]
 name = "preview"
 required-features = ["preview"]
+
+[[bin]]
+name = "tap"
+required-features = ["tap"]
 
 [[bin]]
 name = "foundationdb"
@@ -87,7 +93,8 @@ axum = { version = "0.8", optional = true, default-features = false, features = 
 axum-server = { version = "0.7", optional = true, features = ["tls-rustls-no-provider"] }
 # The upload with the bucket field in front, streamed.
 futures-util = { version = "0.3", optional = true, default-features = false }
-rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
 # Plain HTTP to Garage on the same localhost: no TLS of its own.
 reqwest = { version = "0.12", optional = true, default-features = false }
 serde_yaml = { version = "0.9", optional = true }

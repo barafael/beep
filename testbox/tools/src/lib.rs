@@ -1,6 +1,6 @@
 //! What the testbox's programs share: failures typed, with what was being done; running commands
-//! ([`process`]); the drivers' protocol ([`drivers`]) and the keys ([`keys`]), which the xtask uses
-//! too.
+//! ([`process`]); the drivers' protocol ([`drivers`]), the keys ([`keys`]) and what `tap` writes
+//! ([`tap`]), which the xtask uses too.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
@@ -15,6 +15,7 @@ pub mod avd;
 pub mod drivers;
 pub mod keys;
 pub mod process;
+pub mod tap;
 #[cfg(feature = "android")]
 pub mod verification;
 
@@ -43,6 +44,9 @@ pub fn cdn0_request_line(method: &str, path: &str, status: u16) -> String {
 
 /// What the `preview` tool logs once it serves.
 pub const PREVIEW_READY: &str = "preview: serving";
+
+/// What `tap` says once it listens on every port it relays.
+pub const TAP_READY: &str = "tap: relaying";
 
 /// The line the `preview` tool logs for each request, which the checks can wait on.
 pub fn preview_request_line(path: &str, status: u16) -> String {
