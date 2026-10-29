@@ -490,6 +490,13 @@ async fn handle_content(
     receipts: &mut Receipts,
     content: &Content,
 ) -> bool {
+    #[cfg(feature = "test-servers")]
+    crate::content_log::received(
+        content.metadata.sender.service_id_string(),
+        content.metadata.sender_device.into(),
+        content.timestamp(),
+        &content.body,
+    );
     let events = &ctx.events;
     // Sync messages speak for our account: what our other devices sent, read, blocked or
     // accepted. Only our own devices may say so (the sender is authenticated by the session);

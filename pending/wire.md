@@ -166,6 +166,12 @@ cddb0bc, Signal-Server ccc22f9a.
   - `presage-rs`: unauthenticated sends and CDN traffic. Since b33p names itself, these are
     presage-cli's;
   - `unknown`: connections closed before a request.
-- The content layer (plan M4): what each client puts in `Content`, seen where b33p decrypts it.
+- **Done** (#127): the content layer. b33p's `test-servers` builds write each content they take
+  in (b33p-core content_log.rs); the record keeps them in `content/`, and compare.md's Contents
+  section says, for each kind, which fields each sender filled in. What b33p sends shows where
+  another b33p takes it in (the mesh box). 2026-10-29, first look: b33p's data messages carry
+  the fields Desktop's do, but `isViewOnce` (Desktop says false). Not seen this way: b33p's own
+  sync transcripts (the mesh's primaries are presage-cli's), and Android's story transcripts
+  (no Android driver posts a story yet).
 - A `wire` phase of symmetric scenarios, with an idle stretch, if the existing phases leave
   gaps. So far the keepalives and the background requests are visible enough without one.
