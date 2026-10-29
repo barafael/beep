@@ -463,6 +463,49 @@ const methods = {
     await composer.press('Enter');
     return null;
   },
+  /** Posts a text story with `text` to the group `group`, as Desktop's own test does
+   * (ts/test-mock/messaging/stories_test.node.ts, "allows replies to groups"). A group that
+   * never had a story isn't offered: it is added through "New", "New group story", where it is
+   * chosen and confirmed (SendStoryModal.dom.tsx, Page.ChooseGroups). */
+  post_story: async ({ group, text }: { group: string; text: string }) => {
+    await navTab('Stories');
+    try {
+      await page()
+        .locator('.Stories__pane__list')
+        .getByRole('button', { name: 'Add a story' })
+        .click();
+      await page().getByRole('button', { name: 'Text story' }).click();
+      // As Desktop's test notes, `.click()` doesn't reach it.
+      await page().locator('.TextAttachment').dispatchEvent('click');
+      await page().getByRole('textbox', { name: 'Add text' }).fill(text);
+      await page().getByRole('button', { name: 'Next' }).click();
+      const offered = page()
+        .locator('.Checkbox__container')
+        .filter({ hasText: rendered(group, false) });
+      if (!(await offered.isVisible())) {
+        await page().getByRole('button', { name: 'New', exact: true }).click();
+        await page().getByText('New group story', { exact: true }).click();
+        await page()
+          .locator('.SendStoryModal .Checkbox__container')
+          .filter({ hasText: rendered(group, false) })
+          .click();
+        await page().getByRole('button', { name: 'OK', exact: true }).click();
+      }
+      // Chosen on the way in, or offered: ticked either way.
+      const chosen = page()
+        .locator('.Checkbox__container')
+        .filter({ hasText: rendered(group, false) })
+        .getByRole('checkbox');
+      if (!(await chosen.isChecked())) {
+        await chosen.check();
+      }
+      await page().getByRole('button', { name: 'Send story' }).click();
+      await page().locator('.SendStoryModal').waitFor({ state: 'detached' });
+      return null;
+    } finally {
+      await navTab('Chats');
+    }
+  },
   /** Waits for a story with `text` posted to the group `from`: its row in the Stories tab
    * (StoryListItem), opened. */
   story_shows: async (

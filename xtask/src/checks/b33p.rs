@@ -1,6 +1,6 @@
 //! What the checks do in b33p, and wait for it to show.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Action, Answer, ConversationSnapshot, Delivery, DetailsSnapshot, MessageSnapshot,
@@ -107,6 +107,34 @@ pub(super) fn unlock(b33p: &mut Harness) -> Result<()> {
         confirmation: STORE_PASSWORD.to_owned(),
     })
     .map(drop)
+}
+
+/// Waits for b33p to show a story with `text` among `conversation`'s (b33p files a group's
+/// stories under the group, b33p-core `stories::on_story`), and closes it. It is opened again
+/// until it shows: before the story came, there was none to open.
+pub(super) fn story_shows(b33p: &mut Harness, conversation: &str, text: &str) -> Result<()> {
+    let deadline = Instant::now() + PATIENCE;
+    let shown = loop {
+        b33p.act(Action::OpenStory {
+            conversation: conversation.to_owned(),
+        })?;
+        let shown = b33p.wait_for(
+            &format!("the story {text:?}"),
+            Duration::from_secs(5),
+            |snapshot| {
+                snapshot
+                    .story
+                    .as_ref()
+                    .is_some_and(|story| story.text.as_deref() == Some(text))
+                    .then_some(())
+            },
+        );
+        if shown.is_ok() || Instant::now() >= deadline {
+            break shown;
+        }
+    };
+    b33p.act(Action::CloseStory)?;
+    shown
 }
 
 pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<()> {
