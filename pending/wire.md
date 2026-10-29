@@ -30,6 +30,53 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   | `GET /v1/certificate/auth/group` by b33p, Android box | 11 | 2 |
   | b33p's keepalive, median | 55 s | 30.0 s in every box |
 
+- 2026-10-30, main `bba786f` (#122–#127 and the sender keys merged): `run --capture desktop
+  attachments core android groups storage tour`, 1 round. **Every check passed**: linked box 12,
+  desktop 17, attachments 10, core 6, Android box 16, android 9, groups 25, storage 12, mesh
+  box 10, tour 80. 351 connections and 3187 events, all decoded. Observations below
+  ("Observations on main, 2026-10-30").
+
+## Observations on main, 2026-10-30
+
+The run above, box by box (records under `target/testbox-wire-record/run/1793314487/1/`).
+
+| | linked | Android box | mesh |
+|---|---|---|---|
+| b33p `PUT /v1/messages/multi_recipient` (sender key) | – | 2, all 200 | 15, all 200 |
+| Desktop `PUT /v1/messages/multi_recipient` | – | 3, all 200 | – |
+| b33p `GET /v1/groups/` (whole group) | 0 | 1 | 16 |
+| b33p `GET /v2/groups/logs/{n}` | 0 | 10 (200) | 63 (200), 5 (403) |
+| Android `GET /v2/groups/logs/{n}` | – | 11 | – |
+| b33p `GET /v1/certificate/auth/group` | 0 | 2 | 6 (three b33ps) |
+| `Devices/GetDevices` (gRPC status) | Desktop 0 | Desktop 0, Android 0 | – |
+| keepalive, median per connection | b33p 30.0 s, Desktop 30.0 s | b33p, Desktop, Android 30.0 s | b33p 30.0 s |
+| `?story=true` sends, all 200 | – | b33p 1, Desktop 1 | b33p 2 |
+
+- **Sender keys work against the real clients.** Each of b33p's group texts and stories went
+  as one multi-recipient send; none fell back to a send per member, and Desktop, Android and
+  the other b33ps showed them all. No decryption failure or retry receipt in any client's log.
+  The key handouts don't show in the content log: a content with nothing but a key has no body,
+  and presage drops it before b33p sees it.
+- **Group fetches follow the changes.** In the Android box b33p fetched a group whole once, after
+  creating it (23 times before #126), and read the log 10 times; Android read it 11 times.
+- **New: a log read from before b33p joined is refused.** In the mesh, 5 log reads answered 403
+  and each was followed by a whole fetch that succeeded (200): the b33p was a member, but had
+  joined at a later version than its stored copy (the tour removes members, adds them back, and
+  lets them in by link). The server refuses a log from before one's `joined_at_version`. Android
+  asks `GET /v2/groups/joined_at_version` first and reads from there, so it narrates the changes
+  since joining; presage fetches the group whole and narrates none of them. Fix: on 403, read
+  the log from `joined_at_version` (libsignal-service `fetch_joined_at_version` is there), then
+  fetch whole only if that fails too.
+- **New: b33p's stories carry no profile key.** Desktop's `StoryMessage` has `profileKey`;
+  b33p's don't (content log, Desktop's in the Android box against b33p's in the mesh). A viewer
+  who doesn't have b33p's profile key yet can't show who posted it. Fix: b33p-core's
+  `SendStory` sets `profile_key`, as presage does for data messages.
+- Smaller differences in the contents: Desktop sets `isViewOnce` (false) in data messages and
+  edits, and `flags` in an edit's data message; b33p leaves them out. Harmless.
+- Not fixed, unchanged: group changes still go to each member in turn (presage
+  `send_to_members`); the multi-recipient send is authorized by the combined access key, not a
+  group send token.
+
 ## Findings in b33p and its forks
 
 Each finding was checked against the code at the pins: presage e81ac0b, libsignal-service-rs
@@ -168,6 +215,9 @@ cddb0bc, Signal-Server ccc22f9a.
 
 - **Group send tokens** for the multi-recipient send (finding 4), in place of the combined access
   key: the group's send endorsements kept and renewed.
+- **A log read refused before one's join** (observations, 2026-10-30): read from
+  `joined_at_version` instead of fetching the group whole.
+- **b33p's stories without a profile key** (observations, 2026-10-30).
 - **Fixed** (#125). **A story's sync transcript** set no `storyMessageRecipients`, and went out
   at the time it was sent, not the story's; Desktop files a sent story under its envelope's
   timestamp. Now it names every other member, allowed to reply, as Desktop's sendStory does for
