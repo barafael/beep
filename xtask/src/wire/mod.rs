@@ -363,14 +363,18 @@ impl Identities {
         }
     }
 
-    /// `desktop`, `android`, `b33p` (a linked device of libsignal-service's) or `presage-cli`
-    /// (a primary's); `presage-rs` unauthenticated, as both say the same agent.
+    /// `desktop`, `android`, `b33p` (by its agent, `b33p/<version>`; before it had one, a linked
+    /// device of libsignal-service's) or `presage-cli` (a primary's); `presage-rs`
+    /// unauthenticated, when b33p's said the same agent as presage-cli's.
     fn client(&self) -> String {
         let agent = self.agent.as_deref().unwrap_or_default();
         if agent.contains("Signal-Desktop") {
             "desktop".to_owned()
         } else if agent.contains("Signal-Android") {
             "android".to_owned()
+        } else if agent.starts_with("b33p/") || agent == "b33p" {
+            // `b33p` alone: b33p's own downloads (b33p-core transfer.rs) before it had an agent.
+            "b33p".to_owned()
         } else if agent.starts_with("presage") {
             match self.user.as_deref().and_then(|user| user.rsplit_once('.')) {
                 Some((_, device)) if device != "1" => "b33p".to_owned(),
@@ -378,9 +382,6 @@ impl Identities {
                 None if self.user.is_some() => "presage-cli".to_owned(),
                 None => "presage-rs".to_owned(),
             }
-        } else if agent == "b33p" {
-            // b33p's own downloads (b33p-core transfer.rs).
-            "b33p".to_owned()
         } else if agent == "undici" {
             // wrangler's dev server, in front of CDN3, asking its own worker (`/cdn-cgi/`).
             "cdn3-itself".to_owned()
