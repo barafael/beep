@@ -12,8 +12,8 @@ publish = false
 
 [dependencies]
 testbox-tools = { path = "../tools" }
-presage = { git = "https://github.com/barafael/presage", rev = "e81ac0b3cada5bd936755f3ccf961baa74b763f1" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "e81ac0b3cada5bd936755f3ccf961baa74b763f1" }
+presage = { git = "https://github.com/barafael/presage", rev = "860ca7262f9fa0733342eb944cc8d911ba01e0f4" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "860ca7262f9fa0733342eb944cc8d911ba01e0f4" }
 # libsignal-service's (its `PushService::request` takes a `reqwest::Method`).
 reqwest = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -28,4 +28,4 @@ png = "0.18"
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "cddb0bc8bf276a20a9351c8d51887fb27f83a749" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "ab23dc470ce48e4d1994552e0050117df66fb584" }
