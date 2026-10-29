@@ -17,12 +17,25 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   - Signal-Desktop 44.7.2 (libsignal 0.105.0);
   - b33p and presage-cli (`presage-rs-0.8.0-dev`).
 
+- 2026-10-29, `wire-verify` (main with #119, #120 and #121): `run --capture desktop attachments
+  core android groups storage tour`. Every phase passed except one groups check, the invite
+  link's approval: the Android driver's, root-caused and fixed in #121 (testbox finding 3).
+  Before against after:
+
+  | | before | after |
+  |---|---|---|
+  | b33p's websocket says `x-signal-receive-stories` | `false` | `true` (every b33p upgrade in all three boxes; presage-cli's stay `false`) |
+  | a story Desktop posts reaches b33p | never (the new check fails on main) | in 0.8 s |
+  | b33p's stories | `PUT /v1/messages/{aci}`, identified or sealed | `?story=true`, sealed, 200 (1 in the Android box, 3 in the tour) |
+  | `GET /v1/certificate/auth/group` by b33p, Android box | 11 | 2 |
+  | b33p's keepalive, median | 55 s | 30.0 s in every box |
+
 ## Findings in b33p and its forks
 
 Each finding was checked against the code at the pins: presage e81ac0b, libsignal-service-rs
 cddb0bc, Signal-Server ccc22f9a.
 
-1. **Stories from Signal's own clients never reach b33p.**
+1. **Fixed** (presage #489, b33p #120; checked by #121). **Stories from Signal's own clients never reach b33p.**
    - What the wire shows:
      - b33p's websocket upgrade says `X-Signal-Receive-Stories: false`; Android and Desktop say
        `true`.
@@ -39,7 +52,7 @@ cddb0bc, Signal-Server ccc22f9a.
      - b33p: say `true`.
      - A check: a story Android posts shows in b33p. None of the phases has one; the tour's
        stories are b33p's.
-2. **b33p's stories go out as ordinary messages.**
+2. **Fixed** (libsignal-service #493, presage #490, b33p #120). **b33p's stories go out as ordinary messages.**
    - Android and Desktop send `PUT /v1/messages/{aci}?story=true`. libsignal-service has no
      story parameter at all: `sender.rs` never mentions stories, and every send is a plain
      `PUT /v1/messages/{aci}`.
@@ -49,7 +62,7 @@ cddb0bc, Signal-Server ccc22f9a.
      - they count as urgent messages, so they trigger pushes.
    - Fix: libsignal-service sends with `story=true` when the content is a `StoryMessage`
      (upstream), then presage and b33p.
-3. **b33p fetches its group credentials again for every group operation.**
+3. **Fixed** (presage #491, b33p #120). **b33p fetches its group credentials again for every group operation.**
    - In the groups phase: `GET /v1/certificate/auth/group` b33p 11 times, Android once,
      Desktop once.
    - presage makes a new `GroupsManager` with an empty `InMemoryCredentialsCache` on each call
@@ -75,7 +88,7 @@ cddb0bc, Signal-Server ccc22f9a.
      9 times, `joined_at_version` 9 times and `/v2/groups/` once.
    - libsignal-service reads groups only through `/v1/groups/` (push_service/mod.rs:300).
    - Fix (efficiency, later): read the changes since the known version, as Android does.
-6. **The chat's keepalive is every 55 s; Signal's clients send one every 30 s.**
+6. **Fixed** (libsignal-service #494, b33p #120). **The chat's keepalive is every 55 s; Signal's clients send one every 30 s.**
    - lss `KEEPALIVE_TIMEOUT_SECONDS = 55` (push_service/mod.rs:20). Android and Desktop:
      30.0 s median in both boxes. Android also sends WebSocket pings.
    - A NAT or proxy that drops idle connections after 30-60 s would cut b33p's chat off first.
@@ -93,12 +106,42 @@ cddb0bc, Signal-Server ccc22f9a.
 ## Findings in the testbox
 
 1. **Desktop's `Devices/GetDevices` over gRPC gets a 404 from Jetty on 8443.** The 404 comes
-   back three times in each box. `provision` turns gRPC off for seven Desktop requests
-   (`desktop.libsignalNet.grpc.*`, provision.rs:41-63), but not for this one. Desktop
-   apparently goes on regardless. Fix: add it to the list, or point Desktop's gRPC at the
-   omnibus port.
+   back three times in each box.
+   - There is no remote config key to switch it to the websocket: libsignal 0.105 sends
+     GetDevices over gRPC only (`require_grpc`).
+   - Desktop's chat reaches Jetty, which serves no gRPC. Desktop calls it only to sync device
+     names (onDeviceNameChangeSync).
+   - Left open: pointing Desktop at the omnibus port would move its plain REST requests there
+     too.
 2. With the tap, the server sees every client as 127.0.0.2, the tap's address. Without it,
    every client already came from 127.0.0.1, so per-IP limits change nothing.
+
+3. **The Android driver turned the invite link's approval on too early.** It failed twice in five
+   runs. b33p showed "You turned the invite link on." without the approval, and Android made one
+   group change, not two.
+   - The driver tapped "Require admin approval" while the app was still turning the link on,
+     and the tap was lost.
+   - #121: it waits until the link's switch shows on, then until the approval's does.
+   - Found with `b33p_shows`' error, which now names the open chat and its last messages (#121).
+4. **The Android driver exited on `adb root` right after boot**, and the box waited an hour for
+   it.
+   - Right after boot the emulator's transport was `offline` for a moment, and `adb root`
+     answered "closed".
+   - #121: `adb root` is tried again once `adb wait-for-device` sees the device.
+   - Left open: the xtask waits `START` (an hour) for a driver whose process has already exited.
+     It could stop at the driver's exit line instead.
+
+## Still open, from these findings
+
+- **Sender keys:** group messages one request per member (finding 4); libsignal-service work,
+  large.
+- **Group changes read from `/v2/groups/logs`** instead of the whole group each time
+  (finding 5); medium.
+- **`Accept-Language` and b33p's own user agent** (finding 7): presage would need to thread a
+  setting through every `PushService::new`.
+- **A story's sync transcript** sets no `storyMessageRecipients`. Signal's apps fill it in,
+  and the phone may use it. With the content layer below, the official clients' transcripts
+  can be compared.
 
 ## The tool: open ends
 
