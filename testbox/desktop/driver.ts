@@ -495,22 +495,19 @@ const methods = {
       const offered = page()
         .locator('.Checkbox__container')
         .filter({ hasText: rendered(group, false) });
-      if (!(await offered.isVisible())) {
+      if (await offered.isVisible()) {
+        // Its label, as Desktop's test clicks it: the box itself is drawn over.
+        await offered.getByText(rendered(group, false)).click();
+      } else {
+        // Chosen there, it comes back ticked.
         await page().getByRole('button', { name: 'New', exact: true }).click();
         await page().getByText('New group story', { exact: true }).click();
         await page()
           .locator('.SendStoryModal .Checkbox__container')
           .filter({ hasText: rendered(group, false) })
+          .getByText(rendered(group, false))
           .click();
         await page().getByRole('button', { name: 'OK', exact: true }).click();
-      }
-      // Chosen on the way in, or offered: ticked either way.
-      const chosen = page()
-        .locator('.Checkbox__container')
-        .filter({ hasText: rendered(group, false) })
-        .getByRole('checkbox');
-      if (!(await chosen.isChecked())) {
-        await chosen.check();
       }
       await page().getByRole('button', { name: 'Send story' }).click();
       await page().locator('.SendStoryModal').waitFor({ state: 'detached' });
