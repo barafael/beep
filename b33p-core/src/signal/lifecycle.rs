@@ -631,6 +631,7 @@ async fn session(
     preferences: Rc<Cell<Preferences>>,
     paths: &Paths,
 ) -> Result<Ending, Failed> {
+    crate::client::identify();
     let mut linked = match Manager::load_registered(store.clone()).await {
         Ok(manager) => match Marker::read(paths) {
             None => {
@@ -1163,6 +1164,7 @@ async fn link(
     events: &Events,
 ) -> Result<(Mgr, Option<[u8; 32]>), Failed> {
     let servers = link_servers()?;
+    crate::client::identify();
     let (url_tx, url_rx) = oneshot::channel();
     let (linked, _) = future::join(
         Manager::link_secondary_device(store, servers, device_name, url_tx),

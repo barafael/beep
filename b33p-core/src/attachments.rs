@@ -154,7 +154,7 @@ pub(crate) struct Downloads {
 impl Downloads {
     pub(crate) fn new(servers: SignalServers) -> Rc<Self> {
         Rc::new(Self {
-            cdn: PushService::new(servers, None, "b33p"),
+            cdn: crate::client::push_service(servers),
             limit: Semaphore::new(PARALLEL_DOWNLOADS),
             decoding: Semaphore::new(1),
         })

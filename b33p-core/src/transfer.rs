@@ -22,11 +22,7 @@ use libsignal_message_backup::{
 };
 use presage::{Error as PresageError, libsignal_service::push_service::ServiceError};
 use presage::{
-    libsignal_service::{
-        configuration::Endpoint,
-        protocol::Aci,
-        push_service::{HttpAuthOverride, PushService},
-    },
+    libsignal_service::{configuration::Endpoint, protocol::Aci, push_service::HttpAuthOverride},
     manager::TransferArchive,
     store::ContentsStore,
 };
@@ -166,7 +162,7 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result
     };
 
     let servers = manager.registration_data().signal_servers.clone();
-    let mut response = PushService::new(servers, None, "b33p")
+    let mut response = crate::client::push_service(servers)
         .request(
             reqwest::Method::GET,
             Endpoint::cdn(cdn, format!("/attachments/{cdn_key}")),

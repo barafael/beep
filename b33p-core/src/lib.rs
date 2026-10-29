@@ -10,6 +10,8 @@
 
 #[cfg(feature = "signal")]
 mod attachments;
+#[cfg(feature = "signal")]
+mod client;
 mod error;
 pub mod format;
 #[cfg(feature = "signal")]
