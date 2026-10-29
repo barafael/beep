@@ -965,6 +965,12 @@ impl Pod {
             match process::await_lines(self.follow_logs(service, since), needle, times, left)? {
                 Heard::Found => return Ok(()),
                 Heard::Ended => {
+                    if let Some(failure) = self.failure(service, since)? {
+                        return Err(Error::Failed(format!(
+                            "{} failed before it said {needle:?}:\n{failure}",
+                            service.name()
+                        )));
+                    }
                     let running =
                         podman(&["wait", "--condition", "running", &self.container(service)]);
                     process::output(running, "")?;
@@ -1014,6 +1020,26 @@ impl Pod {
 
     /// `logs --follow` of `service`, from `since` on (seconds since the epoch), or from its
     /// start.
+    /// How `service`'s application failed on its own after `since`, if it did, as `with-display`
+    /// says it: the end of its log up to that line. Restarted, it would most likely fail again,
+    /// or wait for what its first run left behind, until the wait's patience ran out.
+    fn failure(&self, service: Service, since: Option<u64>) -> Result<Option<String>> {
+        let mut logs = podman(&["logs"]);
+        if let Some(since) = since {
+            logs.args(["--since", &since.to_string()]);
+        }
+        logs.arg(self.container(service));
+        let output = logs
+            .stdin(Stdio::null())
+            .output()
+            .context(describe(&logs))?;
+        Ok(failure(&format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+
     fn follow_logs(&self, service: Service, since: Option<u64>) -> Command {
         let mut logs = podman(&["logs", "--follow"]);
         if let Some(since) = since {
@@ -1022,6 +1048,18 @@ impl Pod {
         logs.arg(self.container(service));
         logs
     }
+}
+
+/// The last lines of `log` up to the first that says its application failed
+/// ([`testbox_tools::APPLICATION_FAILED`]), if one does.
+fn failure(log: &str) -> Option<String> {
+    /// Enough for the application's own last words before `with-display`'s.
+    const TAIL: usize = 20;
+    let lines: Vec<&str> = log.lines().collect();
+    let failed = lines
+        .iter()
+        .position(|line| line.contains(testbox_tools::APPLICATION_FAILED))?;
+    Some(lines[failed.saturating_sub(TAIL)..=failed].join("\n"))
 }
 
 /// The file name of the `n`th b33p's harness socket in the run directory (`B33P_AGENT_SOCKET`).
@@ -1044,6 +1082,21 @@ fn claims(pod: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_application_ends_the_wait_with_its_last_words() {
+        let log = format!(
+            "booting\nandroid: adb root: closed\nwith-display: {}: android exited: exit status: 1\nbooting\n",
+            testbox_tools::APPLICATION_FAILED
+        );
+        let last_words = failure(&log).expect("a failure");
+        assert!(last_words.starts_with("booting\nandroid: adb root: closed"));
+        assert!(last_words.ends_with("exit status: 1"));
+        assert_eq!(
+            failure("booting\nwith-display: cage exited: signal: 9\n"),
+            None
+        );
+    }
 
     /// The repository xtask is in, for pod.yaml.
     fn repo() -> PathBuf {
