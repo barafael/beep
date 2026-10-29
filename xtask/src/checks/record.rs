@@ -1,13 +1,16 @@
 //! What a box leaves behind for looking into it once it is wiped: `target/testbox-record/<box>/`,
 //! with every container's log, Desktop's own logs, Android's logcat and the host's load at the
-//! box's end, and with `--screenshots` each client's display after each check (testbox/shot), in
-//! a directory for each part (the box's setup, each phase).
+//! box's end, and with `--screenshots` each client's display after each check, in a directory for
+//! each part (the box's setup, each phase): b33p's window as its harness draws it, the others'
+//! displays as their viewers show them (testbox/shot).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::error::{Context, Result};
-use crate::pod::{Pod, Service};
+use crate::harness::Harness;
+use crate::pod::{self, Pod, Service};
 use crate::process;
 
 use super::lost::{DESKTOP_LOGS, LOGCAT};
@@ -15,19 +18,49 @@ use super::lost::{DESKTOP_LOGS, LOGCAT};
 /// How long a check's name may be in a screenshot's file name.
 const LABEL: usize = 60;
 
+/// How long a b33p may take to draw its window for a screenshot.
+const DRAWING: Duration = Duration::from_secs(30);
+
+/// Where the run directory ([`Pod::run_dir`]) is in a b33p's container (testbox/b33p/pod.yaml).
+const B33P_RUN: &str = "/run/b33p";
+
 /// A box's record, or a part's within it.
 pub(crate) struct Record {
     directory: PathBuf,
     shots: Option<Shots>,
 }
 
-/// The screenshots: the tool, the displays as it takes them (`<name>=<socket>`), and how many
-/// were taken, which numbers them in the order of the checks.
+/// The screenshots: the tool, the displays it takes (`<name>=<socket>`), the b33ps, and how
+/// many were taken, which numbers them in the order of the checks.
+///
+/// A b33p's is its harness's: the window drawn from the state the check left, where its display
+/// shows that only once b33p has painted it and the compositor and the viewer have caught up,
+/// often a check later. Popups are windows of their own on Qt, so they aren't in it.
 #[derive(Clone)]
 struct Shots {
     tool: PathBuf,
     displays: Vec<String>,
+    b33ps: Vec<B33pShot>,
     taken: usize,
+}
+
+/// A b33p's screenshots: its name, its harness's socket, and the run directory it writes them
+/// to, on the host.
+#[derive(Clone)]
+struct B33pShot {
+    name: String,
+    socket: PathBuf,
+    run: PathBuf,
+}
+
+impl B33pShot {
+    /// Its window, as it is drawn now, at `path`.
+    fn take(&self, path: &Path) -> Result<()> {
+        let file = format!("shot-{}.png", self.name);
+        Harness::connect(&self.socket)?.screenshot(&format!("{B33P_RUN}/{file}"), DRAWING)?;
+        let written = self.run.join(file);
+        std::fs::rename(&written, path).context(written.display().to_string())
+    }
 }
 
 impl Record {
@@ -52,10 +85,11 @@ impl Record {
             ]);
             build.arg(&manifest);
             process::run(build)?;
-            let displays = pod
-                .screens()
-                .into_iter()
-                .map(|screen| {
+            let screens = pod.screens();
+            let displays = screens
+                .iter()
+                .filter(|screen| !matches!(screen, Service::B33p(_)))
+                .map(|&screen| {
                     format!(
                         "{}={}",
                         screen.name(),
@@ -63,9 +97,21 @@ impl Record {
                     )
                 })
                 .collect();
+            let b33ps = screens
+                .iter()
+                .filter_map(|&screen| match screen {
+                    Service::B33p(n) => Some(B33pShot {
+                        name: screen.name(),
+                        socket: pod.run_dir().join(pod::agent_socket(n)),
+                        run: pod.run_dir(),
+                    }),
+                    _ => None,
+                })
+                .collect();
             Some(Shots {
                 tool: repo.join("testbox/shot/target/release/testbox-shot"),
                 displays,
+                b33ps,
                 taken: 0,
             })
         } else {
@@ -90,6 +136,15 @@ impl Record {
         };
         shots.taken += 1;
         let label = format!("{:02}-{}", shots.taken, label(name));
+        for b33p in &shots.b33ps {
+            let path = self.directory.join(format!("{label}-{}.png", b33p.name));
+            if let Err(error) = b33p.take(&path) {
+                println!("screenshot {label} of {}: {error}", b33p.name);
+            }
+        }
+        if shots.displays.is_empty() {
+            return;
+        }
         let mut shot = Command::new(&shots.tool);
         shot.arg(&self.directory).arg(&label).args(&shots.displays);
         if let Err(error) = process::run(shot) {

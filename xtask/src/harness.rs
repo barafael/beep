@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use b33p_harness::{Acted, Action, Call, Pushed, Reply, Snapshot, Subscribed};
+use b33p_harness::{Acted, Action, Call, Pushed, Reply, Shot, Snapshot, Subscribed};
 use serde::de::DeserializeOwned;
 
 use crate::error::{Context, Error, Result, WithContext};
@@ -118,6 +118,18 @@ impl Harness {
 
     pub fn snapshot(&mut self) -> Result<Snapshot> {
         self.connection.request(&Call::Snapshot)
+    }
+
+    /// Writes the window, drawn from the state as it is now, to `path` as a PNG; the path is
+    /// b33p's, in its container. A b33p that doesn't answer within `patience` fails it.
+    pub fn screenshot(&mut self, path: &str, patience: Duration) -> Result<Shot> {
+        self.connection
+            .stream
+            .set_read_timeout(Some(patience))
+            .context("setting a read timeout")?;
+        self.connection.request(&Call::Screenshot {
+            path: path.to_owned(),
+        })
     }
 
     /// Returns whether a command went to the backend.
