@@ -418,12 +418,25 @@ async fn on_retry_receipt(
     {
         archive_session_with(manager, sender, sender_device, &key).await;
     }
-    let ours = ctx
+    let conversations = ctx
         .tables
         .conversations_of(&[timestamp])
         .await
         .map_err(|error| warn!(error = %scrubbed(&error), "failed to look up a message"))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // No ratchet key: they lack our sender key for a group message. Renewed, it goes to every
+    // member's devices with the next message to the group, as Signal's apps send it again.
+    if message.ratchet_key.is_none() {
+        for (conversation, _) in &conversations {
+            if let Some(Thread::Group(key)) = super::conversations::thread_of(conversation)
+                && let Err(error) = manager.renew_sender_key(&key).await
+            {
+                warn!(error = %scrubbed(&error), "failed to renew a group's sender key");
+            }
+        }
+        return;
+    }
+    let ours = conversations
         .into_iter()
         .find(|(conversation, _)| *conversation == conversation_id(&Thread::Contact(sender)));
     let Some((_, timestamp)) = ours else {

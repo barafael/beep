@@ -69,18 +69,29 @@ cddb0bc, Signal-Server ccc22f9a.
      (presage/src/manager/registered.rs:698-713, called at :615, :718, :1137, :1611, …).
    - The credentials cover a 7-day redemption window.
    - Fix: keep the cache in the manager's state, shared by its clones (presage).
-4. **Group messages go to each member in turn; Signal's clients send one multi-recipient
-   message.**
+4. **Fixed** (the forks' integration branches; no upstream PR yet). **Group messages went to each
+   member in turn; Signal's clients send one multi-recipient message.**
    - Desktop sends `PUT /v1/messages/multi_recipient`, Android the gRPC
      `MessagesAnonymous/SendMultiRecipientMessage`. Both use sender keys: one encryption, one
      request.
-   - libsignal-service's `send_message_to_group` loops over the recipients
-     (sender.rs:473-477). Each one costs a request, and the content is encrypted once per
-     device.
-   - Not wrong, but slower, larger groups suffer most, and the server sees one request per
-     member.
-   - Fix: sender keys in libsignal-service. libsignal has them (`group_encrypt`,
-     `sealed_sender_multi_recipient_encrypt`). Large.
+   - libsignal-service's `send_message_to_group` looped over the recipients: a request each,
+     the content encrypted once per device.
+   - Now (libsignal-service `send_with_sender_key`, presage `send_with_sender_key`): when every
+     member has an access key and there are two or more, presage hands our sender key to
+     whichever devices lack it (kept per group: `group_sender_keys`, `sender_key_shared`), then
+     the message goes encrypted once, sealed for every device, in one request authorized by the
+     members' access keys combined. A 409 or 410 mends the sessions and sends again; any other
+     refusal sends to each member in turn, as before. The key is made anew when someone it went
+     to is no longer a member, after 30 days, and on a retry receipt for a group message without
+     a ratchet key (b33p: the device lacks our key).
+   - Authorized by the combined access key, not a group send token: Signal-Server still takes
+     both (it counts the access key as legacy); the token needs the group's send endorsements
+     kept and renewed, the next step.
+   - Group changes still go to each member in turn (presage `send_to_members`).
+   - 2026-10-29, `test --capture android groups tour`: every phase passed; b33p's group texts
+     and stories went as `PUT /v1/messages/multi_recipient` (2 in the Android box, 4 in the
+     mesh), all 200, none sent member by member instead; Desktop, Android and the other b33ps
+     showed them. No decryption failures or retry receipts in any client's log.
 5. **Fixed** (libsignal-service #496 and #497, presage #493, b33p #126). **b33p read a group whole on
    every change.**
    - In the groups phase: b33p 23 times `GET /v1/groups/` (the current state); never
@@ -155,8 +166,8 @@ cddb0bc, Signal-Server ccc22f9a.
 
 ## Still open, from these findings
 
-- **Sender keys:** group messages one request per member (finding 4); libsignal-service work,
-  large.
+- **Group send tokens** for the multi-recipient send (finding 4), in place of the combined access
+  key: the group's send endorsements kept and renewed.
 - **Fixed** (#125). **A story's sync transcript** set no `storyMessageRecipients`, and went out
   at the time it was sent, not the story's; Desktop files a sent story under its envelope's
   timestamp. Now it names every other member, allowed to reply, as Desktop's sendStory does for

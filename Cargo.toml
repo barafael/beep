@@ -88,6 +88,7 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 #        libsignal-service-rs#495)
 #   #493 group changes applied from the messages that carry them, the log read for gaps,
 #        missed changes passed on, `update_group` (needs libsignal-service-rs#496 and #497)
+#   (no PR yet) a group message sent with a sender key, in one request; `renew_sender_key`
 # Rebuilt on upstream main past #454, 2026-10-27.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
@@ -95,11 +96,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "61b5658c5d159fa082ef42f3959ee37ae76f1029" }
+presage = { git = "https://github.com/barafael/presage", rev = "53fb55a226535983349c66e5eacb5a223d33045c" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "61b5658c5d159fa082ef42f3959ee37ae76f1029", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53fb55a226535983349c66e5eacb5a223d33045c", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -131,14 +132,14 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # them in one transaction) and #492 (the account's read-receipt setting in the provision message),
 # #493 (stories sent as stories, `?story=true`, and only sealed), #494 (a keepalive every 30 s,
 # as Signal's apps send), #495 (`Accept-Language` on every request), #496 (a group change
-# decrypted once the server's signature shows it) and #497 (a group's changes read from the
-# server's log).
+# decrypted once the server's signature shows it), #497 (a group's changes read from the
+# server's log) and, without a PR yet, a group send with a sender key in one request.
 # Landed upstream and dropped from the branch: #474 (drop sync messages from other
 # accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "b07d7742cb2711749ca642452e59bfe9debd815f" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f9454bf372b8b0566ac846a5d0424e8a34fc2e3" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
