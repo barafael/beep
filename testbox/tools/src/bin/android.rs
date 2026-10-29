@@ -868,11 +868,50 @@ impl Driver {
             .max_by_key(|node| node.y)
             .ok_or("no \"Group link\" row")?;
         self.tap_at(row)?;
+        // On once the app has turned the link on with the server: a tap on the approval before
+        // that was lost, and the link stayed open to anyone.
+        self.switch_shows("Group link", true)?;
         if approval {
-            // Enabled once the link is on.
-            self.tap("Require admin approval", PATIENCE)?;
+            let shown = self.switch_shows("Require admin approval", false)?;
+            let approval_row = shown
+                .screen
+                .iter()
+                .find(|node| node.labelled("Require admin approval"))
+                .ok_or("no \"Require admin approval\" row")?;
+            self.tap_at(approval_row)?;
+            self.switch_shows("Require admin approval", true)?;
         }
         Ok(())
+    }
+
+    /// Waits until the switch beside the lowest row labelled `row` is enabled and `checked`,
+    /// and answers with that screen. Each look waits for the screen to settle.
+    fn switch_shows(&mut self, row: &str, checked: bool) -> Result<agent::Found> {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            let shown = self.element(row, PATIENCE)?;
+            let state = shown
+                .screen
+                .iter()
+                .filter(|node| node.labelled(row))
+                .max_by_key(|node| node.y)
+                .and_then(|label| {
+                    shown
+                        .screen
+                        .iter()
+                        .filter(|node| node.class_name == "android.widget.Switch")
+                        .min_by_key(|switch| switch.y.abs_diff(label.y))
+                })
+                .map(|switch| (switch.enabled, switch.checked));
+            if state == Some((true, checked)) {
+                return Ok(shown);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Failed(format!(
+                    "the switch beside {row:?} is (enabled, checked) {state:?}, not (true, {checked})"
+                )));
+            }
+        }
     }
 
     /// The request among "Requests & invites" (PendingMembersActivity, strings.xml
