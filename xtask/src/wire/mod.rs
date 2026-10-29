@@ -9,6 +9,7 @@
 //! schema ([`proto`]); gRPC's messages. What lies inside an envelope is end-to-end encrypted.
 
 mod compare;
+pub(crate) mod content;
 mod h1;
 mod h2;
 mod proto;
@@ -143,10 +144,11 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
             transcript(events, &spans),
         )?;
     }
-    testbox_tools::write(
-        &wire.join("compare.md"),
-        compare::report(&events, &summaries, &spans),
-    )?;
+    let mut compared = compare::report(&events, &summaries, &spans);
+    if let Some(contents) = content::report(record, &summaries)? {
+        compared.push_str(&contents);
+    }
+    testbox_tools::write(&wire.join("compare.md"), compared)?;
     let undecoded = summaries
         .iter()
         .filter(|summary| !summary.undecoded.is_empty())

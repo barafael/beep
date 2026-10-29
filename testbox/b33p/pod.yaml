@@ -13,6 +13,9 @@
           # (testbox/tools `preview`); the Signal servers' CA is libsignal-service's own.
           { name: "SSL_CERT_DIR", value: "/etc/ssl/certs:/keys/trusted" },
           { name: "B33P_AGENT_SOCKET", value: "/run/b33p/@AGENT@" },
+          # Every content it takes in, for the wire comparison (b33p-core content_log.rs): the
+          # record moves it in (xtask `keep_contents`).
+          { name: "B33P_CONTENT_LOG", value: "/run/b33p/content-@B33P@.jsonl" },
           { name: "QT_QPA_PLATFORM", value: "wayland" },
           # Drawn larger: the viewers show the display shrunk beside the others.
           { name: "QT_SCALE_FACTOR", value: "1.5" },

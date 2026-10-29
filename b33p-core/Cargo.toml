@@ -20,7 +20,7 @@ signal = [
 ]
 # Links to other servers than Signal's, named by `B33P_SIGNAL_SERVERS` (`link_servers`): for the
 # test box. Debug builds only (`compile_error!` in src/signal.rs).
-test-servers = ["signal", "dep:toml"]
+test-servers = ["signal", "dep:toml", "dep:serde_json"]
 
 [dependencies]
 crossbeam-channel.workspace = true
@@ -37,6 +37,8 @@ directories = "6"
 gethostname = "1"
 # A servers file `B33P_SIGNAL_SERVERS` names (`test-servers`), in presage-cli's TOML form.
 toml = { version = "1", optional = true }
+# The content log of `test-servers` builds (src/content_log.rs).
+serde_json = { version = "1", optional = true }
 hex = { version = "0.4", optional = true }
 # Same version and features as presage-store-sqlite, so this only adds the options and error
 # types (`migrate`: why its migrations refuse a database).

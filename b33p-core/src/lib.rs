@@ -12,6 +12,8 @@
 mod attachments;
 #[cfg(feature = "signal")]
 mod client;
+#[cfg(feature = "test-servers")]
+mod content_log;
 mod error;
 pub mod format;
 #[cfg(feature = "signal")]

@@ -1062,6 +1062,10 @@ fn failure(log: &str) -> Option<String> {
     Some(lines[failed.saturating_sub(TAIL)..=failed].join("\n"))
 }
 
+/// How the b33ps' content logs in the run directory begin (testbox/b33p/pod.yaml
+/// `B33P_CONTENT_LOG`).
+pub const CONTENT_LOG_PREFIX: &str = "content-";
+
 /// The file name of the `n`th b33p's harness socket in the run directory (`B33P_AGENT_SOCKET`).
 pub fn agent_socket(n: u8) -> String {
     match n {
