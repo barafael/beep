@@ -181,6 +181,20 @@ function rendered(text: string, whole: boolean): RegExp {
   return new RegExp(whole ? `^${marks}${pattern}${marks}$` : pattern);
 }
 
+/** Leaves a story half made, its editor and its send dialog, so that the next call finds the
+ * chats: best effort, each step only if it is there. */
+async function discardStory(): Promise<void> {
+  const brief = { timeout: 5_000 };
+  for (const step of [
+    () => page().keyboard.press('Escape'),
+    () => page().keyboard.press('Escape'),
+    () => page().getByRole('button', { name: 'Discard', exact: true }).first().click(brief),
+    () => page().getByRole('button', { name: 'Discard', exact: true }).first().click(brief),
+  ]) {
+    await step().catch(() => {});
+  }
+}
+
 /** The open group's "Edit group" dialog, from its settings' header: its title, `old_title`. */
 async function openEditGroup(old_title: string): Promise<Locator> {
   await openGroupSettings();
@@ -475,9 +489,10 @@ const methods = {
         .getByRole('button', { name: 'Add a story' })
         .click();
       await page().getByRole('button', { name: 'Text story' }).click();
-      // As Desktop's test notes, `.click()` doesn't reach it.
-      await page().locator('.TextAttachment').dispatchEvent('click');
-      await page().getByRole('textbox', { name: 'Add text' }).fill(text);
+      // Its text is a textarea disabled until the text control is on (TextStoryCreator.dom.tsx,
+      // `StoryCreator__control--text`).
+      await page().getByRole('button', { name: 'Add story text' }).click();
+      await page().locator('.TextAttachment__text__textarea').fill(text);
       await page().getByRole('button', { name: 'Next' }).click();
       const offered = page()
         .locator('.Checkbox__container')
@@ -502,6 +517,9 @@ const methods = {
       await page().getByRole('button', { name: 'Send story' }).click();
       await page().locator('.SendStoryModal').waitFor({ state: 'detached' });
       return null;
+    } catch (error) {
+      await discardStory();
+      throw error;
     } finally {
       await navTab('Chats');
     }
