@@ -48,6 +48,10 @@ pub const PREVIEW_READY: &str = "preview: serving";
 /// What `tap` says once it listens on every port it relays.
 pub const TAP_READY: &str = "tap: relaying";
 
+/// What `with-display` says when its application failed on its own: what waits for the
+/// application to be ready stops waiting, rather than for its restarts.
+pub const APPLICATION_FAILED: &str = "the application failed";
+
 /// The line the `preview` tool logs for each request, which the checks can wait on.
 pub fn preview_request_line(path: &str, status: u16) -> String {
     format!("preview: GET {path} {status}")

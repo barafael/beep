@@ -181,7 +181,10 @@ fn session(
     if status.success() {
         Ok(())
     } else {
-        Err(Error::Failed(format!("{program} exited: {status}")))
+        Err(Error::Failed(format!(
+            "{}: {program} exited: {status}",
+            testbox_tools::APPLICATION_FAILED
+        )))
     }
 }
 
