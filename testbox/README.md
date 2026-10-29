@@ -178,7 +178,9 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 - `test --screenshots` (and `run --screenshots`) also takes each client's display after each
   check into the record, in a directory for each part (`setup`, then each phase), numbered in
   the order of the checks and named after them
-  (`desktop/07-text-from-b33p-reaches-desktop-b33p.png`); `testbox/shot` takes them over the
+  (`desktop/07-text-from-b33p-reaches-desktop-b33p.png`). b33p's harness draws its window from
+  the state the check left (its display catches up only later, often a check late; popups,
+  windows of their own, aren't in it); `testbox/shot` takes Desktop's and Android's over the
   displays' sockets.
 - `cargo testbox logs b33p server` prints those containers' logs; the names are those in
   `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The last box
