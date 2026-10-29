@@ -322,7 +322,9 @@ mod tests {
     fn a_contents_fields_go_by_their_names() {
         // dataMessage { body: "hi", timestamp: 5, groupV2 { 1: [0xff] } }, and a sender key
         // distribution beside it.
-        let bytes = [10, 11, 10, 2, b'h', b'i', 56, 5, 122, 3, 10, 1, 0xff, 58, 1, 0xfe];
+        let bytes = [
+            10, 11, 10, 2, b'h', b'i', 56, 5, 122, 3, 10, 1, 0xff, 58, 1, 0xfe,
+        ];
         let fields = proto::parse(&bytes).unwrap();
         assert_eq!(kind(&fields), "dataMessage");
         assert_eq!(
