@@ -86,6 +86,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 #        group operation
 #   #492 the client's user agent and languages, set by the application (needs
 #        libsignal-service-rs#495)
+#   #493 group changes applied from the messages that carry them, the log read for gaps,
+#        missed changes passed on, `update_group` (needs libsignal-service-rs#496 and #497)
 # Rebuilt on upstream main past #454, 2026-10-27.
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
@@ -128,7 +130,9 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # the last)) and #491 (a replenishment's pre-keys handed to the store at once, so that it can save
 # them in one transaction) and #492 (the account's read-receipt setting in the provision message),
 # #493 (stories sent as stories, `?story=true`, and only sealed), #494 (a keepalive every 30 s,
-# as Signal's apps send) and #495 (`Accept-Language` on every request).
+# as Signal's apps send), #495 (`Accept-Language` on every request), #496 (a group change
+# decrypted once the server's signature shows it) and #497 (a group's changes read from the
+# server's log).
 # Landed upstream and dropped from the branch: #474 (drop sync messages from other
 # accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
 # history download isn't cut off).
