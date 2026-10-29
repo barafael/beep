@@ -552,11 +552,12 @@ pub(super) async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
     refresh_group(manager, ctx, key).await;
 }
 
-/// For a group we are an admin of: fetches it, so that requests to join show; whether it did.
+/// For a group we are an admin of: brings it up to date, so that requests to join show;
+/// whether it did.
 /// Nobody tells an admin of a request. The one asking isn't a member, and tells only the
 /// members it knew, if any. So a request shows only once the group is fetched, and the details
-/// are where an admin looks for one. Signal-Desktop fetches a group whenever its chat opens, at
-/// most every five minutes (`waitThenMaybeUpdateGroup`).
+/// are where an admin looks for one. Signal-Desktop reads a group's log whenever its chat
+/// opens, at most every five minutes (`waitThenMaybeUpdateGroup`).
 pub(super) async fn fetch_as_admin(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) -> bool {
     use presage::libsignal_service::groups_v2::Role;
     let own = manager.registration_data().service_ids.aci();
@@ -570,13 +571,14 @@ pub(super) async fn fetch_as_admin(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) 
     if !admin {
         return false;
     }
-    match manager.fetch_group(&key).await {
-        Ok(_) => {
-            refresh_group(manager, ctx, key).await;
+    // What changed since, from the group's log: a request among it, perhaps.
+    match manager.update_group(&key).await {
+        Ok(missed) => {
+            on_missed_changes(manager, ctx, &mut Names::new(), key, missed).await;
             true
         }
         Err(error) => {
-            debug!(%error, "couldn't fetch a group we are an admin of");
+            debug!(%error, "couldn't update a group we are an admin of");
             false
         }
     }
