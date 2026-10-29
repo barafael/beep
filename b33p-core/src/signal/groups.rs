@@ -87,6 +87,63 @@ pub(super) async fn refresh_group(manager: &Mgr, ctx: &Ctx, key: [u8; 32]) {
     ctx.events.send(Event::Conversations(vec![conversation]));
 }
 
+/// Keeps and shows the changes to a group that no message told of, which presage read from the
+/// server's log: each as the message that would have told of it, from its editor, so it reads
+/// as the others do. They were made before now, in this order; when exactly, the log doesn't
+/// say.
+pub(super) async fn on_missed_changes(
+    manager: &Mgr,
+    ctx: &Ctx,
+    names: &mut Names,
+    key: [u8; 32],
+    missed: Vec<presage::model::messages::MissedGroupChange>,
+) -> bool {
+    use presage::libsignal_service::content::{Content, ContentBody, Metadata};
+    use presage::libsignal_service::push_service::DEFAULT_DEVICE_ID;
+    let thread = Thread::Group(key);
+    let conversation = super::conversations::conversation_id(&thread);
+    let now = crate::now_millis();
+    let count = missed.len() as u64;
+    for (n, missed) in (0u64..).zip(missed) {
+        let at = now.saturating_sub(count - n);
+        let time = chrono::DateTime::from_timestamp_millis(at as i64).unwrap_or_default();
+        let data = presage::proto::DataMessage {
+            group_v2: Some(GroupContextV2 {
+                master_key: Some(key.to_vec()),
+                revision: Some(missed.changes.version),
+                group_change: Some(missed.signed.encode_to_vec()),
+            }),
+            timestamp: Some(at),
+            ..Default::default()
+        };
+        let content = Content {
+            metadata: Metadata {
+                sender: ServiceId::Aci(missed.changes.editor),
+                destination: own_id(manager),
+                sender_device: *DEFAULT_DEVICE_ID,
+                pni_verified: None,
+                client_timestamp: time,
+                server_timestamp: time,
+                needs_receipt: false,
+                unidentified_sender: false,
+                was_plaintext: false,
+                server_guid: None,
+            },
+            body: ContentBody::DataMessage(data),
+        };
+        if let Err(error) = manager.store().save_message(&thread, content.clone()).await {
+            warn!(error = %scrubbed(&error), "failed to keep a missed group change");
+            continue;
+        }
+        if let Some(message) = to_chat_message(manager, names, conversation.clone(), &content).await
+        {
+            ctx.events.send(Event::Message(message));
+        }
+    }
+    refresh_group(manager, ctx, key).await;
+    true
+}
+
 /// The group change a message carries, decrypted with the group's key, if the server signed
 /// it. Only a signed change counts: the bytes are the sender's, so any member could make up
 /// one that was never applied (removals, admin rights, a timer) and have it narrated or acted
@@ -495,11 +552,12 @@ pub(super) async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
     refresh_group(manager, ctx, key).await;
 }
 
-/// For a group we are an admin of: fetches it, so that requests to join show; whether it did.
+/// For a group we are an admin of: brings it up to date, so that requests to join show;
+/// whether it did.
 /// Nobody tells an admin of a request. The one asking isn't a member, and tells only the
 /// members it knew, if any. So a request shows only once the group is fetched, and the details
-/// are where an admin looks for one. Signal-Desktop fetches a group whenever its chat opens, at
-/// most every five minutes (`waitThenMaybeUpdateGroup`).
+/// are where an admin looks for one. Signal-Desktop reads a group's log whenever its chat
+/// opens, at most every five minutes (`waitThenMaybeUpdateGroup`).
 pub(super) async fn fetch_as_admin(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) -> bool {
     use presage::libsignal_service::groups_v2::Role;
     let own = manager.registration_data().service_ids.aci();
@@ -513,13 +571,14 @@ pub(super) async fn fetch_as_admin(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) 
     if !admin {
         return false;
     }
-    match manager.fetch_group(&key).await {
-        Ok(_) => {
-            refresh_group(manager, ctx, key).await;
+    // What changed since, from the group's log: a request among it, perhaps.
+    match manager.update_group(&key).await {
+        Ok(missed) => {
+            on_missed_changes(manager, ctx, &mut Names::new(), key, missed).await;
             true
         }
         Err(error) => {
-            debug!(%error, "couldn't fetch a group we are an admin of");
+            debug!(%error, "couldn't update a group we are an admin of");
             false
         }
     }

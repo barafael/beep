@@ -81,13 +81,23 @@ cddb0bc, Signal-Server ccc22f9a.
      member.
    - Fix: sender keys in libsignal-service. libsignal has them (`group_encrypt`,
      `sealed_sender_multi_recipient_encrypt`). Large.
-5. **b33p reads a group whole on every change.**
+5. **Fixed** (libsignal-service #496 and #497, presage #493, b33p #126). **b33p read a group whole on
+   every change.**
    - In the groups phase: b33p 23 times `GET /v1/groups/` (the current state); never
      `/v2/groups/logs/{n}`.
    - Android reads `GET /v2/groups/logs/{n}?includeFirstState=…&maxSupportedChangeEpoch=…`
      9 times, `joined_at_version` 9 times and `/v2/groups/` once.
-   - libsignal-service reads groups only through `/v1/groups/` (push_service/mod.rs:300).
-   - Fix (efficiency, later): read the changes since the known version, as Android does.
+   - Now presage applies the change a message carries when its server signature checks out and
+     it is the next revision, reads the log for a gap, and fetches the group whole only when
+     none is stored or the log fails. b33p's own edits read the log first and apply the change
+     the server returns; an admin's details read the log (requests to join), as Desktop does
+     when a chat opens.
+   - Changes no message told of come from presage as such, and b33p shows them as it shows the
+     others. The groups phase checks two changes made while b33p is stopped.
+   - 2026-10-29, `test --capture android groups storage`: b33p `GET /v1/groups/` once (after
+     creating the group), `GET /v2/groups/logs/{n}` 10 times, all 200.
+   - Left: a change shown twice if an admin's details read it from the log before the message
+     telling of it arrives (b33p narrates every stored change message).
 6. **Fixed** (libsignal-service #494, b33p #120). **The chat's keepalive is every 55 s; Signal's clients send one every 30 s.**
    - lss `KEEPALIVE_TIMEOUT_SECONDS = 55` (push_service/mod.rs:20). Android and Desktop:
      30.0 s median in both boxes. Android also sends WebSocket pings.
@@ -137,13 +147,16 @@ cddb0bc, Signal-Server ccc22f9a.
      exited. `with-display` now says "the application failed" when its application exits
      non-zero on its own, and the wait stops there with the application's last lines. A driver
      forced to fail ended the Android box in 13 s.
+5. **Signal-Android crashed when the driver relaunched it right after a chat's menu closed**
+   ("ConversationListFragment … is not currently in the FragmentManager", Compose disposing the
+   menu after the fragment went). The storage phase failed so once; two earlier runs (other
+   worktrees) logged the same crash. The driver's `launch()` cleared Signal's task each time.
+   - #126: `launch()` leaves Signal be when it shows its chat list already. Then twice green.
 
 ## Still open, from these findings
 
 - **Sender keys:** group messages one request per member (finding 4); libsignal-service work,
   large.
-- **Group changes read from `/v2/groups/logs`** instead of the whole group each time
-  (finding 5); medium.
 - **Fixed** (#125). **A story's sync transcript** set no `storyMessageRecipients`, and went out
   at the time it was sent, not the story's; Desktop files a sent story under its envelope's
   timestamp. Now it names every other member, allowed to reply, as Desktop's sendStory does for
