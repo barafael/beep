@@ -68,6 +68,11 @@ pub(crate) struct Summary {
     pub(crate) n: u64,
     pub(crate) port: u16,
     pub(crate) client: String,
+    /// What it said of who made it: its agent, its user.
+    pub(crate) agent: Option<String>,
+    pub(crate) user: Option<String>,
+    /// The users of the credentials it was issued (`GET /v1/storage/auth`).
+    pub(crate) issued: Vec<String>,
     pub(crate) alpn: Option<String>,
     pub(crate) offered: Vec<String>,
     /// A short hash of the client's TLS hello: its suites, schemes and ALPN.
@@ -114,13 +119,16 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
     metas.sort_by_key(|meta| meta.n);
     let mut events = Vec::new();
     let mut summaries = Vec::new();
+    let mut identities = Vec::new();
     for meta in &metas {
         let (bytes_name, _) = testbox_tools::tap::file_names(meta.n, meta.port);
         let records = read_records(&raw.join(bytes_name))?;
-        let (found, summary) = connection(meta, &records);
+        let (found, summary, identity) = connection(meta, &records);
         events.extend(found);
         summaries.push(summary);
+        identities.push(identity);
     }
+    attribute(&mut summaries, &identities, &mut events);
     events.sort_by_key(|event: &Event| event.at);
     let spans = spans(record)?;
     write_lines(&wire.join("events.jsonl"), &events)?;
@@ -198,8 +206,72 @@ fn write_lines<T: Serialize>(path: &Path, items: &[T]) -> Result<()> {
     testbox_tools::write(path, out)
 }
 
-/// One connection's events, and its summary.
-fn connection(meta: &Connection, records: &[Record]) -> (Vec<Event>, Summary) {
+/// What the agent and the user can't tell, told by what else is known of a connection: a
+/// storage credential's user by the clients that were issued it (an account's, every device's:
+/// of those, the one that says the same agent), a TLS hello by the one client whose it is.
+fn attribute(summaries: &mut [Summary], identities: &[Identities], events: &mut [Event]) {
+    let vague = |client: &str| {
+        matches!(client, "unknown" | "presage-rs" | "presage-cli") || client.starts_with("other")
+    };
+    let mut issued: BTreeMap<&str, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for (summary, identity) in summaries.iter().zip(identities) {
+        if summary.client != "unknown" {
+            for user in &identity.issued {
+                issued
+                    .entry(user)
+                    .or_default()
+                    .insert(summary.client.clone());
+            }
+        }
+    }
+    let mut hellos: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    for summary in summaries.iter().filter(|summary| !vague(&summary.client)) {
+        hellos
+            .entry(summary.fingerprint.clone())
+            .or_default()
+            .insert(summary.client.clone());
+    }
+    let mut renamed: BTreeMap<u64, String> = BTreeMap::new();
+    for (summary, identity) in summaries.iter_mut().zip(identities) {
+        if !vague(&summary.client) {
+            continue;
+        }
+        // libsignal-service's two say the same agent.
+        let presage = identity
+            .agent
+            .as_deref()
+            .is_some_and(|agent| agent.starts_with("presage"));
+        let by_credential = identity
+            .user
+            .as_deref()
+            .and_then(|user| issued.get(user))
+            .map(|clients| {
+                clients
+                    .iter()
+                    .filter(|client| !presage || matches!(client.as_str(), "b33p" | "presage-cli"))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|clients| clients.len() == 1)
+            .map(|clients| clients[0].clone());
+        let by_hello = (summary.client == "unknown")
+            .then(|| hellos.get(&summary.fingerprint))
+            .flatten()
+            .filter(|clients| clients.len() == 1)
+            .and_then(|clients| clients.first().cloned());
+        if let Some(client) = by_credential.or(by_hello) {
+            summary.client.clone_from(&client);
+            renamed.insert(summary.n, client);
+        }
+    }
+    for event in events {
+        if let Some(client) = renamed.get(&event.connection) {
+            event.client.clone_from(client);
+        }
+    }
+}
+
+/// One connection's events, its summary, and what it said of who made it.
+fn connection(meta: &Connection, records: &[Record]) -> (Vec<Event>, Summary, Identities) {
     let (sent, received) = Stream::sides(records);
     let mut undecoded = Vec::new();
     let mut found = Vec::new();
@@ -227,12 +299,18 @@ fn connection(meta: &Connection, records: &[Record]) -> (Vec<Event>, Summary) {
     }
     let client = identities.client();
     for event in &mut found {
+        if let Some(user) = issued_user(event) {
+            identities.issued.push(user);
+        }
         event.client.clone_from(&client);
     }
     let summary = Summary {
         n: meta.n,
         port: meta.port,
         client,
+        agent: identities.agent.clone(),
+        user: identities.user.clone(),
+        issued: identities.issued.clone(),
         alpn: meta.alpn.clone(),
         offered: meta.hello.alpn.clone(),
         fingerprint: fingerprint(meta),
@@ -244,7 +322,18 @@ fn connection(meta: &Connection, records: &[Record]) -> (Vec<Event>, Summary) {
         failed: meta.failed.clone(),
         undecoded,
     };
-    (found, summary)
+    (found, summary, identities)
+}
+
+/// The user of a credential the event's answer issued (`GET /v1/storage/auth` and its like),
+/// which [`chat`] noted as `issued=<user>`.
+fn issued_user(event: &mut Event) -> Option<String> {
+    let index = event
+        .noted
+        .iter()
+        .position(|noted| noted.starts_with("issued="))?;
+    let noted = event.noted.remove(index);
+    noted.strip_prefix("issued=").map(str::to_owned)
 }
 
 /// What a connection said of who made it.
@@ -253,6 +342,8 @@ struct Identities {
     agent: Option<String>,
     /// The Basic auth or `login` user: `<aci>` or `<aci>.<device>`.
     user: Option<String>,
+    /// The users of credentials it was issued: a storage service's.
+    issued: Vec<String>,
 }
 
 impl Identities {
@@ -284,6 +375,9 @@ impl Identities {
                 None if self.user.is_some() => "presage-cli".to_owned(),
                 None => "presage-rs".to_owned(),
             }
+        } else if agent == "b33p" {
+            // b33p's own downloads (b33p-core transfer.rs).
+            "b33p".to_owned()
         } else if agent == "undici" {
             // wrangler's dev server, in front of CDN3, asking its own worker (`/cdn-cgi/`).
             "cdn3-itself".to_owned()
@@ -325,6 +419,11 @@ fn http1(
     for exchange in &connection.exchanges {
         identities.note(&exchange.headers, &exchange.path);
         let response = exchange.response.as_ref();
+        if let Some(user) =
+            response.and_then(|response| issued(&exchange.path, Some(&response.body)))
+        {
+            identities.issued.push(user);
+        }
         found.push(event(
             meta,
             "h1",
@@ -569,6 +668,10 @@ fn chat(
         let response = id.and_then(|id| responses.get(&(!by_client, id)));
         let request_type = header(&headers, "content-type").map(str::to_owned);
         let request_body = request_body.unwrap_or_default();
+        let issued = response
+            .filter(|_| by_client)
+            .and_then(|response| issued(&path, response.body.as_deref()))
+            .map(|user| format!("issued={user}"));
         // The server's deliveries: an envelope each.
         let delivered = (!by_client && path == "/api/v1/message")
             .then(|| proto::envelope_shape(&request_body))
@@ -578,7 +681,7 @@ fn chat(
                 kind: "envelope",
                 shape,
             });
-        found.push(event(
+        let mut chat_event = event(
             meta,
             "ws",
             !by_client,
@@ -596,8 +699,27 @@ fn chat(
                     header(&headers, "content-type"),
                 )
             }),
-        ));
+        );
+        chat_event.noted.extend(issued);
+        found.push(chat_event);
     }
+}
+
+/// A credential an answer issues: `GET /v1/storage/auth`'s and its like.
+#[derive(serde::Deserialize)]
+struct Credential {
+    username: String,
+}
+
+/// The user of the credential the answer `body` to `path` issued, if it issued one.
+fn issued(path: &str, body: Option<&[u8]>) -> Option<String> {
+    let path = path.split('?').next().unwrap_or_default();
+    if !path.ends_with("/auth") {
+        return None;
+    }
+    serde_json::from_slice::<Credential>(body?)
+        .ok()
+        .map(|credential| credential.username)
 }
 
 /// A chat response, waiting for its request.
