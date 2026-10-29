@@ -1163,6 +1163,29 @@ mod tests {
         }
     }
 
+    /// The tap is in the pod only with `--capture`: its redirect, its relay and its directory.
+    #[test]
+    fn the_tap_is_there_only_when_capturing() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the workspace");
+        let pod = Pod::new(repo, None).expect("the default box");
+        let tapped = [
+            r#"name: "tap-redirect","#,
+            r#"name: "tap","#,
+            "target/testbox-tap\"",
+        ];
+        let plain = pod.render(&[], 1).expect("a pod");
+        for part in tapped {
+            assert!(!plain.contains(part), "{part} without --capture in\n{plain}");
+        }
+        pod.capture(true);
+        let captured = pod.render(&[], 1).expect("a pod that captures");
+        for part in tapped {
+            assert!(captured.contains(part), "{part} in\n{captured}");
+        }
+    }
+
     /// Each b33p gets a container, a home, a display and a harness socket of its own; the first
     /// keeps the names a box of one b33p always had.
     #[test]
