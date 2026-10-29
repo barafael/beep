@@ -241,9 +241,12 @@ fn attribute(summaries: &mut [Summary], identities: &[Identities], events: &mut 
             .agent
             .as_deref()
             .is_some_and(|agent| agent.starts_with("presage"));
+        // Only the storage service takes those credentials; their user is the account's ACI,
+        // which a primary's own login is too.
         let by_credential = identity
             .user
             .as_deref()
+            .filter(|_| summary.port == testbox_tools::keys::STORAGE_PORT)
             .and_then(|user| issued.get(user))
             .map(|clients| {
                 clients
