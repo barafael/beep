@@ -184,13 +184,11 @@ function rendered(text: string, whole: boolean): RegExp {
 /** Leaves a story half made, its editor and its send dialog, so that the next call finds the
  * chats: best effort, each step only if it is there. */
 async function discardStory(): Promise<void> {
-  const brief = { timeout: 5_000 };
-  for (const step of [
-    () => page().keyboard.press('Escape'),
-    () => page().keyboard.press('Escape'),
-    () => page().getByRole('button', { name: 'Discard', exact: true }).first().click(brief),
-    () => page().getByRole('button', { name: 'Discard', exact: true }).first().click(brief),
-  ]) {
+  const escape = () => page().keyboard.press('Escape');
+  const discard = () =>
+    page().getByRole('button', { name: 'Discard', exact: true }).first().click({ timeout: 5_000 });
+  const steps = [escape, escape, discard, discard];
+  for (const step of steps) {
     await step().catch(() => {});
   }
 }
