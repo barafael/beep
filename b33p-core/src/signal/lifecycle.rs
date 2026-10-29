@@ -765,6 +765,9 @@ async fn run_linked(
     // b33p previews a link itself, and only with the user's `link_previews` on; presage would
     // otherwise fetch the page of every message's first link.
     manager.set_automatic_link_previews(false);
+    // b33p shows stories: without this, the server drops every story sent to it, unread
+    // (Signal-Server `WebSocketConnection`, `X-Signal-Receive-Stories`).
+    manager.set_receive_stories(true);
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
     let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
