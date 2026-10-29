@@ -94,10 +94,12 @@ cddb0bc, Signal-Server ccc22f9a.
    - A NAT or proxy that drops idle connections after 30-60 s would cut b33p's chat off first.
    - Fix: 30 s (lss), unless a reason for 55 s turns up.
 7. **Smaller differences, maybe intended:**
-   - b33p's REST requests send no `Accept-Language`. Android and Desktop do (`en;q=1`, `en`),
-     and the server uses it for localized text.
-   - b33p and presage-cli say the same agent (`presage-rs-<version>`). Something that names
-     b33p would help the server's view, and this tool's attribution.
+   - **Fixed** (presage #492, libsignal-service #495, b33p #124). b33p's REST requests sent no
+     `Accept-Language`. Android and Desktop do (`en;q=1`, `en`), and the server uses it for
+     localized text. b33p now sends `en`, its text's language, on every request and websocket
+     upgrade (2026-10-29: all 42 and 81 of b33p's HTTP requests in the two boxes).
+   - **Fixed** (the same). b33p and presage-cli said the same agent (`presage-rs-<version>`).
+     b33p now says `b33p/<version> presage-rs`, and its CDN downloads, which said `b33p`, too.
    - b33p uploads its pre-keys with its identity key and last-resort key each time
      (`PUT /v2/keys`); Android and Desktop send only what changed.
    - b33p sends without `?story=false`. The server defaults to false, so this is harmless
@@ -137,8 +139,6 @@ cddb0bc, Signal-Server ccc22f9a.
   large.
 - **Group changes read from `/v2/groups/logs`** instead of the whole group each time
   (finding 5); medium.
-- **`Accept-Language` and b33p's own user agent** (finding 7): presage would need to thread a
-  setting through every `PushService::new`.
 - **Fixed** (#125). **A story's sync transcript** set no `storyMessageRecipients`, and went out
   at the time it was sent, not the story's; Desktop files a sent story under its envelope's
   timestamp. Now it names every other member, allowed to reply, as Desktop's sendStory does for
@@ -150,9 +150,9 @@ cddb0bc, Signal-Server ccc22f9a.
 ## The tool: open ends
 
 - Unattributed connections remain:
-  - `presage-rs`: unauthenticated sends and CDN traffic, which could be b33p or presage-cli;
+  - `presage-rs`: unauthenticated sends and CDN traffic. Since b33p names itself, these are
+    presage-cli's;
   - `unknown`: connections closed before a request.
-  Telling b33p and presage-cli apart there needs either their own agents or a b33p-only box.
 - The content layer (plan M4): what each client puts in `Content`, seen where b33p decrypts it.
 - A `wire` phase of symmetric scenarios, with an idle stretch, if the existing phases leave
   gaps. So far the keepalives and the background requests are visible enough without one.
