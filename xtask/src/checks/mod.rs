@@ -157,7 +157,7 @@ pub(crate) fn run(
         |checks| setup::android_box(checks, containers, &sockets),
         |phase, checks, fixture| match phase {
             AndroidPhase::Android => android::android(checks, fixture),
-            AndroidPhase::Groups => groups::groups(checks, fixture, containers),
+            AndroidPhase::Groups => groups::groups(checks, fixture, containers, &sockets),
             AndroidPhase::Storage => storage::storage(checks, fixture),
         },
     );

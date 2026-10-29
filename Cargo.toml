@@ -93,11 +93,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "f16434107bdc58d5f178130876e5608292329b08" }
+presage = { git = "https://github.com/barafael/presage", rev = "ca6428dbee4dc4f8cb2117d344e623e37d2291ae" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "f16434107bdc58d5f178130876e5608292329b08", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ca6428dbee4dc4f8cb2117d344e623e37d2291ae", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -134,7 +134,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0ad61299ed179c05d248ccd4038d8b99e356b0e6" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "b07d7742cb2711749ca642452e59bfe9debd815f" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
