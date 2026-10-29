@@ -128,6 +128,17 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
 libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "cddb0bc8bf276a20a9351c8d51887fb27f83a749" }
 
+# Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
+# 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
+# decrypting a PQXDH prekey message (as presage's own workspace notes).
+[profile.dev.package]
+aes = { opt-level = 3 }
+cbc = { opt-level = 3 }
+ctr = { opt-level = 3 }
+hmac = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+libcrux-ml-kem = { opt-level = 3 }
+
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another
 # 1.6 MB but stops vectorizing loops, which image decoding and the crypto rely on.
