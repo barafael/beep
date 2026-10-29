@@ -107,6 +107,9 @@ pub(crate) fn report(record: &Path, summaries: &[Summary]) -> Result<Option<Stri
 fn senders(summaries: &[Summary]) -> HashMap<(String, u32), String> {
     summaries
         .iter()
+        // The storage service's credentials name the account alone, whichever device fetched
+        // them: they would say a linked device is the primary.
+        .filter(|summary| summary.port != testbox_tools::keys::STORAGE_PORT)
         .filter_map(|summary| {
             let user = summary.user.as_deref()?;
             let (aci, device) = match user.rsplit_once('.') {
@@ -209,7 +212,8 @@ fn name(parents: &[&str], number: u32) -> &'static str {
             (10, "pniSignatureMessage"),
             (11, "editMessage"),
         ],
-        Some("dataMessage") => &[
+        // A sent transcript's `message`, an edit's `dataMessage`: a DataMessage.
+        Some("dataMessage" | "message") => &[
             (1, "body"),
             (2, "attachments"),
             (4, "flags"),
