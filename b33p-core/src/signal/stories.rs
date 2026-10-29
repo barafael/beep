@@ -4,9 +4,12 @@ use std::time::Duration;
 
 use presage::libsignal_service::prelude::ProtobufMessage as _;
 use presage::{
-    libsignal_service::{content::ContentBody, protocol::ServiceId},
+    libsignal_service::{
+        content::ContentBody,
+        protocol::{Aci, ServiceId},
+    },
     proto::{ReceiptMessage, SyncMessage, receipt_message, sync_message},
-    store::Thread,
+    store::{ContentsStore as _, Thread},
 };
 use tracing::{debug, warn};
 
@@ -39,6 +42,38 @@ fn story_is_current(now: u64, timestamp: u64) -> bool {
 pub(super) const STORY_FOREGROUND: u32 = 0xffff_ffff;
 
 pub(super) const STORY_BACKGROUND: u32 = 0xff3a_76f0;
+
+/// Whom a group story went to, as our other devices hear of it: [`recipients`] of the group.
+pub(super) async fn story_recipients(
+    manager: &Mgr,
+    key: [u8; 32],
+) -> Vec<sync_message::sent::StoryMessageRecipient> {
+    let own = manager.registration_data().service_ids.aci();
+    match manager.store().group(key).await {
+        Ok(Some(group)) => recipients(group.members.iter().map(|member| member.aci), own),
+        _ => Vec::new(),
+    }
+}
+
+/// Every member but us, each allowed to reply, and no distribution list: a group story's
+/// recipients as Signal's apps say them (Desktop's sendStory.preload.ts).
+fn recipients(
+    members: impl Iterator<Item = Aci>,
+    own: Aci,
+) -> Vec<sync_message::sent::StoryMessageRecipient> {
+    members
+        .filter(|member| *member != own)
+        .map(|member| {
+            let member = ServiceId::from(member);
+            sync_message::sent::StoryMessageRecipient {
+                destination_service_id: Some(member.service_id_string()),
+                destination_service_id_binary: Some(member.service_id_binary()),
+                distribution_list_ids: Vec::new(),
+                is_allowed_to_reply: Some(true),
+            }
+        })
+        .collect()
+}
 
 /// Keeps a story from someone (or from us, on another device) and tells the UI.
 pub(super) async fn on_story(
@@ -237,6 +272,25 @@ pub(super) async fn expire_stories(manager: Mgr, ctx: Ctx, mut next: Option<u64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_story_goes_to_every_other_member_who_may_reply() {
+        let own = Aci::from_uuid_bytes([1; 16]);
+        let other = Aci::from_uuid_bytes([2; 16]);
+        let recipients = recipients([own, other].into_iter(), own);
+        assert_eq!(recipients.len(), 1);
+        let recipient = &recipients[0];
+        assert_eq!(
+            recipient.parse_destination_service_id(),
+            Some(ServiceId::from(other))
+        );
+        assert_eq!(
+            recipient.destination_service_id.as_deref(),
+            Some(ServiceId::from(other).service_id_string().as_str())
+        );
+        assert!(recipient.distribution_list_ids.is_empty());
+        assert_eq!(recipient.is_allowed_to_reply, Some(true));
+    }
 
     /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise
     /// stay for as long) is not shown, while a clock a little ahead is fine.

@@ -42,10 +42,12 @@ use super::{
     },
     send::{
         Outgoing, aci_binary, body_ranges, group_context, link_preview, respond, send_blocked,
-        send_data, send_edit, send_new, send_read, send_sync, send_typing, sticker_message,
+        send_data, send_edit, send_new, send_read, send_sync_at, send_typing, sticker_message,
         sticker_packs,
     },
-    stories::{STORY_BACKGROUND, STORY_FOREGROUND, keep_story, send_stories, send_viewed},
+    stories::{
+        STORY_BACKGROUND, STORY_FOREGROUND, keep_story, send_stories, send_viewed, story_recipients,
+    },
     trust::{refresh_trust, set_verified},
 };
 
@@ -449,16 +451,18 @@ async fn handle_command(
                 .map_err(send_failed("failed to post the story"))?;
             keep_story(ctx, &stored).await.map_err(db)?;
             send_stories(manager, ctx).await;
-            // Sending tells our other devices of data messages only; this one they hear of here.
+            // Sending tells our other devices of data messages only; this one they hear of here,
+            // at the story's time: Desktop files a sent story under its envelope's.
             let sync = SyncMessage {
                 content: Some(SyncContent::Sent(Sent {
                     timestamp: Some(timestamp),
                     story_message: Some(message),
+                    story_message_recipients: story_recipients(manager, key).await,
                     ..Default::default()
                 })),
                 ..Default::default()
             };
-            send_sync(manager, &ctx.outbox, sync).await;
+            send_sync_at(manager, &ctx.outbox, sync, timestamp).await;
         }
         Command::CreateGroup { title, members } => {
             let members = members

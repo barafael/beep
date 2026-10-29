@@ -144,9 +144,13 @@ cddb0bc, Signal-Server ccc22f9a.
   large.
 - **Group changes read from `/v2/groups/logs`** instead of the whole group each time
   (finding 5); medium.
-- **A story's sync transcript** sets no `storyMessageRecipients`. Signal's apps fill it in,
-  and the phone may use it. With the content layer below, the official clients' transcripts
-  can be compared.
+- **Fixed** (#125). **A story's sync transcript** set no `storyMessageRecipients`, and went out
+  at the time it was sent, not the story's; Desktop files a sent story under its envelope's
+  timestamp. Now it names every other member, allowed to reply, as Desktop's sendStory does for
+  a group story, and goes at the story's time (2026-10-29: the transcript's `timestamp` is the
+  `?story=true` send's, in the transcript's `timestamp=` notes the decoder now keeps for message
+  sends). Still to see: what Android puts in its own transcripts (the content layer, with an
+  Android driver that posts a story).
 
 ## The tool: open ends
 
