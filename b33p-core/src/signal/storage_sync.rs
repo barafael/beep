@@ -8,7 +8,7 @@ use presage::proto::{
 };
 use tracing::warn;
 
-use crate::{Event, scrub::scrubbed};
+use crate::{Event, Preferences, local::AccountPreferences, scrub::scrubbed};
 
 use super::{
     Ctx, Mgr,
@@ -24,8 +24,10 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
     const SETTLE: Duration = Duration::from_secs(2);
     loop {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
-            Ok((known, verifications)) => {
-                take_verifications(&manager, &ctx, verifications).await;
+            Ok(synced) => {
+                let known = synced.known;
+                take_verifications(&manager, &ctx, synced.verifications).await;
+                take_preferences(&ctx, synced.preferences);
                 if known && !ctx.events.sent(Event::StorageRead) {
                     return;
                 }
@@ -57,6 +59,30 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
                 }
             }
         }
+    }
+}
+
+/// Takes over the account's settings the phone changed, for the UI to keep. Link previews only
+/// turn off from there: Signal's apps have them on by default, and b33p only if they were turned
+/// on here, since the linked site sees our address.
+fn take_preferences(ctx: &Ctx, account: Option<AccountPreferences>) {
+    let Some(account) = account else {
+        return;
+    };
+    let before = ctx.preferences.get();
+    let now = taken(before, account);
+    if now != before {
+        ctx.preferences.set(now);
+        ctx.events.send(Event::Preferences(now));
+    }
+}
+
+fn taken(before: Preferences, account: AccountPreferences) -> Preferences {
+    Preferences {
+        read_receipts: account.read_receipts,
+        typing_indicators: account.typing_indicators,
+        link_previews: before.link_previews && account.link_previews,
+        sync_to_phone: before.sync_to_phone,
     }
 }
 
@@ -104,7 +130,10 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
         match crate::storage::push(manager, &ctx.tables).await {
             Ok(Written::Stale) => {
                 match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
-                    Ok((_, verifications)) => take_verifications(manager, ctx, verifications).await,
+                    Ok(synced) => {
+                        take_verifications(manager, ctx, synced.verifications).await;
+                        take_preferences(ctx, synced.preferences);
+                    }
                     Err(error) => {
                         warn!(error = %scrubbed(&error), "failed to read the storage service");
                         return;
@@ -131,4 +160,39 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
         }
     }
     warn!("the storage service kept changing; trying again later");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_phone_turns_link_previews_off_but_not_on() {
+        let account = |link_previews| AccountPreferences {
+            read_receipts: false,
+            typing_indicators: true,
+            link_previews,
+        };
+        let before = |link_previews| Preferences {
+            read_receipts: true,
+            typing_indicators: false,
+            link_previews,
+            sync_to_phone: true,
+        };
+        for (here, phone, now) in [
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                taken(before(here), account(phone)),
+                Preferences {
+                    read_receipts: false,
+                    typing_indicators: true,
+                    link_previews: now,
+                    sync_to_phone: true,
+                }
+            );
+        }
+    }
 }
