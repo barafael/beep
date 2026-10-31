@@ -189,6 +189,9 @@ pub(super) async fn sweep_expired(ctx: Ctx) {
             tokio::time::sleep(RETRY).await;
             continue;
         }
+        if !deleted.is_empty() {
+            checkpoint(&ctx).await;
+        }
         let mut gone: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
         for (conversation, message, _) in deleted {
             gone.entry(conversation).or_default().push(message);
@@ -365,8 +368,19 @@ pub(super) async fn erase_deleted(
     ctx.tables
         .record_deleted(conversation, target)
         .await
-        .map(|()| true)
-        .map_err(db)
+        .map_err(db)?;
+    checkpoint(ctx).await;
+    Ok(true)
+}
+
+/// After erasing, so that nothing of it stays in the database's log. Failing leaves it there
+/// until the next erasing or the database closing, which checkpoints too.
+pub(super) async fn checkpoint(ctx: &Ctx) {
+    match ctx.tables.checkpoint().await {
+        Ok(true) => {}
+        Ok(false) => warn!("a reader kept the database's log from emptying"),
+        Err(error) => warn!(error = %scrubbed(&error), "failed to checkpoint the database"),
+    }
 }
 
 /// The store keys messages by (thread, timestamp); the sender check keeps another author's

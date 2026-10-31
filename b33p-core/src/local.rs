@@ -1283,6 +1283,18 @@ impl LocalStore {
             .collect())
     }
 
+    /// Copies the write-ahead log into the database and empties it, for any connection's
+    /// writes, presage's too. Why: SQLite checkpoints on its own only once the log reaches 1000
+    /// pages (<https://sqlite.org/wal.html#automatic_checkpoint>), so erased rows would stay in
+    /// the -wal file for days. `Ok(false)` if a reader outlasted the busy timeout and the log
+    /// isn't empty yet.
+    pub(crate) async fn checkpoint(&self) -> Result<bool, sqlx::Error> {
+        let busy: i64 = sqlx::query_scalar("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&self.db)
+            .await?;
+        Ok(busy == 0)
+    }
+
     /// Forgets messages gone from the store, in one transaction.
     pub(crate) async fn forget(
         &self,

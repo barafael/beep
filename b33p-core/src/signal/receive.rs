@@ -44,8 +44,8 @@ use super::{
         own_membership_change, refresh_group, signed_group_change,
     },
     history::{
-        author_of, data_of, erase_deleted, is_outgoing, original, start_timers, stored_at,
-        stored_timers, to_chat_message, to_reaction,
+        author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
+        stored_at, stored_timers, to_chat_message, to_reaction,
     },
     stories::on_story,
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
@@ -957,6 +957,7 @@ async fn on_answered_elsewhere(
         let mut store = manager.store().clone();
         match store.clear_thread(&thread).await {
             Ok(()) => {
+                checkpoint(ctx).await;
                 ctx.events.send(Event::Cleared(id));
             }
             Err(error) => {

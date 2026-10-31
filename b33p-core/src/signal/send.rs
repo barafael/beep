@@ -38,7 +38,7 @@ use super::{
         thread_of, wrote_to,
     },
     groups::{group_identifier, member_aci},
-    history::start_timers,
+    history::{checkpoint, start_timers},
     trust::{announce_identity_change, hold_changed},
 };
 
@@ -577,6 +577,7 @@ pub(super) async fn respond(
                 .clear_thread(thread)
                 .await
                 .map_err(store_failed("failed to delete the chat"))?;
+            checkpoint(ctx).await;
             ctx.events.send(Event::Cleared(conversation.clone()));
             Type::Delete
         }
