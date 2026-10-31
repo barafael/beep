@@ -492,6 +492,16 @@ impl Shared {
         true
     }
 
+    /// The backend's, after the phone changed the account's settings: shown and saved.
+    fn take_preferences(self: &Rc<Self>, preferences: b33p_core::Preferences) {
+        let mut settings = self.settings.borrow().clone();
+        settings.preferences = preferences;
+        if let Some(window) = self.ui() {
+            window.show_settings(&settings, &self.style_note());
+        }
+        self.apply_settings(settings);
+    }
+
     fn apply_settings(self: &Rc<Self>, settings: Settings) {
         if let Err(error) = settings.save() {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
@@ -732,21 +742,27 @@ fn main() -> Result<(), slint::PlatformError> {
                     .focus_override
                     .get()
                     .unwrap_or_else(|| shared.ui().is_some_and(|ui| ui.visible() && ui.active()));
+                let mut preferences = None;
                 let update = {
                     let mut chat = shared.chat.borrow_mut();
                     chat.set_window_focused(focused);
-                    chat.apply_all(batch.inspect(|event| {
+                    chat.apply_all(batch.inspect(|event| match event {
                         // Commands log their own failures in the backend.
-                        if let Event::Error(error) = event {
+                        Event::Error(error) => {
                             let message = b33p_core::scrub::scrub(&error.message);
                             match error.kind {
                                 b33p_core::ErrorKind::Unreachable => tracing::warn!("{message}"),
                                 _ => tracing::error!("{message}"),
                             }
                         }
+                        Event::Preferences(taken) => preferences = Some(*taken),
+                        _ => {}
                     }))
                 };
                 shared.refresh_after_events(update);
+                if let Some(preferences) = preferences {
+                    shared.take_preferences(preferences);
+                }
                 if !events.is_empty() {
                     next_turn().await;
                 }

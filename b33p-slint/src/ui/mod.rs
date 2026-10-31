@@ -132,9 +132,8 @@ impl Window {
             .set_scale(if enabled { 1.0 } else { 0.0 });
     }
 
-    /// Puts `settings` on the window, as at start-up; the harness calls this after changing
-    /// settings from outside the window.
-    #[cfg(all(feature = "harness", target_family = "unix"))]
+    /// Puts `settings` on the window, as at start-up, after they changed from outside it: by
+    /// the harness, or on the phone.
     pub fn show_settings(&self, settings: &Settings, style_note: &str) {
         show_settings(&self.0, settings, style_note);
     }

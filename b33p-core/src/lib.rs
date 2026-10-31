@@ -900,6 +900,9 @@ pub enum Event {
     /// What the phone keeps in the storage service has been read, so chats it didn't accept
     /// can be told apart as message requests.
     StorageRead,
+    /// The backend's preferences, after the phone changed the account's settings, for the UI
+    /// to keep.
+    Preferences(Preferences),
     /// Unread incoming messages per conversation, counted from the store at start.
     Unread(Vec<(ConversationId, u32)>),
     /// A page of a conversation's stored history, answering [`Command::LoadHistory`]: the

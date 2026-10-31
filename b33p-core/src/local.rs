@@ -31,6 +31,31 @@ pub(crate) struct Verification {
     pub state: State,
 }
 
+/// The account's settings that Signal keeps in the storage service's account record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AccountPreferences {
+    pub read_receipts: bool,
+    pub typing_indicators: bool,
+    pub link_previews: bool,
+}
+
+impl AccountPreferences {
+    /// As kept in `b33p_meta`, one bit each.
+    fn bits(self) -> i64 {
+        i64::from(self.read_receipts)
+            | i64::from(self.typing_indicators) << 1
+            | i64::from(self.link_previews) << 2
+    }
+
+    fn from_bits(bits: i64) -> Self {
+        Self {
+            read_receipts: bits & 1 != 0,
+            typing_indicators: bits & 2 != 0,
+            link_previews: bits & 4 != 0,
+        }
+    }
+}
+
 /// A verification as kept in its tables: `identity_key` and `verified` (Signal's state as a
 /// number) at `at` and the column after.
 fn verification_of(row: &SqliteRow, at: usize) -> Verification {
@@ -771,6 +796,32 @@ impl LocalStore {
                 .fetch_optional(&self.db)
                 .await?;
         Ok(read.is_some())
+    }
+
+    /// What the storage service's account record said last.
+    pub(crate) async fn remote_preferences(
+        &self,
+    ) -> Result<Option<AccountPreferences>, sqlx::Error> {
+        let bits: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'remote_preferences'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(bits.map(AccountPreferences::from_bits))
+    }
+
+    /// Replaces what the storage service's account record said last.
+    pub(crate) async fn set_remote_preferences(
+        &self,
+        preferences: AccountPreferences,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO b33p_meta (key, value) VALUES ('remote_preferences', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(preferences.bits())
+        .execute(&self.db)
+        .await
+        .map(drop)
     }
 
     /// Replaces what the storage service said last about verifications.
@@ -2015,6 +2066,28 @@ mod tests {
             assert!(local.edits(&a, ..).await.unwrap().is_empty());
             assert!(local.deleted(&a, ..).await.unwrap().is_empty());
             assert_eq!(local.due(150).await.unwrap().0, []);
+        });
+    }
+
+    #[test]
+    fn remote_preferences_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            assert_eq!(local.remote_preferences().await.unwrap(), None);
+            for (read_receipts, typing_indicators, link_previews) in [
+                (true, false, true),
+                (false, true, false),
+                (true, true, true),
+            ] {
+                let preferences = AccountPreferences {
+                    read_receipts,
+                    typing_indicators,
+                    link_previews,
+                };
+                local.set_remote_preferences(preferences).await.unwrap();
+                assert_eq!(local.remote_preferences().await.unwrap(), Some(preferences));
+            }
         });
     }
 

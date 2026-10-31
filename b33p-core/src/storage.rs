@@ -21,7 +21,7 @@ use tracing::{debug, info};
 use crate::signal::errors::{failed, http, service_failed, storage_service_failed};
 use crate::{
     ChatSettings, ConversationId, Error, Event, Events,
-    local::{LocalStore, Verification},
+    local::{AccountPreferences, LocalStore, Verification},
     signal::Mgr,
 };
 
@@ -38,21 +38,29 @@ pub(crate) struct Verifications {
     pub now: HashMap<String, Verification>,
 }
 
+/// What a read of the storage service found for the caller to take over.
+#[derive(Default)]
+pub(crate) struct Synced {
+    /// Whether b33p knows what the phone says: not before the phone has sent the storage key.
+    pub known: bool,
+    pub verifications: Option<Verifications>,
+    /// The account's settings, if they changed on the phone since the last read.
+    pub preferences: Option<AccountPreferences>,
+}
+
 /// Takes over what changed on the phone since the last time; tells the UI what changed here.
-/// Returns whether b33p knows what the phone says (it doesn't before the phone has sent the
-/// storage key).
 pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<(bool, Option<Verifications>), Error> {
+) -> Result<Synced, Error> {
     let Some(service) = manager
         .storage_service()
         .await
         .map_err(failed("failed to reach the storage service"))?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
-        return Ok((false, None));
+        return Ok(Synced::default());
     };
     // Verifications came later than the rest: read everything again once to get them.
     let first = !tables.remote_verifications_read().await.map_err(db)?;
@@ -69,7 +77,10 @@ pub(crate) async fn sync(
                 "failed to read the storage manifest",
             ))?
     else {
-        return Ok((true, None));
+        return Ok(Synced {
+            known: true,
+            ..Synced::default()
+        });
     };
     let wanted: Vec<Vec<u8>> = manifest
         .identifiers
@@ -90,6 +101,7 @@ pub(crate) async fn sync(
     let mut verifications = HashMap::new();
     let mut pins = Vec::new();
     let mut folders = Vec::new();
+    let mut account_preferences = None;
     for keys in wanted.chunks(BATCH) {
         let records = read(&service, keys.to_vec(), ikm).await?;
         for record in records {
@@ -128,6 +140,11 @@ pub(crate) async fn sync(
                     );
                 }
                 Record::Account(account) => {
+                    account_preferences = Some(AccountPreferences {
+                        read_receipts: account.read_receipts,
+                        typing_indicators: account.typing_indicators,
+                        link_previews: account.link_previews,
+                    });
                     pins = account
                         .pinned_conversations
                         .iter()
@@ -153,6 +170,13 @@ pub(crate) async fn sync(
             }
         }
     }
+    let preferences = match account_preferences {
+        Some(now) if tables.remote_preferences().await.map_err(db)? != Some(now) => {
+            tables.set_remote_preferences(now).await.map_err(db)?;
+            Some(now)
+        }
+        Some(_) | None => None,
+    };
     folders.sort_by_key(|(position, _)| *position);
     let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
     tables.set_folders(&folders).await.map_err(db)?;
@@ -188,14 +212,15 @@ pub(crate) async fn sync(
             break;
         }
     }
-    Ok((
-        true,
-        Some(Verifications {
+    Ok(Synced {
+        known: true,
+        verifications: Some(Verifications {
             first,
             changed: verified_changed,
             now: verifications,
         }),
-    ))
+        preferences,
+    })
 }
 
 /// Puts the account record's pins on the phone's chats, archived ones left out: Signal unpins a
