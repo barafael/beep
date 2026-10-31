@@ -37,8 +37,8 @@ use super::{
         member_of, only_admin_check, parse_group_link, refresh_group, show_stored,
     },
     history::{
-        data_of, decorate, erase_deleted, history_page, is_outgoing, media, original, search,
-        start_timers, to_chat_message, to_reaction,
+        checkpoint, data_of, decorate, erase_deleted, history_page, is_outgoing, media, original,
+        search, start_timers, to_chat_message, to_reaction,
     },
     send::{
         Outgoing, aci_binary, body_ranges, group_context, link_preview, respond, send_blocked,
@@ -889,6 +889,7 @@ async fn handle_command(
                 .forget(&[(conversation, target)])
                 .await
                 .map_err(db)?;
+            checkpoint(ctx).await;
         }
         Command::Typing {
             conversation,

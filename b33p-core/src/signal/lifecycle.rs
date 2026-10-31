@@ -582,6 +582,10 @@ fn open_store(
         .busy_timeout(Duration::from_secs(10))
         // sqlx keeps its own copy of this string; it can't be wiped.
         .pragma("key", vault::sqlcipher_pragma(key).to_string())
+        // Overwrites what is deleted, which otherwise stays in free pages for anyone with the
+        // passphrase. SQLCipher's build has it on; SQLite's default depends on the build
+        // (<https://sqlite.org/pragma.html#pragma_secure_delete>).
+        .pragma("secure_delete", "ON")
         // The key is part of the SQL text (pragmas take no parameters), so statements must
         // never reach the log, whatever RUST_LOG says.
         .disable_statement_logging()
@@ -1249,6 +1253,35 @@ pub(super) mod tests {
         // Encrypted: no plaintext SQLite header.
         let bytes = std::fs::read(&paths.db).unwrap();
         assert!(!bytes.starts_with(b"SQLite format 3"));
+    }
+
+    #[test]
+    fn erased_rows_stay_neither_in_the_log_nor_in_free_pages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        let log = paths.db.with_extension("db3-wal");
+        open_and_close(&paths, &key, async |_, tables| {
+            let secure_delete: i64 = sqlx::query_scalar("PRAGMA secure_delete")
+                .fetch_one(tables.pool())
+                .await
+                .unwrap();
+            assert_eq!(secure_delete, 1);
+            let conversation = ConversationId("a".into());
+            let message = MessageRef {
+                author_id: "alice".into(),
+                timestamp: 10,
+            };
+            tables
+                .record_edit(&conversation, &message, 20, "secret")
+                .await
+                .unwrap();
+            tables.forget(&[(conversation, message)]).await.unwrap();
+            assert_ne!(std::fs::metadata(&log).unwrap().len(), 0);
+            assert!(tables.checkpoint().await.unwrap());
+            assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+        })
+        .unwrap();
     }
 
     pub(crate) fn test_paths(dir: &std::path::Path) -> Paths {
