@@ -25,6 +25,7 @@ mod agent;
 compile_error!("the `harness` feature is for test builds: build without `--release`");
 mod audio;
 mod autostart;
+mod capture;
 mod clipboard;
 mod emoji;
 mod instance;

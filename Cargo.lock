@@ -859,6 +859,7 @@ dependencies = [
  "open",
  "png",
  "proptest",
+ "raw-window-handle",
  "rfd",
  "rodio",
  "serde",
@@ -7929,6 +7930,7 @@ dependencies = [
  "i-slint-renderer-software",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "vtable",
 ]
