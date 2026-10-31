@@ -74,7 +74,9 @@ impl Window {
     }
 
     pub fn show(&self) -> Result<(), slint::PlatformError> {
-        self.0.show()
+        self.0.show()?;
+        crate::capture::exclude(self.0.window());
+        Ok(())
     }
 
     /// For focusing a window anew on Linux; see `Shared::activate`.
@@ -90,8 +92,9 @@ impl Window {
     /// activation token (see `Shared::activate`), and may only highlight it otherwise.
     pub fn raise(&self) {
         self.0.window().set_minimized(false);
-        if let Err(error) = self.0.show() {
-            tracing::warn!(%error, "failed to show the window");
+        match self.0.show() {
+            Ok(()) => crate::capture::exclude(self.0.window()),
+            Err(error) => tracing::warn!(%error, "failed to show the window"),
         }
         // Not in Slint's public API. On Qt this raises and activates the window, which on
         // Wayland asks the compositor with the token in `XDG_ACTIVATION_TOKEN`, if there is one.

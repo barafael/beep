@@ -81,9 +81,12 @@ directories = "6"
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4"
 
-# The single-instance pipe (`instance.rs`) and the window that hears the session end
-# (`shutdown.rs`).
+# The single-instance pipe (`instance.rs`), the window that hears the session end
+# (`shutdown.rs`), and the window kept out of screen capture (`capture.rs`).
 [target.'cfg(windows)'.dependencies]
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+# The version Slint's `raw-window-handle-06` hands out.
+raw-window-handle = "0.6"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
