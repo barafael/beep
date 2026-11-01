@@ -374,7 +374,7 @@ enum UiError {
     #[error("screencap format {format}, not RGBA_8888")]
     ScreencapFormat { format: u32 },
     /// The screenshot is kept at `kept`.
-    #[error("no reaction bar above or below {text:?} on the screen ({kept})")]
+    #[error("no reaction bar with its heart after a long press on {text:?} ({kept})")]
     NoReactionBar { text: String, kept: String },
     #[error("{seconds} s isn't one of the app's presets")]
     Preset { seconds: u32 },
@@ -743,59 +743,36 @@ fn screenshot() -> Result<Screenshot, UiError> {
 }
 
 impl Screenshot {
-    fn is_white(&self, x: u32, y: u32) -> bool {
-        let at = ((y * self.width + x) * 4) as usize;
-        // The bar is Signal's near-white (237, 240, 246); the dimmed screen around it is grey.
-        self.pixels[at..at + 3]
-            .iter()
-            .all(|&channel| channel >= 230)
-    }
-
-    /// The longest run of white in row `y`: its left end and its length.
-    fn white_run(&self, y: u32) -> (u32, u32) {
-        let (mut best, mut run_start, mut run) = ((0, 0), 0, 0);
-        for x in 0..self.width {
-            if self.is_white(x, y) {
-                if run == 0 {
-                    run_start = x;
+    /// The middle of the red heart emoji, the reaction bar's first: the red pixels (the
+    /// heart's (255, 66, 54)) are nearly all its, on the dimmed screen below the app's header;
+    /// the other emoji have a few. Their median, if most of them lie within an emoji of it.
+    fn heart(&self) -> Option<(u32, u32)> {
+        let header = self.height / 6;
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for y in header..self.height {
+            for x in 0..self.width {
+                let at = ((y * self.width + x) * 4) as usize;
+                let (r, g, b) = (self.pixels[at], self.pixels[at + 1], self.pixels[at + 2]);
+                if r >= 200 && g <= 110 && b <= 110 {
+                    xs.push(x);
+                    ys.push(y);
                 }
-                run += 1;
-                if run > best.1 {
-                    best = (run_start, run);
-                }
-            } else {
-                run = 0;
             }
         }
-        best
-    }
-
-    /// The reaction bar beside the message at the row `at`, on a screen dimmed around the two:
-    /// above the message, or below it when there is no room above. The message's own bubble is
-    /// as light as the bar, so the first light rows away from `at` are its, then the dimmed
-    /// gap, then the bar's padding, a run at least half the screen wide. Its left end, and the
-    /// height of its emoji: the bar is about a seventh of the screen's width tall, with the
-    /// emoji in its middle. The app's header, at the top, is light too, and no bar.
-    fn reaction_bar(&self, at: u32) -> Option<(u32, u32)> {
-        let header = self.height / 6;
-        let at = at.min(self.height.saturating_sub(1));
-        let above = self
-            .band_edge((header..at).rev())
-            .map(|(left, bottom)| (left, bottom.saturating_sub(self.width / 16)));
-        above.or_else(|| {
-            self.band_edge(at..self.height)
-                .map(|(left, top)| (left, top + self.width / 16))
-        })
-    }
-
-    /// Along `rows`, which start on the message: the bubble's light rows, a dark gap, then the
-    /// first row of the bar, a run at least half the screen wide: its left end and the row.
-    fn band_edge(&self, mut rows: impl Iterator<Item = u32>) -> Option<(u32, u32)> {
-        let wide = self.width / 2;
-        rows.by_ref()
-            .find(|&y| self.white_run(y).1 < self.width / 8)?;
-        let edge = rows.find(|&y| self.white_run(y).1 >= wide)?;
-        Some((self.white_run(edge).0, edge))
+        if xs.len() < 100 {
+            return None;
+        }
+        xs.sort_unstable();
+        ys.sort_unstable();
+        let (x, y) = (xs[xs.len() / 2], ys[ys.len() / 2]);
+        let emoji = self.width / 12;
+        let near = xs
+            .iter()
+            .zip(&ys)
+            .filter(|(px, py)| px.abs_diff(x) <= emoji && py.abs_diff(y) <= emoji)
+            .count();
+        (near * 10 >= xs.len() * 7).then_some((x, y))
     }
 }
 
@@ -1377,37 +1354,30 @@ impl Driver {
         Ok(done.map(|()| Answered::Done)?)
     }
 
-    /// Long-presses the message with `text`, which opens its menu and, above the message, the
+    /// Long-presses the message with `text`, which opens its menu and, beside the message, the
     /// reaction bar (ConversationReactionOverlay.java): a row of emoji drawn without labels,
-    /// chosen by touch. The bar is found on a screenshot, the long white band above the message
-    /// on the dimmed screen, and its first emoji tapped: ❤️, the account's first preferred
-    /// reaction.
+    /// chosen by touch, with the message scrolled under it. The first emoji is ❤️, the
+    /// account's first preferred reaction: the one patch of red on the dimmed screen, found on
+    /// a screenshot and tapped.
     fn react_to_message(&mut self, text: &str) -> Result<(), UiError> {
-        let found = self.long_press(text)?;
+        self.long_press(text)?;
         // The bar slides into place after the menu shows.
         std::thread::sleep(Duration::from_millis(600));
         let shot = screenshot()?;
         // Kept for reading afterwards (`podman cp`), with the tap's place in the log.
-        let kept = format!("/tmp/reaction-{}.png", found.node.y);
+        let kept = "/tmp/reaction.png";
         if let Ok(png) = Command::new("adb")
             .args(["exec-out", "screencap", "-p"])
             .output()
-            && let Err(error) = std::fs::write(&kept, png.stdout)
+            && let Err(error) = std::fs::write(kept, png.stdout)
         {
-            eprintln!("android: keeping the screenshot at {kept}: {error}");
+            eprintln!("android: couldn't keep {kept}: {error}");
         }
-        let (left, y) = shot
-            .reaction_bar(found.node.y)
-            .ok_or_else(|| UiError::NoReactionBar {
-                text: text.to_owned(),
-                kept: kept.clone(),
-            })?;
-        // The first emoji's middle: a fourteenth of the screen's width in from the bar's left end.
-        let x = left + shot.width / 14;
-        eprintln!(
-            "android: the reaction bar at ({left}, {y}) above the message at {}; tapping ({x}, {y})",
-            found.node.y
-        );
+        let (x, y) = shot.heart().ok_or_else(|| UiError::NoReactionBar {
+            text: text.to_owned(),
+            kept: kept.to_owned(),
+        })?;
+        eprintln!("android: the reaction bar's heart at ({x}, {y}); tapping it");
         adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()])
             .map_err(|source| UiError::TapAt { x, y, source })?;
         // The overlay goes with the tap; its menu too.

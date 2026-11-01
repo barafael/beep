@@ -105,12 +105,13 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. Right-click one of your messages → **Edit**, change the text, Enter.
    - It shows the new text and "edited"; on their phone too. *(box: desktop)*
 2. Press ↑ in an empty composer: your last message goes into editing. Esc cancels.
-3. Have them edit a message: it changes in b33p and shows "edited". *(box: desktop)*
+3. Have them edit a message: it changes in b33p and shows "edited". *(box: desktop; android,
+   edited on your phone)*
 4. Right-click your message → **Delete for everyone**.
    - It reads "This message was deleted." here and on their phone. *(box: desktop)*
 5. **Delete for me** on any message: it goes away here only.
 6. Have them delete a message for everyone: it shows as deleted here, also after a restart.
-   *(box: desktop, not the restart)*
+   *(box: desktop, not the restart; android, deleted on your phone)*
 7. Ctrl+click two of your recent messages, then the bin in the bar over the composer →
    **Delete for everyone**: both read as deleted here and on their phone. (**Delete for
    everyone** is only offered while every selected message is yours and recent.)
@@ -381,10 +382,12 @@ part of a test. Every change below reaches all members' phones.
 ### 3.3 Stories
 
 1. Have someone post a story on their phone (text, then a photo), visible to you.
-   - ◎ above the chat list gets a dot. Click it: their ring is listed with the time.
+   - ◎ above the chat list gets a dot. Click it: their ring is listed with the time. *(box:
+     groups, a text story to a group from your own phone and from Desktop)*
 2. Click the ring: the story shows full size; ‹ › move between their stories, Esc
    closes the story, Esc again the list.
    - On **their** phone your view is counted (if you send read receipts / view receipts are on).
+     *(box: groups, counted on Desktop)*
    - On **your** phone the story counts as viewed too.
 3. A story posted to a group you are in shows under the group's name.
 4. Your own stories posted on the phone show in the list too, without sending yourself receipts.

@@ -899,15 +899,26 @@ and Android. What came of it, by phase (the new checks' names are in the phase f
 | Android box, 3rd | android 12/19, groups 27/30, storage 13/13, large-group 10/11 |
 | Android box, 4th and 5th | the phone's reaction, delete and timer, and the story checks, each a driver step short |
 | Android box, 6th | android 15/18 (edit, reply, long texts, note pass); groups 25/30; a story modal left Desktop on its Stories tab, which failed storage and large-group after it |
+| Android box, 7th, from a clean worktree | android 17/18, groups 30/30, storage 13/13, large-group 11/11: only the phone's reaction left |
+| android alone, 8th to 12th | 8th: the heart found but its bounds spoilt by a few red pixels of the other emoji; 9th to 11th: the box's setup died at Desktop's start (below); 12th: android 18/18 |
 
-What the sixth run taught is in the driver but not yet run: the reaction bar is found above
-or below the message (it was the message's own bubble, and the app's header, that the scan
-took for it), the phone's delete-for-everyone has a confirmation, b33p's story viewer counts
-positions from 1 (so the phone's story, third of three, was never stepped to), Desktop keeps
-a closed replies modal in the DOM (the visible one is the open one), and a failed story call
-now leaves Desktop on its chats. Another session began changing the tools crate's and
-b33p-core's error types in this worktree at 14:15, which stops the box from building until it
-is done; the seventh run waits for that.
+What the sixth run taught: the phone's delete-for-everyone has a confirmation; b33p's story
+viewer counts positions from 1 (so the phone's story, third of three, was never stepped to);
+Desktop keeps a closed replies modal in the DOM (the visible one is the open one); a failed
+story call now leaves Desktop on its chats. All in, and green in the seventh run. The
+reaction: the phone scrolls the long-pressed message up under the bar, so the message's place
+before the press, which the scan started from, is stale, and it took the message's own bubble
+for the bar. The driver now finds the bar's ❤️ itself, the one patch of red on the dimmed
+screen, and taps that: the median of the red pixels, as the other emoji have a few too. Green
+in the twelfth run. The ninth to eleventh runs never reached the checks: with the host at a
+load of 55 from another session's builds, Desktop's first window was still its loading page
+when the driver first spoke to it, and the page's going to the main page ended the script
+("Execution context was destroyed"; then "SignalCI undefined"). The driver now waits for
+Desktop's test hooks before its first call and asks again across that navigation; eleven
+earlier boxes had been quick enough never to show it. Another session
+began changing the tools crate's and b33p-core's error types in the main worktree at 14:15,
+which stops the box from building there until it is done; the seventh and eighth runs were
+made from a clean worktree of the commits (`beep-rerun`, branch `rerun-fix`).
 
 ### Not done, and why
 

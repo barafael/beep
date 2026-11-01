@@ -88,18 +88,46 @@ async function launch(): Promise<void> {
   app.process().stderr?.pipe(process.stderr);
   window = await app.firstWindow();
   window.setDefaultTimeout(PATIENCE_MS);
+  // The first window may still be Desktop's loading page, which goes to the main page on its
+  // own: SignalCI is there once that has happened (the wait ends with the navigation, and is
+  // made again).
+  const until = Date.now() + PATIENCE_MS;
+  for (;;) {
+    try {
+      await window.waitForFunction(() => globalThis.SignalCI !== undefined, undefined, {
+        timeout: Math.max(1, until - Date.now()),
+      });
+      break;
+    } catch (error) {
+      if (!String(error).includes('Execution context was destroyed') || Date.now() >= until) {
+        throw error;
+      }
+    }
+  }
   // The microphone, for voice messages: Desktop grants it only with `mediaPermissions` in its user
   // config (app/permissions.std.ts; Settings, "Allow access to the microphone"), which SignalCI
   // sets as Desktop's own tests do (ts/CI.preload.ts `setMediaPermissions`).
   await window.evaluate(() => globalThis.SignalCI.setMediaPermissions());
 }
 
-/** SignalCI's next `name` event, the oldest one it holds first (ts/CI.preload.ts `waitForEvent`). */
-function signalCiEvent(name: string, timeoutMs: number): Promise<unknown> {
-  return page().evaluate(
-    ([event, timeout]) => globalThis.SignalCI.waitForEvent(event, { timeout }),
-    [name, timeoutMs] as const,
-  );
+/** SignalCI's next `name` event, the oldest one it holds first (ts/CI.preload.ts `waitForEvent`).
+ * Right after its start Desktop's window goes from its loading page to its main page, which
+ * ends a script running in it ("Execution context was destroyed"): asked again then. */
+async function signalCiEvent(name: string, timeoutMs: number): Promise<unknown> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await page().evaluate(
+        ([event, timeout]) => globalThis.SignalCI.waitForEvent(event, { timeout }),
+        [name, Math.max(1, deadline - Date.now())] as const,
+      );
+    } catch (error) {
+      if (!String(error).includes('Execution context was destroyed') || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
 }
 
 /** How many `name` events SignalCI holds that nobody has taken yet. */
