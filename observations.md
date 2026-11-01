@@ -930,3 +930,68 @@ made from a clean worktree of the commits (`beep-rerun`, branch `rerun-fix`).
   b33p, typing from the phone: no action in b33p's harness or label on the phone to drive
   them yet.
 
+
+## Main after the error-type refactor (1 Nov, evening)
+
+The other session's conversion of the error types landed on `main` as 9b642ac, and the rerun
+branch's two fixes came over by cherry-pick (6130b68; the conflict was the error's style only).
+`main` builds again, and a run of every default phase with capture on it, the images rebuilt:
+
+| box / phase | checks |
+|---|---|
+| linked box setup, desktop, network | 13, 26, 16, all green |
+| attachments | 9 of 12: the picture from Desktop, its delete, the file from Desktop |
+| core | 7 of 8: the duplicate counted lost, as in yesterday's second linked box |
+| Android box setup, android, groups, storage, large-group | 17, 18, 30, 13, 11, all green |
+
+The Android box, with the heart finder and Desktop's start-up wait, is green on the first try
+on `main`, so the refactor changed nothing the box can see on the phone's side.
+
+### Three attachments checks: a send Desktop drops without a word
+
+The picture from Desktop never arrived; the file from Desktop arrived with a picture in it.
+Desktop's log for the picture's check (18:24:01) shows a typing indicator and then nothing but
+keepalives for four minutes; the content log shows "a file from Desktop" arriving at 18:28:07
+with a blurHash, 299 bytes: the picture, under the next check's caption. The 1 MiB file went
+out at 18:30:33 under a later check's send.
+
+The cause is in the driver, and in Desktop's composer. A staged file is *pending* while
+Desktop reads and scales it (`AttachmentList.dom.tsx` renders it as an `Image` without
+`data-loaded`, with a spinner). A send meanwhile is dropped without a word:
+`composer.preload.ts` `withPreSendChecks` counts draft attachments with `includePending:
+false`, finds none, and returns. The staged file stays for the next send. The driver waited
+for the rail and pressed Enter about 100 ms later; Desktop's own `composerAttachFiles` waits
+for `.module-image[data-loaded]` on the last file. The host was idle (load 2.3), so this was
+not load; the earlier passes were luck, and the first linked box on 1 Nov afternoon
+(attachments 6/12, put down to a menu left open) was most likely this too.
+
+`send_files` now: clears a rail left from an earlier send, waits for every staged file to be
+processed (`.module-image[data-loaded]` or a generic attachment, and no pending `Image`
+left), sends, and waits for the message to show in the timeline before returning. A check
+that fails after this fails at the send, not two minutes later in b33p. Rerun on the same
+`main`: the linked box 13, attachments 12 of 12 in 17 s, core 8 of 8.
+
+### The duplicate in core, read again
+
+"No client lost a message" at core's end counted one: presage-cli (Peer), "failed to decrypt
+a message from <ACI:…>.2 of 1793558024112: message with old counter 41 / 38". Yesterday's
+note put this down to libsignal-service sending b33p's message again; this one is not
+b33p's at all. The timestamp is Desktop's "4 of 10 over a flapping link", sent at 18:33:44 in
+the *network* phase, and `.2` of the peer's own ACI is Desktop itself: the line is about
+Desktop's sent transcript to its own primary, which presage-cli (the peer) saw twice. Desktop
+sent it once (its log shows one send and the delivery receipt from b33p). presage-cli is run
+per sync and exits after an empty queue; one run stored the transcript and exited before
+acknowledging it, and the next run was handed it again: a redelivery, which presage-cli
+counts as a decryption failure because its session has seen the counter. The check knows
+this case and asks presage-cli's store for the first copy, but it asked in the sender's
+thread, and a sent transcript from one's own device is stored under the thread it went to:
+b33p's account. So a redelivery counted as a loss. (Yesterday's note already found the lookup
+wanting: "it searches presage-cli's store by the sender and timestamp".)
+
+`stored` now, when the sender is the account itself, also asks in the threads of the box's
+other accounts. A replay of one's own transcript is then a redelivery, not a loss. The
+core phase otherwise passed, and the message reached b33p once. The rerun's core passed
+8 of 8 without a redelivery, so the new lookup wasn't exercised by a box; its premise was
+checked by hand on the box's peer store: `list-messages -u <peer's own ACI>` lists none of
+Desktop's sends, `list-messages -u <primary's ACI>` lists them all as "From Peer … @
+<timestamp>".
