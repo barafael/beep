@@ -131,31 +131,53 @@ pub(super) fn unlock(b33p: &mut Harness) -> Result<()> {
 }
 
 /// Waits for b33p to show a story with `text` among `conversation`'s (b33p files a group's
-/// stories under the group, b33p-core `stories::on_story`), and closes it. It is opened again
-/// until it shows: before the story came, there was none to open.
+/// stories under the group, b33p-core `stories::on_story`), and closes it. The viewer opens on
+/// the first story not viewed yet, or the first of all: the others are stepped to. It is
+/// opened again until it shows: before the story came, there was none to open.
 pub(super) fn story_shows(b33p: &mut Harness, conversation: &str, text: &str) -> Result<()> {
     let deadline = Instant::now() + PATIENCE;
     let shown = loop {
         b33p.act(Action::OpenStory {
             conversation: conversation.to_owned(),
         })?;
-        let shown = b33p.wait_for(
-            &format!("the story {text:?}"),
-            Duration::from_secs(5),
-            |snapshot| {
-                snapshot
-                    .story
-                    .as_ref()
-                    .is_some_and(|story| story.text.as_deref() == Some(text))
-                    .then_some(())
-            },
-        );
+        let shown = story_stepped_to(b33p, text);
         if shown.is_ok() || Instant::now() >= deadline {
             break shown;
         }
     };
     b33p.act(Action::CloseStory)?;
     shown
+}
+
+/// Steps through the open conversation's stories to the one with `text`, from the one shown
+/// to the last, then from the first. A story's `position` counts from 1.
+fn story_stepped_to(b33p: &mut Harness, text: &str) -> Result<()> {
+    let current = |snapshot: &Snapshot| snapshot.story.clone();
+    let mut story = b33p.wait_for("a story open", Duration::from_secs(5), current)?;
+    let mut steps = 0;
+    loop {
+        if story.text.as_deref() == Some(text) {
+            return Ok(());
+        }
+        if steps >= story.count {
+            return Err(Error::Failed(format!(
+                "no story {text:?} among the {}",
+                story.count
+            )));
+        }
+        // Past the last, the viewer closes: back to the first then.
+        let by = if story.position >= story.count {
+            1 - i32::try_from(story.position).unwrap_or(i32::MAX)
+        } else {
+            1
+        };
+        let position = story.position;
+        b33p.act(Action::StepStory { by })?;
+        story = b33p.wait_for("the next story", Duration::from_secs(5), |snapshot| {
+            current(snapshot).filter(|story| story.position != position)
+        })?;
+        steps += 1;
+    }
 }
 
 pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<()> {

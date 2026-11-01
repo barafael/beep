@@ -50,3 +50,13 @@ pub(super) fn android_containing(android: &mut Android, text: &str) -> Result<()
         timeout_ms: PATIENCE_MS,
     })
 }
+
+/// Waits for a message starting with `head` in Desktop's open conversation to show
+/// [`super::desktop::LAST_LINE`] too, unfolded if Desktop folded it: a long text, whole.
+pub(super) fn desktop_shows_whole(desktop: &mut Desktop, head: &str) -> Result<()> {
+    desktop.call(drivers::Desktop::WaitForMessageWhole {
+        head: head.to_owned(),
+        tail: super::desktop::LAST_LINE.to_owned(),
+        timeout_ms: PATIENCE_MS,
+    })
+}

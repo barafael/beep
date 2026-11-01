@@ -16,6 +16,8 @@ pub(crate) enum LinkedPhase {
     // Before anything has the primary receive: its profile picture check needs b33p to fetch
     // the peer's profile then, as presage keeps a profile it fetched for good.
     Attachments,
+    // Impairs the clients' link to the servers, and makes it whole again at its end.
+    Network,
     // Restarts the server.
     Core,
 }
@@ -28,6 +30,9 @@ pub(crate) enum AndroidPhase {
     Groups,
     // Pins and archives the chat with the peer.
     Storage,
+    // Twenty presage-cli members more: b33p's account's second group, a large one.
+    #[strum(serialize = "large-group")]
+    LargeGroup,
 }
 
 /// The stress phases (pending/stress.md), each on a box of its own (`PlainBox` there), and

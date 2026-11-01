@@ -181,6 +181,74 @@ function rendered(text: string, whole: boolean): RegExp {
   return new RegExp(whole ? `^${marks}${pattern}${marks}$` : pattern);
 }
 
+/** Desktop's disappearing-timer presets by their seconds, as expirationTimer.std.ts formats
+ * them (`DEFAULT_DURATIONS_IN_SECONDS`, humanize-duration in English; zero is "Off"). */
+const TIMER_LABELS = new Map<number, string>([
+  [0, 'Off'],
+  [4 * 7 * 24 * 60 * 60, '4 weeks'],
+  [7 * 24 * 60 * 60, '1 week'],
+  [24 * 60 * 60, '1 day'],
+  [8 * 60 * 60, '8 hours'],
+  [60 * 60, '1 hour'],
+  [5 * 60, '5 minutes'],
+  [30, '30 seconds'],
+]);
+
+/** Opens, in the Stories tab, the story with `text` among those the group `from` names: its row
+ * (StoryListItem), then the viewer, which shows the text in a TextAttachment. */
+async function openStory(from: string, text: string): Promise<void> {
+  await navTab('Stories');
+  await page()
+    .locator('.StoryListItem')
+    .filter({ hasText: rendered(from, false) })
+    .first()
+    .click();
+  await page()
+    .locator('.StoryViewer__container')
+    .getByText(rendered(text, false))
+    .first()
+    .waitFor();
+}
+
+/** Opens the story and its replies (StoryViewer.dom.tsx `StoryViewer__reply`, "Reply to Group"
+ * for a group's): the modal with the reaction picker and the composer. A press that leaves the
+ * modal hidden (the viewer opened on another story, or paused instead) has the story closed
+ * and opened again, a few times. */
+async function openStoryAndReplies(from: string, text: string): Promise<Locator> {
+  // A modal closed before stays in the DOM, hidden: the visible one is the open one.
+  const modal = page().locator('.StoryViewsNRepliesModal:visible').first();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await openStory(from, text);
+    const reply = page().locator('.StoryViewer__reply');
+    if (attempt === 0) {
+      await reply.click();
+    } else {
+      await reply.dispatchEvent('click');
+    }
+    try {
+      await modal.waitFor({ state: 'visible', timeout: 5_000 });
+      return modal;
+    } catch {
+      await closeStory();
+    }
+  }
+  await openStory(from, text);
+  await page().locator('.StoryViewer__reply').click();
+  await modal.waitFor({ state: 'visible' });
+  return modal;
+}
+
+/** Closes what `openStory` and its modal left open, and goes back to the chats. */
+async function closeStory(): Promise<void> {
+  await page().keyboard.press('Escape');
+  await page()
+    .getByRole('button', { name: 'Close' })
+    .first()
+    .click({ timeout: 5_000 })
+    .catch(() => {});
+  await navTab('Chats');
+}
+
 /** Leaves a story half made, its editor and its send dialog, so that the next call finds the
  * chats: best effort, each step only if it is there. */
 async function discardStory(): Promise<void> {
@@ -315,6 +383,130 @@ const methods = {
   },
   /** Waits up to `timeout_ms` for a message with `text` in the open conversation. */
   wait_for_message: ({ text, timeout_ms }: Text & Timeout) => appears(message(text), timeout_ms),
+  /** Waits for the message with `head` to show `tail` too, unfolded first if Desktop folded it
+   * (MessageBodyReadMore.dom.tsx, "Read more"): a long text, whole. */
+  wait_for_message_whole: async (
+    { head, tail, timeout_ms }: Timeout & { head: string; tail: string },
+  ) => {
+    const found = message(head).first();
+    await found.waitFor({ timeout: timeout_ms });
+    await found
+      .getByRole('button', { name: 'Read more' })
+      .click({ timeout: 5_000 })
+      .catch(() => {});
+    return await appears(found.getByText(rendered(tail, false)), timeout_ms);
+  },
+  /** Waits until no message with `text` is left in the open conversation: one that disappeared. */
+  wait_for_message_gone: ({ text, timeout_ms }: Text & Timeout) => gone(message(text), timeout_ms),
+  /** Waits for the message with `text` to show a link preview titled `title`
+   * (LinkPreview in Message.dom.tsx, `module-message__link-preview__title`). */
+  wait_for_link_preview: ({ text, title, timeout_ms }: Text & Timeout & { title: string }) =>
+    appears(
+      message(text)
+        .locator('.module-message__link-preview__title')
+        .filter({ hasText: rendered(title, false) }),
+      timeout_ms,
+    ),
+  /** Sets the open conversation's disappearing-message timer from the header's menu
+   * (ConversationHeader.dom.tsx: "More Info", the "Disappearing messages" submenu by its test id,
+   * a radio item per preset, named as expirationTimer.std.ts formats it; 0 is "Off"). */
+  set_timer: async ({ seconds }: { seconds: number }) => {
+    const label = TIMER_LABELS.get(seconds);
+    if (label === undefined) {
+      throw new Error(`${seconds} s isn't one of Desktop's presets`);
+    }
+    await page()
+      .locator('.Inbox__conversation-stack')
+      .getByRole('button', { name: 'More Info' })
+      .click();
+    try {
+      await page().getByTestId('ConversationHeader__ContextMenu__DisappearingTimer').click();
+      // While the menu is open, Radix turns pointer events off below it, which Playwright's
+      // check of what a click would hit takes for an obstruction: forced.
+      const item = page().getByRole('menuitemradio', { name: rendered(label, true) }).first();
+      await item.waitFor();
+      // A click event straight to the item (Radix selects on it), as Desktop's own tests do
+      // where a pointer click goes astray (stories_test.node.ts).
+      await item.dispatchEvent('click');
+      await item.waitFor({ state: 'detached' });
+      // The header shows the timer it was set to, or no timer.
+      const subtitle = page().locator(
+        '.module-ConversationHeader__header__info__subtitle__expiration',
+      );
+      if (seconds === 0) {
+        await subtitle.waitFor({ state: 'detached' });
+      } else {
+        await subtitle.filter({ hasText: rendered(label, false) }).waitFor();
+      }
+      return null;
+    } catch (error) {
+      await page().keyboard.press('Escape').catch(() => {});
+      await page().keyboard.press('Escape').catch(() => {});
+      throw error;
+    }
+  },
+  /** Opens the story with `text` the group `from` names and reacts to it with the picker's
+   * first emoji (StoryViewer.dom.tsx `StoryViewer__reply`, then StoryViewsNRepliesModal's
+   * ReactionPicker); back to the chats after. */
+  react_to_story: async ({ from, text }: Text & { from: string }) => {
+    try {
+      const modal = await openStoryAndReplies(from, text);
+      await modal.locator('.module-ReactionPickerPicker__button--emoji').first().click();
+      // The modal shows the reaction among the replies once sent.
+      await modal.locator('.StoryViewsNRepliesModal__reaction').first().waitFor();
+      return null;
+    } finally {
+      await closeStory();
+    }
+  },
+  /** As `react_to_story`, writing `reply` under the story (the modal's CompositionInput). */
+  reply_to_story: async ({ from, text, reply }: Text & { from: string; reply: string }) => {
+    try {
+      const modal = await openStoryAndReplies(from, text);
+      const composer = modal.locator('.StoryViewsNRepliesModal__input .ql-editor');
+      await composer.waitFor();
+      await composer.fill(reply);
+      await composer.press('Enter');
+      await modal
+        .locator('.StoryViewsNRepliesModal__reply')
+        .filter({ hasText: rendered(reply, false) })
+        .first()
+        .waitFor();
+      return null;
+    } finally {
+      await closeStory();
+    }
+  },
+  /** Waits until a story of Desktop's own counts `views` views: the Stories tab's "My Stories"
+   * (MyStoryButton.dom.tsx), its rows' details (MyStories.dom.tsx `MyStories__story__details`,
+   * "{views, plural, one {# view} other {# views}}"); back to the chats after. */
+  wait_for_story_views: async ({ views, timeout_ms }: Timeout & { views: number }) => {
+    await navTab('Stories');
+    try {
+      await page()
+        .locator('.StoryListItem__click-container')
+        .filter({ hasText: rendered('My Stories', false) })
+        .click();
+      const wanted = views === 1 ? '1 view' : `${views} views`;
+      const details = page().locator('.MyStories__story__details');
+      try {
+        return await appears(
+          // The details' text runs the views and the time together ("1 view2m").
+          details.filter({ hasText: new RegExp(`(^|\\D)${wanted}`) }),
+          timeout_ms,
+        );
+      } catch (error) {
+        // What the stories' details read instead.
+        const read = await details.allInnerTexts().catch(() => []);
+        throw new Error(
+          `no story with ${wanted}; the details read ${JSON.stringify(read)}: ${error}`,
+        );
+      }
+    } finally {
+      await page().locator('.NavSidebar__BackButton').click().catch(() => {});
+      await navTab('Chats');
+    }
+  },
   /** Sends `paths` with `text` as its caption, as helpers.node.ts `composerAttachFiles` and
    * `sendMessageWithAttachments` do. */
   send_files: async ({ paths, text }: Text & { paths: string[] }) => {
@@ -659,6 +851,13 @@ async function answer(line: string): Promise<string> {
     const result = await call(request.params ?? {});
     return JSON.stringify({ id, result });
   } catch (error) {
+    // A call that failed halfway may have left a menu or a dialog open, which would take every
+    // click after it: closed, innermost first, as far as Escape closes them.
+    if (window) {
+      for (let i = 0; i < 3; i += 1) {
+        await window.keyboard.press('Escape').catch(() => {});
+      }
+    }
     return JSON.stringify({ id, error: String(error) });
   }
 }

@@ -82,7 +82,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    minutes). The bubble shows **Not sent · Retry**, and the banner says "A message couldn't
    be sent: Signal can't be reached. Retry on the message sends it." Once b33p is connected
    and caught up again, click **Retry**: the banner goes, "Sending…", then the ticks as in 1.
-   *(box: core, with the server paused)*
+   *(box: core, with the server paused; network, with the link dead)*
 5. With your phone off (flight mode), have someone you have a chat with write to you while
    b33p runs, and again while b33p is closed, then start it.
    - On **their** phone both messages show as delivered (✓✓) once b33p has them: b33p sends
@@ -125,10 +125,12 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. Chat ⋮ → **Disappearing messages → 30 seconds** (1:1 chat).
    - A notice "You set disappearing messages to 30 seconds.", with a timer icon before it. On
      their phone the timer is set. In the chat list, the preview has the timer icon too.
+     *(box: desktop)*
 2. Send a message: it shows a timer icon with the time left and disappears after 30 seconds,
-   here and on their phone.
+   here and on their phone. *(box: desktop)*
 3. Have them send one: its timer starts when you read it.
 4. Change the timer on the phone: b33p shows the notice and the new timer in the header.
+   *(box: desktop, set on Desktop; android, set on the phone)*
 5. Group chats: see 3.1.
 
 ### 1.6 Formatting
@@ -173,7 +175,14 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.11 Note to Self
 
 1. Note to Self is in the list even before you wrote there; messages to it arrive on the
-   phone.
+   phone. *(box: android)*
+
+### 1.12 Long messages
+
+1. Send a message of a few thousand characters: it arrives whole on their phone and desktop
+   (Signal carries the first 2000 characters inline and the whole text as an attachment; a
+   phone drops a message with more inline as invalid). Have them send one: it shows whole here.
+   *(box: desktop, android)*
 
 ---
 
@@ -257,7 +266,8 @@ drops the selection.
 1. Receive a link with a preview: a card with picture, title, description and site; clicking it
    opens the link.
 2. Turn **Settings → Privacy → Link previews** on and send a link (https).
-   - The message goes out with a preview, on their phone too. (Off: no preview.)
+   - The message goes out with a preview, on their phone too. (Off: no preview.) *(box:
+     desktop)*
 
 ### 2.11 Stickers
 
@@ -307,7 +317,7 @@ part of a test. Every change below reaches all members' phones.
 1. **+** above the chat list → pick two people → name the group → **Create**.
    - The group opens; it reads "You created the group." On their phones the group appears with
      both of you as members, and they can write to it; their messages arrive in b33p.
-   - On **your** phone the group appears too. *(box: groups)*
+   - On **your** phone the group appears too. *(box: groups; large-group, with 21 others)*
 2. Group details (click its name) → change the **name**, then the **description**.
    - Notices "You changed the group name to …" here, and the change on every phone.
      *(box: groups, the name)*
@@ -500,7 +510,7 @@ Back up `~/.local/share/b33p` before these; some delete it on purpose.
 9. Settings → **Unlink this device…** → **Unlink and delete**: the phone no longer lists it,
    b33p shows a linking code, and the chats are gone here.
 10. Take the network away while chatting: the chat list says "Not connected · trying again";
-    back: "Catching up…", then nothing.
+    back: "Catching up…", then nothing. *(box: network: the link dead for 90 s, and flapping)*
 11. Settings → About → **Open log folder**: `b33p.log` is there. Search it for a contact's
     number, name, or a word you sent: none of them appear.
 12. Start the 0.2.0 build on the data of a newer test build whose migrations it doesn't know

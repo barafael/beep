@@ -24,7 +24,7 @@ const ANDROID_NUMBER: &str = "+15555550103";
 /// Written by Android before b33p links: it reaches b33p in the message history, through CDN3.
 pub(super) const NOTE: &str = "testbox android: a note from before b33p linked";
 /// The peer's first message to b33p's account, which b33p accepts as a message request.
-const FIRST: &str = "testbox: the peer's first message";
+pub(super) const FIRST: &str = "testbox: the peer's first message";
 /// b33p-slint/src/ui.rs `sync_status` for `HistoryTransfer::Waiting`.
 const WAITING_FOR_HISTORY: &str = "Waiting for your phone to send your message history…";
 
@@ -210,7 +210,7 @@ pub(super) fn mesh_box<'pod>(
 }
 
 /// `work` on each of `items` at once, in threads; every outcome, in order, or the first failure.
-fn each<Item: Sync, Done: Send>(
+pub(super) fn each<Item: Sync, Done: Send>(
     items: &[Item],
     work: impl Fn(&Item) -> Result<Done> + Sync,
 ) -> Result<Vec<Done>> {

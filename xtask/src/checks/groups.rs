@@ -340,6 +340,74 @@ pub(super) fn groups(
         })?;
         story_shows(b33p, &group, desktop_story)
     });
+    // Opening it had b33p send a view receipt (b33p-core stories.rs `send_viewed`, with read
+    // receipts on, as Android's account has them), which Desktop counts on its own story.
+    checks.record("b33p's view of Desktop's story counts on Desktop", || {
+        // Desktop counts views only with read receipts on, which a linked Desktop's are not
+        // until its primary says (presage-cli says nothing): on, unless they are.
+        if let Err(error) = desktop.call(drivers::Desktop::SetReadReceipts {
+            on: true,
+            timeout_ms: PATIENCE_MS,
+        }) && !error.to_string().contains("already")
+        {
+            return Err(error);
+        }
+        desktop.call(drivers::Desktop::WaitForStoryViews {
+            views: 1,
+            timeout_ms: PATIENCE_MS,
+        })
+    });
+    // Replies and reactions to a group story go to the group, with the story as their context
+    // (DataMessage `storyContext`): Signal's apps show them in the group's chat, a reply as a
+    // message quoting the story, a reaction as "Reacted to your story". PLAN.md lists both
+    // as b33p's next for stories; what b33p shows of them is checked here.
+    let story_reply = "testbox groups: a reply to b33p's story";
+    checks.record(
+        "a reply Desktop gives b33p's story reaches b33p in the group",
+        || {
+            desktop.call(drivers::Desktop::ReplyToStory {
+                from: by_desktop.to_owned(),
+                text: story.to_owned(),
+                reply: story_reply.to_owned(),
+            })?;
+            select(b33p, &group)?;
+            b33p_shows(b33p, "the story's reply", |message| {
+                !message.outgoing && message.text == story_reply
+            })
+        },
+    );
+    checks.record(
+        "a reaction Desktop gives b33p's story shows in b33p",
+        || {
+            desktop.call(drivers::Desktop::ReactToStory {
+                from: by_desktop.to_owned(),
+                text: story.to_owned(),
+            })?;
+            select(b33p, &group)?;
+            b33p_shows(b33p, "the story's reaction", |message| {
+                !message.outgoing && message.text.to_lowercase().contains("story")
+            })
+        },
+    );
+
+    // A story from the phone: the account's own, which b33p hears of as a sync and files under
+    // the group, as it does one of its own.
+    let android_story = "testbox groups: a story from Android";
+    checks.record(
+        "a story Android posts to the group shows on b33p and Desktop",
+        || {
+            android.call(drivers::Android::PostStory {
+                group: by_desktop.to_owned(),
+                text: android_story.to_owned(),
+            })?;
+            story_shows(b33p, &group, android_story)?;
+            desktop.call(drivers::Desktop::StoryShows {
+                from: by_desktop.to_owned(),
+                text: android_story.to_owned(),
+                timeout_ms: PATIENCE_MS,
+            })
+        },
+    );
 
     // b33p's own changes to the group. Android was left elsewhere (the request it approved), so
     // it opens the chat again, by the name it has once the change reached it.

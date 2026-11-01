@@ -211,6 +211,17 @@
           { name: "files", mountPath: "/files", readOnly: true },
         ],
       },
+      # The clients' link to the servers, impaired when a check asks (`tc netem` on the pod's
+      # loopback, for the servers' ports: xtask/src/pod.rs `impair`); idle until then.
+      {
+        name: "netem",
+        image: "localhost/@POD@-cdn0",
+        command: ["sleep", "infinity"],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+        },
+      },
       # @B33PS@
       # @CLIENTS@
       # @CAPTURE@

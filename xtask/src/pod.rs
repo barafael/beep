@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use crate::error::{Context, Error, Result, WithContext};
 use crate::process::{self, Heard};
 use testbox_tools::View;
+use testbox_tools::keys;
 use testbox_tools::process::describe;
 
 /// The pod's name without an instance (`--instance`); an instance's is `<POD>.<instance>`, which
@@ -56,6 +57,8 @@ pub enum Service {
     Android,
     /// With `--capture`, the packet capture (testbox/capture).
     Capture,
+    /// Where the clients' link is impaired from ([`Pod::impair`]).
+    Netem,
 }
 
 /// The b33p every box has.
@@ -74,6 +77,7 @@ impl Service {
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
             Self::Capture => "capture".to_owned(),
+            Self::Netem => "netem".to_owned(),
         }
     }
 
@@ -910,6 +914,49 @@ impl Pod {
         exec.args(argv);
         exec.output()
             .with_context(|| format!("podman exec {}", argv.join(" ")))
+    }
+
+    /// Impairs the clients' link to the servers as the netem qdisc `spec` says (tc-netem(8):
+    /// `delay 150ms 40ms loss 1%`, `rate 1mbit`, `loss 100%`): on the pod's loopback, for what
+    /// goes to or comes from the servers' ports ([`keys::CAPTURED_PORTS`]), both ways; the
+    /// servers' own traffic to their stores is left alone. Each call replaces the one before;
+    /// [`Self::unimpair`] takes it away. From the `netem` container (pod.yaml), the one with
+    /// NET_ADMIN.
+    pub fn impair(&self, spec: &str) -> Result<()> {
+        // Band 4 of a prio qdisc, which nothing goes to by default (the priomap sends every
+        // priority to band 1), holds the netem; the filters send the servers' ports there. For
+        // IPv6, the ports by offset: u32 has no ip6 port selector.
+        const SCRIPT: &str = r#"set -e
+spec=$1; ports=$2
+tc qdisc del dev lo root 2>/dev/null || true
+tc qdisc add dev lo root handle 1: prio bands 4 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+tc qdisc add dev lo parent 1:4 handle 40: netem $spec
+for port in $ports; do
+  tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip dport $port 0xffff flowid 1:4
+  tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport $port 0xffff flowid 1:4
+  tc filter add dev lo parent 1: protocol ipv6 prio 2 u32 match u16 $port 0xffff at 42 flowid 1:4
+  tc filter add dev lo parent 1: protocol ipv6 prio 2 u32 match u16 $port 0xffff at 40 flowid 1:4
+done"#;
+        let ports: Vec<String> = keys::CAPTURED_PORTS.iter().map(u16::to_string).collect();
+        let ports = ports.join(" ");
+        self.exec(
+            Service::Netem,
+            &["sh", "-c", SCRIPT, "impair", spec, &ports],
+            "",
+        )
+        .map(drop)
+    }
+
+    /// Takes away what [`Self::impair`] put on the link; nothing to take away is fine.
+    pub fn unimpair(&self) -> Result<()> {
+        let deleted =
+            self.exec_status(Service::Netem, &["tc", "qdisc", "del", "dev", "lo", "root"])?;
+        let error = String::from_utf8_lossy(&deleted.stderr);
+        if deleted.status.success() || error.contains("Cannot delete qdisc with handle of zero") {
+            Ok(())
+        } else {
+            Err(Error::Failed(format!("tc qdisc del: {}", error.trim())))
+        }
     }
 
     /// Freezes `service` until [`Self::unpause`]: its connections stay open, and nothing answers

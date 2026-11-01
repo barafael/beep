@@ -123,6 +123,7 @@ fn start() -> Result<()> {
         agent: Agent::start()?,
     };
     no_soft_keyboard()?;
+    gesture_navigation()?;
     driver.launch()?;
     serve(&mut driver, Path::new(&socket))
 }
@@ -249,6 +250,111 @@ fn adb(args: &[&str]) -> Result<String> {
     let mut command = Command::new("adb");
     command.args(args);
     output(command, "")
+}
+
+fn back() -> Result<()> {
+    adb(&["shell", "input", "keyevent", "KEYCODE_BACK"]).map(drop)
+}
+
+/// The screen's size in pixels (`wm size`, "Physical size: 720x1560", an override's line after
+/// it if there is one).
+fn screen_size() -> Result<(u32, u32)> {
+    let size = adb(&["shell", "wm", "size"])?;
+    size.lines()
+        .filter_map(|line| line.split_once(": "))
+        .filter_map(|(_, size)| size.trim().split_once('x'))
+        .filter_map(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .next_back()
+        .ok_or_else(|| Error::Failed(format!("wm size: {size:?}")))
+}
+
+/// The screen as pixels (`screencap` without `-p`: width, height, format and colour space as
+/// u32, then RGBA).
+struct Screenshot {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+fn screenshot() -> Result<Screenshot> {
+    let taken = Command::new("adb")
+        .args(["exec-out", "screencap"])
+        .output()
+        .context("adb exec-out screencap")?;
+    if !taken.status.success() || taken.stdout.len() < 16 {
+        return Err(Error::Failed(format!("screencap: {}", taken.status)));
+    }
+    let word = |at: usize| u32::from_le_bytes(taken.stdout[at..at + 4].try_into().unwrap());
+    let (width, height, format) = (word(0), word(4), word(8));
+    if format != 1 {
+        return Err(Error::Failed(format!(
+            "screencap format {format}, not RGBA_8888"
+        )));
+    }
+    let bytes = (width as usize) * (height as usize) * 4;
+    let start = taken.stdout.len() - bytes;
+    Ok(Screenshot {
+        width,
+        height,
+        pixels: taken.stdout[start..].to_vec(),
+    })
+}
+
+impl Screenshot {
+    fn is_white(&self, x: u32, y: u32) -> bool {
+        let at = ((y * self.width + x) * 4) as usize;
+        // The bar is Signal's near-white (237, 240, 246); the dimmed screen around it is grey.
+        self.pixels[at..at + 3]
+            .iter()
+            .all(|&channel| channel >= 230)
+    }
+
+    /// The longest run of white in row `y`: its left end and its length.
+    fn white_run(&self, y: u32) -> (u32, u32) {
+        let (mut best, mut run_start, mut run) = ((0, 0), 0, 0);
+        for x in 0..self.width {
+            if self.is_white(x, y) {
+                if run == 0 {
+                    run_start = x;
+                }
+                run += 1;
+                if run > best.1 {
+                    best = (run_start, run);
+                }
+            } else {
+                run = 0;
+            }
+        }
+        best
+    }
+
+    /// The reaction bar beside the message at the row `at`, on a screen dimmed around the two:
+    /// above the message, or below it when there is no room above. The message's own bubble is
+    /// as light as the bar, so the first light rows away from `at` are its, then the dimmed
+    /// gap, then the bar's padding, a run at least half the screen wide. Its left end, and the
+    /// height of its emoji: the bar is about a seventh of the screen's width tall, with the
+    /// emoji in its middle. The app's header, at the top, is light too, and no bar.
+    fn reaction_bar(&self, at: u32) -> Option<(u32, u32)> {
+        let header = self.height / 6;
+        let at = at.min(self.height.saturating_sub(1));
+        let above = self
+            .band_edge((header..at).rev())
+            .map(|(left, bottom)| (left, bottom.saturating_sub(self.width / 16)));
+        above.or_else(|| {
+            self.band_edge(at..self.height)
+                .map(|(left, top)| (left, top + self.width / 16))
+        })
+    }
+
+    /// Along `rows`, which start on the message: the bubble's light rows, a dark gap, then the
+    /// first row of the bar, a run at least half the screen wide: its left end and the row.
+    fn band_edge(&self, mut rows: impl Iterator<Item = u32>) -> Option<(u32, u32)> {
+        let wide = self.width / 2;
+        rows.by_ref()
+            .find(|&y| self.white_run(y).1 < self.width / 8)?;
+        let edge = rows.find(|&y| self.white_run(y).1 >= wide)?;
+        Some((self.white_run(edge).0, edge))
+    }
 }
 
 /// Multiplies Android's ANR timeouts (`Build.HW_TIMEOUT_MULTIPLIER`; `InputConstants`
@@ -440,6 +546,20 @@ fn boot_emulator(config: &LocalConfig) -> Result<()> {
 /// a window in front would take.
 fn no_soft_keyboard() -> Result<()> {
     setting("secure", "show_ime_with_hard_keyboard", "0")
+}
+
+/// Navigation by gestures, a thin bar, in place of the three buttons' bar: the emulator's default
+/// bar lies over the bottom of the app's windows, where Signal puts a story's Share and Send,
+/// and the agent refuses a tap another window would take.
+fn gesture_navigation() -> Result<()> {
+    adb(&[
+        "shell",
+        "cmd",
+        "overlay",
+        "enable",
+        "com.android.internal.systemui.navbar.gestural",
+    ])
+    .map(drop)
 }
 
 /// Sets `name` in `namespace` (`settings put`) to `value`, and reads it back.
@@ -735,8 +855,15 @@ impl Driver {
             Android::LinkDevice { url, transfer } => self.link_device(&url, transfer),
             Android::OpenConversation { text } => {
                 self.launch()?;
-                self.tap(&text, PATIENCE)
+                self.open_row(&text)
             }
+            Android::Tap { text } => self.tap(&text, PATIENCE),
+            Android::LongPress { text } => self.long_press(&text).map(drop),
+            Android::Back => back(),
+            Android::TypeText { text } => self.type_text(&text, agent::Echo::Exact(text.clone())),
+            Android::ReactToMessage { text } => self.react_to_message(&text),
+            Android::SetTimer { seconds } => self.set_timer(seconds),
+            Android::PostStory { group, text } => self.post_story(&group, &text),
             Android::Send { text } => self.send(&text),
             Android::WaitFor { wanted, timeout_ms } => self
                 .first_shown(vec![wanted], Duration::from_millis(timeout_ms))
@@ -757,6 +884,181 @@ impl Driver {
             }
         };
         done.map(|()| Answered::Done)
+    }
+
+    /// Long-presses the message with `text`, which opens its menu and, above the message, the
+    /// reaction bar (ConversationReactionOverlay.java): a row of emoji drawn without labels,
+    /// chosen by touch. The bar is found on a screenshot, the long white band above the message
+    /// on the dimmed screen, and its first emoji tapped: ❤️, the account's first preferred
+    /// reaction.
+    fn react_to_message(&mut self, text: &str) -> Result<()> {
+        let found = self.long_press(text)?;
+        // The bar slides into place after the menu shows.
+        std::thread::sleep(Duration::from_millis(600));
+        let shot = screenshot()?;
+        // Kept for reading afterwards (`podman cp`), with the tap's place in the log.
+        let kept = format!("/tmp/reaction-{}.png", found.node.y);
+        if let Ok(png) = Command::new("adb")
+            .args(["exec-out", "screencap", "-p"])
+            .output()
+        {
+            let _ = std::fs::write(&kept, png.stdout);
+        }
+        let (left, y) = shot.reaction_bar(found.node.y).ok_or_else(|| {
+            Error::Failed(format!(
+                "no reaction bar above or below {text:?} on the screen ({kept})"
+            ))
+        })?;
+        // The first emoji's middle: a fourteenth of the screen's width in from the bar's left end.
+        let x = left + shot.width / 14;
+        eprintln!(
+            "android: the reaction bar at ({left}, {y}) above the message at {}; tapping ({x}, {y})",
+            found.node.y
+        );
+        adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()])?;
+        // The overlay goes with the tap; its menu too.
+        self.agent.act(agent::Call::WaitGone {
+            wanted: vec![agent::Wanted::label("Reply")],
+            timeout_ms: timeout_ms(PATIENCE),
+        })
+    }
+
+    /// Taps the chat list's row showing `text`, scrolled to if the list is long.
+    fn open_row(&mut self, text: &str) -> Result<()> {
+        if self
+            .first_shown(vec![agent::Wanted::control(text)], GLANCE)
+            .is_err()
+        {
+            let row = self.agent.look(agent::Call::ScrollTo {
+                label: text.to_owned(),
+                timeout_ms: timeout_ms(PATIENCE),
+            })?;
+            return self.tap_at(&row.node);
+        }
+        self.tap(text, PATIENCE)
+    }
+
+    /// Long-presses the message with `text` in it, and waits for its menu; a menu left open
+    /// by a call before is closed first, as it would take the press.
+    fn long_press(&mut self, text: &str) -> Result<agent::Found> {
+        // A message's menu, or a text selection's bar, left by a call before.
+        let open = || {
+            vec![
+                agent::Wanted::label("Forward"),
+                agent::Wanted::label("Message details"),
+            ]
+        };
+        if self.first_shown(open(), GLANCE).is_ok() {
+            back()?;
+            self.agent.act(agent::Call::WaitGone {
+                wanted: open(),
+                timeout_ms: timeout_ms(PATIENCE),
+            })?;
+        }
+        let found = self.first_shown(vec![agent::Wanted::containing(text)], PATIENCE)?;
+        self.agent.click(&found.node, true)?;
+        self.element("Reply", PATIENCE)?;
+        Ok(found)
+    }
+
+    /// The open conversation's timer, from its chat settings (ConversationSettingsFragment,
+    /// "Disappearing messages": a radio list of the app's presets and Save, strings.xml
+    /// `ExpirationDialog_*`); then back to the conversation.
+    fn set_timer(&mut self, seconds: u32) -> Result<()> {
+        let label = match seconds {
+            0 => "Off",
+            2_419_200 => "4 weeks",
+            604_800 => "1 week",
+            86_400 => "1 day",
+            28_800 => "8 hours",
+            3_600 => "1 hour",
+            300 => "5 minutes",
+            30 => "30 seconds",
+            other => {
+                return Err(Error::Failed(format!(
+                    "{other} s isn't one of the app's presets"
+                )));
+            }
+        };
+        self.tap("More options", PATIENCE)?;
+        self.tap("Chat settings", PATIENCE)?;
+        self.tap("Disappearing messages", PATIENCE)?;
+        self.element("Custom time", PATIENCE)?;
+        self.tap(label, PATIENCE)?;
+        self.tap("Save", PATIENCE)?;
+        self.back_to_conversation()
+    }
+
+    /// Back until the conversation's composer shows (its content description, strings.xml
+    /// `conversation_activity__compose_message`).
+    fn back_to_conversation(&mut self) -> Result<()> {
+        for _ in 0..4 {
+            if self
+                .first_shown(vec![agent::Wanted::label("Message composition")], GLANCE)
+                .is_ok()
+            {
+                return Ok(());
+            }
+            back()?;
+        }
+        Err(Error::Failed("not back in the conversation".to_owned()))
+    }
+
+    /// A text story to `group`: the Stories tab's camera, its Text mode, the text typed and
+    /// done, the editor's next arrow (unlabelled: at its place on the screen), the group chosen
+    /// on "Send to", Send; then the chats.
+    fn post_story(&mut self, group: &str, text: &str) -> Result<()> {
+        self.launch()?;
+        self.tap("Stories", PATIENCE)?;
+        self.tap("Open Camera", PATIENCE)?;
+        self.tap("Text", PATIENCE)?;
+        self.tap("Tap to add text", PATIENCE)?;
+        self.element("Done adding text", PATIENCE)?;
+        self.type_text(text, agent::Echo::Exact(text.to_owned()))?;
+        self.tap("Done adding text", PATIENCE)?;
+        self.element("Add link", PATIENCE)?;
+        // The arrow's place with the gesture navigation bar (`gesture_navigation`): bottom
+        // right, above the bar.
+        let (width, height) = screen_size()?;
+        adb(&[
+            "shell",
+            "input",
+            "tap",
+            &(width * 91 / 100).to_string(),
+            &(height * 925 / 1000).to_string(),
+        ])?;
+        self.element("Send to", PATIENCE)?;
+        // A group the account never posted to isn't offered: it is added as a group story
+        // (New, Group story, its introduction the first time, the group, Share), and comes
+        // back chosen.
+        if self
+            .first_shown(vec![agent::Wanted::control(group)], GLANCE)
+            .is_ok()
+        {
+            self.tap(group, PATIENCE)?;
+        } else {
+            self.tap("New", PATIENCE)?;
+            self.tap("Group story", PATIENCE)?;
+            let shown = self.first_shown(
+                vec![
+                    agent::Wanted::label("Choose groups"),
+                    agent::Wanted::control("Next"),
+                ],
+                PATIENCE,
+            )?;
+            if shown.which == 1 {
+                self.tap_at(&shown.node)?;
+                self.element("Choose groups", PATIENCE)?;
+            }
+            self.tap(group, PATIENCE)?;
+            self.tap("Share", PATIENCE)?;
+        }
+        self.tap("Send", PATIENCE)?;
+        self.agent.act(agent::Call::WaitGone {
+            wanted: vec![agent::Wanted::label("Send to")],
+            timeout_ms: timeout_ms(PATIENCE),
+        })?;
+        self.launch()
     }
 
     /// Opens the menu of the chat list's row showing `text` (a long click on it); the menu's own
@@ -1180,7 +1482,15 @@ impl Driver {
             }
             outcome => outcome?,
         }
-        self.tap("Send message", PATIENCE)
+        // The composer's button: "Send edit" while a message is being edited.
+        let send = self.first_shown(
+            vec![
+                agent::Wanted::control("Send message"),
+                agent::Wanted::control("Send edit"),
+            ],
+            PATIENCE,
+        )?;
+        self.tap_at(&send.node)
     }
 
     /// The composer's field, the last editable one on screen, given `text`.

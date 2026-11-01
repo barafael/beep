@@ -99,9 +99,9 @@ Android image builds while the linked box runs.
 
 ```mermaid
 flowchart LR
-    build["build the images"] --> linked["the linked box:<br/>desktop, attachments, core"]
+    build["build the images"] --> linked["the linked box:<br/>desktop, attachments, network, core"]
     build -. "meanwhile" .-> image["build the Android image"]
-    linked --> android["the Android box:<br/>android, groups, storage"]
+    linked --> android["the Android box:<br/>android, groups, storage, large-group"]
     image --> android
     linked -. "meanwhile" .-> watch["cargo testbox web<br/>or vnc"]
 ```
@@ -110,10 +110,12 @@ flowchart LR
 |---|---|---|
 | `desktop` | linked | Signal-Desktop, linked to the peer, on the other end of b33p: receipts, edits, formatting, reactions, replies, deletes and emoji each way |
 | `attachments` | linked | pictures, files and audio through CDN3 between b33p and Desktop; a profile picture and a sticker pack through CDN0 |
+| `network` | linked | the clients' link to the servers impaired with `tc netem` (the pod's `netem` container): slow and lossy, narrow, dead for a while with nothing to say so, and flapping; what gets through, and how long it takes |
 | `core` | linked | b33p linked to a presage-cli primary, with a presage-cli peer: text both ways, delivery receipts, reconnecting after the server drops, a send it leaves unanswered and its retry |
 | `android` | Android | Signal-Android registers as the primary and b33p links to it; text and receipts between the two accounts, each one's linked device in step |
 | `groups` | Android | a group b33p makes with the peer and a presage-cli member; what b33p changes shows on Desktop and Android, and what they change on b33p |
 | `storage` | Android | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
+| `large-group` | Android | a group of the peer and twenty presage-cli members more, made by b33p: its text to everyone (one sender-key request), and everyone's answers at once |
 
 The linked box links b33p to a presage-cli primary and Desktop to a presage-cli peer; the
 Android box links b33p to Android and Desktop to the peer. On both, the peer's first message

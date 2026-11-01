@@ -141,7 +141,7 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
     }
     for (client, events) in &clients {
         testbox_tools::write(
-            &wire.join(format!("transcript-{client}.txt")),
+            &wire.join(format!("transcript-{}.txt", file_name(client))),
             transcript(events, &spans),
         )?;
     }
@@ -423,6 +423,10 @@ impl Identities {
                 None if self.user.is_some() => "presage-cli".to_owned(),
                 None => "presage-rs".to_owned(),
             }
+        } else if agent == "WhatsApp/2" {
+            // Desktop's link preview fetch (ts/linkPreviews/linkPreviewFetch.std.ts, which
+            // asks for a page as WhatsApp does, so sites answer with their tags).
+            "desktop".to_owned()
         } else if agent == "undici" {
             // wrangler's dev server, in front of CDN3, asking its own worker (`/cdn-cgi/`).
             "cdn3-itself".to_owned()
@@ -1034,4 +1038,18 @@ pub(crate) fn clock(at: u64) -> String {
         day / 1000 % 60,
         day % 1000
     )
+}
+
+/// `name` as a file's: a client's name is from the wire (`other (<agent>)`), so a slash or a
+/// space in it isn't one in the path.
+fn file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

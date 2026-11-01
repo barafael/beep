@@ -17,7 +17,9 @@ mod crashed;
 mod desktop;
 mod errors;
 mod groups;
+mod large_group;
 mod lost;
+mod network;
 mod presage;
 pub(crate) mod record;
 mod rng;
@@ -32,12 +34,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
-use crate::error::{Error, Result};
 use crate::phase::{AndroidPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
 use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
-use self::record::Record;
+use self::record::{Record, RecordError};
+use testbox_tools::Report;
 
 /// How long a client may take to say it listens: the emulator's first boot is the slowest.
 const START: Duration = Duration::from_secs(60 * 60);
@@ -47,6 +49,71 @@ const PATIENCE: Duration = Duration::from_millis(PATIENCE_MS);
 /// Exporting, uploading, downloading and importing a message history.
 const HISTORY_PATIENCE: Duration = Duration::from_secs(600);
 
+/// Why a check, a fixture's setup or a phase failed: whichever step's own error it was, kept whole
+/// for the report, which prints it with its causes. A check is a sequence of steps across the pod,
+/// b33p's harness, the drivers and the check's own expectations; each step's error says what
+/// failed, and the check's name says what it was for.
+pub(crate) type Failure = Box<dyn std::error::Error + Send + Sync>;
+
+/// A check others depend on failed, and was reported as it failed ([`Checks::require`]): what
+/// comes after it doesn't run.
+#[derive(Debug, thiserror::Error)]
+#[error("{check} failed")]
+pub(crate) struct Unmet {
+    pub(crate) check: String,
+}
+
+/// A run that can't start, or that found failures.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RunError {
+    /// `--capture` with a stress phase, whose volume would fill the disk.
+    #[error("--capture is not for the stress phases ({phase})")]
+    CaptureWithStress { phase: &'static str },
+    /// The Android image didn't build, so no box that needs it can play.
+    #[error("the Android image didn't build (above)")]
+    AndroidImage,
+    /// The checks that failed, each under its part's name, and how many phases didn't run.
+    #[error("{}", failures(failed, *not_run))]
+    Failed { failed: Vec<String>, not_run: usize },
+}
+
+/// The summary [`RunError::Failed`] prints: the failed checks, one a line, and the phases not run.
+fn failures(failed: &[String], not_run: usize) -> String {
+    let mut outcome = Vec::new();
+    if !failed.is_empty() {
+        let failed: String = failed.iter().map(|check| format!("\n- {check}")).collect();
+        outcome.push(format!("failed:{failed}"));
+    }
+    if not_run > 0 {
+        outcome.push(format!("{not_run} phases not run"));
+    }
+    outcome.join("\n")
+}
+
+/// What the checks after every part found new on the box ([`Reported::none_new`]).
+#[derive(Debug, thiserror::Error)]
+#[error("{count} {what}:\n{}", listed.join("\n"))]
+pub(crate) struct NewLines {
+    /// What the lines are: lost messages, crashes, unexpected errors.
+    what: &'static str,
+    count: usize,
+    /// The first [`LISTED`] of them.
+    listed: Vec<String>,
+}
+
+/// An environment variable that should hold a number ([`env_number`]).
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EnvNumberError {
+    #[error("{name}={value:?} isn't a number")]
+    NotANumber { name: String, value: String },
+    #[error("the environment variable {name}")]
+    Unreadable {
+        name: String,
+        #[source]
+        source: std::env::VarError,
+    },
+}
+
 /// Runs the phases `options` names, every phase but the stress phases if none, each fixture's on
 /// a box from nothing (with `--fresh`, each phase on a box of its own), each box's record in
 /// `target/testbox-record/<records>/<box>/`; fails if a check failed.
@@ -55,7 +122,7 @@ pub(crate) fn run(
     repo: &Path,
     records: &str,
     options: &TestOptions,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let TestOptions {
         phases,
         screenshots,
@@ -69,9 +136,7 @@ pub(crate) fn run(
             _ => None,
         })
     {
-        return Err(Error::Failed(format!(
-            "--capture is not for the stress phases ({stress})"
-        )));
+        return Err(RunError::CaptureWithStress { phase: stress }.into());
     }
     containers.capture(*capture);
     let sockets = Sockets::new(containers);
@@ -99,9 +164,9 @@ pub(crate) fn run(
         || phases.contains(&Phase::Stress(StressPhase::Concurrency));
     let built: &[Client] = if desktop { &linked_clients } else { &[] };
     containers.build_others(built, b33p.optimized)?;
-    let play = |clients: &[Client], b33ps: u8| {
+    let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
         containers.fresh(clients, b33ps)?;
-        b33p.limit_memory(containers, b33ps)
+        Ok(b33p.limit_memory(containers, b33ps)?)
     };
     let b33ps = b33p.b33ps.unwrap_or(1);
     // Only when named, as the stress phases.
@@ -139,6 +204,13 @@ pub(crate) fn run(
                 // Any picture will do; this one is in the repository already.
                 &repo.join("docs/screenshots/01-chats.png"),
             ),
+            LinkedPhase::Network => network::network(
+                checks,
+                fixture,
+                containers,
+                &files,
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
             LinkedPhase::Core => core::core(checks, fixture, containers, &sockets),
         },
     );
@@ -151,7 +223,7 @@ pub(crate) fn run(
                 build.finish().inspect_err(|_| android_failed = true)?;
             }
             if android_failed {
-                return Err("the Android image didn't build (above)".into());
+                return Err(RunError::AndroidImage.into());
             }
             play(&android_clients, b33ps)
         },
@@ -160,6 +232,7 @@ pub(crate) fn run(
             AndroidPhase::Android => android::android(checks, fixture),
             AndroidPhase::Groups => groups::groups(checks, fixture, containers, &sockets),
             AndroidPhase::Storage => storage::storage(checks, fixture),
+            AndroidPhase::LargeGroup => large_group::large_group(checks, fixture, containers),
         },
     );
     for phase in StressPhase::VARIANTS
@@ -204,7 +277,7 @@ pub(crate) fn run(
             ),
         },
     );
-    tally.finish()
+    Ok(tally.finish()?)
 }
 
 /// Brings a box up from nothing for the phase `name` alone (`ready`), which sets it up itself, and
@@ -212,12 +285,13 @@ pub(crate) fn run(
 fn on_own_box(
     tally: &mut Tally<'_>,
     name: &str,
-    ready: impl FnOnce() -> Result<()>,
-    phase: impl FnOnce(&mut Checks) -> Result<()>,
+    ready: impl FnOnce() -> Result<(), Failure>,
+    phase: impl FnOnce(&mut Checks) -> Result<(), Failure>,
 ) {
-    let record = match ready().and_then(|()| tally.record(name)) {
+    let record = match ready().and_then(|()| Ok(tally.record(name)?)) {
         Ok(record) => record,
         Err(error) => {
+            let error = Report(&*error);
             println!("{name}: {error}");
             tally.failed.push(format!("{name}: {error}"));
             tally.not_run += 1;
@@ -245,9 +319,9 @@ fn on_fixture<Fixture, Each: Copy + Into<&'static str>>(
     tally: &mut Tally<'_>,
     record: &'static str,
     phases: &[Each],
-    mut ready: impl FnMut() -> Result<()>,
-    mut fixture: impl FnMut(&mut Checks) -> Result<Fixture>,
-    mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<()>,
+    mut ready: impl FnMut() -> Result<(), Failure>,
+    mut fixture: impl FnMut(&mut Checks) -> Result<Fixture, Failure>,
+    mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<(), Failure>,
 ) {
     let per_box = if tally.fresh { 1 } else { phases.len().max(1) };
     for group in phases.chunks(per_box) {
@@ -267,14 +341,15 @@ fn on_box<Fixture, Each: Copy + Into<&'static str>>(
     tally: &mut Tally<'_>,
     record: &str,
     phases: &[Each],
-    ready: impl FnOnce() -> Result<()>,
-    fixture: impl FnOnce(&mut Checks) -> Result<Fixture>,
-    mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<()>,
+    ready: impl FnOnce() -> Result<(), Failure>,
+    fixture: impl FnOnce(&mut Checks) -> Result<Fixture, Failure>,
+    mut phase: impl FnMut(Each, &mut Checks, &mut Fixture) -> Result<(), Failure>,
 ) {
     let name = format!("the {record} box");
-    let record = match ready().and_then(|()| tally.record(record)) {
+    let record = match ready().and_then(|()| Ok(tally.record(record)?)) {
         Ok(record) => record,
         Err(error) => {
+            let error = Report(&*error);
             println!("{name}: {error}");
             tally.failed.push(format!("{name}: {error}"));
             tally.not_run += phases.len();
@@ -314,7 +389,7 @@ struct Tally<'run> {
 
 impl Tally<'_> {
     /// The box `name`'s record, emptied of a former run's.
-    fn record(&self, name: &str) -> Result<Record> {
+    fn record(&self, name: &str) -> Result<Record, RecordError> {
         let path = if self.records.is_empty() {
             name.to_owned()
         } else {
@@ -332,13 +407,14 @@ impl Tally<'_> {
         name: &str,
         record: &Record,
         directory: &str,
-        part: impl FnOnce(&mut Checks) -> Result<T>,
+        part: impl FnOnce(&mut Checks) -> Result<T, Failure>,
     ) -> Option<T> {
         println!("{name}:");
         let started = Instant::now();
         let kept = match record.part(directory) {
             Ok(kept) => kept,
             Err(error) => {
+                let error = Report(&error);
                 println!("{name}: {error}");
                 self.failed.push(format!("{name}: {error}"));
                 return None;
@@ -352,21 +428,25 @@ impl Tally<'_> {
         let outcome = part(&mut checks);
         // An unmet check is tallied already.
         if let Err(error) = &outcome
-            && !matches!(error, Error::Unmet(_))
+            && !error.is::<Unmet>()
         {
+            let error = Report(&**error);
             println!("{name} ended: {error}");
             checks.failed.push(error.to_string());
         }
         checks.record("no client lost a message", || {
-            self.reported.none_new("lost", lost::found(self.containers))
+            let lost = lost::found(self.containers)?;
+            Ok(self.reported.none_new("lost", lost)?)
         });
         checks.record("no client crashed", || {
-            self.reported
-                .none_new("crashed", Ok(crashed::found(self.containers)))
+            Ok(self
+                .reported
+                .none_new("crashed", crashed::found(self.containers))?)
         });
         checks.record("b33p logged no unexpected error", || {
-            self.reported
-                .none_new("unexpected errors", Ok(errors::found(self.containers)))
+            Ok(self
+                .reported
+                .none_new("unexpected errors", errors::found(self.containers))?)
         });
         println!(
             "{name}: {} passed, {} failed, in {:.0} s",
@@ -383,23 +463,15 @@ impl Tally<'_> {
         outcome.ok()
     }
 
-    fn finish(self) -> Result<()> {
-        let mut outcome = Vec::new();
-        if !self.failed.is_empty() {
-            let failed: String = self
-                .failed
-                .iter()
-                .map(|check| format!("\n- {check}"))
-                .collect();
-            outcome.push(format!("failed:{failed}"));
-        }
-        if self.not_run > 0 {
-            outcome.push(format!("{} phases not run", self.not_run));
-        }
-        if outcome.is_empty() {
+    /// Fails if a check failed or a phase didn't run.
+    fn finish(self) -> Result<(), RunError> {
+        if self.failed.is_empty() && self.not_run == 0 {
             Ok(())
         } else {
-            Err(Error::Failed(outcome.join("\n")))
+            Err(RunError::Failed {
+                failed: self.failed,
+                not_run: self.not_run,
+            })
         }
     }
 }
@@ -413,10 +485,10 @@ struct Reported(HashMap<String, usize>);
 impl Reported {
     /// Fails, listing them as `what`, if `found` has lines not reported before, or a line more
     /// often than before.
-    fn none_new(&mut self, what: &str, found: Result<Vec<String>>) -> Result<()> {
+    fn none_new(&mut self, what: &'static str, found: Vec<String>) -> Result<(), NewLines> {
         let mut counted: HashMap<String, usize> = HashMap::new();
         let mut new = Vec::new();
-        for line in found? {
+        for line in found {
             let count = counted.entry(line.clone()).or_default();
             *count += 1;
             if *count > self.0.get(&line).copied().unwrap_or_default() {
@@ -432,10 +504,11 @@ impl Reported {
         }
         let count = new.len();
         new.truncate(LISTED);
-        Err(Error::Failed(format!(
-            "{count} {what}:\n{}",
-            new.join("\n")
-        )))
+        Err(NewLines {
+            what,
+            count,
+            listed: new,
+        })
     }
 }
 
@@ -444,15 +517,17 @@ const LISTED: usize = 10;
 
 /// The number in the environment variable `name`, if it is set: one that doesn't parse fails
 /// rather than being passed over, as a seed mistyped to replay a run would be.
-fn env_number<T: std::str::FromStr>(name: &str) -> Result<Option<T>> {
+fn env_number<T: std::str::FromStr>(name: &str) -> Result<Option<T>, EnvNumberError> {
     match std::env::var(name) {
-        Ok(value) => value
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| Error::Failed(format!("{name}={value:?} isn't a number"))),
+        Ok(value) => match value.trim().parse() {
+            Ok(number) => Ok(Some(number)),
+            Err(_) => Err(EnvNumberError::NotANumber {
+                name: name.to_owned(),
+                value,
+            }),
+        },
         Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(source) => Err(Error::Env {
+        Err(source) => Err(EnvNumberError::Unreadable {
             name: name.to_owned(),
             source,
         }),
@@ -470,14 +545,15 @@ impl Checks {
     fn require<Found>(
         &mut self,
         name: &str,
-        check: impl FnOnce() -> Result<Found>,
-    ) -> Result<Found> {
-        self.report(name, check)
-            .ok_or_else(|| Error::Unmet(name.to_owned()))
+        check: impl FnOnce() -> Result<Found, Failure>,
+    ) -> Result<Found, Unmet> {
+        self.report(name, check).ok_or_else(|| Unmet {
+            check: name.to_owned(),
+        })
     }
 
     /// A check nothing depends on: a failure is tallied and the phase goes on.
-    fn record(&mut self, name: &str, check: impl FnOnce() -> Result<()>) {
+    fn record(&mut self, name: &str, check: impl FnOnce() -> Result<(), Failure>) {
         self.report(name, check);
     }
 
@@ -486,7 +562,7 @@ impl Checks {
     fn report<Found>(
         &mut self,
         name: &str,
-        check: impl FnOnce() -> Result<Found>,
+        check: impl FnOnce() -> Result<Found, Failure>,
     ) -> Option<Found> {
         let started = Instant::now();
         let started_at = SystemTime::now();
@@ -502,7 +578,7 @@ impl Checks {
                 Some(found)
             }
             Err(reason) => {
-                println!("check {name}: failed ({took:.1} s): {reason}");
+                println!("check {name}: failed ({took:.1} s): {}", Report(&*reason));
                 self.failed.push(name.to_owned());
                 None
             }
@@ -514,8 +590,8 @@ impl Checks {
 mod tests {
     use super::Reported;
 
-    fn lines(lines: &[&str]) -> crate::error::Result<Vec<String>> {
-        Ok(lines.iter().map(|&line| line.to_owned()).collect())
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|&line| line.to_owned()).collect()
     }
 
     /// A line the part before reported isn't new; the same line once more is, as b33p killed

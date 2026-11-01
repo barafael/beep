@@ -6,7 +6,7 @@
 use crate::pod::Pod;
 
 /// The ERROR lines a box leaves that say nothing new, by a piece of each.
-const KNOWN: [&str; 6] = [
+const KNOWN: [&str; 7] = [
     // cage, the clients' compositor (testbox/tools `with-display`): the image has no Xwayland,
     // on purpose, and cage says so at every start.
     "Cannot find Xwayland binary",
@@ -25,6 +25,12 @@ const KNOWN: [&str; 6] = [
     // registration (`core`'s keepalive drop): the next connect runs it again, and the keys
     // were on the server already (observations of 2026-10-31, the pre-key alarm).
     "failed to register pre-keys",
+    // presage, on an envelope whose counter its session has seen: the same ciphertext a second
+    // time, as a sender's retry over a dead link brings (libsignal-service sends the encrypted
+    // messages again when the websocket closed under them, and the first try may have got
+    // through). b33p tells a duplicate from a loss by its store (receive.rs `Decrypted`), and
+    // the lost-message check counts the loss; the line itself says duplicate.
+    "message with old counter",
 ];
 
 /// The ERROR lines of every b33p's log not among the known, each with its b33p's name.

@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use b33p_harness::Action;
 
 use super::b33p::{
     b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index, outgoing_index,
     select, type_and_send,
 };
-use super::clients::desktop_shows;
+use super::clients::{desktop_shows, desktop_shows_whole, desktop_text};
 use super::presage::Account;
 use super::setup::LinkedBox;
 use super::{Checks, PATIENCE_MS};
@@ -256,8 +258,111 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             !message.outgoing && message.text == text
         })
     });
+    // The other way: whether b33p sends the whole text inline or as Signal's apps do (the
+    // first 2000 bytes inline, the whole as a `LongText` attachment), Desktop must show it all.
+    // Which of the two it was is in the wire record's content log.
+    checks.record("a long text from b33p reaches Desktop whole", || {
+        let head = "testbox desktop: a long text from b33p";
+        type_and_send(b33p, &long_text(head))?;
+        desktop_shows_whole(desktop, head)
+    });
+
+    // TESTPLAN.md §2.10: a link with the box's preview page behind it (testbox/tools `preview`),
+    // its preview fetched by b33p and sent along, which Desktop shows as a card.
+    checks.record("a link from b33p reaches Desktop with its preview", || {
+        link_previews(b33p, true)?;
+        let head = "testbox desktop: a link from b33p";
+        let sent = type_and_send(
+            b33p,
+            &format!("{head} {}", testbox_tools::keys::preview_url("/page/7")),
+        );
+        let off = link_previews(b33p, false);
+        sent?;
+        off?;
+        desktop.call(drivers::Desktop::WaitForLinkPreview {
+            text: head.to_owned(),
+            title: testbox_tools::preview_title(7),
+            timeout_ms: PATIENCE_MS,
+        })
+    });
+
+    // TESTPLAN.md §1.5, with Desktop on the other end. Desktop's notice (messages.json
+    // `icu:DisappearingTimer--set`) names the time; its timer on an incoming message starts when
+    // it reads it, which the open conversation does at once; b33p's on its own starts at the send.
+    checks.record(
+        "a timer b33p sets shows on Desktop, and a message then goes on both",
+        || {
+            b33p.act(Action::SetTimer {
+                conversation: conversation.clone(),
+                seconds: 30,
+            })?;
+            b33p_chat(b33p, conversation, "with a 30 s timer", |chat| {
+                chat.expire_timer == 30
+            })?;
+            desktop_text(desktop, "30 seconds")?;
+            let text = "testbox desktop: gone in 30 seconds";
+            type_and_send(b33p, text)?;
+            desktop_shows(desktop, text)?;
+            // Desktop's timer starts when it reads the message, which it does for the open
+            // conversation once its window counts as active: a click on the conversation's
+            // row makes it so (`storage`'s read receipts the same way).
+            desktop.call(drivers::Desktop::OpenConversation {
+                aci: primary_aci.clone(),
+            })?;
+            desktop.call(drivers::Desktop::WaitForMessageGone {
+                text: text.to_owned(),
+                timeout_ms: EXPIRY_PATIENCE_MS,
+            })?;
+            b33p.wait_for(
+                "b33p's message gone",
+                Duration::from_millis(EXPIRY_PATIENCE_MS),
+                |snapshot| {
+                    (!snapshot.messages.iter().any(|message| message.text == text)).then_some(())
+                },
+            )
+        },
+    );
+    checks.record("a timer Desktop sets shows in b33p, and off again", || {
+        desktop.call(drivers::Desktop::SetTimer { seconds: 5 * 60 })?;
+        b33p_chat(b33p, conversation, "with a 5 min timer", |chat| {
+            chat.expire_timer == 5 * 60
+        })?;
+        b33p_shows(b33p, "the timer's notice", |message| {
+            message.notice && message.text.contains("5 minutes")
+        })?;
+        desktop.call(drivers::Desktop::SetTimer { seconds: 0 })?;
+        b33p_chat(b33p, conversation, "without a timer", |chat| {
+            chat.expire_timer == 0
+        })
+    });
 
     Ok(())
+}
+
+/// How long a message with a 30 s timer may take to go, on either side.
+const EXPIRY_PATIENCE_MS: u64 = 90_000;
+
+/// Turns b33p's link previews on or off, as its settings switch does.
+fn link_previews(b33p: &mut crate::harness::Harness, on: bool) -> Result<()> {
+    b33p.act(Action::SetSettings {
+        theme: None,
+        style: None,
+        text_size: None,
+        animations: None,
+        show_avatars: None,
+        notifications: None,
+        notification_content: None,
+        show_activity: None,
+        show_calendar: None,
+        close_to_tray: None,
+        read_receipts: None,
+        typing_indicators: None,
+        link_previews: Some(on),
+        sync_to_phone: None,
+    })?;
+    b33p.wait_for("b33p's link previews", super::PATIENCE, |snapshot| {
+        (snapshot.settings.link_previews == on).then_some(())
+    })
 }
 
 /// Turns b33p's typing indicators on or off, as its settings switch does.
@@ -294,6 +399,10 @@ pub(super) fn long_text(head: &str) -> String {
         ));
         n += 1;
     }
-    text.push_str("\nthe last line, past the inline limit");
+    text.push('\n');
+    text.push_str(LAST_LINE);
     text
 }
+
+/// [`long_text`]'s last line, which a text cut at the inline limit lacks.
+pub(super) const LAST_LINE: &str = "the last line, past the inline limit";

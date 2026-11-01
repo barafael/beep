@@ -239,7 +239,7 @@ pub(super) fn downloaded(b33p: &mut Harness, id: &str) -> Result<()> {
 }
 
 /// Waits until the attachment `id` is saved.
-fn saved(b33p: &mut Harness, id: &str) -> Result<()> {
+pub(super) fn saved(b33p: &mut Harness, id: &str) -> Result<()> {
     b33p.wait_for(
         &format!("{id} saved"),
         PATIENCE,

@@ -16,6 +16,8 @@ pub(super) enum Account {
     Peer,
     /// A group's member besides the peer (`groups`).
     Member,
+    /// The `n`th of the large group's members (`large-group`).
+    Crowd(u8),
     /// The account the `n`th b33p of a mesh links to (`tour`).
     Mesh(u8),
 }
@@ -26,6 +28,7 @@ impl Account {
             Self::Primary => "/presage/primary.db".into(),
             Self::Peer => "/presage/peer.db".into(),
             Self::Member => "/presage/member.db".into(),
+            Self::Crowd(n) => format!("/presage/crowd-{n}.db").into(),
             Self::Mesh(n) => format!("/presage/mesh-{n}.db").into(),
         }
     }
@@ -35,6 +38,7 @@ impl Account {
             Self::Primary => "+15555550101".into(),
             Self::Peer => "+15555550102".into(),
             Self::Member => "+15555550104".into(),
+            Self::Crowd(n) => format!("+1555555{:04}", 300 + u16::from(n)).into(),
             Self::Mesh(n) => format!("+1555555{:04}", 200 + u16::from(n)).into(),
         }
     }
@@ -45,6 +49,7 @@ impl Account {
             Self::Primary => "Primary".into(),
             Self::Peer => "Peer".into(),
             Self::Member => "Member".into(),
+            Self::Crowd(n) => format!("Crowd {n}").into(),
             Self::Mesh(n) => format!("Mesh {n}").into(),
         }
     }
@@ -62,6 +67,11 @@ impl<'pod> Presage<'pod> {
             containers,
             account,
         }
+    }
+
+    /// The account's name, as the clients show it.
+    pub(super) fn name(&self) -> Cow<'static, str> {
+        self.account.name()
     }
 
     fn cli(&self, arguments: &[&str], stdin: &str) -> Result<String> {
@@ -155,6 +165,22 @@ impl<'pod> Presage<'pod> {
     pub(super) fn send(&self, recipient_aci: &str, text: &str) -> Result<()> {
         self.cli(&["send", "--uuid", recipient_aci, "--message", text], "")
             .map(drop)
+    }
+
+    /// Sends `text` to the group whose master key is `master_key` (hex), which this account
+    /// knows from a message it received in it.
+    pub(super) fn send_to_group(&self, master_key: &str, text: &str) -> Result<()> {
+        self.cli(
+            &[
+                "send-to-group",
+                "--master-key",
+                master_key,
+                "--message",
+                text,
+            ],
+            "",
+        )
+        .map(drop)
     }
 
     /// Sends `texts` to `recipient_aci` one after another, in one `podman exec`: as fast as

@@ -111,6 +111,48 @@ pub enum Desktop {
         text: String,
         timeout_ms: u64,
     },
+    /// Waits for the message with `head` to show `tail` too, unfolded if Desktop folded it
+    /// behind "Read more": a long text, whole.
+    WaitForMessageWhole {
+        head: String,
+        tail: String,
+        timeout_ms: u64,
+    },
+    /// Waits until no message with `text` is left in the open conversation: one that
+    /// disappeared.
+    WaitForMessageGone {
+        text: String,
+        timeout_ms: u64,
+    },
+    /// Waits for the message with `text` to show a link preview titled `title`.
+    WaitForLinkPreview {
+        text: String,
+        title: String,
+        timeout_ms: u64,
+    },
+    /// Sets the open conversation's disappearing-message timer to `seconds` (one of Desktop's
+    /// presets, 0 for off) from the header's menu.
+    SetTimer {
+        seconds: u32,
+    },
+    /// In the Stories tab, opens the story with `text` the group `from` names and reacts to it
+    /// with the first emoji of Desktop's picker; back to the chats after.
+    ReactToStory {
+        from: String,
+        text: String,
+    },
+    /// As [`Self::ReactToStory`], with `reply` written under the story instead.
+    ReplyToStory {
+        from: String,
+        text: String,
+        reply: String,
+    },
+    /// Waits until a story of Desktop's own (the Stories tab's "My Stories") counts `views`
+    /// views; back to the chats after.
+    WaitForStoryViews {
+        views: u32,
+        timeout_ms: u64,
+    },
     WaitForBold {
         text: String,
         timeout_ms: u64,
@@ -213,6 +255,36 @@ pub enum Android {
     },
     /// Opens the chat whose row in the chat list shows `text`.
     OpenConversation {
+        text: String,
+    },
+    /// Taps the control labelled `text`, wherever the app is.
+    Tap {
+        text: String,
+    },
+    /// Long-presses the first node with `text` in it: a message's bubble, for its menu.
+    LongPress {
+        text: String,
+    },
+    /// The back key.
+    Back,
+    /// Sets the text of the field with input focus.
+    TypeText {
+        text: String,
+    },
+    /// Reacts to the message with `text` with the first emoji of the bar a long press on it
+    /// opens (Signal-Android's ConversationReactionOverlay, ❤️ first).
+    ReactToMessage {
+        text: String,
+    },
+    /// Sets the open conversation's disappearing-message timer to `seconds` (one of the app's
+    /// presets, 0 for off), from its chat settings; back in the conversation after.
+    SetTimer {
+        seconds: u32,
+    },
+    /// Posts a text story with `text` to the group `group` names, from the Stories tab; back in
+    /// the chats after.
+    PostStory {
+        group: String,
         text: String,
     },
     Send {
