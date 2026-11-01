@@ -36,13 +36,12 @@ use crate::{
 use super::{
     Background, Ctx, GroupIds, Mgr,
     avatars::AvatarFetcher,
-    commands::{command_failed, handle, outgoing, send_interrupted},
+    commands::{handle, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
-    history::sweep_expired,
-    receive::{Repairs, start_receiving},
     send::request_sync,
+    session::{Ended, Session},
     storage_sync::follow_storage,
-    stories::{expire_stories, send_stories},
+    stories::send_stories,
 };
 
 /// How an [`attempt`] ended, other than failing.
@@ -181,7 +180,7 @@ impl Failed {
 /// What a session tells the user while it carries on (or starts linking again): said in
 /// words, as the causes are logged where they come up.
 #[derive(Debug, thiserror::Error)]
-enum Notice {
+pub(super) enum Notice {
     #[error(
         "The message history transfer was interrupted. Scan the code to link this device again \
          and retry."
@@ -309,7 +308,7 @@ pub(super) fn attempt(
 }
 
 /// The backend side of the command bridge (see [`run`]).
-type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
+pub(super) type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
 
 pub(super) enum AfterFailure {
     Retry,
@@ -877,20 +876,10 @@ async fn has_contents(store: &SqliteStore) -> bool {
             .is_ok_and(|mut groups| groups.next().is_some())
 }
 
-/// How [`run_linked`] ended.
-enum Ended {
-    /// The UI went away.
-    Gone,
-    /// Signal removed this device; it has to be linked again.
-    Removed,
-    /// [`Command::Unlink`]: removed from the account here; the data is to be deleted.
-    Unlinked,
-}
-
 /// Runs a linked session: syncs, receives and handles commands, until the UI goes away, this
 /// device is unlinked, or Signal removes it.
 async fn run_linked(
-    mut manager: Mgr,
+    manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
     tables: &LocalStore,
@@ -924,7 +913,7 @@ async fn run_linked(
     let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
     if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
-        // The answer arrives through `receive` as `Received::Contacts`.
+        // The answer arrives through receiving, as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
         if let Err(error) = ctx.outbox.request_contacts().await {
             warn!(error = %crate::scrub::chain(&error), "failed to request contacts");
@@ -947,28 +936,11 @@ async fn run_linked(
     let story_over = send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
-    let sweeping = tokio::task::spawn_local(sweep_expired(ctx.clone()));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
-    let stories =
-        tokio::task::spawn_local(expire_stories(manager.clone(), ctx.clone(), story_over));
 
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
     avatars.request();
-    let removed = Rc::new(tokio::sync::Notify::new());
-    // Shared by every start of receiving: the limits it keeps must outlive a restart, and a
-    // second avatar fetcher would send the first one's requests again, alongside.
-    let repairs = Rc::new(RefCell::new(Repairs::default()));
-    let mut receiving = start_receiving(
-        &manager,
-        &ctx,
-        &removed,
-        avatars.clone(),
-        repairs.clone(),
-        Duration::ZERO,
-    );
-    let mut failures = 0u32;
-
     // What the other side sees, one command at a time and in order; see `outgoing`. Their
     // sends then go through the outbox, with everyone else's.
     let (in_order, mut ordered) = tokio::sync::mpsc::unbounded_channel::<Command>();
@@ -981,82 +953,14 @@ async fn run_linked(
         }
     });
 
-    let mut pending = pending.into_iter();
-    let ended = loop {
-        let command = match pending.next() {
-            Some(command) => command,
-            None => tokio::select! {
-                command = command_rx.recv() => match command {
-                    Some(command) => command,
-                    None => break Ended::Gone,
-                },
-                () = removed.notified() => break Ended::Removed,
-                finished = &mut receiving => {
-                    // `receive` ends on its own only once the device was removed.
-                    let Err(error) = finished else { break Ended::Removed };
-                    // Anything else it couldn't handle: start over, rather than look connected
-                    // while nothing arrives; later and later should it keep failing.
-                    warn!(error = %crate::scrub::chain(&error), "receiving failed");
-                    events.send(Event::Error(Notice::ReceivingFailed.into()));
-                    failures += 1;
-                    let after = Duration::from_secs(5 << failures.min(6));
-                    receiving = start_receiving(
-                        &manager,
-                        &ctx,
-                        &removed,
-                        avatars.clone(),
-                        repairs.clone(),
-                        after,
-                    );
-                    continue;
-                }
-            },
-        };
-        if let Command::Unlink = command {
-            info!("unlinking this device");
-            receiving.abort();
-            unlink(manager.clone()).await;
-            break Ended::Unlinked;
-        }
-        if let Command::SetDeviceName(name) = command {
-            // For the next link; the account keeps the name it was linked with.
-            *device_name.borrow_mut() = name;
-            continue;
-        }
-        if outgoing(&command) {
-            // Kept from here until it went out: should b33p stop before, it shows as failed.
-            if let Err(error) = ctx.tables.keep_unsent(&command).await {
-                warn!(error = %crate::scrub::chain(&error), "failed to keep a message until it is sent");
-            }
-            // It fails only if the task taking them in order panicked: then say the message
-            // failed rather than show it as on its way. It is kept, so it shows as failed at
-            // the next start too.
-            if let Err(tokio::sync::mpsc::error::SendError(command)) = in_order.send(command) {
-                if let Command::Send {
-                    conversation,
-                    timestamp,
-                    ..
-                } = &command
-                {
-                    events.send(Event::SendFailed {
-                        conversation: conversation.clone(),
-                        timestamp: *timestamp,
-                        retryable: false,
-                    });
-                }
-                command_failed(&events, Notice::OrderedSendingStopped.into(), command);
-            }
-            continue;
-        }
-        handle(&mut manager, &ctx, &downloads, command).await;
-    };
+    let session = Session::new(manager, ctx.clone(), downloads, avatars, in_order);
+    let (_, ended) = session
+        .event_loop(pending, command_rx, device_name, story_over)
+        .await;
     ctx.background.stop();
     ordering.abort();
     latest.abort();
-    sweeping.abort();
     following.abort();
-    stories.abort();
-    receiving.abort();
     // Not drained: after an unlink there is nobody to send to, and a session after this one
     // must not send alongside it.
     sending.abort();
@@ -1155,7 +1059,7 @@ async fn link_with_history(
 
 /// Removes this device from the account before linking again, so the phone's list of linked
 /// devices doesn't fill up with dead entries. Best effort: linking again works regardless.
-async fn unlink(manager: Mgr) {
+pub(super) async fn unlink(manager: Mgr) {
     if let Err(error) = manager.unlink_self().await {
         warn!(error = %crate::scrub::chain(&error), "failed to remove this device from the account");
     }

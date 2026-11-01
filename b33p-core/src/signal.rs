@@ -9,6 +9,7 @@ mod history;
 mod lifecycle;
 mod receive;
 mod send;
+mod session;
 mod storage_sync;
 mod stories;
 mod trust;
@@ -112,9 +113,11 @@ struct Ctx {
     events: Events,
     tables: LocalStore,
     preferences: Rc<Cell<Preferences>>,
-    /// Woken when a disappearing message starts counting down, for `sweep_expired`.
+    /// Woken when a disappearing message starts counting down, for the session's sweep
+    /// (`sweep_expired`).
     expiring: Rc<tokio::sync::Notify>,
-    /// Woken when a story is kept, for `expire_stories`.
+    /// Woken when a story is kept, for the session's taking stories off the list once their
+    /// day is over.
     story_kept: Rc<tokio::sync::Notify>,
     /// Woken when the phone says the storage service changed, for `follow_storage`.
     storage_changed: Rc<tokio::sync::Notify>,
@@ -128,6 +131,29 @@ struct Ctx {
     background: Background,
     /// Every send goes through here, one at a time ([`outbox`](crate::outbox)).
     outbox: crate::outbox::Outbox,
+}
+
+#[cfg(test)]
+impl Ctx {
+    /// A session's context on `tables` alone, without a manager; with what it sends the UI.
+    async fn for_tests(tables: LocalStore) -> (Self, async_channel::Receiver<Event>) {
+        let (events, ui) = async_channel::unbounded();
+        let ctx = Ctx {
+            threads: Rc::default(),
+            events: Events::new(events),
+            tables,
+            preferences: Rc::new(Cell::new(Preferences::default())),
+            expiring: Rc::default(),
+            story_kept: Rc::default(),
+            storage_changed: Rc::default(),
+            storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
+            trust: Rc::default(),
+            group_ids: GroupIds::default(),
+            background: Background::default(),
+            outbox: tokio::sync::mpsc::channel(1).0,
+        };
+        (ctx, ui)
+    }
 }
 
 /// Commands that read a lot (a chat's whole history, every sticker) and so run beside the
