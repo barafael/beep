@@ -12,30 +12,72 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use testbox_tools::process::{spawn_logged, supervise};
-use testbox_tools::{Context, Describe, Error, Result, keys, tls};
+use testbox_tools::{keys, tls};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
+
+const USAGE: &str = "front -- <the server's command and its arguments>";
+
+/// What keeps the front from serving.
+#[derive(Debug, thiserror::Error)]
+enum FrontError {
+    #[error("usage: {USAGE}")]
+    Usage,
+    #[error("no command after --")]
+    NoCommand,
+    #[error("building a runtime")]
+    Runtime(#[source] std::io::Error),
+    #[error("listening on {address}")]
+    Listen {
+        address: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// What ends one client's connection with a failure.
+#[derive(Debug, thiserror::Error)]
+enum RelayError {
+    #[error("setting TCP_NODELAY on the {side}'s connection")]
+    NoDelay {
+        side: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("TLS with the client")]
+    Handshake(#[source] std::io::Error),
+    #[error("connecting to {address}")]
+    Connect {
+        address: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("relaying")]
+    Relay(#[source] std::io::Error),
+}
 
 fn main() -> std::process::ExitCode {
     let outcome = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .describe("a runtime")
+        .map_err(|source| FrontError::Runtime(source).into())
         .and_then(|runtime| runtime.block_on(run()));
-    testbox_tools::exit("front", outcome)
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("front: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = std::env::args().skip(1);
     let separator = arguments.next();
     if separator.as_deref() != Some("--") {
-        return Err(Error::Failed(
-            "usage: front -- <the server's command and its arguments>".to_owned(),
-        ));
+        return Err(FrontError::Usage.into());
     }
-    let program = arguments
-        .next()
-        .ok_or_else(|| Error::Failed("front: no command after --".to_owned()))?;
+    let program = arguments.next().ok_or(FrontError::NoCommand)?;
     let mut command = tokio::process::Command::new(program);
     command.args(arguments);
 
@@ -43,9 +85,10 @@ async fn run() -> Result<()> {
     // Clients offer HTTP/1.1 to the CDNs, and wrangler speaks nothing else.
     let acceptor = TlsAcceptor::from(Arc::new(tls::server_config(&["http/1.1"])?));
     tls::say_where_secrets_go("front");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, keys::CDN3_PORT))
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, keys::CDN3_PORT));
+    let listener = TcpListener::bind(address)
         .await
-        .context(format!("127.0.0.1:{}", keys::CDN3_PORT))?;
+        .map_err(|source| FrontError::Listen { address, source })?;
     let (mut server, _heard) = spawn_logged(&mut command)?;
     eprintln!("{} on {}", testbox_tools::FRONT_READY, keys::CDN3_PORT);
 
@@ -61,36 +104,35 @@ async fn run() -> Result<()> {
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
                 if let Err(error) = relay(acceptor, client).await {
-                    eprintln!("front: {peer}: {error}");
+                    eprintln!("front: {peer}: {}", testbox_tools::Report(&error));
                 }
             });
         }
     };
     tokio::select! {
-        supervised = supervise(&mut server, "wrangler") => supervised,
+        supervised = supervise(&mut server, "wrangler") => Ok(supervised?),
         () = accepting => Ok(()),
     }
 }
 
 /// One client's connection: its TLS ended here, its bytes copied to wrangler and back until
 /// either side closes.
-async fn relay(acceptor: TlsAcceptor, client: TcpStream) -> Result<()> {
-    client.set_nodelay(true).context("TCP_NODELAY")?;
+async fn relay(acceptor: TlsAcceptor, client: TcpStream) -> Result<(), RelayError> {
+    let no_delay = |side| move |source| RelayError::NoDelay { side, source };
+    client.set_nodelay(true).map_err(no_delay("client"))?;
     let mut client = acceptor
         .accept(client)
         .await
-        .context("TLS with the client")?;
-    let mut upstream = TcpStream::connect(SocketAddr::from((
-        Ipv4Addr::LOCALHOST,
-        keys::CDN3_UPSTREAM_PORT,
-    )))
-    .await
-    .context(format!("127.0.0.1:{}", keys::CDN3_UPSTREAM_PORT))?;
-    upstream.set_nodelay(true).context("TCP_NODELAY")?;
+        .map_err(RelayError::Handshake)?;
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, keys::CDN3_UPSTREAM_PORT));
+    let mut upstream = TcpStream::connect(address)
+        .await
+        .map_err(|source| RelayError::Connect { address, source })?;
+    upstream.set_nodelay(true).map_err(no_delay("upstream"))?;
     match tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
         Ok(_bytes) => Ok(()),
         // A client that drops the connection without TLS's goodbye, as browsers' stacks do.
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
-        Err(error) => Err(error).context("relaying"),
+        Err(error) => Err(RelayError::Relay(error)),
     }
 }

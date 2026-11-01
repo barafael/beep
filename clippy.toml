@@ -1,0 +1,4 @@
+# The backend's errors keep presage's and libsignal's as their sources, typed, so that what failed
+# and why reaches the log; those are 120-odd bytes, which puts a few of ours just past clippy's
+# default of 128. Errors are rare and off the hot paths, so that size doesn't matter.
+large-error-threshold = 160

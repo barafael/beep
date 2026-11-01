@@ -8,10 +8,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::error::{Context, Result};
-use crate::harness::Harness;
+use crate::harness::{Harness, HarnessError};
 use crate::pod::{self, Pod, Service};
 use crate::process;
+use testbox_tools::Report;
+use testbox_tools::process::CommandError;
 
 use super::lost::{DESKTOP_LOGS, LOGCAT};
 
@@ -23,6 +24,45 @@ const DRAWING: Duration = Duration::from_secs(30);
 
 /// Where the run directory ([`Pod::run_dir`]) is in a b33p's container (testbox/b33p/pod.yaml).
 const B33P_RUN: &str = "/run/b33p";
+
+/// A box's or a part's record that couldn't be made.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RecordError {
+    /// A former run's record, which this one replaces.
+    #[error("emptying {}", path.display())]
+    Clear {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("creating {}", path.display())]
+    Directory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// testbox/shot, which `--screenshots` takes the displays with.
+    #[error("building the screenshot tool")]
+    BuildShot(#[source] CommandError),
+}
+
+/// A b33p's screenshot that wasn't taken ([`B33pShot::take`]).
+#[derive(Debug, thiserror::Error)]
+enum ShotError {
+    #[error("asking {b33p} to draw its window")]
+    Draw {
+        b33p: String,
+        #[source]
+        source: HarnessError,
+    },
+    #[error("moving {} to {}", written.display(), to.display())]
+    Move {
+        written: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// A check as `spans.jsonl` has it ([`Record::span`]): its name, when it started and ended
 /// (nanoseconds since the epoch, as the capture's packets), and whether it passed.
@@ -67,11 +107,20 @@ struct B33pShot {
 
 impl B33pShot {
     /// Its window, as it is drawn now, at `path`.
-    fn take(&self, path: &Path) -> Result<()> {
+    fn take(&self, path: &Path) -> Result<(), ShotError> {
         let file = format!("shot-{}.png", self.name);
-        Harness::connect(&self.socket)?.screenshot(&format!("{B33P_RUN}/{file}"), DRAWING)?;
+        Harness::connect(&self.socket)
+            .and_then(|mut b33p| b33p.screenshot(&format!("{B33P_RUN}/{file}"), DRAWING))
+            .map_err(|source| ShotError::Draw {
+                b33p: self.name.clone(),
+                source,
+            })?;
         let written = self.run.join(file);
-        std::fs::rename(&written, path).context(written.display().to_string())
+        std::fs::rename(&written, path).map_err(|source| ShotError::Move {
+            written,
+            to: path.to_owned(),
+            source,
+        })
     }
 }
 
@@ -79,12 +128,20 @@ impl Record {
     /// The record in target/testbox-record/`name` ([`Pod::record_dir`]), emptied of a former
     /// run's; with
     /// `screenshots`, testbox/shot built and the running clients' displays found.
-    pub(crate) fn new(pod: &Pod, repo: &Path, name: &str, screenshots: bool) -> Result<Self> {
+    pub(crate) fn new(
+        pod: &Pod,
+        repo: &Path,
+        name: &str,
+        screenshots: bool,
+    ) -> Result<Self, RecordError> {
         let directory = pod.record_dir().join(name);
         if directory.exists() {
-            std::fs::remove_dir_all(&directory).context(directory.display().to_string())?;
+            std::fs::remove_dir_all(&directory).map_err(|source| RecordError::Clear {
+                path: directory.clone(),
+                source,
+            })?;
         }
-        std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
+        create(&directory)?;
         let shots = if screenshots {
             let manifest = repo.join("testbox/shot/Cargo.toml");
             let mut build = Command::new(env!("CARGO"));
@@ -96,7 +153,7 @@ impl Record {
                 "--manifest-path",
             ]);
             build.arg(&manifest);
-            process::run(build)?;
+            process::run(build).map_err(RecordError::BuildShot)?;
             let screens = pod.screens();
             let displays = screens
                 .iter()
@@ -137,9 +194,9 @@ impl Record {
     }
 
     /// The record of the part `name` within this one, its screenshots numbered from 1.
-    pub(super) fn part(&self, name: &str) -> Result<Self> {
+    pub(super) fn part(&self, name: &str) -> Result<Self, RecordError> {
         let directory = self.directory.join(name);
-        std::fs::create_dir_all(&directory).context(directory.display().to_string())?;
+        create(&directory)?;
         let shots = self.shots.clone().map(|shots| Shots { taken: 0, ..shots });
         Ok(Self {
             directory,
@@ -165,17 +222,20 @@ impl Record {
             passed,
         };
         let path = self.directory.join("spans.jsonl");
-        let appended = serde_json::to_string(&span)
-            .map_err(std::io::Error::other)
-            .and_then(|line| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .and_then(|mut file| {
-                        use std::io::Write as _;
-                        writeln!(file, "{line}")
-                    })
+        let line = match serde_json::to_string(&span) {
+            Ok(line) => line,
+            Err(error) => {
+                println!("record: the span of {name}: {error}");
+                return;
+            }
+        };
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| {
+                use std::io::Write as _;
+                writeln!(file, "{line}")
             });
         if let Err(error) = appended {
             println!("record: {}: {error}", path.display());
@@ -193,7 +253,7 @@ impl Record {
         for b33p in &shots.b33ps {
             let path = self.directory.join(format!("{label}-{}.png", b33p.name));
             if let Err(error) = b33p.take(&path) {
-                println!("screenshot {label} of {}: {error}", b33p.name);
+                println!("screenshot {label} of {}: {}", b33p.name, Report(&error));
             }
         }
         if shots.displays.is_empty() {
@@ -202,7 +262,7 @@ impl Record {
         let mut shot = Command::new(&shots.tool);
         shot.arg(&self.directory).arg(&label).args(&shots.displays);
         if let Err(error) = process::run(shot) {
-            println!("screenshot {label}: {error}");
+            println!("screenshot {label}: {}", Report(&error));
         }
     }
 
@@ -218,29 +278,29 @@ impl Record {
         self.write("load.txt", &load(pod));
         let server = pod.running(Service::Server);
         if server && let Err(error) = pod.stop(Service::Server) {
-            println!("record: stopping the server: {error}");
+            println!("record: stopping the server: {}", Report(&error));
         }
         for service in pod.containers() {
             let log = pod
                 .log_named(&service)
-                .unwrap_or_else(|error| error.to_string());
+                .unwrap_or_else(|error| Report(&error).to_string());
             self.write(&format!("{service}.log"), &log);
         }
         if server && let Err(error) = pod.start(Service::Server) {
-            println!("record: starting the server again: {error}");
+            println!("record: starting the server again: {}", Report(&error));
         }
         if pod.running(Service::Desktop) {
             let logs = pod.exec(Service::Desktop, &["sh", "-c", DESKTOP_LOGS], "");
             self.write(
                 "desktop-app.log",
-                &logs.unwrap_or_else(|error| error.to_string()),
+                &logs.unwrap_or_else(|error| Report(&error).to_string()),
             );
         }
         if pod.running(Service::Android) {
             let logcat = pod.exec(Service::Android, &["cat", LOGCAT], "");
             self.write(
                 "logcat.txt",
-                &logcat.unwrap_or_else(|error| error.to_string()),
+                &logcat.unwrap_or_else(|error| Report(&error).to_string()),
             );
         }
         self.keep_contents(pod);
@@ -287,7 +347,7 @@ impl Record {
             return;
         }
         if let Err(error) = crate::wire::decode(&self.directory) {
-            println!("record: decoding the capture: {error}");
+            println!("record: decoding the capture: {}", Report(&error));
         }
     }
 
@@ -298,6 +358,14 @@ impl Record {
             println!("record: {}: {error}", path.display());
         }
     }
+}
+
+/// Makes `directory` with what it is in.
+fn create(directory: &Path) -> Result<(), RecordError> {
+    std::fs::create_dir_all(directory).map_err(|source| RecordError::Directory {
+        path: directory.to_owned(),
+        source,
+    })
 }
 
 /// The host's load average and pressure, and each container's `cpu.stat`, as they are at the
@@ -316,7 +384,7 @@ fn load(pod: &Pod) -> String {
     for name in pod.containers() {
         let stat = pod
             .cpu_stat_named(&name)
-            .unwrap_or_else(|error| format!("{error}\n"));
+            .unwrap_or_else(|error| format!("{}\n", Report(&error)));
         load.push_str(&format!("== {name}: cpu.stat\n{stat}"));
     }
     load

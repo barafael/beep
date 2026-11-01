@@ -1,16 +1,15 @@
-use super::b33p::{b33p_chat, b33p_shows, delivered, select, type_and_send};
+use super::b33p::{b33p_chat, b33p_shows, delivered, message_timestamp, select, type_and_send};
 use super::clients::{android_containing, android_shows, desktop_shows, desktop_shows_whole};
 use super::desktop::long_text;
 use super::presage::Account;
 use super::setup::{AndroidBox, NOTE};
-use super::{Checks, PATIENCE_MS};
-use crate::error::Result;
+use super::{Checks, Failure, PATIENCE_MS};
 use testbox_tools::drivers;
 
 /// Signal-Android's `local` flavor registers as a primary and b33p links to it; Signal-Desktop
 /// links to a presage-cli peer as in `desktop`. Text and receipts pass between the two accounts,
 /// with each one's linked device in step.
-pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<()> {
+pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<(), Failure> {
     let AndroidBox {
         peer,
         android,
@@ -21,16 +20,16 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     } = fixture;
     checks.record("Android's note reaches b33p in the history", || {
         select(b33p, &format!("c:{android_aci}"))?;
-        b33p_shows(b33p, NOTE, |message| message.text == NOTE)
+        Ok(b33p_shows(b33p, NOTE, |message| message.text == NOTE)?)
     });
 
     // Every Desktop check from here on looks in this conversation, which Desktop has from the
     // peer's own message, as a sync; opened once, so that one check failing doesn't leave the
     // next ones looking at nothing.
     checks.require("Desktop has the peer's conversation with Android", || {
-        desktop.call(drivers::Desktop::OpenConversation {
+        Ok(desktop.call(drivers::Desktop::OpenConversation {
             aci: android_aci.clone(),
-        })
+        })?)
     })?;
 
     let b33p_text = "testbox android: from b33p";
@@ -41,12 +40,12 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             type_and_send(b33p, b33p_text)?;
             peer.sync_printing(b33p_text)?;
             android_shows(android, b33p_text)?;
-            desktop_shows(desktop, b33p_text)
+            Ok(desktop_shows(desktop, b33p_text)?)
         },
     );
     // As in `desktop`: Desktop, linked to the peer, sends a delivery receipt for b33p's text.
     checks.record("Desktop's delivery receipt reaches b33p", || {
-        delivered(b33p, b33p_text)
+        Ok(delivered(b33p, b33p_text)?)
     });
 
     let android_text = "testbox android: from Android";
@@ -64,7 +63,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             b33p_shows(b33p, android_text, |message| {
                 message.text == android_text && message.outgoing
             })?;
-            desktop_shows(desktop, android_text)
+            Ok(desktop_shows(desktop, android_text)?)
         },
     );
 
@@ -74,19 +73,19 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             text: desktop_text.to_owned(),
         })?;
         android_shows(android, desktop_text)?;
-        b33p_shows(b33p, desktop_text, |message| {
+        Ok(b33p_shows(b33p, desktop_text, |message| {
             message.text == desktop_text && !message.outgoing
-        })
+        })?)
     });
 
     // Signal-Android sends a delivery receipt only for a sealed-sender message
     // (DataMessageProcessor.kt `metadata.sealedSender`): Desktop's, not presage-cli's first one,
     // which goes out unsealed while the peer has no profile key of Android's.
     checks.record("Android's delivery receipt reaches Desktop", || {
-        desktop.call(drivers::Desktop::WaitForDelivered {
+        Ok(desktop.call(drivers::Desktop::WaitForDelivered {
             text: desktop_text.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     // What the account does on its phone reaches b33p as syncs, and the peer's Desktop as the
@@ -103,10 +102,10 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
                 message.text == desktop_text
                     && message.reactions.iter().any(|reaction| reaction.outgoing)
             })?;
-            desktop.call(drivers::Desktop::WaitForReaction {
+            Ok(desktop.call(drivers::Desktop::WaitForReaction {
                 text: desktop_text.to_owned(),
                 timeout_ms: PATIENCE_MS,
-            })
+            })?)
         },
     );
     let android_reply = "testbox android: a reply from Android";
@@ -130,11 +129,11 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
                         .as_ref()
                         .is_some_and(|quote| quote.text == desktop_text)
             })?;
-            desktop.call(drivers::Desktop::WaitForQuote {
+            Ok(desktop.call(drivers::Desktop::WaitForQuote {
                 text: android_reply.to_owned(),
                 quoted: desktop_text.to_owned(),
                 timeout_ms: PATIENCE_MS,
-            })
+            })?)
         },
     );
     let android_edited = "testbox android: from Android, edited";
@@ -151,18 +150,14 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         b33p_shows(b33p, "Android's edit", |message| {
             message.outgoing && message.text == android_edited && message.edited
         })?;
-        desktop_shows(desktop, android_edited)
+        Ok(desktop_shows(desktop, android_edited)?)
     });
     checks.record(
         "a delete for everyone from Android shows in b33p and on Desktop",
         || {
-            let timestamp = b33p
-                .snapshot()?
-                .messages
-                .iter()
-                .find(|message| message.outgoing && message.text == android_edited)
-                .map(|message| message.timestamp)
-                .ok_or("Android's edited message went from b33p's view")?;
+            let timestamp = message_timestamp(b33p, "Android's edited message", |message| {
+                message.outgoing && message.text == android_edited
+            })?;
             android.call(drivers::Android::LongPress {
                 text: android_edited.to_owned(),
             })?;
@@ -181,7 +176,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
                 message.timestamp == timestamp && message.deleted
             })?;
             // "{name} deleted this message" (messages.json `icu:message--deletedForEveryone--incoming`).
-            desktop_shows(desktop, "deleted this message")
+            Ok(desktop_shows(desktop, "deleted this message")?)
         },
     );
     checks.record(
@@ -193,9 +188,9 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             })?;
             super::clients::desktop_text(desktop, "5 minutes")?;
             android.call(drivers::Android::SetTimer { seconds: 0 })?;
-            b33p_chat(b33p, conversation, "without a timer", |chat| {
+            Ok(b33p_chat(b33p, conversation, "without a timer", |chat| {
                 chat.expire_timer == 0
-            })
+            })?)
         },
     );
     // TESTPLAN.md §1.11: Android is this account's phone, so what b33p writes to itself is a
@@ -207,7 +202,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         android.call(drivers::Android::OpenConversation {
             text: "Note to Self".to_owned(),
         })?;
-        android_shows(android, note)
+        Ok(android_shows(android, note)?)
     });
 
     // Long texts, as Signal's apps carry them: the first 2000 bytes inline and the whole as a
@@ -227,7 +222,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             b33p_shows(b33p, "Android's long text, whole", |message| {
                 message.outgoing && message.text == text
             })?;
-            desktop_shows_whole(desktop, head)
+            Ok(desktop_shows_whole(desktop, head)?)
         },
     );
     // Android folds a long text behind "Read More", a span of the text that only a touch on it
@@ -240,7 +235,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             select(b33p, conversation)?;
             type_and_send(b33p, &long_text(head))?;
             desktop_shows_whole(desktop, head)?;
-            android_containing(android, head)
+            Ok(android_containing(android, head)?)
         },
     );
 

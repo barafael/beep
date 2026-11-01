@@ -9,14 +9,13 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{Action, AttachmentKind, Delivery};
 
-use super::attachments::{incoming_attachment, saved};
-use super::b33p::{b33p_shows, delivered, outgoing_index, select, type_and_send};
+use super::attachments::{incoming_attachment, saved, stage_picture};
+use super::b33p::{b33p_shows, delivered, outgoing_index, select, send_text, type_and_send};
 use super::clients::desktop_shows;
 use super::setup::LinkedBox;
-use super::{Checks, PATIENCE, PATIENCE_MS};
-use crate::error::{Context, Error, Result};
-use crate::harness::Harness;
-use crate::pod::Pod;
+use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
+use crate::harness::{Harness, HarnessError};
+use crate::pod::{Pod, PodError};
 use testbox_tools::drivers;
 
 /// A slow, lossy link: a mobile network at its worst, packets reordered and doubled too.
@@ -37,16 +36,40 @@ const RECOVERY: Duration = Duration::from_secs(4 * 60);
 /// The file sent over the narrow link: 1 MiB, eight seconds at the link's rate.
 const FILE_SIZE: usize = 1 << 20;
 
+/// What the network checks find wrong of their own: texts sent over the flapping link that
+/// b33p shows wrong, or a thread that panicked.
+#[derive(Debug, thiserror::Error)]
+enum NetworkError {
+    /// Fewer of the texts than were sent showed in time; with those that did, as of the last
+    /// screen.
+    #[error("{} of {sent} shown in {open:?}: {shown:?}", shown.len())]
+    NotAllShown {
+        shown: Vec<String>,
+        sent: usize,
+        /// The conversation open.
+        open: Option<String>,
+        #[source]
+        source: HarnessError,
+    },
+    /// Some text showed more than once.
+    #[error("{} shown for {sent} sent: {shown:?}", shown.len())]
+    Duplicated { shown: Vec<String>, sent: usize },
+    #[error("out of order: {shown:?}")]
+    OutOfOrder { shown: Vec<String> },
+    #[error("{thread} panicked")]
+    Panicked { thread: &'static str },
+}
+
 pub(super) fn network(
     checks: &mut Checks,
     linked: &mut LinkedBox<'_>,
     containers: &Pod,
     files: &Path,
     picture: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let outcome = impaired(checks, linked, containers, files, picture);
     // Whatever happened, the link is whole again for the phases after.
-    checks.require("the link is whole again", || containers.unimpair())?;
+    checks.require("the link is whole again", || Ok(containers.unimpair()?))?;
     outcome
 }
 
@@ -56,7 +79,7 @@ fn impaired(
     containers: &Pod,
     files: &Path,
     picture: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let LinkedBox {
         primary_aci,
         b33p,
@@ -64,11 +87,11 @@ fn impaired(
         conversation,
         ..
     } = linked;
-    std::fs::copy(picture, files.join("picture.png")).context(picture.display().to_string())?;
+    stage_picture(picture, files)?;
     let in_box = |name: &str| format!("/files/{name}");
 
     checks.require("the link is made slow and lossy", || {
-        containers.impair(LOSSY)
+        Ok(containers.impair(LOSSY)?)
     })?;
     let b33p_text = "testbox network: from b33p over a slow, lossy link";
     let desktop_text = "testbox network: from Desktop over a slow, lossy link";
@@ -96,7 +119,7 @@ fn impaired(
         Ok(())
     });
     checks.record("Desktop's delivery receipt comes back over it", || {
-        delivered(b33p, b33p_text)
+        Ok(delivered(b33p, b33p_text)?)
     });
     checks.record("a picture from b33p reaches Desktop over it", || {
         let text = "testbox network: a picture over a slow, lossy link";
@@ -113,7 +136,7 @@ fn impaired(
         Ok(())
     });
 
-    checks.require("the link is made narrow", || containers.impair(NARROW))?;
+    checks.require("the link is made narrow", || Ok(containers.impair(NARROW)?))?;
     checks.record(
         "a 1 MiB file from Desktop arrives over a 1 Mbit/s link, downloaded",
         || {
@@ -141,7 +164,7 @@ fn impaired(
     // TESTPLAN.md §1.2 item 4 and §5 item 10, with the link itself gone rather than the server
     // paused (`core`): the connections stay open and nothing answers, and when the link is back
     // the old connections are dead. Both sides write meanwhile.
-    checks.require("the link goes dead", || containers.impair(DEAD))?;
+    checks.require("the link goes dead", || Ok(containers.impair(DEAD)?))?;
     let dead_desktop = "testbox network: from Desktop while the link was dead";
     let dead_b33p = "testbox network: from b33p while the link was dead";
     let written = checks.report("both write while the link is dead", || {
@@ -150,16 +173,11 @@ fn impaired(
         })?;
         // Queued on Desktop, at least: its own timeline shows it at once.
         desktop_shows(desktop, dead_desktop)?;
-        b33p.act(Action::Type {
-            text: dead_b33p.to_owned(),
-        })?;
-        if !b33p.act(Action::Send)? {
-            return Err(Error::Failed("b33p sent nothing".to_owned()));
-        }
+        send_text(b33p, dead_b33p)?;
         std::thread::sleep(DEAD_FOR);
         Ok(())
     });
-    checks.require("the link is back", || containers.unimpair())?;
+    checks.require("the link is back", || Ok(containers.unimpair()?))?;
     if written.is_some() {
         let back = Instant::now();
         checks.record(
@@ -223,9 +241,9 @@ fn impaired(
         "ten texts from Desktop over a flapping link reach b33p in order, once",
         || {
             let started = Instant::now();
-            let sent = std::thread::scope(|scope| {
+            let sent = std::thread::scope(|scope| -> Result<(), Failure> {
                 let flapping = scope.spawn(|| flap(containers));
-                let sent = (|| {
+                let sent = (|| -> Result<(), HarnessError> {
                     for text in &flapped {
                         desktop.call(drivers::Desktop::Send { text: text.clone() })?;
                         desktop_shows(desktop, text)?;
@@ -233,10 +251,11 @@ fn impaired(
                     }
                     Ok(())
                 })();
-                let flapped = flapping
-                    .join()
-                    .map_err(|_| Error::Failed("the flapping thread panicked".to_owned()))?;
-                sent.and(flapped)
+                let flapped = flapping.join().map_err(|_| NetworkError::Panicked {
+                    thread: "the flapping thread",
+                })?;
+                sent?;
+                Ok(flapped?)
             });
             containers.unimpair()?;
             sent?;
@@ -254,7 +273,7 @@ fn impaired(
 }
 
 /// The link dead and back by turns of [`FLAP`], for [`FLAPPING_FOR`]; back at the end.
-fn flap(containers: &Pod) -> Result<()> {
+fn flap(containers: &Pod) -> Result<(), PodError> {
     let until = Instant::now() + FLAPPING_FOR;
     while Instant::now() < until {
         containers.impair(DEAD)?;
@@ -267,7 +286,11 @@ fn flap(containers: &Pod) -> Result<()> {
 
 /// Waits until b33p's open conversation shows each of `texts` from someone else, in their
 /// order, and none twice.
-fn in_order_once(b33p: &mut Harness, texts: &[String], patience: Duration) -> Result<()> {
+fn in_order_once(
+    b33p: &mut Harness,
+    texts: &[String],
+    patience: Duration,
+) -> Result<(), NetworkError> {
     let matching = |snapshot: &b33p_harness::Snapshot| -> Vec<String> {
         snapshot
             .messages
@@ -278,33 +301,32 @@ fn in_order_once(b33p: &mut Harness, texts: &[String], patience: Duration) -> Re
             .map(str::to_owned)
             .collect()
     };
-    let waited = b33p.wait_for("every text", patience, |snapshot| {
-        let shown = matching(snapshot);
-        (shown.len() >= texts.len()).then_some(shown)
-    });
-    // Which came, for the failure.
-    let shown: Vec<String> = match waited {
-        Ok(shown) => shown,
-        Err(error) => {
-            let snapshot = b33p.snapshot()?;
-            return Err(Error::Failed(format!(
-                "{error}; {} of {} shown in {:?}: {:?}",
-                matching(&snapshot).len(),
-                texts.len(),
-                snapshot.selected,
-                matching(&snapshot)
-            )));
-        }
-    };
+    // Which came, as of the last screen, for the failure.
+    let (mut open, mut last) = (None, Vec::new());
+    let shown = b33p
+        .wait_for("every text", patience, |snapshot| {
+            let shown = matching(snapshot);
+            if shown.len() >= texts.len() {
+                return Some(shown);
+            }
+            open.clone_from(&snapshot.selected);
+            last = shown;
+            None
+        })
+        .map_err(|source| NetworkError::NotAllShown {
+            shown: last,
+            sent: texts.len(),
+            open,
+            source,
+        })?;
     if shown.len() > texts.len() {
-        return Err(Error::Failed(format!(
-            "{} shown for {} sent: {shown:?}",
-            shown.len(),
-            texts.len()
-        )));
+        return Err(NetworkError::Duplicated {
+            shown,
+            sent: texts.len(),
+        });
     }
     if shown != texts {
-        return Err(Error::Failed(format!("out of order: {shown:?}")));
+        return Err(NetworkError::OutOfOrder { shown });
     }
     Ok(())
 }

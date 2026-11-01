@@ -341,19 +341,15 @@ impl Shared {
         }
         let result = self.player.borrow_mut().seek(&id, fraction);
         if let Err(error) = result {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't seek in audio");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "can't seek in audio");
         }
         self.show_playback();
     }
 
     fn start_playing(&self, id: AttachmentId, audio: Arc<[u8]>) {
         if let Err(error) = self.player.borrow_mut().play(id, audio) {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't play audio");
-            // The audio itself, which playing again won't change.
-            let update = self
-                .chat
-                .borrow_mut()
-                .apply(Event::Error(b33p_core::Error::refused(error)));
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "can't play audio");
+            let update = self.chat.borrow_mut().apply(Event::Error(error.into()));
             self.refresh(update);
             return;
         }
@@ -440,7 +436,7 @@ impl Shared {
         if let Some(ui) = self.ui()
             && let Err(error) = ui.show()
         {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to show the window");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "failed to show the window");
         }
     }
 
@@ -485,7 +481,7 @@ impl Shared {
             return false;
         }
         if let Err(error) = settings.save() {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "failed to save settings");
         }
         self.settings.replace(settings);
         self.commands.send(Command::SetDeviceName(name));
@@ -504,7 +500,7 @@ impl Shared {
 
     fn apply_settings(self: &Rc<Self>, settings: Settings) {
         if let Err(error) = settings.save() {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "failed to save settings");
         }
         self.settings.replace(settings.clone());
         self.apply_motion();
@@ -544,7 +540,10 @@ fn command_line_answer() -> Option<String> {
         "--version" | "-V" => Some(format!("b33p {}", env!("CARGO_PKG_VERSION"))),
         "--unregister" => {
             if let Err(error) = autostart::set(false) {
-                println!("Starting with the system wasn't turned off: {error}");
+                println!(
+                    "Starting with the system wasn't turned off: {}",
+                    b33p_core::Chain(&error)
+                );
             }
             b33p_notify::unregister(&APP);
             Some(format!(
@@ -749,8 +748,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     chat.apply_all(batch.inspect(|event| match event {
                         // Commands log their own failures in the backend.
                         Event::Error(error) => {
-                            let message = b33p_core::scrub::scrub(&error.message);
-                            match error.kind {
+                            let message = b33p_core::scrub::scrubbed(error);
+                            match error.kind() {
                                 b33p_core::ErrorKind::Unreachable => tracing::warn!("{message}"),
                                 _ => tracing::error!("{message}"),
                             }
@@ -991,7 +990,7 @@ fn open_link(link: &str) {
         return;
     }
     if let Err(error) = open::that_detached(link) {
-        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "couldn't open a link");
+        tracing::warn!(error = %b33p_core::scrub::chain(&error), "couldn't open a link");
     }
 }
 

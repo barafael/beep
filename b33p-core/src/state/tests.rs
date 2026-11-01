@@ -1496,7 +1496,7 @@ fn a_failed_sends_error_goes_with_its_retry() {
         error: crate::Error::unreachable(raw),
         command: command.clone(),
     });
-    assert_eq!(state.error(), Some(super::session::UNSENT));
+    assert_eq!(state.error().as_deref(), Some(super::session::UNSENT));
     assert!(!state.can_retry_error(), "the bubble has the retry");
     assert!(state.retry_send(0).is_some());
     assert_eq!(state.error(), None);
@@ -1509,7 +1509,7 @@ fn a_failed_sends_error_goes_with_its_retry() {
         command: refused,
     });
     assert_eq!(
-        state.error(),
+        state.error().as_deref(),
         Some("failed to send: recipient is not registered")
     );
     state.apply(Event::SendFailed {
@@ -1522,7 +1522,7 @@ fn a_failed_sends_error_goes_with_its_retry() {
     )));
     assert!(state.retry_send(0).is_some());
     assert_eq!(
-        state.error(),
+        state.error().as_deref(),
         Some("Receiving messages failed; trying again.")
     );
 }
@@ -1563,7 +1563,7 @@ fn failed_commands_are_offered_again_when_that_may_work() {
         error: crate::Error::unreachable("failed to send: timed out"),
         command: react,
     });
-    assert_eq!(state.error(), Some("failed to send: timed out"));
+    assert_eq!(state.error().as_deref(), Some("failed to send: timed out"));
     assert!(state.can_retry_error());
     assert!(matches!(state.retry_error(), Some(Command::React { .. })));
     assert_eq!(state.error(), None, "trying again takes the error away");

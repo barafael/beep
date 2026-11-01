@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use slint::{
     ComponentHandle, FilterModel, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak,
 };
-use testbox_tools::{Context, Describe, Result};
-use testbox_vnc::{Frame, NamedKey, VncClient, X11Event};
+use testbox_tools::Report;
+use testbox_vnc::{ConnectError, Frame, NamedKey, VncClient, X11Event};
 use tokio::sync::mpsc;
 
 slint::slint! {
@@ -173,7 +173,39 @@ fn main() -> std::process::ExitCode {
     // on the sandbox.
     // SAFETY: the process's only thread yet; nothing reads the environment concurrently.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "disabled:") };
-    testbox_tools::exit("testbox-viewer", run())
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("testbox-viewer: {}", Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// What the viewer itself fails at; testbox-vnc's failures come as its own.
+#[derive(Debug, thiserror::Error)]
+enum ViewerError {
+    #[error("starting a tokio runtime")]
+    Runtime {
+        #[source]
+        source: std::io::Error,
+    },
+    /// Its connection to the desktop's display, mostly.
+    #[error("making the window")]
+    NewWindow {
+        #[source]
+        source: slint::PlatformError,
+    },
+    #[error("showing the window")]
+    ShowWindow {
+        #[source]
+        source: slint::PlatformError,
+    },
+    #[error("running the window's event loop")]
+    RunWindow {
+        #[source]
+        source: slint::PlatformError,
+    },
 }
 
 /// What a display's task and the window share: whether its toggle shows it, and whether a frame
@@ -183,20 +215,21 @@ struct Shared {
     in_flight: AtomicBool,
 }
 
-fn run() -> Result<()> {
+/// The viewer, to its window's end; any failure, to be reported, whoever's type it is.
+fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (interactive, targets) = testbox_vnc::arguments("testbox-viewer")?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
-        .context("a tokio runtime")?;
+        .map_err(|source| ViewerError::Runtime { source })?;
     // Every socket opens before the sandbox closes: a display that isn't there shows why.
-    let clients: Vec<Result<VncClient>> = targets
+    let clients: Vec<Result<VncClient, ConnectError>> = targets
         .iter()
         .map(|target| runtime.block_on(testbox_vnc::connect(&target.socket)))
         .collect();
     // The window's connection to the desktop's display opens here.
-    let viewer = Viewer::new().describe("the window")?;
+    let viewer = Viewer::new().map_err(|source| ViewerError::NewWindow { source })?;
     let screens = Rc::new(VecModel::from(
         targets
             .iter()
@@ -208,7 +241,7 @@ fn run() -> Result<()> {
                 frame: slint::Image::default(),
                 state: match client {
                     Ok(_) => "connecting".into(),
-                    Err(error) => error.to_string().into(),
+                    Err(error) => Report(error).to_string().into(),
                 },
                 shown: true,
             })
@@ -227,7 +260,9 @@ fn run() -> Result<()> {
     viewer.set_wide_panes(panes(false));
     let input = viewer.global::<Input>();
     input.set_interactive(interactive);
-    viewer.show().describe("the window")?;
+    viewer
+        .show()
+        .map_err(|source| ViewerError::ShowWindow { source })?;
     let restricted = testbox_vnc::sandbox(readable())?;
     eprintln!(
         "testbox-viewer: Landlock {:?}, no_new_privs {}",
@@ -278,7 +313,9 @@ fn run() -> Result<()> {
         }
     });
     // The displays' tasks run on the runtime's thread until the window closes.
-    viewer.run().describe("the window")?;
+    viewer
+        .run()
+        .map_err(|source| ViewerError::RunWindow { source })?;
     // Its callbacks hold the input senders: dropped, each task sees its input end, and closes
     // its connection.
     drop(viewer);
@@ -341,7 +378,7 @@ async fn follow(
         }
     })
     .await;
-    shown(&viewer, index, None, ended.to_string(), || {});
+    shown(&viewer, index, None, Report(&ended).to_string(), || {});
 }
 
 /// Puts display `index`'s frame, if any, and state into the window, then `landed`.

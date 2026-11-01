@@ -7,27 +7,59 @@ use std::process::Command;
 
 use b33p_harness::ScreenSnapshot;
 
-use crate::error::{Error, Result};
-use crate::harness::Harness;
-use crate::pod::{Pod, Service};
+use crate::harness::{Harness, HarnessError};
+use crate::pod::{Pod, PodError, Service};
 use crate::process;
+use testbox_tools::process::CommandError;
+
+/// The displays that couldn't be shown, or the QR that couldn't go on the poster.
+#[derive(Debug, thiserror::Error)]
+pub enum ViewError {
+    #[error("no client with a display runs: `cargo testbox up` first")]
+    NoDisplay,
+    /// The viewer, built and run by Cargo, that failed.
+    #[error("running the viewer {manifest}")]
+    Viewer {
+        manifest: &'static str,
+        #[source]
+        source: CommandError,
+    },
+    #[error("asking b33p for its link")]
+    Ask(#[source] HarnessError),
+    /// b33p on another screen than the one that shows a link.
+    #[error("b33p shows no link to scan, but {screen}: on its first screen, link to a phone")]
+    NoLink { screen: String },
+    #[error("putting the QR on the camera's poster")]
+    Poster(#[source] PodError),
+}
 
 /// Shows each running client's display in a window. `interactive` lets the window's keys and
 /// pointer through to them; without it they only show, as a driver's input and the viewer's
 /// would race.
-pub fn vnc(pod: &Pod, repo: &Path, interactive: bool) -> Result<()> {
-    process::run(viewer(pod, repo, "testbox/viewer/Cargo.toml", interactive)?)
+pub fn vnc(pod: &Pod, repo: &Path, interactive: bool) -> Result<(), ViewError> {
+    show(pod, repo, "testbox/viewer/Cargo.toml", interactive)
 }
 
 /// Serves each running client's display as a web page on loopback; it prints the URL to open.
 /// `interactive` as for [`vnc`].
-pub fn web(pod: &Pod, repo: &Path, interactive: bool) -> Result<()> {
-    process::run(viewer(pod, repo, "testbox/web/Cargo.toml", interactive)?)
+pub fn web(pod: &Pod, repo: &Path, interactive: bool) -> Result<(), ViewError> {
+    show(pod, repo, "testbox/web/Cargo.toml", interactive)
+}
+
+/// Runs the viewer of `manifest` ([`viewer`]) until it ends.
+fn show(
+    pod: &Pod,
+    repo: &Path,
+    manifest: &'static str,
+    interactive: bool,
+) -> Result<(), ViewError> {
+    process::run(viewer(pod, repo, manifest, interactive)?)
+        .map_err(|source| ViewError::Viewer { manifest, source })
 }
 
 /// `cargo run` of a viewer's own workspace for the running clients' displays, built for speed
 /// (the frames are copied by hand); their input set as `interactive` says.
-fn viewer(pod: &Pod, repo: &Path, manifest: &str, interactive: bool) -> Result<Command> {
+fn viewer(pod: &Pod, repo: &Path, manifest: &str, interactive: bool) -> Result<Command, ViewError> {
     let mut run = Command::new(env!("CARGO"));
     run.current_dir(repo).args([
         "run",
@@ -51,24 +83,28 @@ fn viewer(pod: &Pod, repo: &Path, manifest: &str, interactive: bool) -> Result<C
         shown += 1;
     }
     if shown == 0 {
-        return Err("no client with a display runs: `cargo testbox up` first".into());
+        return Err(ViewError::NoDisplay);
     }
     Ok(run)
 }
 
 /// Puts the QR of the link b33p shows on the poster in the emulator camera's scene, for linking
 /// by hand in a viewer: Android's scanner, opened from Settings, Linked devices, sees it.
-pub fn qr(pod: &Pod, agent_socket: &Path) -> Result<()> {
-    let url = match Harness::connect(agent_socket)?.snapshot()?.screen {
+pub fn qr(pod: &Pod, agent_socket: &Path) -> Result<(), ViewError> {
+    let snapshot = Harness::connect(agent_socket)
+        .and_then(|mut b33p| b33p.snapshot())
+        .map_err(ViewError::Ask)?;
+    let url = match snapshot.screen {
         ScreenSnapshot::Link { url, .. } => url,
         other => {
-            return Err(Error::Failed(format!(
-                "b33p shows no link to scan, but {other:?}: on its first screen, link to a phone"
-            )));
+            return Err(ViewError::NoLink {
+                screen: format!("{other:?}"),
+            });
         }
     };
     // The driver binary's own, run beside the driver, which may be busy with a test.
-    pod.exec(Service::Android, &["android", "show-qr", &url], "")?;
+    pod.exec(Service::Android, &["android", "show-qr", &url], "")
+        .map_err(ViewError::Poster)?;
     println!(
         "b33p's QR is on the camera's poster. On Android: Settings, Linked devices, \
          Link a new device; the scanner reads it."

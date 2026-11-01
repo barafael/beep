@@ -12,11 +12,10 @@ use super::b33p::{
 };
 use super::clients::{Android, Desktop, android_shows};
 use super::presage::{Account, Presage};
-use super::{Checks, HISTORY_PATIENCE, PATIENCE, START};
+use super::{Checks, Failure, HISTORY_PATIENCE, PATIENCE, START};
 use crate::Sockets;
-use crate::error::{Error, Result};
-use crate::harness::Harness;
-use crate::pod::{B33P, Pod, Ready, Service};
+use crate::harness::{Harness, HarnessError};
+use crate::pod::{B33P, Pod, PodError, Ready, Service};
 use crate::process;
 use testbox_tools::drivers;
 
@@ -27,6 +26,26 @@ pub(super) const NOTE: &str = "testbox android: a note from before b33p linked";
 pub(super) const FIRST: &str = "testbox: the peer's first message";
 /// b33p-slint/src/ui.rs `sync_status` for `HistoryTransfer::Waiting`.
 const WAITING_FOR_HISTORY: &str = "Waiting for your phone to send your message history…";
+
+/// What setting a fixture up found not as it should be.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SetupError {
+    /// The egress probe reached Signal's own server: the box isn't confined.
+    #[error("reached chat.signal.org")]
+    Egress,
+    /// The egress probe (curl) ended neither as without egress nor reaching the server: podman's
+    /// own failure, or curl's.
+    #[error("the egress probe ended with {code:?}: {stderr}")]
+    EgressProbe { code: Option<i32>, stderr: String },
+    #[error("b33p already has a store: the box isn't fresh (cargo testbox down --wipe)")]
+    NotFresh,
+    /// b33p's password screen showed `error` for the password typed.
+    #[error("b33p refused the store password: {error}")]
+    PasswordRefused { error: String },
+    /// One of [`each`]'s threads panicked rather than return.
+    #[error("thread {index} of {count} panicked")]
+    Panicked { index: usize, count: usize },
+}
 
 /// b33p linked to a presage-cli primary, Desktop to a presage-cli peer, and the peer's first
 /// message to b33p's account accepted in `conversation`.
@@ -43,7 +62,7 @@ pub(super) fn linked_box<'pod>(
     checks: &mut Checks,
     containers: &'pod Pod,
     sockets: &Sockets,
-) -> Result<LinkedBox<'pod>> {
+) -> Result<LinkedBox<'pod>, Failure> {
     let PlainBox {
         primary,
         peer,
@@ -58,7 +77,7 @@ pub(super) fn linked_box<'pod>(
         peer_text_reaches(&mut b33p, &peer, &primary_aci, FIRST)
     })?;
     checks.require(REQUEST_ACCEPTED, || {
-        accept_request(&mut b33p, &conversation)
+        Ok(accept_request(&mut b33p, &conversation)?)
     })?;
     Ok(LinkedBox {
         primary,
@@ -83,13 +102,13 @@ pub(super) fn plain_box<'pod>(
     checks: &mut Checks,
     containers: &'pod Pod,
     sockets: &Sockets,
-) -> Result<PlainBox<'pod>> {
+) -> Result<PlainBox<'pod>, Failure> {
     confined_and_healthy(checks, containers)?;
     let primary = Presage::new(containers, Account::Primary);
     let peer = Presage::new(containers, Account::Peer);
     let primary_aci = checks.require("two presage-cli accounts register", || {
         peer.register()?;
-        primary.register()
+        Ok(primary.register()?)
     })?;
     containers.await_ready(Ready::B33p(0), None, START)?;
     let mut b33p = Harness::connect(&sockets.b33p)?;
@@ -140,7 +159,7 @@ pub(super) fn mesh_box<'pod>(
     containers: &'pod Pod,
     sockets: &Sockets,
     b33ps: u8,
-) -> Result<MeshBox<'pod>> {
+) -> Result<MeshBox<'pod>, Failure> {
     confined_and_healthy(checks, containers)?;
     let primaries: Vec<Presage<'pod>> = (0..b33ps)
         .map(|n| Presage::new(containers, Account::Mesh(n)))
@@ -148,13 +167,9 @@ pub(super) fn mesh_box<'pod>(
     let acis = checks.require(&format!("{b33ps} presage-cli primaries register"), || {
         each(&primaries, |primary| primary.register())
     })?;
+    let numbered: Vec<(u8, &Presage<'pod>)> = (0..).zip(&primaries).collect();
     let linked = checks.require(&format!("{b33ps} b33ps link, each to its primary"), || {
-        each(&primaries, |primary| {
-            let n = primaries
-                .iter()
-                .position(|each| std::ptr::eq(each, primary))
-                .and_then(|n| u8::try_from(n).ok())
-                .ok_or("a primary of the mesh's")?;
+        each(&numbered, |&(n, primary)| -> Result<_, Failure> {
             containers.await_ready(Ready::B33p(n), None, START)?;
             let started = Instant::now();
             let mut b33p = Harness::connect(&sockets.agent(n))?;
@@ -190,7 +205,9 @@ pub(super) fn mesh_box<'pod>(
         || {
             for i in 0..mesh.b33ps.len() {
                 let (earlier, rest) = mesh.b33ps.split_at_mut(i);
-                let (this, later) = rest.split_first_mut().ok_or("a b33p of the mesh's")?;
+                let [this, later @ ..] = rest else {
+                    continue;
+                };
                 for other in earlier.iter() {
                     accept_request(&mut this.b33p, &other.chat())?;
                 }
@@ -210,22 +227,27 @@ pub(super) fn mesh_box<'pod>(
 }
 
 /// `work` on each of `items` at once, in threads; every outcome, in order, or the first failure.
-pub(super) fn each<Item: Sync, Done: Send>(
+pub(super) fn each<Item: Sync, Done: Send, E: Into<Failure> + Send>(
     items: &[Item],
-    work: impl Fn(&Item) -> Result<Done> + Sync,
-) -> Result<Vec<Done>> {
+    work: impl Fn(&Item) -> Result<Done, E> + Sync,
+) -> Result<Vec<Done>, Failure> {
     std::thread::scope(|scope| {
         let work = &work;
         let running: Vec<_> = items
             .iter()
             .map(|item| scope.spawn(move || work(item)))
             .collect();
-        running
+        let count = running.len();
+        // Every thread joined before any outcome counts: the scope panics for one left unjoined
+        // that panicked.
+        let joined: Vec<_> = running.into_iter().map(|thread| thread.join()).collect();
+        joined
             .into_iter()
-            .map(|thread| {
-                thread
-                    .join()
-                    .map_err(|_| Error::Failed("a thread panicked".to_owned()))?
+            .enumerate()
+            .map(|(index, outcome)| -> Result<Done, Failure> {
+                outcome
+                    .map_err(|_| SetupError::Panicked { index, count })?
+                    .map_err(Into::into)
             })
             .collect()
     })
@@ -236,13 +258,15 @@ pub(super) fn linked_desktop(
     checks: &mut Checks,
     socket: &Path,
     primary: &Presage<'_>,
-) -> Result<Desktop> {
+) -> Result<Desktop, Failure> {
     let mut desktop = linking_desktop(checks, socket, primary)?;
-    checks.require("Desktop shows its inbox", || desktop_inbox(&mut desktop))?;
+    checks.require("Desktop shows its inbox", || {
+        Ok(desktop_inbox(&mut desktop)?)
+    })?;
     Ok(desktop)
 }
 
-fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<()> {
+fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<(), Failure> {
     checks.require("no egress", || {
         let probe = [
             "curl",
@@ -258,30 +282,31 @@ fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<()> {
         let probed = containers.exec_status(Service::Presage, &probe)?;
         match probed.status.code() {
             Some(6 | 7 | 28) => Ok(()),
-            Some(0) => Err("reached chat.signal.org".into()),
-            code => Err(Error::Failed(format!(
-                "the egress probe ended with {code:?}: {}",
-                String::from_utf8_lossy(&probed.stderr)
-            ))),
+            Some(0) => Err(SetupError::Egress.into()),
+            code => Err(SetupError::EgressProbe {
+                code,
+                stderr: String::from_utf8_lossy(&probed.stderr).into_owned(),
+            }
+            .into()),
         }
     })?;
 
     // `podman kube play` returns once the containers exist: each says when it serves.
-    checks.require("the server is healthy", || server_healthy(containers))?;
+    checks.require("the server is healthy", || Ok(server_healthy(containers)?))?;
     checks.require("the storage service serves", || {
-        containers.await_ready(Ready::Storage, None, START)
+        Ok(containers.await_ready(Ready::Storage, None, START)?)
     })?;
     // Before any client connects: a connection's first packets are its TLS handshake, which
     // the decoding needs.
     if containers.capturing() {
         checks.require("the capture writes the wire down", || {
-            containers.await_ready(Ready::Capture, None, START)
+            Ok(containers.await_ready(Ready::Capture, None, START)?)
         })?;
     }
     Ok(())
 }
 
-fn server_healthy(containers: &Pod) -> Result<()> {
+fn server_healthy(containers: &Pod) -> Result<(), PodError> {
     containers.await_ready(Ready::Server, None, PATIENCE)
 }
 
@@ -301,10 +326,12 @@ pub(super) fn android_box<'pod>(
     checks: &mut Checks,
     containers: &'pod Pod,
     sockets: &Sockets,
-) -> Result<AndroidBox<'pod>> {
+) -> Result<AndroidBox<'pod>, Failure> {
     confined_and_healthy(checks, containers)?;
     let peer = Presage::new(containers, Account::Peer);
-    checks.require("a presage-cli peer registers", || peer.register().map(drop))?;
+    checks.require("a presage-cli peer registers", || {
+        Ok(peer.register().map(drop)?)
+    })?;
     // Desktop syncs after linking (driver.ts `inbox`): while Android and b33p set up.
     let mut desktop = linking_desktop(checks, &sockets.desktop, &peer)?;
 
@@ -312,15 +339,15 @@ pub(super) fn android_box<'pod>(
     containers.await_ready(Ready::Android, None, START)?;
     let mut android = Android::connect(&sockets.android)?;
     checks.require("Android registers", || {
-        android.call(drivers::Android::Register {
+        Ok(android.call(drivers::Android::Register {
             number: ANDROID_NUMBER.to_owned(),
             name: "Android".to_owned(),
-        })
+        })?)
     })?;
     checks.require("Android writes a note to itself", || {
-        android.call(drivers::Android::NoteToSelf {
+        Ok(android.call(drivers::Android::NoteToSelf {
             text: NOTE.to_owned(),
-        })
+        })?)
     })?;
 
     containers.await_ready(Ready::B33p(0), None, START)?;
@@ -333,8 +360,10 @@ pub(super) fn android_box<'pod>(
             })
         })
     })?;
-    let android_aci = checks.require("b33p knows Android's account", || own_aci(&mut b33p))?;
-    checks.require("Desktop shows its inbox", || desktop_inbox(&mut desktop))?;
+    let android_aci = checks.require("b33p knows Android's account", || Ok(own_aci(&mut b33p)?))?;
+    checks.require("Desktop shows its inbox", || {
+        Ok(desktop_inbox(&mut desktop)?)
+    })?;
 
     let conversation = checks.require("text from the peer reaches b33p", || {
         peer_text_reaches(&mut b33p, &peer, &android_aci, FIRST)
@@ -345,10 +374,10 @@ pub(super) fn android_box<'pod>(
         android.call(drivers::Android::OpenConversation {
             text: "Message Request".to_owned(),
         })?;
-        android_shows(&mut android, FIRST)
+        Ok(android_shows(&mut android, FIRST)?)
     });
     checks.require(REQUEST_ACCEPTED, || {
-        accept_request(&mut b33p, &conversation)
+        Ok(accept_request(&mut b33p, &conversation)?)
     })?;
     Ok(AndroidBox {
         peer,
@@ -361,14 +390,14 @@ pub(super) fn android_box<'pod>(
 }
 
 /// Links Signal-Desktop to `primary`: the primary takes Desktop's link URL.
-fn link_desktop(desktop: &mut Desktop, primary: &Presage<'_>) -> Result<()> {
+fn link_desktop(desktop: &mut Desktop, primary: &Presage<'_>) -> Result<(), Failure> {
     let url: String = desktop.ask(drivers::Desktop::ProvisioningUrl)?;
-    primary.add_device(&url)
+    Ok(primary.add_device(&url)?)
 }
 
 /// Waits for Desktop's inbox once it is linked: up to ten minutes, as Desktop waits for syncs
 /// nobody in the box answers (driver.ts `inbox`).
-fn desktop_inbox(desktop: &mut Desktop) -> Result<()> {
+fn desktop_inbox(desktop: &mut Desktop) -> Result<(), HarnessError> {
     desktop.call(drivers::Desktop::Inbox {
         timeout_ms: 10 * 60 * 1000,
     })
@@ -376,7 +405,11 @@ fn desktop_inbox(desktop: &mut Desktop) -> Result<()> {
 
 /// Launches Desktop and links it to `primary`, without waiting for its inbox
 /// ([`desktop_inbox`]), so that other setup can go on meanwhile.
-fn linking_desktop(checks: &mut Checks, socket: &Path, primary: &Presage<'_>) -> Result<Desktop> {
+fn linking_desktop(
+    checks: &mut Checks,
+    socket: &Path,
+    primary: &Presage<'_>,
+) -> Result<Desktop, Failure> {
     primary
         .containers
         .await_ready(Ready::Desktop, None, PATIENCE)?;
@@ -393,7 +426,11 @@ fn linking_desktop(checks: &mut Checks, socket: &Path, primary: &Presage<'_>) ->
 /// Links b33p as a new device; `primary` takes the link screen's URL.
 /// With `history`, b33p waits for the primary's message history and imports it; without, it skips
 /// a history it is told to wait for.
-fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+fn link<E: std::error::Error + Send + Sync + 'static>(
+    b33p: &mut Harness,
+    history: bool,
+    primary: impl FnOnce(&str) -> Result<(), E>,
+) -> Result<(), Failure> {
     let new_store = b33p.wait_for(
         "b33p asking for a password",
         PATIENCE,
@@ -403,9 +440,7 @@ fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<
         },
     )?;
     if !new_store {
-        return Err(
-            "b33p already has a store: the box isn't fresh (cargo testbox down --wipe)".into(),
-        );
+        return Err(SetupError::NotFresh.into());
     }
     unlock(b33p)?;
     let url = b33p.wait_for("the link screen", PATIENCE, |snapshot| {
@@ -413,15 +448,15 @@ fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<
             ScreenSnapshot::Link { url } => Some(Ok(url.clone())),
             ScreenSnapshot::Password {
                 error: Some(error), ..
-            } => Some(Err(Error::Failed(format!(
-                "b33p refused the store password: {error}"
-            )))),
+            } => Some(Err(SetupError::PasswordRefused {
+                error: error.clone(),
+            })),
             _ => None,
         }
     })??;
     primary(&url)?;
     if history {
-        return wait_for_chats(b33p, HISTORY_PATIENCE);
+        return Ok(wait_for_chats(b33p, HISTORY_PATIENCE)?);
     }
     // presage-cli sends no history archive: if b33p waits for one, skip it.
     let waiting_for_history =
@@ -440,19 +475,28 @@ fn link(b33p: &mut Harness, history: bool, primary: impl FnOnce(&str) -> Result<
 }
 
 /// Restarts b33p and connects to it again, its store unlocked and its chats shown.
-pub(super) fn restart_b33p(containers: &Pod, socket: &Path) -> Result<Harness> {
+pub(super) fn restart_b33p(containers: &Pod, socket: &Path) -> Result<Harness, Failure> {
     let since = process::now()?;
     containers.restart(B33P)?;
     started_b33p(containers, socket, since)
 }
 
 /// b33p unlocked and showing its chats again, once it has started after `since`.
-pub(super) fn started_b33p(containers: &Pod, socket: &Path, since: u64) -> Result<Harness> {
+pub(super) fn started_b33p(
+    containers: &Pod,
+    socket: &Path,
+    since: u64,
+) -> Result<Harness, Failure> {
     started(containers, 0, socket, since)
 }
 
 /// The `n`th b33p as [`started_b33p`].
-pub(super) fn started(containers: &Pod, n: u8, socket: &Path, since: u64) -> Result<Harness> {
+pub(super) fn started(
+    containers: &Pod,
+    n: u8,
+    socket: &Path,
+    since: u64,
+) -> Result<Harness, Failure> {
     containers.await_ready(Ready::B33p(n), Some(since), PATIENCE)?;
     let mut b33p = Harness::connect(socket)?;
     b33p.wait_for("b33p asking for its password", PATIENCE, |snapshot| {

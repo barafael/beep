@@ -3,11 +3,32 @@
 //! libsignal stage built them, so Gradle checks them by content like every other dependency.
 //! POMs are left out: Signal-Android's own entries trust them by name.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::{Context, Error, Result};
+/// Why the patched artifacts' checksums can't go into the metadata.
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationError {
+    #[error("listing {}", dir.display())]
+    List {
+        dir: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading the artifact {}", path.display())]
+    Artifact {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The libsignal stage built nothing at the version.
+    #[error("no artifact at {version} under {}", group.display())]
+    NoArtifact { group: PathBuf, version: String },
+    /// The metadata has not one end of its components to put them before.
+    #[error("verification-metadata.xml has {ends} {END}, not 1")]
+    Ends { ends: usize },
+}
 
 /// The end of the metadata's components, before which the artifacts' go.
 const END: &str = "</components>";
@@ -20,7 +41,7 @@ pub struct Component {
 
 /// The components under `group` (a Maven repository's `org/signal`) at `version`, by name, their
 /// files by name: the same order each time.
-pub fn components(group: &Path, version: &str) -> Result<Vec<Component>> {
+pub fn components(group: &Path, version: &str) -> Result<Vec<Component>, VerificationError> {
     let mut components = Vec::new();
     for name in names(group)? {
         let dir = group.join(&name).join(version);
@@ -33,27 +54,30 @@ pub fn components(group: &Path, version: &str) -> Result<Vec<Component>> {
                 continue;
             }
             let path = dir.join(&file);
-            let bytes = std::fs::read(&path).context(path.display().to_string())?;
+            let bytes = std::fs::read(&path)
+                .map_err(|source| VerificationError::Artifact { path, source })?;
             files.push((file, hex::encode(Sha256::digest(&bytes))));
         }
         components.push(Component { name, files });
     }
     if components.is_empty() {
-        return Err(Error::Failed(format!(
-            "no artifact at {version} under {}",
-            group.display()
-        )));
+        return Err(VerificationError::NoArtifact {
+            group: group.to_owned(),
+            version: version.to_owned(),
+        });
     }
     Ok(components)
 }
 
 /// `metadata` with the `components` at `version` in, before its one `</components>`.
-pub fn with_components(metadata: &str, version: &str, components: &[Component]) -> Result<String> {
+pub fn with_components(
+    metadata: &str,
+    version: &str,
+    components: &[Component],
+) -> Result<String, VerificationError> {
     let ends = metadata.matches(END).count();
     if ends != 1 {
-        return Err(Error::Failed(format!(
-            "verification-metadata.xml has {ends} {END}, not 1"
-        )));
+        return Err(VerificationError::Ends { ends });
     }
     let version = attribute(version);
     let entries: String = components
@@ -79,15 +103,16 @@ pub fn with_components(metadata: &str, version: &str, components: &[Component]) 
 }
 
 /// The names in `dir`, sorted.
-fn names(dir: &Path) -> Result<Vec<String>> {
+fn names(dir: &Path) -> Result<Vec<String>, VerificationError> {
+    let listing = |source| VerificationError::List {
+        dir: dir.to_owned(),
+        source,
+    };
     let mut names = std::fs::read_dir(dir)
-        .context(dir.display().to_string())?
-        .map(|entry| {
-            entry
-                .context(dir.display().to_string())
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        })
-        .collect::<Result<Vec<String>>>()?;
+        .map_err(listing)?
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(listing)?;
     names.sort();
     Ok(names)
 }

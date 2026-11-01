@@ -1,7 +1,5 @@
 //! Groups: how they are listed, what their changes say, editing them, joining by invite link.
 
-use crate::Error;
-
 use presage::libsignal_service::prelude::ProtobufMessage as _;
 use presage::{
     libsignal_service::zkgroup::groups::{GroupMasterKey, GroupSecretParams},
@@ -10,7 +8,7 @@ use presage::{
 };
 use tracing::{debug, warn};
 
-use crate::{Conversation, ConversationId, Event, attachments, scrub::scrubbed};
+use crate::{Conversation, ConversationId, Event, attachments};
 
 use super::{
     Ctx, Mgr, Threads,
@@ -132,7 +130,7 @@ pub(super) async fn on_missed_changes(
             body: ContentBody::DataMessage(data),
         };
         if let Err(error) = manager.store().save_message(&thread, content.clone()).await {
-            warn!(error = %scrubbed(&error), "failed to keep a missed group change");
+            warn!(error = %crate::scrub::chain(&error), "failed to keep a missed group change");
             continue;
         }
         if let Some(message) = to_chat_message(manager, names, conversation.clone(), &content).await
@@ -206,7 +204,7 @@ pub(super) async fn forget_membership(manager: &Mgr, key: [u8; 32], context: &Gr
     }
     group.revision = changes.version;
     if let Err(error) = store.save_group(key, group).await {
-        warn!(error = %scrubbed(&error), "failed to note that we were removed from a group");
+        warn!(error = %crate::scrub::chain(&error), "failed to note that we were removed from a group");
     }
 }
 
@@ -352,7 +350,9 @@ pub(super) async fn accept_from_trusted(
                 settings,
             });
         }
-        Err(error) => warn!(error = %scrubbed(&error), "failed to accept a group from a contact"),
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to accept a group from a contact")
+        }
     }
 }
 
@@ -381,6 +381,66 @@ pub(super) fn own_membership_change(
 pub(super) const PHONE_NUMBER_ONLY: &str = "someone chosen is known only by their phone number: they can be \
      invited once the group exists (make it, then add them)";
 
+/// Why a group can't be changed as asked: before anything is sent.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum GroupError {
+    #[error("{PHONE_NUMBER_ONLY}")]
+    MemberByNumber { member: String },
+    #[error("you are the group's only admin: make someone else an admin first")]
+    OnlyAdmin,
+    #[error("not in the group")]
+    NotInGroup,
+    #[error("That isn't a Signal group link.")]
+    NotAGroupLink,
+    #[error("couldn't make the group's picture")]
+    Picture(#[source] PictureError),
+    #[error("making the group's picture stopped")]
+    PictureStopped(#[source] tokio::task::JoinError),
+}
+
+impl crate::Classified for GroupError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            Self::Picture(error) => error.kind(),
+            Self::MemberByNumber { .. }
+            | Self::OnlyAdmin
+            | Self::NotInGroup
+            | Self::NotAGroupLink
+            | Self::PictureStopped(_) => crate::ErrorKind::Refused,
+        }
+    }
+}
+
+/// Why a picture can't be a group's.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PictureError {
+    #[error("couldn't read the picture {}", path.display())]
+    Read {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    #[error("that file isn't a picture")]
+    NotAPicture { path: std::path::PathBuf },
+    #[error("that picture is empty")]
+    Empty { path: std::path::PathBuf },
+    #[error("couldn't encode the picture as JPEG")]
+    Encode {
+        path: std::path::PathBuf,
+        source: image::ImageError,
+    },
+}
+
+impl PictureError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            Self::Read { .. } => crate::ErrorKind::Storage,
+            Self::NotAPicture { .. } | Self::Empty { .. } | Self::Encode { .. } => {
+                crate::ErrorKind::Refused
+            }
+        }
+    }
+}
+
 /// A group member's ACI; `None` for those known only by their phone number (PNI).
 pub(super) fn member_aci(id: &str) -> Option<presage::libsignal_service::protocol::Aci> {
     match ServiceId::parse_from_service_id_string(id)? {
@@ -391,7 +451,7 @@ pub(super) fn member_aci(id: &str) -> Option<presage::libsignal_service::protoco
 
 /// Refuses to leave a group we are the only admin of, while others are in it: it would be
 /// left without one. Signal's apps ask to choose a new admin first; here it is done by hand.
-pub(super) async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(), Error> {
+pub(super) async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(), GroupError> {
     use presage::libsignal_service::groups_v2::Role;
     let own = manager.registration_data().service_ids.aci();
     let Ok(Some(group)) = manager.store().group(key).await else {
@@ -402,9 +462,7 @@ pub(super) async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(),
     let other_admin = group.members.iter().filter(admin).any(|m| m.aci != own);
     let others = group.members.iter().any(|m| m.aci != own);
     if we_admin && !other_admin && others {
-        return Err(Error::refused(
-            "you are the group's only admin: make someone else an admin first",
-        ));
+        return Err(GroupError::OnlyAdmin);
     }
     Ok(())
 }
@@ -413,10 +471,14 @@ pub(super) async fn only_admin_check(manager: &Mgr, key: [u8; 32]) -> Result<(),
 /// can't be read).
 pub(super) async fn group_edit(
     edit: crate::GroupEdit,
-) -> Result<presage::manager::GroupEdit, Error> {
+) -> Result<presage::manager::GroupEdit, GroupError> {
     use crate::GroupEdit as Edit;
     use presage::manager::GroupEdit as To;
-    let aci = |member: &str| member_aci(member).ok_or_else(|| Error::refused(PHONE_NUMBER_ONLY));
+    let aci = |member: &str| {
+        member_aci(member).ok_or_else(|| GroupError::MemberByNumber {
+            member: member.to_owned(),
+        })
+    };
     Ok(match edit {
         Edit::Title(title) => To::Title(title.trim().to_owned()),
         Edit::Description(description) => To::Description(description.trim().to_owned()),
@@ -424,16 +486,19 @@ pub(super) async fn group_edit(
         Edit::SetPicture(path) => To::Avatar(
             tokio::task::spawn_blocking(move || group_picture(&path))
                 .await
-                .map_err(|e| Error::refused(e.to_string()))??,
+                .map_err(GroupError::PictureStopped)?
+                .map_err(GroupError::Picture)?,
         ),
         Edit::RemovePicture => To::Avatar(Vec::new()),
         // Someone known only by phone number is invited by it.
         Edit::AddMembers(members) => To::AddMembers(
             members
                 .iter()
-                .map(|m| ServiceId::parse_from_service_id_string(m))
-                .collect::<Option<_>>()
-                .ok_or_else(|| Error::refused(PHONE_NUMBER_ONLY))?,
+                .map(|m| {
+                    ServiceId::parse_from_service_id_string(m)
+                        .ok_or_else(|| GroupError::MemberByNumber { member: m.clone() })
+                })
+                .collect::<Result<_, _>>()?,
         ),
         Edit::RemoveMember(member) => To::RemoveMember(aci(&member)?),
         Edit::SetAdmin(member, admin) => To::SetAdmin(aci(&member)?, admin),
@@ -452,7 +517,7 @@ pub(super) async fn group_edit(
         Edit::ApproveRequest(member) => To::ApproveRequest(aci(&member)?),
         Edit::DenyRequest(member) => To::DenyRequest(aci(&member)?),
         // Not a change to the group: see `Command::EditGroup`.
-        Edit::CancelJoinRequest => return Err(Error::refused("not in the group")),
+        Edit::CancelJoinRequest => return Err(GroupError::NotInGroup),
     })
 }
 
@@ -479,9 +544,9 @@ pub(super) fn edit_kind(edit: &presage::manager::GroupEdit) -> &'static str {
 
 pub(super) fn parse_group_link(
     link: &str,
-) -> Result<presage::libsignal_service::groups_v2::GroupInviteLink, Error> {
+) -> Result<presage::libsignal_service::groups_v2::GroupInviteLink, GroupError> {
     presage::libsignal_service::groups_v2::GroupInviteLink::parse(link)
-        .ok_or_else(|| Error::refused("That isn't a Signal group link."))
+        .ok_or(GroupError::NotAGroupLink)
 }
 
 /// The conversation of a group we are a member of.
@@ -519,7 +584,7 @@ pub(super) async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
         }
         Err(presage::Error::ServiceError(ServiceError::Unauthorized)) => {}
         Err(error) => {
-            debug!(%error, "couldn't check on a request to join");
+            debug!(error = %crate::scrub::chain(&error), "couldn't check on a request to join");
             return;
         }
     }
@@ -532,7 +597,7 @@ pub(super) async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
         // The link is gone, and the request with it.
         Err(presage::Error::ServiceError(ServiceError::Unauthorized)) => false,
         Err(error) => {
-            debug!(%error, "couldn't check on a request to join");
+            debug!(error = %crate::scrub::chain(&error), "couldn't check on a request to join");
             return;
         }
     };
@@ -546,7 +611,7 @@ pub(super) async fn check_request(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) {
     if asking(&group) {
         group.requesting_members.retain(|m| m.aci != own);
         if let Err(error) = manager.store().save_group(key, group).await {
-            warn!(%error, "failed to note that a request to join is over");
+            warn!(error = %crate::scrub::chain(&error), "failed to note that a request to join is over");
         }
     }
     refresh_group(manager, ctx, key).await;
@@ -578,7 +643,7 @@ pub(super) async fn fetch_as_admin(manager: &mut Mgr, ctx: &Ctx, key: [u8; 32]) 
             true
         }
         Err(error) => {
-            debug!(%error, "couldn't update a group we are an admin of");
+            debug!(error = %crate::scrub::chain(&error), "couldn't update a group we are an admin of");
             false
         }
     }
@@ -589,14 +654,19 @@ const GROUP_PICTURE_SIDE: u32 = 1024;
 
 /// The picture at `path` as a group's: cropped to a square, no larger than
 /// [`GROUP_PICTURE_SIDE`], as JPEG.
-fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, Error> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| Error::storage(format!("couldn't read the picture: {error}")))?;
-    let image = attachments::decode_limited(&bytes)
-        .ok_or_else(|| Error::refused("that file isn't a picture"))?;
+fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, PictureError> {
+    let bytes = std::fs::read(path).map_err(|source| PictureError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    let image = attachments::decode_limited(&bytes).ok_or_else(|| PictureError::NotAPicture {
+        path: path.to_owned(),
+    })?;
     let side = image.width().min(image.height()).min(GROUP_PICTURE_SIDE);
     if side == 0 {
-        return Err(Error::refused("that picture is empty"));
+        return Err(PictureError::Empty {
+            path: path.to_owned(),
+        });
     }
     let square = image.resize_to_fill(side, side, image::imageops::FilterType::Lanczos3);
     let mut jpeg = std::io::Cursor::new(Vec::new());
@@ -604,7 +674,10 @@ fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, Error> {
         .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
             &mut jpeg, 85,
         ))
-        .map_err(|error| Error::refused(format!("couldn't encode the picture: {error}")))?;
+        .map_err(|source| PictureError::Encode {
+            path: path.to_owned(),
+            source,
+        })?;
     Ok(jpeg.into_inner())
 }
 
@@ -1015,10 +1088,10 @@ mod tests {
         assert_eq!((sent.width(), sent.height()), (30, 30));
         let text = dir.path().join("notes.txt");
         std::fs::write(&text, "hello").unwrap();
-        assert_eq!(
-            group_picture(&text).unwrap_err(),
-            Error::refused("that file isn't a picture")
-        );
+        assert!(matches!(
+            group_picture(&text),
+            Err(PictureError::NotAPicture { .. })
+        ));
         assert!(group_picture(&dir.path().join("missing.png")).is_err());
     }
 

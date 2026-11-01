@@ -186,24 +186,37 @@ fn settings_of(row: &SqliteRow) -> ChatSettings {
 const SCHEMA_VERSION: i64 = 1;
 
 /// Why [`LocalStore::open`] failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum OpenError {
-    Db(sqlx::Error),
+    #[error("failed to connect to the database")]
+    Connect(#[source] sqlx::Error),
+    #[error("failed to read the version of b33p's tables")]
+    ReadVersion(#[source] sqlx::Error),
     /// Written by a newer b33p, at this [`SCHEMA_VERSION`].
+    #[error("b33p's tables are at version {0}, newer than this build's {SCHEMA_VERSION}")]
     TooNew(i64),
+    #[error("failed to create b33p's tables")]
+    Create(#[source] sqlx::Error),
+    #[error("failed to add the column {column} to {table}")]
+    AddColumn {
+        table: &'static str,
+        column: &'static str,
+        source: sqlx::Error,
+    },
+    #[error("failed to record the version of b33p's tables")]
+    WriteVersion(#[source] sqlx::Error),
 }
 
-impl From<sqlx::Error> for OpenError {
-    fn from(error: sqlx::Error) -> Self {
-        Self::Db(error)
-    }
-}
-
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl OpenError {
+    /// The database's own error, if it was one.
+    pub(crate) fn db(&self) -> Option<&sqlx::Error> {
         match self {
-            Self::Db(error) => error.fmt(f),
-            Self::TooNew(version) => write!(f, "b33p's tables are at version {version}"),
+            Self::Connect(error)
+            | Self::ReadVersion(error)
+            | Self::Create(error)
+            | Self::AddColumn { source: error, .. }
+            | Self::WriteVersion(error) => Some(error),
+            Self::TooNew(_) => None,
         }
     }
 }
@@ -377,7 +390,8 @@ impl LocalStore {
         let db = SqlitePoolOptions::new()
             .max_connections(2)
             .connect_with(options)
-            .await?;
+            .await
+            .map_err(OpenError::Connect)?;
         // Before changing anything: a newer b33p may have changed the tables in ways this one
         // would get wrong.
         let found: Option<i64> =
@@ -388,26 +402,37 @@ impl LocalStore {
                     // Made before the version was kept, or not at all yet.
                     sqlx::Error::Database(e) if e.message().contains("no such table") => Ok(None),
                     _ => Err(error),
-                })?;
+                })
+                .map_err(OpenError::ReadVersion)?;
         if let Some(found) = found
             && found > SCHEMA_VERSION
         {
             return Err(OpenError::TooNew(found));
         }
         for statement in SCHEMA {
-            sqlx::query(*statement).execute(&db).await?;
+            sqlx::query(*statement)
+                .execute(&db)
+                .await
+                .map_err(OpenError::Create)?;
         }
         // Columns added since the tables were first made.
         for (table, column, statement) in ADDED_COLUMNS {
-            let exists: Option<i64> =
+            let exists: Result<Option<i64>, sqlx::Error> =
                 sqlx::query_scalar("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
                     .bind(table)
                     .bind(column)
                     .fetch_optional(&db)
-                    .await?;
-            if exists.is_none() {
-                sqlx::query(*statement).execute(&db).await?;
-            }
+                    .await;
+            let added = match exists {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => sqlx::query(*statement).execute(&db).await.map(drop),
+                Err(error) => Err(error),
+            };
+            added.map_err(|source| OpenError::AddColumn {
+                table,
+                column,
+                source,
+            })?;
         }
         sqlx::query(
             "INSERT INTO b33p_meta (key, value) VALUES ('schema', ?)
@@ -415,7 +440,8 @@ impl LocalStore {
         )
         .bind(SCHEMA_VERSION)
         .execute(&db)
-        .await?;
+        .await
+        .map_err(OpenError::WriteVersion)?;
         Ok(Self { db })
     }
 

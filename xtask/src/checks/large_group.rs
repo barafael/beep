@@ -12,10 +12,18 @@ use super::b33p::{
 use super::clients::{android_containing, android_shows, desktop_shows};
 use super::presage::{Account, Presage};
 use super::setup::{AndroidBox, each};
-use super::{Checks, PATIENCE};
-use crate::error::{Error, Result};
+use super::{Checks, Failure, PATIENCE};
+use crate::harness::HarnessError;
 use crate::pod::Pod;
-use testbox_tools::drivers;
+use testbox_tools::{Report, drivers};
+
+/// What the large group's checks find wrong of their own.
+#[derive(Debug, thiserror::Error)]
+enum LargeGroupError {
+    /// The conversation b33p made isn't a group's (`g:` and the master key).
+    #[error("{id} isn't a group's id")]
+    NotAGroup { id: String },
+}
 
 /// How many presage-cli members join the peer.
 const MEMBERS: u8 = 20;
@@ -24,7 +32,7 @@ pub(super) fn large_group(
     checks: &mut Checks,
     fixture: &mut AndroidBox<'_>,
     containers: &Pod,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let AndroidBox {
         android,
         b33p,
@@ -41,11 +49,11 @@ pub(super) fn large_group(
     checks.require(&format!("{MEMBERS} presage-cli members register"), || {
         each(&crowd, |member| {
             member.register().or_else(|error| {
-                eprintln!("  {}: registering again: {error}", member.name());
+                eprintln!("  {}: registering again: {}", member.name(), Report(&error));
                 member.register()
             })
-        })
-        .map(drop)
+        })?;
+        Ok(())
     })?;
     // Each writes to b33p's account first: that brings b33p their profile keys, which it adds
     // them to a group with outright (`groups`); b33p accepts each.
@@ -56,14 +64,14 @@ pub(super) fn large_group(
     let chats = checks.require(
         &format!("the {MEMBERS} message requests are accepted in b33p"),
         || {
-            crowd
+            Ok(crowd
                 .iter()
                 .map(|member| {
                     let chat = chat_previewing(b33p, &hello(member))?;
                     accept_request(b33p, &chat)?;
                     Ok(chat)
                 })
-                .collect::<Result<Vec<String>>>()
+                .collect::<Result<Vec<String>, HarnessError>>()?)
         },
     )?;
 
@@ -77,13 +85,15 @@ pub(super) fn large_group(
                 title: title.to_owned(),
                 members,
             })?;
-            b33p.wait_for("the large group in b33p", PATIENCE, |snapshot| {
-                snapshot
-                    .conversations
-                    .iter()
-                    .find(|chat| chat.group && chat.title == title && !chat.request)
-                    .map(|chat| chat.id.clone())
-            })
+            Ok(
+                b33p.wait_for("the large group in b33p", PATIENCE, |snapshot| {
+                    snapshot
+                        .conversations
+                        .iter()
+                        .find(|chat| chat.group && chat.title == title && !chat.request)
+                        .map(|chat| chat.id.clone())
+                })?,
+            )
         },
     )?;
     let everyone = usize::from(MEMBERS) + 2;
@@ -91,9 +101,12 @@ pub(super) fn large_group(
         &format!("b33p's details of the group list all {everyone} members"),
         || {
             select(b33p, &group)?;
-            b33p_details(b33p, "You created the group.", "every member", |details| {
-                (details.members.len() == everyone).then_some(())
-            })
+            Ok(b33p_details(
+                b33p,
+                "You created the group.",
+                "every member",
+                |details| (details.members.len() == everyone).then_some(()),
+            )?)
         },
     );
 
@@ -111,20 +124,26 @@ pub(super) fn large_group(
                 text: title.to_owned(),
             })?;
             android_shows(android, greeting)?;
-            each(&crowd, |member| member.sync_printing(greeting)).map(drop)
+            each(&crowd, |member| member.sync_printing(greeting))?;
+            Ok(())
         },
     );
     // The members as Android names them under the group's name: three, "and N others";
     // Desktop's header doesn't say them.
     checks.record(
         &format!("Android names the group's {everyone} members"),
-        || android_containing(android, &format!("and {} others", everyone - 3)),
+        || {
+            Ok(android_containing(
+                android,
+                &format!("and {} others", everyone - 3),
+            )?)
+        },
     );
 
     // presage-cli knows the group from b33p's greeting; each member writes at once.
     let master_key = group
         .strip_prefix("g:")
-        .ok_or_else(|| Error::Failed(format!("{group} isn't a group's id")))?
+        .ok_or_else(|| LargeGroupError::NotAGroup { id: group.clone() })?
         .to_owned();
     let answer = |member: &Presage<'_>| format!("testbox large group: {} answers", member.name());
     checks.record(
@@ -141,7 +160,7 @@ pub(super) fn large_group(
                 desktop_shows(desktop, &text)?;
             }
             // Whichever came last is on Android's screen.
-            android_containing(android, "testbox large group: ")
+            Ok(android_containing(android, "testbox large group: ")?)
         },
     );
     Ok(())

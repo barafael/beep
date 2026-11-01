@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use landlock::{
     ABI, Access, AccessFs, AccessNet, RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr,
-    Scope, path_beneath_rules,
+    RulesetError, Scope, path_beneath_rules,
 };
-use testbox_tools::{Context, Describe, Error, Result};
+use testbox_tools::SocketError;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -28,6 +28,147 @@ pub use vnc::{VncClient, X11Event};
 /// `recv_event` holds the lock `input` needs, and it marks no update's end), at 60 Hz.
 pub const FRAME: Duration = Duration::from_millis(16);
 
+/// The arguments [`arguments`] refuses.
+#[derive(Debug, thiserror::Error)]
+pub enum ArgumentsError {
+    /// An argument that is neither `--interactive` nor a display.
+    #[error(
+        "{argument:?} is no <name>=<socket> (usage: {tool} [--interactive] <name>=<socket>...)"
+    )]
+    NotADisplay { tool: String, argument: String },
+    #[error("no display given (usage: {tool} [--interactive] <name>=<socket>...)")]
+    NoDisplay { tool: String },
+}
+
+/// Landlock, refused: the step that failed is the source's.
+#[derive(Debug, thiserror::Error)]
+#[error("restricting the process with Landlock")]
+pub struct SandboxError {
+    #[source]
+    pub source: RulesetError,
+}
+
+/// What keeps [`connect`] from a display.
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectError {
+    #[error("checking that the display's socket is the box's")]
+    Socket {
+        #[source]
+        source: SocketError,
+    },
+    #[error("connecting to {}", socket.display())]
+    Connect {
+        socket: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("starting VNC on {}", socket.display())]
+    Handshake {
+        socket: PathBuf,
+        #[source]
+        source: HandshakeError,
+    },
+}
+
+/// The steps of a VNC connection's start that fail.
+#[derive(Debug, thiserror::Error)]
+pub enum HandshakeError {
+    #[error("setting up the VNC client")]
+    Configure {
+        #[source]
+        source: VncError,
+    },
+    #[error("negotiating with the VNC server")]
+    Negotiate {
+        #[source]
+        source: VncError,
+    },
+    #[error("finishing the VNC connection")]
+    Finish {
+        #[source]
+        source: VncError,
+    },
+    #[error("asking for the whole screen")]
+    WholeScreen {
+        #[source]
+        source: VncError,
+    },
+}
+
+/// Why [`follow`] stopped following a display.
+#[derive(Debug, thiserror::Error)]
+pub enum FollowError {
+    /// Its input's sender is gone: the viewer is done with the display.
+    #[error("its viewer closed")]
+    ViewerClosed,
+    #[error("sending input to the display")]
+    Input {
+        #[source]
+        source: VncError,
+    },
+    #[error("reading the display")]
+    Poll {
+        #[source]
+        source: VncError,
+    },
+    /// A thread panicked holding the frame's lock.
+    #[error("the frame's lock, poisoned")]
+    Poisoned,
+    #[error("taking the display's changes into the frame")]
+    Frame {
+        #[source]
+        source: FrameError,
+    },
+    #[error("asking for an update")]
+    Refresh {
+        #[source]
+        source: VncError,
+    },
+}
+
+/// Why [`snapshot`] took no frame.
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotError {
+    #[error("reading the display")]
+    Poll {
+        #[source]
+        source: VncError,
+    },
+    #[error("taking the display into the frame")]
+    Frame {
+        #[source]
+        source: FrameError,
+    },
+    #[error("not all of the display came within {patience:?}")]
+    Timeout { patience: Duration },
+}
+
+/// What a display sent that its frame can't take, or a part asked of the frame that isn't in it.
+#[derive(Debug, thiserror::Error)]
+pub enum FrameError {
+    /// vnc-rs's connection task failed; its event carries only the message.
+    #[error("the VNC connection failed: {message}")]
+    Connection { message: String },
+    /// Pixels from (`x`, `y`), `width` of them, past the frame's edge or its end.
+    #[error("{width} pixels at ({x}, {y}) past the {frame_width}x{frame_height} frame")]
+    OutOfFrame {
+        x: u16,
+        y: usize,
+        width: u16,
+        frame_width: u16,
+        frame_height: u16,
+    },
+    #[error(
+        "a {}x{} rectangle at ({}, {}) with {length} bytes, short of {expected}",
+        region.width, region.height, region.x, region.y
+    )]
+    ShortRectangle {
+        region: Region,
+        expected: usize,
+        length: usize,
+    },
+}
+
 /// A display to show: its name and its socket.
 pub struct Target {
     pub name: String,
@@ -36,15 +177,19 @@ pub struct Target {
 
 /// The arguments both viewers take, `[--interactive] <name>=<socket>...`: whether input is on,
 /// and the displays.
-pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>)> {
-    let usage = || Error::Failed(format!("usage: {tool} [--interactive] <name>=<socket>..."));
+pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>), ArgumentsError> {
     let mut interactive = false;
     let mut targets = Vec::new();
     for argument in std::env::args().skip(1) {
         if argument == "--interactive" {
             interactive = true;
         } else {
-            let (name, socket) = argument.split_once('=').ok_or_else(usage)?;
+            let Some((name, socket)) = argument.split_once('=') else {
+                return Err(ArgumentsError::NotADisplay {
+                    tool: tool.to_owned(),
+                    argument,
+                });
+            };
             targets.push(Target {
                 name: name.to_owned(),
                 socket: PathBuf::from(socket),
@@ -52,7 +197,9 @@ pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>)> {
         }
     }
     if targets.is_empty() {
-        return Err(usage());
+        return Err(ArgumentsError::NoDisplay {
+            tool: tool.to_owned(),
+        });
     }
     Ok((interactive, targets))
 }
@@ -61,20 +208,22 @@ pub fn arguments(tool: &str) -> Result<(bool, Vec<Target>)> {
 /// `readable`; no new Unix socket (ABI 9's `ResolveUnix`); no TCP bind or connect beyond what is
 /// already open; no abstract socket or signal beyond itself. Best effort on an older kernel: the
 /// status says what holds.
-pub fn sandbox(readable: impl IntoIterator<Item = PathBuf>) -> Result<RestrictionStatus> {
+pub fn sandbox(
+    readable: impl IntoIterator<Item = PathBuf>,
+) -> Result<RestrictionStatus, SandboxError> {
     restrict(readable, [])
 }
 
 /// [`sandbox`], and files beneath `writable` also written and made: for testbox/shot's
 /// screenshots.
-pub fn sandbox_writing(writable: PathBuf) -> Result<RestrictionStatus> {
+pub fn sandbox_writing(writable: PathBuf) -> Result<RestrictionStatus, SandboxError> {
     restrict([], [writable])
 }
 
 fn restrict(
     readable: impl IntoIterator<Item = PathBuf>,
     writable: impl IntoIterator<Item = PathBuf>,
-) -> Result<RestrictionStatus> {
+) -> Result<RestrictionStatus, SandboxError> {
     let abi = ABI::V9;
     Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
@@ -88,20 +237,28 @@ fn restrict(
             ruleset.add_rules(path_beneath_rules(writable, AccessFs::from_all(abi)))
         })
         .and_then(|ruleset| ruleset.restrict_self())
-        .describe("Landlock")
+        .map_err(|source| SandboxError { source })
 }
 
 /// Connects to a display's socket, which must be the box's (`testbox_tools::box_socket`).
-pub async fn connect(socket: &Path) -> Result<VncClient> {
-    testbox_tools::box_socket(socket)?;
+pub async fn connect(socket: &Path) -> Result<VncClient, ConnectError> {
+    testbox_tools::box_socket(socket).map_err(|source| ConnectError::Socket { source })?;
     let stream = UnixStream::connect(socket)
         .await
-        .context(socket.display().to_string())?;
-    start(stream).await
+        .map_err(|source| ConnectError::Connect {
+            socket: socket.to_owned(),
+            source,
+        })?;
+    start(stream)
+        .await
+        .map_err(|source| ConnectError::Handshake {
+            socket: socket.to_owned(),
+            source,
+        })
 }
 
 /// [`connect`]'s handshake, on any stream.
-async fn start<S>(stream: S) -> Result<VncClient>
+async fn start<S>(stream: S) -> Result<VncClient, HandshakeError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + 'static,
 {
@@ -115,18 +272,18 @@ where
         .allow_shared(true)
         .set_pixel_format(PixelFormat::rgba())
         .build()
-        .describe("a VNC connection")?
+        .map_err(|source| HandshakeError::Configure { source })?
         .try_start()
         .await
-        .describe("a VNC handshake")?
+        .map_err(|source| HandshakeError::Negotiate { source })?
         .finish()
-        .describe("a VNC connection")?;
+        .map_err(|source| HandshakeError::Finish { source })?;
     // The whole screen once: incremental updates bring only what changed since the last update,
     // so what never changes would never show.
     client
         .input(X11Event::FullRefresh)
         .await
-        .describe("asking for the whole screen")?;
+        .map_err(|source| HandshakeError::WholeScreen { source })?;
     Ok(client)
 }
 
@@ -139,7 +296,7 @@ pub async fn follow(
     frame: &Mutex<Frame>,
     mut input: mpsc::UnboundedReceiver<X11Event>,
     mut changed: impl FnMut(&mut Frame),
-) -> Error {
+) -> FollowError {
     let mut tick = tokio::time::interval(FRAME);
     // A tick that came late asks once, not once for each one missed.
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -152,10 +309,10 @@ pub async fn follow(
             }
             event = input.recv() => {
                 let Some(event) = event else {
-                    break Error::Failed("its viewer closed".to_owned());
+                    break FollowError::ViewerClosed;
                 };
-                if let Err(error) = client.input(event).await {
-                    break Error::Failed(format!("input: {error}"));
+                if let Err(source) = client.input(event).await {
+                    break FollowError::Input { source };
                 }
             }
         }
@@ -172,7 +329,7 @@ const SETTLED: Duration = Duration::from_millis(200);
 
 /// The whole display once, from a client just connected ([`connect`]), for a screenshot; fails
 /// if it isn't whole within `patience`. Closes the connection.
-pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
+pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame, SnapshotError> {
     let mut frame = Frame::default();
     let taken = tokio::time::timeout(patience, async {
         let mut quiet = Duration::ZERO;
@@ -182,7 +339,11 @@ pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
         let mut drawn: u64 = 0;
         loop {
             let mut came = false;
-            while let Some(event) = client.poll_event().await.describe("the display")? {
+            while let Some(event) = client
+                .poll_event()
+                .await
+                .map_err(|source| SnapshotError::Poll { source })?
+            {
                 drawn = match &event {
                     VncEvent::SetResolution(_) => 0,
                     VncEvent::RawImage(rect, _) | VncEvent::Copy(rect, _) => {
@@ -190,7 +351,9 @@ pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
                     }
                     _ => drawn,
                 };
-                frame.apply(event)?;
+                frame
+                    .apply(event)
+                    .map_err(|source| SnapshotError::Frame { source })?;
                 came = true;
             }
             quiet = if came { Duration::ZERO } else { quiet + FRAME };
@@ -208,9 +371,7 @@ pub async fn snapshot(client: VncClient, patience: Duration) -> Result<Frame> {
     match taken {
         Ok(Ok(())) => Ok(frame),
         Ok(Err(error)) => Err(error),
-        Err(_) => Err(Error::Failed(format!(
-            "not all of the display came within {patience:?}"
-        ))),
+        Err(_elapsed) => Err(SnapshotError::Timeout { patience }),
     }
 }
 
@@ -220,25 +381,30 @@ async fn take_changes(
     client: &VncClient,
     frame: &Mutex<Frame>,
     changed: &mut impl FnMut(&mut Frame),
-) -> Result<()> {
+) -> Result<(), FollowError> {
     // Taken before the frame is locked: polling awaits.
     let mut events = Vec::new();
-    while let Some(event) = client.poll_event().await.describe("the display")? {
+    while let Some(event) = client
+        .poll_event()
+        .await
+        .map_err(|source| FollowError::Poll { source })?
+    {
         events.push(event);
     }
     {
-        let mut frame = frame
-            .lock()
-            .map_err(|_| Error::Failed("the frame's lock".to_owned()))?;
+        // The guard in a poisoned lock's error borrows the frame: none of it can go on.
+        let mut frame = frame.lock().map_err(|_poisoned| FollowError::Poisoned)?;
         for event in events {
-            frame.apply(event)?;
+            frame
+                .apply(event)
+                .map_err(|source| FollowError::Frame { source })?;
         }
         changed(&mut frame);
     }
     client
         .input(X11Event::Refresh)
         .await
-        .describe("asking for an update")
+        .map_err(|source| FollowError::Refresh { source })
 }
 
 /// The pointer at (x, y) of the frame's pixels with `buttons` down (RFC 6143 §7.5.5's mask);
@@ -408,7 +574,7 @@ impl Frame {
     }
 
     /// Appends `region`'s pixels, row by row, to `out`.
-    pub fn write_region(&self, region: Region, out: &mut Vec<u8>) -> Result<()> {
+    pub fn write_region(&self, region: Region, out: &mut Vec<u8>) -> Result<(), FrameError> {
         out.reserve(usize::from(region.width) * usize::from(region.height) * 4);
         for line in 0..region.height {
             let row = self.row(region.x, below(region.y, line), region.width)?;
@@ -417,7 +583,7 @@ impl Frame {
         Ok(())
     }
 
-    fn apply(&mut self, event: VncEvent) -> Result<()> {
+    fn apply(&mut self, event: VncEvent) -> Result<(), FrameError> {
         let region = match event {
             VncEvent::SetResolution(screen) => {
                 self.width = screen.width;
@@ -435,7 +601,7 @@ impl Frame {
                 self.copy(destination, source)?;
                 destination.into()
             }
-            VncEvent::Error(error) => return Err(Error::Failed(error)),
+            VncEvent::Error(message) => return Err(FrameError::Connection { message }),
             // The viewer's own pointer stands in for the display's.
             VncEvent::SetCursor(..) => return Ok(()),
             // Not asked for (`connect`'s encodings), or nothing to show.
@@ -453,26 +619,33 @@ impl Frame {
 
     /// Row `y`'s pixels from `x` on for `width`, in `rgba`; an error past the frame. `y` is a
     /// `usize`: the coordinates are the server's, and their sums may not fit a `u16`.
-    fn row(&self, x: u16, y: usize, width: u16) -> Result<std::ops::Range<usize>> {
+    fn row(&self, x: u16, y: usize, width: u16) -> Result<std::ops::Range<usize>, FrameError> {
         let start = (y * usize::from(self.width) + usize::from(x)) * 4;
         let end = start + usize::from(width) * 4;
         if usize::from(x) + usize::from(width) > usize::from(self.width) || end > self.rgba.len() {
-            return Err(Error::Failed(format!(
-                "a rectangle at ({x}, {y}) past the {}x{} frame",
-                self.width, self.height
-            )));
+            return Err(FrameError::OutOfFrame {
+                x,
+                y,
+                width,
+                frame_width: self.width,
+                frame_height: self.height,
+            });
         }
         Ok(start..end)
     }
 
-    fn draw(&mut self, rect: Rect, data: &[u8]) -> Result<()> {
+    fn draw(&mut self, rect: Rect, data: &[u8]) -> Result<(), FrameError> {
         let stride = usize::from(rect.width) * 4;
         for line in 0..rect.height {
             let pixels = self.row(rect.x, below(rect.y, line), rect.width)?;
             let offset = usize::from(line) * stride;
-            let source = data
-                .get(offset..offset + stride)
-                .ok_or("a rectangle shorter than its size")?;
+            let source =
+                data.get(offset..offset + stride)
+                    .ok_or_else(|| FrameError::ShortRectangle {
+                        region: rect.into(),
+                        expected: stride * usize::from(rect.height),
+                        length: data.len(),
+                    })?;
             let target = &mut self.rgba[pixels];
             target.copy_from_slice(source);
             // The server's alpha byte is padding (RFC 6143 §7.4: depth 24 in 32 bits).
@@ -485,7 +658,7 @@ impl Frame {
 
     /// Within the frame, row by row; from the bottom when the rows move down, so no row is
     /// overwritten before it is copied. Both rectangles are checked before anything moves.
-    fn copy(&mut self, destination: Rect, source: Rect) -> Result<()> {
+    fn copy(&mut self, destination: Rect, source: Rect) -> Result<(), FrameError> {
         if source.height == 0 {
             return Ok(());
         }
@@ -498,7 +671,7 @@ impl Frame {
         ] {
             self.row(rect.x, below(rect.y, line), source.width)?;
         }
-        let mut move_row = |line: u16| -> Result<()> {
+        let mut move_row = |line: u16| -> Result<(), FrameError> {
             let from = self.row(source.x, below(source.y, line), source.width)?;
             let to = self.row(destination.x, below(destination.y, line), source.width)?;
             self.rgba.copy_within(from, to.start);

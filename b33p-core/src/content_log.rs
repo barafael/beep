@@ -44,6 +44,6 @@ fn note(line: serde_json::Value) {
         .open(path)
         .and_then(|mut file| writeln!(file, "{line}"));
     if let Err(error) = written {
-        warn!(%error, "failed to log a content");
+        warn!(error = %crate::scrub::chain(&error), "failed to log a content");
     }
 }

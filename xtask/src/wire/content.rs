@@ -4,16 +4,40 @@
 //! sends shows where another b33p takes it in (the mesh box).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 
 use super::Summary;
 use super::proto::{self, Field, Value};
-use crate::error::{Context, Result, WithContext};
 
 /// The record's directory of b33p's content logs.
 pub(crate) const DIRECTORY: &str = "content";
+
+/// What fails reading b33p's content logs.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ContentError {
+    #[error("listing the content logs in {}", path.display())]
+    List {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading the content log {}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A line that isn't a content as b33p logs it.
+    #[error("{}, line {line}: not a logged content", path.display())]
+    Line {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: serde_json::Error,
+    },
+}
 
 /// One content as b33p logged it.
 #[derive(serde::Deserialize)]
@@ -25,7 +49,7 @@ struct Logged {
 
 /// The section of compare.md on the contents, if the record has any: for each kind of content,
 /// which fields each client sent.
-pub(crate) fn report(record: &Path, summaries: &[Summary]) -> Result<Option<String>> {
+pub(crate) fn report(record: &Path, summaries: &[Summary]) -> Result<Option<String>, ContentError> {
     let directory = record.join(DIRECTORY);
     if !directory.is_dir() {
         return Ok(None);
@@ -35,11 +59,23 @@ pub(crate) fn report(record: &Path, summaries: &[Summary]) -> Result<Option<Stri
     let mut paths: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     let mut counts: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut clients = BTreeSet::new();
-    for entry in std::fs::read_dir(&directory).context(directory.display().to_string())? {
-        let path = entry.context(directory.display().to_string())?.path();
-        for line in testbox_tools::read(&path)?.lines() {
+    let list = |source| ContentError::List {
+        path: directory.clone(),
+        source,
+    };
+    for entry in std::fs::read_dir(&directory).map_err(list)? {
+        let path = entry.map_err(list)?.path();
+        let text = std::fs::read_to_string(&path).map_err(|source| ContentError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        for (n, line) in text.lines().enumerate() {
             let logged: Logged =
-                serde_json::from_str(line).with_context(|| path.display().to_string())?;
+                serde_json::from_str(line).map_err(|source| ContentError::Line {
+                    path: path.clone(),
+                    line: n + 1,
+                    source,
+                })?;
             let client = senders
                 .get(&(logged.sender.clone(), logged.device))
                 .cloned()

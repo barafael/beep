@@ -3,9 +3,8 @@ use b33p_harness::Action;
 use super::b33p::{b33p_chat, b33p_shows, edit, outgoing_index, read, select, type_and_send};
 use super::clients::{Android, desktop_shows, desktop_status};
 use super::setup::AndroidBox;
-use super::{Checks, PATIENCE, PATIENCE_MS};
-use crate::error::Result;
-use crate::harness::Harness;
+use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
+use crate::harness::{Harness, HarnessError};
 use testbox_tools::drivers;
 
 /// Android's suggested folder of every 1:1 chat (strings.xml `ChatFoldersFragment__one_on_one_chats`).
@@ -13,7 +12,7 @@ const FOLDER: &str = "1:1 chats";
 
 /// Chat settings through the storage service, between b33p, Android (the primary: it writes
 /// there, presage-cli doesn't) and Desktop, linked to the peer.
-pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<()> {
+pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<(), Failure> {
     use drivers::ChatMenuItem::{Archive, Mute, Pin, Read, Unmute, Unpin, Unread};
 
     let AndroidBox {
@@ -35,7 +34,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     checks.require("text from b33p reaches Desktop", || {
         select(b33p, conversation)?;
         type_and_send(b33p, row)?;
-        desktop_shows(desktop, row)
+        Ok(desktop_shows(desktop, row)?)
     })?;
     // TESTPLAN.md §1.1 item 2.
     checks.record("Desktop's read receipt shows on b33p as read", || {
@@ -45,7 +44,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         desktop.call(drivers::Desktop::OpenConversation {
             aci: android_aci.clone(),
         })?;
-        read(b33p, row)
+        Ok(read(b33p, row)?)
     });
     // From here on the chat isn't open in b33p: an open chat is read, which would undo a mark.
     b33p.act(Action::Back)?;
@@ -53,11 +52,11 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     // TESTPLAN.md §1.8, §1.10.
     checks.record("a chat pinned on Android shows pinned in b33p", || {
         chat_menu(android, row, Pin)?;
-        b33p_chat(b33p, conversation, "pinned", |chat| chat.pinned)
+        Ok(b33p_chat(b33p, conversation, "pinned", |chat| chat.pinned)?)
     });
     checks.record("a chat muted on Android shows muted in b33p", || {
         chat_menu(android, row, Mute)?;
-        b33p_chat(b33p, conversation, "muted", |chat| chat.muted)
+        Ok(b33p_chat(b33p, conversation, "muted", |chat| chat.muted)?)
     });
     // Archiving unpins, on Android as in b33p. b33p lists archived chats with its archive open
     // (b33p-core/src/state.rs `listed`).
@@ -68,7 +67,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             chat.archived && !chat.pinned
         });
         b33p.act(Action::ShowArchived { show: false })?;
-        archived
+        Ok(archived?)
     });
 
     // TESTPLAN.md §2.12. Not Android's "Unread" folder: its chip would carry the label of the
@@ -77,7 +76,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         android.call(drivers::Android::AddSuggestedFolder {
             name: FOLDER.to_owned(),
         })?;
-        b33p.wait_for(
+        Ok(b33p.wait_for(
             &format!("the folder {FOLDER:?} in b33p"),
             PATIENCE,
             |snapshot| {
@@ -87,7 +86,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
                     .any(|folder| folder.name == FOLDER && folder.all_individual)
                     .then_some(())
             },
-        )
+        )?)
     });
 
     // TESTPLAN.md §2.13: b33p writes only when told to sync to the phone.
@@ -103,7 +102,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             .map(drop)
         })?;
         // Unarchived, pinned, and still muted from Android.
-        menu_offers(android, row, &[Unpin, Unmute])
+        Ok(menu_offers(android, row, &[Unpin, Unmute])?)
     });
 
     // Not a 409: b33p reads right before each write (b33p-core/src/signal.rs `follow_storage`),
@@ -131,9 +130,9 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             )?;
             android_takes(android, b33p, |_b33p| Ok(()))?;
             menu_offers(android, row, &[Read, Mute, Unpin])?;
-            b33p_chat(b33p, conversation, "as on Android", |chat| {
+            Ok(b33p_chat(b33p, conversation, "as on Android", |chat| {
                 chat.marked_unread && !chat.muted && chat.pinned
-            })
+            })?)
         },
     );
 
@@ -155,7 +154,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             desktop.call(drivers::Desktop::OpenConversation {
                 aci: android_aci.clone(),
             })?;
-            read(b33p, edited)
+            Ok(read(b33p, edited)?)
         },
     );
     checks.record(
@@ -180,7 +179,7 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
             })?;
             desktop_status(desktop, edited, "delivered")?;
             b33p.act(Action::SetWindowFocused { focused: true })?;
-            desktop_status(desktop, edited, "read")
+            Ok(desktop_status(desktop, edited, "read")?)
         },
     );
 
@@ -188,7 +187,11 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
 }
 
 /// Picks `item` from the menu of Android's chat list row showing `row`.
-fn chat_menu(android: &mut Android, row: &str, item: drivers::ChatMenuItem) -> Result<()> {
+fn chat_menu(
+    android: &mut Android,
+    row: &str,
+    item: drivers::ChatMenuItem,
+) -> Result<(), HarnessError> {
     android.call(drivers::Android::ChatMenu {
         text: row.to_owned(),
         item,
@@ -196,7 +199,11 @@ fn chat_menu(android: &mut Android, row: &str, item: drivers::ChatMenuItem) -> R
 }
 
 /// Fails unless the menu of Android's row showing `row` offers each of `items`.
-fn menu_offers(android: &mut Android, row: &str, items: &[drivers::ChatMenuItem]) -> Result<()> {
+fn menu_offers(
+    android: &mut Android,
+    row: &str,
+    items: &[drivers::ChatMenuItem],
+) -> Result<(), HarnessError> {
     android.call(drivers::Android::ChatMenuOffers {
         text: row.to_owned(),
         items: items.to_vec(),
@@ -209,8 +216,8 @@ fn menu_offers(android: &mut Android, row: &str, items: &[drivers::ChatMenuItem]
 fn android_takes(
     android: &mut Android,
     b33p: &mut Harness,
-    act: impl FnOnce(&mut Harness) -> Result<()>,
-) -> Result<()> {
+    act: impl FnOnce(&mut Harness) -> Result<(), HarnessError>,
+) -> Result<(), HarnessError> {
     let mark: u64 = android.ask(drivers::Android::LogMark)?;
     sync_to_phone(b33p, true)?;
     act(b33p)?;
@@ -222,7 +229,7 @@ fn android_takes(
 
 /// Turns b33p's "sync to phone" on or off, as its settings switch does: the next write to the
 /// storage service, or none.
-fn sync_to_phone(b33p: &mut Harness, on: bool) -> Result<()> {
+fn sync_to_phone(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
         style: None,

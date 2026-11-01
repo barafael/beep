@@ -29,7 +29,6 @@ use tracing::{debug, info, warn};
 use crate::{
     ChatMessage, ConversationId, Delivery, Event, MessageRef, now_millis,
     outbox::{Outbox, Sends as _},
-    scrub::scrubbed,
 };
 
 use super::{
@@ -147,11 +146,13 @@ async fn receive(
                 }
             }
             Err(error) if removed_from_account(&error) => {
-                warn!(error = %scrubbed(&error), "Signal no longer accepts this device");
+                warn!(error = %crate::scrub::chain(&error), "Signal no longer accepts this device");
                 removed.notify_one();
                 return;
             }
-            Err(error) => warn!(error = %scrubbed(&error), "failed to connect to Signal"),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to connect to Signal")
+            }
         }
         if !ctx.events.sent(Event::Reconnecting) {
             return;
@@ -208,7 +209,7 @@ async fn watch_wakeups(woke: Rc<tokio::sync::Notify>) {
         zbus::Result::Ok(())
     };
     if let Err(error) = watch.await {
-        debug!(error = %scrubbed(&error), "can't tell when the computer wakes from sleep");
+        debug!(error = %crate::scrub::chain(&error), "can't tell when the computer wakes from sleep");
     }
 }
 
@@ -283,7 +284,7 @@ async fn handle_received(
                 }
                 return true;
             }
-            warn!(sender = %sender.service_id_string(), error = %scrubbed(&error), "failed to decrypt a message");
+            warn!(sender = %sender.service_id_string(), error = %crate::scrub::chain(&error), "failed to decrypt a message");
             // Our own devices' messages: nothing to reset (a session with ourselves), and
             // nothing to tell in a chat with ourselves.
             if sender == own_id(manager) {
@@ -315,7 +316,9 @@ async fn handle_received(
                 repairs.borrow_mut().resets.insert(sender, Instant::now());
                 match ctx.outbox.session_reset(sender, now_millis()).await {
                     Ok(()) => info!(sender = %sender.service_id_string(), "reset the session"),
-                    Err(error) => warn!(error = %scrubbed(&error), "failed to reset the session"),
+                    Err(error) => {
+                        warn!(error = %crate::scrub::chain(&error), "failed to reset the session")
+                    }
                 }
             }
             // The envelope doesn't say whether it was a group message, so it goes in the 1:1 chat.
@@ -422,7 +425,7 @@ async fn on_retry_receipt(
         .tables
         .conversations_of(&[timestamp])
         .await
-        .map_err(|error| warn!(error = %scrubbed(&error), "failed to look up a message"))
+        .map_err(|error| warn!(error = %crate::scrub::chain(&error), "failed to look up a message"))
         .unwrap_or_default();
     // No ratchet key: they lack our sender key for a group message. Renewed, it goes to every
     // member's devices with the next message to the group, as Signal's apps send it again.
@@ -431,7 +434,7 @@ async fn on_retry_receipt(
             if let Some(Thread::Group(key)) = super::conversations::thread_of(conversation)
                 && let Err(error) = manager.renew_sender_key(&key).await
             {
-                warn!(error = %scrubbed(&error), "failed to renew a group's sender key");
+                warn!(error = %crate::scrub::chain(&error), "failed to renew a group's sender key");
             }
         }
         return;
@@ -465,7 +468,7 @@ async fn on_retry_receipt(
             }
             repairs.resent.insert((sender, timestamp));
         }
-        Err(error) => warn!(error = %scrubbed(&error), "failed to send a message again"),
+        Err(error) => warn!(error = %crate::scrub::chain(&error), "failed to send a message again"),
     }
 }
 
@@ -491,7 +494,7 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
     }
     match sessions.store_session(&address, &session).await {
         Ok(()) => info!(%address, "dropped the session they couldn't decrypt"),
-        Err(error) => warn!(error = %scrubbed(&error), "failed to drop a session"),
+        Err(error) => warn!(error = %crate::scrub::chain(&error), "failed to drop a session"),
     }
 }
 
@@ -765,7 +768,9 @@ async fn handle_content(
                 debug!("ignored a delete of a message that isn't there");
                 return true;
             }
-            Err(error) => warn!(error = %scrubbed(&error), "failed to erase a deleted message"),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to erase a deleted message")
+            }
         }
         return events.sent(Event::Deleted {
             conversation: id,
@@ -786,7 +791,7 @@ async fn handle_content(
             .set_delivery(&id, message.timestamp, Delivery::Sent)
             .await
         {
-            warn!(error = %scrubbed(&error), "failed to remember a sent message");
+            warn!(error = %crate::scrub::chain(&error), "failed to remember a sent message");
         }
         if let ContentBody::SynchronizeMessage(SyncMessage {
             content:
@@ -808,11 +813,11 @@ async fn handle_content(
         if let Some(edited_at) = message.edited_at
             && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
         {
-            warn!(error = %scrubbed(&error), "failed to note when a message was edited");
+            warn!(error = %crate::scrub::chain(&error), "failed to note when a message was edited");
         }
         // Edited from another device of ours: sent again, until a receipt names the edit.
         if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
-            warn!(error = %scrubbed(&error), "failed to note an edited message as sent");
+            warn!(error = %crate::scrub::chain(&error), "failed to note an edited message as sent");
         }
         return events.sent(Event::Edited {
             conversation: id,
@@ -830,7 +835,9 @@ async fn handle_content(
                 });
             }
             Ok(None) => {}
-            Err(error) => warn!(error = %scrubbed(&error), "failed to unarchive a conversation"),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to unarchive a conversation")
+            }
         }
     }
     events.sent(Event::Message(message))
@@ -847,7 +854,7 @@ async fn forget_stored(manager: &Mgr, content: &Content) {
         && stored.metadata.sender == content.metadata.sender
         && let Err(error) = store.delete_message(&thread, at).await
     {
-        warn!(error = %scrubbed(&error), "failed to forget a message from someone blocked");
+        warn!(error = %crate::scrub::chain(&error), "failed to forget a message from someone blocked");
     }
 }
 
@@ -907,7 +914,7 @@ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::
     let changed = match ctx.tables.set_blocked(&blocking).await {
         Ok(changed) => changed,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to remember whom the phone blocks");
+            warn!(error = %crate::scrub::chain(&error), "failed to remember whom the phone blocks");
             return;
         }
     };
@@ -961,7 +968,7 @@ async fn on_answered_elsewhere(
                 ctx.events.send(Event::Cleared(id));
             }
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to delete a chat deleted elsewhere")
+                warn!(error = %crate::scrub::chain(&error), "failed to delete a chat deleted elsewhere")
             }
         }
     }
@@ -980,7 +987,7 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     let mut found = match ctx.tables.conversations_of(&receipt.timestamp).await {
         Ok(found) => found,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to look up receipted messages");
+            warn!(error = %crate::scrub::chain(&error), "failed to look up receipted messages");
             return true;
         }
     };
@@ -992,7 +999,7 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     }
     found = theirs;
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
-        warn!(error = %scrubbed(&error), "failed to remember a receipt");
+        warn!(error = %crate::scrub::chain(&error), "failed to remember a receipt");
     }
     let mut by_conversation: HashMap<ConversationId, Vec<u64>> = HashMap::new();
     for (conversation, timestamp) in found {
@@ -1108,7 +1115,9 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                     settings,
                 });
             }
-            Err(error) => warn!(error = %scrubbed(&error), "failed to remember what was read"),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to remember what was read")
+            }
         }
         let timers = stored_timers(manager, &conversation, &messages).await;
         start_timers(ctx, &conversation, &timers, now).await;

@@ -1,8 +1,7 @@
 //! Safety numbers: identity keys, verifying them here and elsewhere, how far each is trusted.
 
-use super::errors::{db, send_failed, store_failed};
-use crate::Error;
-use crate::outbox::Sends as _;
+use super::errors::send_kind;
+use crate::outbox::{SendFailure, Sends as _};
 use presage::{
     libsignal_service::{
         content::{Content, ContentBody},
@@ -13,7 +12,7 @@ use presage::{
 };
 use tracing::warn;
 
-use crate::{ConversationId, Event, local::LocalStore, now_millis, scrub::scrubbed};
+use crate::{ConversationId, Event, local::LocalStore, now_millis};
 
 use super::{
     Ctx, Mgr,
@@ -112,7 +111,7 @@ async fn key_shown(
         Ok(Some(offered)) => Some(offered),
         Ok(None) => identity_of(manager, who).await,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read the key the store refused for sending");
+            warn!(error = %crate::scrub::chain(&error), "failed to read the key the store refused for sending");
             identity_of(manager, who).await
         }
     }
@@ -216,22 +215,22 @@ pub(super) async fn set_verified(
     ctx: &Ctx,
     conversation: &ConversationId,
     verified: bool,
-) -> Result<(), Error> {
+) -> Result<(), TrustError> {
     use presage::libsignal_service::content::NullMessage;
     use presage::proto::verified::State;
     let thread = ctx.threads.borrow().get(conversation).cloned();
     let who = match thread {
         Some(Thread::Contact(who @ ServiceId::Aci(_))) if who != own_id(manager) => who,
         _ => {
-            return Err(Error::refused(
-                "only a contact has a safety number to verify",
-            ));
+            return Err(TrustError::NotAContact {
+                conversation: conversation.clone(),
+            });
         }
     };
     let current = identity_of(manager, who).await;
     let key = key_shown(manager, who)
         .await
-        .ok_or_else(|| Error::refused("there is no safety number with them yet"))?;
+        .ok_or(TrustError::NoSafetyNumber { who })?;
     if current.as_ref() != Some(&key) {
         take_over(manager, ctx, who, &key).await?;
     }
@@ -254,16 +253,14 @@ pub(super) async fn set_verified(
         )
         .await
     {
-        warn!(error = %scrubbed(&error), "failed to send the null message that goes with a verification");
+        warn!(error = %crate::scrub::chain(&error), "failed to send the null message that goes with a verification");
     }
     let sync = verified_sync(who, &key, verified, padding);
     let own = own_id(manager);
     ctx.outbox
         .message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
-        .map_err(send_failed(
-            "done here, but your other devices couldn't be told",
-        ))?;
+        .map_err(TrustError::TellDevices)?;
     Ok(())
 }
 
@@ -276,7 +273,7 @@ async fn take_over(
     ctx: &Ctx,
     who: ServiceId,
     key: &presage::libsignal_service::protocol::IdentityKey,
-) -> Result<(), Error> {
+) -> Result<(), TrustError> {
     use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
     use presage::store::Store as _;
     let address = ProtocolAddress::new(
@@ -288,10 +285,10 @@ async fn take_over(
     store
         .save_identity(&address, key)
         .await
-        .map_err(store_failed("failed to take their new key"))?;
+        .map_err(|source| TrustError::TakeKey { who, source })?;
     // Under presage's session lock, so that no decryption or send runs into it.
     if let Err(error) = manager.clear_sessions(&who).await {
-        warn!(error = %scrubbed(&error), "failed to drop the sessions on their old key");
+        warn!(error = %crate::scrub::chain(&error), "failed to drop the sessions on their old key");
     }
     show_identity_notes(manager, ctx, &mut Names::new(), who, since).await;
     Ok(())
@@ -355,7 +352,7 @@ pub(super) async fn remember_verification(
     key: &presage::libsignal_service::protocol::IdentityKey,
     state: presage::proto::verified::State,
     verifier: Verifier,
-) -> Result<(), Error> {
+) -> Result<(), TrustError> {
     use presage::libsignal_service::protocol::{DeviceId, IdentityKeyStore, ProtocolAddress};
     use presage::store::Store as _;
     let aci = who.service_id_string();
@@ -366,7 +363,7 @@ pub(super) async fn remember_verification(
         match store.save_identity(&address, key).await {
             Ok(_) => current = identity_of(manager, who).await,
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to take over a key verified on another device")
+                warn!(error = %crate::scrub::chain(&error), "failed to take over a key verified on another device")
             }
         }
     }
@@ -374,7 +371,11 @@ pub(super) async fn remember_verification(
         identity_key: key.serialize().to_vec(),
         state,
     };
-    let before = ctx.tables.verification(&aci).await.map_err(db)?;
+    let before = ctx
+        .tables
+        .verification(&aci)
+        .await
+        .map_err(|source| TrustError::ReadVerification { who, source })?;
     if before.as_ref() == Some(&verification) {
         return Ok(());
     }
@@ -386,7 +387,7 @@ pub(super) async fn remember_verification(
     ctx.tables
         .set_verification(&aci, &verification)
         .await
-        .map_err(db)?;
+        .map_err(|source| TrustError::KeepVerification { who, source })?;
     pin_verified(manager, who, &verification).await;
     publish_trust(ctx, who, trust(Some(&verification), current.as_ref()));
     if let Some(state) = note {
@@ -397,7 +398,7 @@ pub(super) async fn remember_verification(
             Ok(()) => show_identity_notes(manager, ctx, &mut Names::new(), who, since).await,
             // The verification itself is kept; only its note is missing.
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to save the note of a verification")
+                warn!(error = %crate::scrub::chain(&error), "failed to save the note of a verification")
             }
         }
     }
@@ -446,7 +447,7 @@ pub(super) async fn pin_verified(
         State::Unverified => return,
     };
     if let Err(error) = pinned {
-        warn!(error = %scrubbed(&error), "failed to pin or unpin a verified safety number");
+        warn!(error = %crate::scrub::chain(&error), "failed to pin or unpin a verified safety number");
     }
 }
 
@@ -462,7 +463,7 @@ pub(super) async fn hold_changed(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
     if let Err(error) =
         remember_verification(manager, ctx, who, &key, State::Unverified, Verifier::Here).await
     {
-        warn!(error = %scrubbed(&error), "failed to hold a chat whose safety number changed");
+        warn!(error = %crate::scrub::chain(&error), "failed to hold a chat whose safety number changed");
     }
 }
 
@@ -481,7 +482,40 @@ pub(super) async fn on_verified_elsewhere(
     if let Err(error) =
         remember_verification(manager, ctx, who, &key, verified.state(), verifier).await
     {
-        warn!(error = %scrubbed(&error), "failed to keep a verification from another device");
+        warn!(error = %crate::scrub::chain(&error), "failed to keep a verification from another device");
+    }
+}
+
+/// What fails in verifying a safety number, or in taking over a key.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum TrustError {
+    #[error("only a contact has a safety number to verify")]
+    NotAContact { conversation: ConversationId },
+    #[error("there is no safety number with them yet")]
+    NoSafetyNumber { who: ServiceId },
+    #[error("failed to take their new key")]
+    TakeKey {
+        who: ServiceId,
+        source: presage::libsignal_service::protocol::SignalProtocolError,
+    },
+    #[error("failed to read whether their safety number was verified")]
+    ReadVerification { who: ServiceId, source: sqlx::Error },
+    #[error("failed to keep whether their safety number is verified")]
+    KeepVerification { who: ServiceId, source: sqlx::Error },
+    #[error("done here, but your other devices couldn't be told")]
+    TellDevices(#[source] SendFailure),
+}
+
+impl crate::Classified for TrustError {
+    fn kind(&self) -> crate::ErrorKind {
+        use crate::ErrorKind::{Refused, Storage};
+        match self {
+            Self::NotAContact { .. } | Self::NoSafetyNumber { .. } => Refused,
+            Self::TakeKey { .. }
+            | Self::ReadVerification { .. }
+            | Self::KeepVerification { .. } => Storage,
+            Self::TellDevices(failure) => send_kind(failure),
+        }
     }
 }
 

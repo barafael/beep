@@ -1,7 +1,23 @@
 //! HTTP/1.1: requests and their responses in order, and where a `101 Switching Protocols` hands
 //! the connection over to WebSocket.
 
+use testbox_tools::Report;
+
 use super::stream::Stream;
+
+/// What doesn't parse in a request or a response, said in [`Connection::left`].
+#[derive(Debug, thiserror::Error)]
+enum MessageError {
+    #[error("its head")]
+    Head(#[source] httparse::Error),
+    /// A `content-length` that isn't a number.
+    #[error("content-length {value:?}")]
+    ContentLength {
+        value: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+}
 
 /// Request or response headers, names lowercased, in order.
 pub(crate) type Headers = Vec<(String, String)>;
@@ -63,7 +79,7 @@ pub(crate) fn parse(sent: &Stream, received: &Stream) -> Connection {
                 return connection;
             }
             Err(error) => {
-                connection.left = Some(format!("a request: {error}"));
+                connection.left = Some(format!("a request: {}", Report(&error)));
                 return connection;
             }
         };
@@ -75,7 +91,7 @@ pub(crate) fn parse(sent: &Stream, received: &Stream) -> Connection {
                 Ok(Some(response)) => Some(response),
                 Ok(None) => None,
                 Err(error) => {
-                    connection.left = Some(format!("a response: {error}"));
+                    connection.left = Some(format!("a response: {}", Report(&error)));
                     None
                 }
             }
@@ -137,10 +153,10 @@ struct ParsedResponse {
 }
 
 /// A whole request at the start of `bytes`, `None` if it isn't all there.
-fn request(bytes: &[u8]) -> Result<Option<Request>, String> {
+fn request(bytes: &[u8]) -> Result<Option<Request>, MessageError> {
     let mut slots = [httparse::EMPTY_HEADER; 96];
     let mut parsed = httparse::Request::new(&mut slots);
-    let head = match parsed.parse(bytes).map_err(|error| error.to_string())? {
+    let head = match parsed.parse(bytes).map_err(MessageError::Head)? {
         httparse::Status::Complete(head) => head,
         httparse::Status::Partial => return Ok(None),
     };
@@ -160,10 +176,10 @@ fn request(bytes: &[u8]) -> Result<Option<Request>, String> {
 }
 
 /// A whole response at the start of `bytes`, `None` if it isn't all there.
-fn response(bytes: &[u8], head_only: bool) -> Result<Option<ParsedResponse>, String> {
+fn response(bytes: &[u8], head_only: bool) -> Result<Option<ParsedResponse>, MessageError> {
     let mut slots = [httparse::EMPTY_HEADER; 96];
     let mut parsed = httparse::Response::new(&mut slots);
-    let head = match parsed.parse(bytes).map_err(|error| error.to_string())? {
+    let head = match parsed.parse(bytes).map_err(MessageError::Head)? {
         httparse::Status::Complete(head) => head,
         httparse::Status::Partial => return Ok(None),
     };
@@ -207,17 +223,21 @@ fn body(
     head: usize,
     headers: &Headers,
     to_end: bool,
-) -> Result<Option<(Vec<u8>, usize)>, String> {
+) -> Result<Option<(Vec<u8>, usize)>, MessageError> {
     let rest = &bytes[head..];
     if header(headers, "transfer-encoding").is_some_and(|coding| coding.contains("chunked")) {
         return Ok(chunked(rest).map(|(body, length)| (body, head + length)));
     }
     match header(headers, "content-length") {
         Some(length) => {
-            let length: usize = length
-                .trim()
-                .parse()
-                .map_err(|_| format!("content-length {length:?}"))?;
+            let length: usize =
+                length
+                    .trim()
+                    .parse()
+                    .map_err(|source| MessageError::ContentLength {
+                        value: length.to_owned(),
+                        source,
+                    })?;
             Ok(rest
                 .get(..length)
                 .map(|body| (body.to_vec(), head + length)))
@@ -302,5 +322,18 @@ mod tests {
         assert_eq!(&sent.bytes[upgrade.sent..], b"\x82\x00");
         assert_eq!(upgrade.received, received.bytes.len());
         assert_eq!(upgrade.extensions.as_deref(), Some("permessage-deflate"));
+    }
+
+    #[test]
+    fn what_does_not_parse_is_left_with_its_cause() {
+        let sent = stream(&[(1, b"GET / HTTP/1.1\r\nContent-Length: x\r\n\r\n")]);
+        let connection = parse(&sent, &Stream::default());
+        assert_eq!(
+            connection.left.as_deref(),
+            Some("a request: content-length \"x\": invalid digit found in string")
+        );
+        let sent = stream(&[(1, b"GET / HTTP/1.1\r\nBad Header: x\r\n\r\n")]);
+        let left = parse(&sent, &Stream::default()).left.unwrap_or_default();
+        assert!(left.starts_with("a request: its head: "), "{left}");
     }
 }

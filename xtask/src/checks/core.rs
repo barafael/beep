@@ -2,11 +2,12 @@ use std::time::Duration;
 
 use b33p_harness::{Action, Delivery};
 
-use super::b33p::{chat_previewing, outgoing_index, peer_text_reaches, select, type_and_send};
+use super::b33p::{
+    chat_previewing, outgoing_index, peer_text_reaches, select, send_text, type_and_send,
+};
 use super::setup::{LinkedBox, started_b33p};
-use super::{Checks, PATIENCE};
+use super::{Checks, Failure, PATIENCE};
 use crate::Sockets;
-use crate::error::{Error, Result};
 use crate::pod::{B33P, Pod, Ready, Service};
 use crate::process;
 
@@ -15,6 +16,14 @@ use crate::process;
 /// one retry on a new connection.
 const SILENT_SERVER: Duration = Duration::from_secs(5 * 60);
 
+/// What the core checks find b33p showing that it shouldn't.
+#[derive(Debug, thiserror::Error)]
+enum CoreError {
+    /// A send that failed shows in b33p's banner as the library's error, not in words.
+    #[error("the banner reads {banner:?}, the library's error")]
+    BannerUnworded { banner: String },
+}
+
 /// Text, reconnecting, and a send to a server that doesn't answer, between b33p and the
 /// presage-cli peer.
 pub(super) fn core(
@@ -22,7 +31,7 @@ pub(super) fn core(
     linked: &mut LinkedBox<'_>,
     containers: &Pod,
     sockets: &Sockets,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let LinkedBox {
         peer,
         primary_aci,
@@ -35,7 +44,7 @@ pub(super) fn core(
     checks.record("text from b33p reaches the peer", || {
         select(b33p, conversation)?;
         type_and_send(b33p, reply_text)?;
-        peer.sync_printing(reply_text)
+        Ok(peer.sync_printing(reply_text)?)
     });
 
     // presage-cli sends no receipts (presage-cli/src/main.rs only prints a `ReceiptMessage`), so
@@ -44,7 +53,7 @@ pub(super) fn core(
     // (ts/messages/handleDataMessage.preload.ts `deliveryReceiptQueue`).
     checks.record("b33p sends a delivery receipt", || {
         peer_text_reaches(b33p, peer, primary_aci, "testbox core: to be receipted")?;
-        peer.sync_printing("got Delivery receipt")
+        Ok(peer.sync_printing("got Delivery receipt")?)
     });
 
     // TESTPLAN.md §1.2 item 5, the second half: written to while b33p is closed. What came
@@ -60,7 +69,7 @@ pub(super) fn core(
             containers.start(B33P)?;
             *b33p = started_b33p(containers, &sockets.b33p, since)?;
             chat_previewing(b33p, text)?;
-            select(b33p, conversation)
+            Ok(select(b33p, conversation)?)
         },
     );
 
@@ -69,7 +78,8 @@ pub(super) fn core(
         let since = process::now()?;
         containers.restart(Service::Server)?;
         containers.await_ready(Ready::Server, Some(since), PATIENCE)?;
-        peer_text_reaches(b33p, peer, primary_aci, "testbox core: after the drop").map(drop)
+        peer_text_reaches(b33p, peer, primary_aci, "testbox core: after the drop")?;
+        Ok(())
     });
 
     // TESTPLAN.md §1.2 item 3: a message that can't go out says so, and goes out when sent again.
@@ -81,30 +91,27 @@ pub(super) fn core(
         || {
             let text = "testbox core: while the server doesn't answer";
             containers.pause(Service::Server)?;
-            let failed = (|| {
-                b33p.act(Action::Type {
-                    text: text.to_owned(),
-                })?;
-                if !b33p.act(Action::Send)? {
-                    return Err(Error::Failed("b33p didn't send it".to_owned()));
-                }
-                b33p.wait_for("b33p's message marked failed", SILENT_SERVER, |snapshot| {
-                    snapshot
-                        .messages
-                        .iter()
-                        .find(|message| message.outgoing && message.text == text)
-                        .filter(|message| message.delivery == Some(Delivery::Failed))
-                        .map(drop)
-                })
+            let failed = (|| -> Result<(), Failure> {
+                send_text(b33p, text)?;
+                Ok(
+                    b33p.wait_for("b33p's message marked failed", SILENT_SERVER, |snapshot| {
+                        snapshot
+                            .messages
+                            .iter()
+                            .find(|message| message.outgoing && message.text == text)
+                            .filter(|message| message.delivery == Some(Delivery::Failed))
+                            .map(drop)
+                    })?,
+                )
             })();
             containers.unpause(Service::Server)?;
             failed?;
             // The banner says it in words, not as the library's error (another error, about
             // receiving, may stand in its place by now).
-            if let Some(error) = b33p.snapshot()?.error
-                && error.contains("failed to send")
+            if let Some(banner) = b33p.snapshot()?.error
+                && banner.contains("failed to send")
             {
-                return Err(Error::Failed(format!("the banner reads {error:?}")));
+                return Err(CoreError::BannerUnworded { banner }.into());
             }
             // Once b33p has caught up again, which it lets nobody write before.
             let index = outgoing_index(b33p, text)?;
@@ -116,7 +123,8 @@ pub(super) fn core(
             b33p.wait_for("the banner about it gone", PATIENCE, |snapshot| {
                 let error = snapshot.error.as_deref().unwrap_or_default();
                 (!error.contains("couldn't be sent")).then_some(())
-            })
+            })?;
+            Ok(())
         },
     );
 

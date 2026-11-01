@@ -34,7 +34,7 @@ use serde_yaml::{Mapping, Value};
 use strum::VariantArray;
 use testbox_tools::keys::{self, Cdn0Credentials, DesktopConfig, KeyFile};
 use testbox_tools::process::{spawn_logged, supervise, wait_for};
-use testbox_tools::{Context, Describe, Error, Result, WithContext, read, write};
+use testbox_tools::{FileError, read, write};
 use tokio::process::Command;
 
 const SERVER_CONFIG: &str = "/tmp/server.yml";
@@ -93,20 +93,226 @@ const SERVER_PATIENCE: Duration = Duration::from_secs(600);
 /// Ten years: the box's keys outlive any run.
 const VALIDITY_DAYS: i64 = 3650;
 
+/// The tool was given another argument than its one.
+#[derive(Debug, thiserror::Error)]
+#[error("usage: provision [keys], not {argument}")]
+struct ArgumentError {
+    argument: String,
+}
+
+/// What keeps the keys from being written, or copied from the image, or read back.
+#[derive(Debug, thiserror::Error)]
+enum KeysError {
+    #[error("listing {}", path.display())]
+    List {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{} has no name", path.display())]
+    NoName { path: PathBuf },
+    #[error("creating {}", path.display())]
+    CreateDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("copying {} to {}", from.display(), to.display())]
+    Copy {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("opening {} to every client", path.display())]
+    Permissions {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A key file, or a file of Signal-Server's the keys are made from.
+    #[error("writing the keys")]
+    File(#[source] FileError),
+    #[error("parsing {}", path.display())]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("no {name} in the secrets bundle")]
+    MissingSecret { name: String },
+    #[error("decoding {name} as base64")]
+    SecretBase64 {
+        name: &'static str,
+        #[source]
+        source: base64::DecodeError,
+    },
+    #[error("reading {name} as a GenericServerSecretParams")]
+    ZkgroupSecret {
+        name: &'static str,
+        #[source]
+        source: zkgroup::ZkGroupDeserializationFailure,
+    },
+    #[error("signing the sealed-sender certificate")]
+    SealedSenderCertificate(#[source] libsignal_protocol::SignalProtocolError),
+    #[error("serializing the sealed-sender certificate")]
+    SerializeSealedSender(#[source] libsignal_protocol::SignalProtocolError),
+    #[error("serializing {}", path.display())]
+    SerializeYaml {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("serializing {}", path.display())]
+    SerializeToml {
+        path: PathBuf,
+        #[source]
+        source: toml::ser::Error,
+    },
+    #[error("serializing {}", path.display())]
+    SerializeJson {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("generating {owner} TLS key")]
+    TlsKey {
+        owner: &'static str,
+        #[source]
+        source: rcgen::Error,
+    },
+    #[error("the DNS name {name:?}")]
+    DnsName {
+        name: &'static str,
+        #[source]
+        source: rcgen::Error,
+    },
+    #[error("signing the CA's certificate")]
+    SignCa(#[source] rcgen::Error),
+    #[error("signing the server's certificate")]
+    SignServer(#[source] rcgen::Error),
+    #[error("no PEM {label} in {}", path.display())]
+    NoPem { path: PathBuf, label: &'static str },
+    #[error("decoding the PEM {label} in {}", path.display())]
+    PemBase64 {
+        path: PathBuf,
+        label: &'static str,
+        #[source]
+        source: base64::DecodeError,
+    },
+    #[error("reading the server's key into the keystore")]
+    KeystoreKey(#[source] p12_keystore::error::Error),
+    #[error("reading the server's certificate into the keystore")]
+    KeystoreCertificate(#[source] p12_keystore::error::Error),
+    #[error("writing the keystore")]
+    Keystore(#[source] p12_keystore::error::Error),
+}
+
+/// What keeps the server's configuration from being written: test.yml with the box's changes.
+#[derive(Debug, thiserror::Error)]
+enum ServerConfigError {
+    /// test.yml, or the keys' sealed-sender certificate it takes in.
+    #[error("writing the server's configuration")]
+    File(#[source] FileError),
+    #[error("parsing {}", path.display())]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_yaml::Error,
+    },
+    #[error("test.yml has no {path}")]
+    Missing { path: String },
+    #[error("test.yml's {path} isn't a {expected}")]
+    Kind {
+        path: String,
+        expected: &'static str,
+    },
+    /// A change to make at no path: the code's own mistake.
+    #[error("an empty configuration path")]
+    EmptyPath,
+    #[error("parsing test.yml's dynamicConfig.object")]
+    ParseDynamic(#[source] serde_yaml::Error),
+    #[error("serializing the dynamic configuration")]
+    SerializeDynamic(#[source] serde_yaml::Error),
+    #[error("serializing a connector")]
+    Connector(#[source] serde_yaml::Error),
+    #[error("serializing the server's configuration")]
+    Serialize(#[source] serde_yaml::Error),
+}
+
+/// A store the server needs that isn't ready for it, or that refused a request.
+#[derive(Debug, thiserror::Error)]
+enum StoreError {
+    #[error("resolving {node}")]
+    Resolve {
+        node: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{node} resolves to nothing")]
+    NoAddress { node: &'static str },
+    #[error("asking {node} for CLUSTER INFO")]
+    Redis {
+        node: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    /// `CLUSTER INFO`'s `cluster_state` line, or its whole answer without one.
+    #[error("the Redis cluster isn't formed yet: {state}")]
+    NotFormed { state: String },
+    #[error("PUT {url}")]
+    Bucket {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("PUT {url}: {status}")]
+    BucketStatus {
+        url: String,
+        status: reqwest::StatusCode,
+    },
+    #[error("DynamoDB {operation}")]
+    DynamoDb {
+        operation: &'static str,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("DynamoDB {operation}: {status}: {text}")]
+    DynamoDbStatus {
+        operation: &'static str,
+        status: reqwest::StatusCode,
+        text: String,
+    },
+    #[error("DynamoDB {operation}'s answer {text}")]
+    DynamoDbAnswer {
+        operation: &'static str,
+        text: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// What `run` reports: the errors above, or the library's.
+type Failure = Box<dyn std::error::Error + Send + Sync>;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
     let outcome = match testbox_tools::argument("provision [keys]") {
         Ok(None) => run(false).await,
         Ok(Some(argument)) if argument == "keys" => run(true).await,
-        Ok(Some(other)) => Err(Error::Failed(format!(
-            "usage: provision [keys], not {other}"
-        ))),
-        Err(error) => Err(error),
+        Ok(Some(argument)) => Err(ArgumentError { argument }.into()),
+        Err(error) => Err(error.into()),
     };
-    testbox_tools::exit("provision", outcome)
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("provision: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
-async fn run(keys_only: bool) -> Result<()> {
+async fn run(keys_only: bool) -> Result<(), Failure> {
     if !KeyFile::Complete.path().exists() {
         if Path::new(BUILT_KEYS).exists() {
             copy_built_keys()?;
@@ -119,7 +325,10 @@ async fn run(keys_only: bool) -> Result<()> {
     }
     let secrets_path = KeyFile::Secrets.path();
     let secrets: Secrets =
-        serde_yaml::from_str(&read(&secrets_path)?).describe(secrets_path.display().to_string())?;
+        serde_yaml::from_str(&read(&secrets_path)?).map_err(|source| KeysError::Parse {
+            path: secrets_path,
+            source,
+        })?;
     let password = keystore_password(&secrets)?;
     let http = reqwest::Client::new();
     redis_cluster_formed()?;
@@ -132,11 +341,13 @@ async fn run(keys_only: bool) -> Result<()> {
 /// The secrets bundle: every value a string (test-secrets-bundle.yml).
 type Secrets = BTreeMap<String, String>;
 
-fn secret<'a>(secrets: &'a Secrets, name: &str) -> Result<&'a str> {
+fn secret<'a>(secrets: &'a Secrets, name: &str) -> Result<&'a str, KeysError> {
     secrets
         .get(name)
         .map(String::as_str)
-        .ok_or_else(|| Error::Failed(format!("no {name} in the secrets bundle")))
+        .ok_or_else(|| KeysError::MissingSecret {
+            name: name.to_owned(),
+        })
 }
 
 /// What the keys need of test.yml.
@@ -171,34 +382,70 @@ struct ServersFile {
 const BUILT_KEYS: &str = "/opt/testbox/keys";
 
 /// The image's keys into the volume, `complete` last: a copy cut short is written again.
-fn copy_built_keys() -> Result<()> {
+fn copy_built_keys() -> Result<(), KeysError> {
     copy_dir(Path::new(BUILT_KEYS), Path::new(keys::DIR))?;
-    write(&KeyFile::Complete.path(), "")
+    write(&KeyFile::Complete.path(), "").map_err(KeysError::File)
+}
+
+/// The entries of `directory`, as paths.
+fn entries(directory: &Path) -> Result<Vec<PathBuf>, KeysError> {
+    let listed = |source| KeysError::List {
+        path: directory.to_owned(),
+        source,
+    };
+    std::fs::read_dir(directory)
+        .map_err(listed)?
+        .map(|entry| entry.map(|entry| entry.path()).map_err(listed))
+        .collect()
+}
+
+fn create_dir_all(path: &Path) -> Result<(), KeysError> {
+    std::fs::create_dir_all(path).map_err(|source| KeysError::CreateDirectory {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// The files of `from` into `to`, and its directories with theirs (`trusted/`), but `complete`.
-fn copy_dir(from: &Path, to: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(from).context(from.display().to_string())? {
-        let from = entry.context(from.display().to_string())?.path();
+fn copy_dir(from: &Path, to: &Path) -> Result<(), KeysError> {
+    for from in entries(from)? {
         let name = from
             .file_name()
-            .ok_or_else(|| Error::Failed(format!("{} has no name", from.display())))?;
+            .ok_or_else(|| KeysError::NoName { path: from.clone() })?;
         if name == <&str>::from(KeyFile::Complete) {
             continue;
         }
         let to = to.join(name);
         if from.is_dir() {
-            std::fs::create_dir_all(&to).context(to.display().to_string())?;
+            create_dir_all(&to)?;
             copy_dir(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("{} to {}", from.display(), to.display()))?;
+        } else if let Err(source) = std::fs::copy(&from, &to) {
+            return Err(KeysError::Copy { from, to, source });
         }
     }
     Ok(())
 }
 
-fn write_keys() -> Result<()> {
+/// The YAML of `value`, for the key file at `path`.
+fn to_yaml(value: &impl Serialize, path: PathBuf) -> Result<String, KeysError> {
+    serde_yaml::to_string(value).map_err(|source| KeysError::SerializeYaml { path, source })
+}
+
+/// The TOML of `value`, for the key file at `path`.
+fn to_toml(value: &impl Serialize, path: PathBuf) -> Result<String, KeysError> {
+    toml::to_string(value).map_err(|source| KeysError::SerializeToml { path, source })
+}
+
+/// Test configuration of Signal-Server's, parsed.
+fn parse_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, KeysError> {
+    serde_yaml::from_str(&read(path).map_err(KeysError::File)?).map_err(|source| KeysError::Parse {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn write_keys() -> Result<(), KeysError> {
+    let write = |path: &Path, contents: String| write(path, contents).map_err(KeysError::File);
     let ca_pem = write_tls()?;
 
     // Sealed sender: the test bundle's key (test-secrets-bundle.yml
@@ -214,12 +461,11 @@ fn write_keys() -> Result<()> {
         &trust_root.private_key,
         &mut rng,
     )
-    .describe("the sealed-sender certificate")?;
+    .map_err(KeysError::SealedSenderCertificate)?;
     let trust_root_public = BASE64.encode(trust_root.public_key.serialize());
 
     let bundle_path = Path::new(TEST_CONFIG).join("test-secrets-bundle.yml");
-    let mut secrets: Secrets =
-        serde_yaml::from_str(&read(&bundle_path)?).describe(bundle_path.display().to_string())?;
+    let mut secrets: Secrets = parse_yaml(&bundle_path)?;
     secrets.insert(
         "unidentifiedDelivery.privateKey".to_owned(),
         BASE64.encode(server_key.private_key.serialize()),
@@ -234,12 +480,9 @@ fn write_keys() -> Result<()> {
     secrets.insert("cdn.accessSecret".to_owned(), cdn0.secret_key.clone());
     write(
         &KeyFile::Secrets.path(),
-        serde_yaml::to_string(&secrets).describe("the secrets")?,
+        to_yaml(&secrets, KeyFile::Secrets.path())?,
     )?;
-    write(
-        &KeyFile::Cdn0.path(),
-        toml::to_string(&cdn0).describe(KeyFile::Cdn0.to_string())?,
-    )?;
+    write(&KeyFile::Cdn0.path(), to_toml(&cdn0, KeyFile::Cdn0.path())?)?;
     // CDN3's half of the shared secret, as tus-server's dev server reads it (`wrangler dev
     // --env-file`, testbox/tus/Containerfile): base64 on both sides (JwtGenerator's secret bytes;
     // tus-server src/index.ts `authenticateToken`).
@@ -255,13 +498,11 @@ fn write_keys() -> Result<()> {
         BASE64.encode(
             certificate
                 .serialized()
-                .describe("the sealed-sender certificate")?,
+                .map_err(KeysError::SerializeSealedSender)?,
         ),
     )?;
 
-    let test_config_path = Path::new(TEST_CONFIG).join("test.yml");
-    let test_config: TestConfig = serde_yaml::from_str(&read(&test_config_path)?)
-        .describe(test_config_path.display().to_string())?;
+    let test_config: TestConfig = parse_yaml(&Path::new(TEST_CONFIG).join("test.yml"))?;
     let zkgroup_public = test_config.groups_zk_config.server_public;
 
     // The servers for libsignal-service (b33p, presage-cli): `SignalServers::Custom`. The zkgroup
@@ -277,7 +518,7 @@ fn write_keys() -> Result<()> {
     };
     write(
         &KeyFile::Servers.path(),
-        toml::to_string(&servers).describe(KeyFile::Servers.to_string())?,
+        to_toml(&servers, KeyFile::Servers.path())?,
     )?;
 
     // `localhost` with a CA makes Desktop use libsignal-net's local override
@@ -300,19 +541,19 @@ fn write_keys() -> Result<()> {
         certificate_authority: ca_pem,
         server_public_params: zkgroup_public,
         server_trust_roots: vec![trust_root_public],
-        generic_server_public_params: generic_public_params(secret(
+        generic_server_public_params: generic_public_params(
             &secrets,
             "callingZkConfigV101.serverSecret",
-        )?)?,
-        backup_server_public_params: generic_public_params(secret(
-            &secrets,
-            "chatZkConfig.serverSecret",
-        )?)?,
+        )?,
+        backup_server_public_params: generic_public_params(&secrets, "chatZkConfig.serverSecret")?,
         updates_enabled: false,
     };
     write(
         &KeyFile::Desktop.path(),
-        serde_json::to_string_pretty(&desktop).describe(KeyFile::Desktop.to_string())?,
+        serde_json::to_string_pretty(&desktop).map_err(|source| KeysError::SerializeJson {
+            path: KeyFile::Desktop.path(),
+            source,
+        })?,
     )?;
 
     let password = keystore_password(&secrets)?;
@@ -320,17 +561,18 @@ fn write_keys() -> Result<()> {
     write_storage_service_config(&secrets, &cdn0, password)?;
 
     readable(Path::new(keys::DIR))?;
-    write(&KeyFile::Complete.path(), "")
+    write(&KeyFile::Complete.path(), String::new())
 }
 
 /// Every file in `directory` readable by every client container, whichever user it runs as, and
 /// its directories open to them.
-fn readable(directory: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(directory).context(directory.display().to_string())? {
-        let path = entry.context(directory.display().to_string())?.path();
+fn readable(directory: &Path) -> Result<(), KeysError> {
+    for path in entries(directory)? {
         let mode = if path.is_dir() { 0o755 } else { 0o644 };
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
-            .context(path.display().to_string())?;
+        if let Err(source) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+        {
+            return Err(KeysError::Permissions { path, source });
+        }
         if path.is_dir() {
             readable(&path)?;
         }
@@ -348,39 +590,50 @@ fn cdn_urls(service_url: &str) -> keys::CdnUrls {
     }
 }
 
-/// The public half of a base64 `GenericServerSecretParams`, in base64.
-fn generic_public_params(secret: &str) -> Result<String> {
-    let bytes = BASE64.decode(secret).describe("a zkgroup secret")?;
+/// The public half of the secret `name`, a base64 `GenericServerSecretParams`, in base64.
+fn generic_public_params(secrets: &Secrets, name: &'static str) -> Result<String, KeysError> {
+    let secret = secret(secrets, name)?;
+    let bytes = BASE64
+        .decode(secret)
+        .map_err(|source| KeysError::SecretBase64 { name, source })?;
     let params: zkgroup::generic_server_params::GenericServerSecretParams =
-        zkgroup::deserialize(&bytes).describe("a zkgroup secret")?;
+        zkgroup::deserialize(&bytes).map_err(|source| KeysError::ZkgroupSecret { name, source })?;
     Ok(BASE64.encode(zkgroup::serialize(&params.get_public_params())))
 }
 
 /// A CA and a certificate for `localhost`: libsignal-service pins one CA (push_service/mod.rs
 /// `tls_certs_only`); libsignal-net's local override connects to `localhost` only (net_env.rs
 /// `hostname: "localhost"`). Returns the CA, in PEM.
-fn write_tls() -> Result<String> {
+fn write_tls() -> Result<String, KeysError> {
+    let write = |path: &Path, contents: &str| write(path, contents).map_err(KeysError::File);
+    let generate = |owner| {
+        TlsKeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
+            .map_err(|source| KeysError::TlsKey { owner, source })
+    };
+    let dns_name = |name: &'static str| {
+        name.try_into()
+            .map(SanType::DnsName)
+            .map_err(|source| KeysError::DnsName { name, source })
+    };
     let now = time::OffsetDateTime::now_utc();
     let until = now + time::Duration::days(VALIDITY_DAYS);
 
-    let ca_key =
-        TlsKeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).describe("the CA's key")?;
+    let ca_key = generate("the CA's")?;
     let mut ca_params = CertificateParams::default();
     ca_params.distinguished_name = name("b33p testbox CA");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     ca_params.not_before = now;
     ca_params.not_after = until;
-    let ca = ca_params.self_signed(&ca_key).describe("the CA")?;
+    let ca = ca_params.self_signed(&ca_key).map_err(KeysError::SignCa)?;
 
-    let server_key =
-        TlsKeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).describe("the server's key")?;
+    let server_key = generate("the server's")?;
     let mut server_params = CertificateParams::default();
     server_params.distinguished_name = name("localhost");
     server_params.subject_alt_names = vec![
-        SanType::DnsName("localhost".try_into().describe("localhost")?),
+        dns_name("localhost")?,
         SanType::IpAddress(std::net::IpAddr::from([127, 0, 0, 1])),
-        SanType::DnsName(keys::PREVIEW_HOST.try_into().describe(keys::PREVIEW_HOST)?),
+        dns_name(keys::PREVIEW_HOST)?,
     ];
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     server_params.not_before = now;
@@ -388,17 +641,17 @@ fn write_tls() -> Result<String> {
     let issuer = Issuer::from_params(&ca_params, &ca_key);
     let server = server_params
         .signed_by(&server_key, &issuer)
-        .describe("the server's certificate")?;
+        .map_err(KeysError::SignServer)?;
 
     let ca_pem = ca.pem();
     write(&KeyFile::TlsCa.path(), &ca_pem)?;
     let trusted = KeyFile::TrustedCa.path();
     if let Some(directory) = trusted.parent() {
-        std::fs::create_dir_all(directory).context(directory.display().to_string())?;
+        create_dir_all(directory)?;
     }
     write(&trusted, &ca_pem)?;
-    write(&KeyFile::TlsCertificate.path(), server.pem())?;
-    write(&KeyFile::TlsKey.path(), server_key.serialize_pem())?;
+    write(&KeyFile::TlsCertificate.path(), &server.pem())?;
+    write(&KeyFile::TlsKey.path(), &server_key.serialize_pem())?;
     Ok(ca_pem)
 }
 
@@ -411,29 +664,31 @@ fn name(common_name: &str) -> DistinguishedName {
 /// The secrets bundle's `tlsKeyStore.password`: the server opens every TLS connector's keystore
 /// with it for its certificate-expiry metrics (TlsCertificateExpirationUtil.configureMetrics),
 /// whatever the connector's own `keyStorePassword` says.
-fn keystore_password(secrets: &Secrets) -> Result<&str> {
+fn keystore_password(secrets: &Secrets) -> Result<&str, KeysError> {
     secret(secrets, "tlsKeyStore.password")
 }
 
 /// The keys' certificate and key as Jetty reads them, once: Signal-Server and storage-service
 /// both serve with it.
-fn write_keystore(password: &str) -> Result<()> {
-    let certificate = pem_der(&read(&KeyFile::TlsCertificate.path())?, "CERTIFICATE")?;
-    let key = pem_der(&read(&KeyFile::TlsKey.path())?, "PRIVATE KEY")?;
-    let chain =
-        p12_keystore::PrivateKeyChain::new(
-            rand::random::<[u8; 20]>().as_slice(),
-            p12_keystore::PrivateKey::from_der(&key).describe("the server's key")?,
-            [p12_keystore::Certificate::from_der(&certificate)
-                .describe("the server's certificate")?],
-        );
+fn write_keystore(password: &str) -> Result<(), KeysError> {
+    let certificate = pem_der(&KeyFile::TlsCertificate.path(), "CERTIFICATE")?;
+    let key = pem_der(&KeyFile::TlsKey.path(), "PRIVATE KEY")?;
+    let chain = p12_keystore::PrivateKeyChain::new(
+        rand::random::<[u8; 20]>().as_slice(),
+        p12_keystore::PrivateKey::from_der(&key).map_err(KeysError::KeystoreKey)?,
+        [p12_keystore::Certificate::from_der(&certificate)
+            .map_err(KeysError::KeystoreCertificate)?],
+    );
     let mut store = p12_keystore::KeyStore::new();
     store.add_entry(
         "server",
         p12_keystore::KeyStoreEntry::PrivateKeyChain(chain),
     );
-    let bytes = store.writer(password).write().describe("the keystore")?;
-    write(&KeyFile::Keystore.path(), bytes)
+    let bytes = store
+        .writer(password)
+        .write()
+        .map_err(KeysError::Keystore)?;
+    write(&KeyFile::Keystore.path(), bytes).map_err(KeysError::File)
 }
 
 /// storage-service's configuration (StorageServiceConfiguration.java), sharing Signal-Server's
@@ -525,13 +780,16 @@ fn write_storage_service_config(
     secrets: &Secrets,
     cdn0: &Cdn0Credentials,
     password: &str,
-) -> Result<()> {
-    let storage_secret = BASE64
-        .decode(secret(
-            secrets,
-            "storageService.userAuthenticationTokenSharedSecret",
-        )?)
-        .describe("the storage service's shared secret")?;
+) -> Result<(), KeysError> {
+    let secret = |name| secret(secrets, name);
+    const STORAGE_SECRET: &str = "storageService.userAuthenticationTokenSharedSecret";
+    let storage_secret =
+        BASE64
+            .decode(secret(STORAGE_SECRET)?)
+            .map_err(|source| KeysError::SecretBase64 {
+                name: STORAGE_SECRET,
+                source,
+            })?;
     let config = StorageServiceConfig {
         server: DropwizardServer {
             application_connectors: [tls_connector(
@@ -557,7 +815,7 @@ fn write_storage_service_config(
             key: hex::encode(&storage_secret),
         },
         zk_config: ZkConfig {
-            server_secret: secret(secrets, "zkConfig-libsignal-0.42.serverSecret")?.to_owned(),
+            server_secret: secret("zkConfig-libsignal-0.42.serverSecret")?.to_owned(),
         },
         cdn: StorageCdn {
             access_key: cdn0.access_key.clone(),
@@ -575,15 +833,23 @@ fn write_storage_service_config(
     };
     write(
         &KeyFile::StorageService.path(),
-        serde_yaml::to_string(&config).describe("storage-service's configuration")?,
+        to_yaml(&config, KeyFile::StorageService.path())?,
     )
+    .map_err(KeysError::File)
 }
 
-/// The DER inside a PEM block labelled `label`.
-fn pem_der(pem: &str, label: &str) -> Result<Vec<u8>> {
-    let body =
-        keys::pem_body(pem, label).ok_or_else(|| Error::Failed(format!("no PEM {label}")))?;
-    BASE64.decode(body).describe(format!("a PEM {label}"))
+/// The DER inside the PEM block labelled `label` in the file at `path`.
+fn pem_der(path: &Path, label: &'static str) -> Result<Vec<u8>, KeysError> {
+    let pem = read(path).map_err(KeysError::File)?;
+    let body = keys::pem_body(&pem, label).ok_or_else(|| KeysError::NoPem {
+        path: path.to_owned(),
+        label,
+    })?;
+    BASE64.decode(body).map_err(|source| KeysError::PemBase64 {
+        path: path.to_owned(),
+        label,
+        source,
+    })
 }
 
 /// Dropwizard's connector types the box uses (`server.applicationConnectors[].type`).
@@ -634,10 +900,10 @@ struct Connector {
 ///
 /// test.yml is Signal-Server's, hundreds of keys we don't own: it stays a YAML document, and the
 /// changes go in at their paths.
-fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
+fn write_server_config(password: &str, init_tables: bool) -> Result<(), ServerConfigError> {
     let path = Path::new(TEST_CONFIG).join("test.yml");
-    let mut config: Value =
-        serde_yaml::from_str(&read(&path)?).describe(path.display().to_string())?;
+    let mut config: Value = serde_yaml::from_str(&read(&path).map_err(ServerConfigError::File)?)
+        .map_err(|source| ServerConfigError::Parse { path, source })?;
 
     // Without `type`, the production factories (`defaultImpl` on FaultTolerantRedisClusterFactory
     // and FaultTolerantRedisClientFactory). One cluster for all four, as
@@ -688,7 +954,9 @@ fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
     set(
         &mut config,
         &["unidentifiedDelivery", "certificate"],
-        read(&KeyFile::UnidentifiedDeliveryCertificate.path())?.into(),
+        read(&KeyFile::UnidentifiedDeliveryCertificate.path())
+            .map_err(ServerConfigError::File)?
+            .into(),
     )?;
 
     // TLS in the server itself, on two ports. libsignal-net (Signal-Desktop, Android) opens its
@@ -716,13 +984,15 @@ fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
         },
         tls(ConnectorType::Https, keys::LIBSIGNAL_SERVICE_PORT),
     ];
-    let Value::Sequence(existing) = at(&mut config, &["server", "applicationConnectors"])? else {
-        return Err(Error::Failed(
-            "test.yml's server.applicationConnectors isn't a list".to_owned(),
-        ));
+    let connectors_path = ["server", "applicationConnectors"];
+    let Value::Sequence(existing) = at(&mut config, &connectors_path)? else {
+        return Err(ServerConfigError::Kind {
+            path: connectors_path.join("."),
+            expected: "list",
+        });
     };
     for connector in &connectors {
-        existing.push(yaml(connector)?);
+        existing.push(serde_yaml::to_value(connector).map_err(ServerConfigError::Connector)?);
     }
 
     // libsignal-net sends a request as gRPC on its HTTP/2 chat connection unless remote config
@@ -763,19 +1033,22 @@ fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
         Value::from(100 * 1024 * 1024),
     )?;
     // The dynamic configuration is a YAML document in a string.
-    let Value::String(dynamic) = at(&mut config, &["dynamicConfig", "object"])? else {
-        return Err(Error::Failed(
-            "test.yml's dynamicConfig.object isn't a string".to_owned(),
-        ));
+    let dynamic_path = ["dynamicConfig", "object"];
+    let Value::String(dynamic) = at(&mut config, &dynamic_path)? else {
+        return Err(ServerConfigError::Kind {
+            path: dynamic_path.join("."),
+            expected: "string",
+        });
     };
     let mut dynamic_config: Value =
-        serde_yaml::from_str(dynamic).describe("dynamicConfig.object")?;
+        serde_yaml::from_str(dynamic).map_err(ServerConfigError::ParseDynamic)?;
     set(
         &mut dynamic_config,
         &["experiments"],
         mapping("cdn3", mapping("enrollmentPercentage", 100)),
     )?;
-    let dynamic_text = serde_yaml::to_string(&dynamic_config).describe("dynamicConfig.object")?;
+    let dynamic_text =
+        serde_yaml::to_string(&dynamic_config).map_err(ServerConfigError::SerializeDynamic)?;
     set(
         &mut config,
         &["dynamicConfig", "object"],
@@ -784,12 +1057,9 @@ fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
 
     write(
         Path::new(SERVER_CONFIG),
-        serde_yaml::to_string(&config).describe("the server's configuration")?,
+        serde_yaml::to_string(&config).map_err(ServerConfigError::Serialize)?,
     )
-}
-
-fn yaml(value: &impl Serialize) -> Result<Value> {
-    serde_yaml::to_value(value).describe("a configuration value")
+    .map_err(ServerConfigError::File)
 }
 
 /// `{key: value}`.
@@ -798,24 +1068,24 @@ fn mapping(key: &str, value: impl Into<Value>) -> Value {
 }
 
 /// The value at `path`, which must exist.
-fn at<'a>(root: &'a mut Value, path: &[&str]) -> Result<&'a mut Value> {
+fn at<'a>(root: &'a mut Value, path: &[&str]) -> Result<&'a mut Value, ServerConfigError> {
     path.iter().try_fold(root, |value, key| {
         value
             .get_mut(*key)
-            .ok_or_else(|| Error::Failed(format!("test.yml has no {}", path.join("."))))
+            .ok_or_else(|| ServerConfigError::Missing {
+                path: path.join("."),
+            })
     })
 }
 
 /// Sets `path`'s last key in the mapping its other keys lead to, which must exist.
-fn set(root: &mut Value, path: &[&str], new: Value) -> Result<()> {
-    let (last, parents) = path
-        .split_last()
-        .ok_or_else(|| Error::Failed("an empty configuration path".to_owned()))?;
+fn set(root: &mut Value, path: &[&str], new: Value) -> Result<(), ServerConfigError> {
+    let (last, parents) = path.split_last().ok_or(ServerConfigError::EmptyPath)?;
     let Value::Mapping(mapping) = at(root, parents)? else {
-        return Err(Error::Failed(format!(
-            "test.yml's {} isn't a mapping",
-            parents.join(".")
-        )));
+        return Err(ServerConfigError::Kind {
+            path: parents.join("."),
+            expected: "mapping",
+        });
     };
     // What it replaces, if anything, is test.yml's, and goes.
     mapping.insert(Value::from(*last), new);
@@ -824,27 +1094,26 @@ fn set(root: &mut Value, path: &[&str], new: Value) -> Result<()> {
 
 /// Fails unless the Redis cluster says it is formed (`CLUSTER INFO`'s `cluster_state:ok`), which
 /// the node `redis-2` creates once all three run (testbox/pod.yaml `REDIS_CLUSTER_CREATOR`).
-fn redis_cluster_formed() -> Result<()> {
+fn redis_cluster_formed() -> Result<(), StoreError> {
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
-    let address = REDIS_CLUSTER_NODE
+    let node = REDIS_CLUSTER_NODE;
+    let address = node
         .to_socket_addrs()
-        .describe(REDIS_CLUSTER_NODE.to_owned())?
+        .map_err(|source| StoreError::Resolve { node, source })?
         .next()
-        .ok_or_else(|| Error::Failed(format!("{REDIS_CLUSTER_NODE} resolves to nothing")))?;
-    let mut node = TcpStream::connect_timeout(&address, REDIS_PATIENCE)
-        .describe(REDIS_CLUSTER_NODE.to_owned())?;
-    node.set_read_timeout(Some(REDIS_PATIENCE))
-        .describe(REDIS_CLUSTER_NODE.to_owned())?;
+        .ok_or(StoreError::NoAddress { node })?;
+    let asked = |source| StoreError::Redis { node, source };
+    let mut stream = TcpStream::connect_timeout(&address, REDIS_PATIENCE).map_err(asked)?;
+    stream
+        .set_read_timeout(Some(REDIS_PATIENCE))
+        .map_err(asked)?;
     // An inline command; the answer is a bulk string of `key:value` lines.
-    node.write_all(b"CLUSTER INFO\r\n")
-        .describe(REDIS_CLUSTER_NODE.to_owned())?;
+    stream.write_all(b"CLUSTER INFO\r\n").map_err(asked)?;
     let mut answer = Vec::new();
     let mut chunk = [0; 4096];
     while !String::from_utf8_lossy(&answer).contains("cluster_state:") {
-        let read = node
-            .read(&mut chunk)
-            .describe(REDIS_CLUSTER_NODE.to_owned())?;
+        let read = stream.read(&mut chunk).map_err(asked)?;
         if read == 0 {
             break;
         }
@@ -854,23 +1123,26 @@ fn redis_cluster_formed() -> Result<()> {
     if answer.lines().any(|line| line.trim() == "cluster_state:ok") {
         Ok(())
     } else {
-        Err(Error::Failed(format!(
-            "the Redis cluster isn't formed yet: {}",
-            answer
+        Err(StoreError::NotFormed {
+            state: answer
                 .lines()
                 .find(|line| line.starts_with("cluster_state:"))
                 .unwrap_or(answer.trim())
-        )))
+                .to_owned(),
+        })
     }
 }
 
 /// LocalStack takes an unsigned path-style PUT; 409 means the bucket exists already.
-async fn ensure_prekey_bucket(http: &reqwest::Client) -> Result<()> {
+async fn ensure_prekey_bucket(http: &reqwest::Client) -> Result<(), StoreError> {
     let url = format!("{}/{}", PREKEY_BUCKET.endpoint, PREKEY_BUCKET.name);
-    let response = http.put(&url).send().await.describe(format!("PUT {url}"))?;
+    let response = match http.put(&url).send().await {
+        Ok(response) => response,
+        Err(source) => return Err(StoreError::Bucket { url, source }),
+    };
     match response.status() {
         reqwest::StatusCode::OK | reqwest::StatusCode::CONFLICT => Ok(()),
-        status => Err(Error::Failed(format!("PUT {url}: {status}"))),
+        status => Err(StoreError::BucketStatus { url, status }),
     }
 }
 
@@ -878,9 +1150,10 @@ async fn ensure_prekey_bucket(http: &reqwest::Client) -> Result<()> {
 /// credentials see the server's database, and it doesn't check the signature.
 async fn dynamodb<T: serde::de::DeserializeOwned>(
     http: &reqwest::Client,
-    operation: &str,
+    operation: &'static str,
     body: &impl Serialize,
-) -> Result<T> {
+) -> Result<T, StoreError> {
+    let failed = |source| StoreError::DynamoDb { operation, source };
     let response = http
         .post(DYNAMODB_ENDPOINT)
         .header("Content-Type", "application/x-amz-json-1.0")
@@ -893,18 +1166,21 @@ async fn dynamodb<T: serde::de::DeserializeOwned>(
         .json(body)
         .send()
         .await
-        .describe(format!("DynamoDB {operation}"))?;
+        .map_err(failed)?;
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .describe(format!("DynamoDB {operation}"))?;
+    let text = response.text().await.map_err(failed)?;
     if !status.is_success() {
-        return Err(Error::Failed(format!(
-            "DynamoDB {operation}: {status}: {text}"
-        )));
+        return Err(StoreError::DynamoDbStatus {
+            operation,
+            status,
+            text,
+        });
     }
-    serde_json::from_str(&text).describe(format!("DynamoDB {operation}: {text}"))
+    serde_json::from_str(&text).map_err(|source| StoreError::DynamoDbAnswer {
+        operation,
+        text,
+        source,
+    })
 }
 
 #[derive(Serialize)]
@@ -919,7 +1195,7 @@ struct TableNames {
     table_names: Vec<String>,
 }
 
-async fn dynamodb_has_tables(http: &reqwest::Client) -> Result<bool> {
+async fn dynamodb_has_tables(http: &reqwest::Client) -> Result<bool, StoreError> {
     let tables: TableNames = dynamodb(http, "ListTables", &ListTables { limit: 1 }).await?;
     Ok(!tables.table_names.is_empty())
 }
@@ -970,7 +1246,7 @@ enum AttributeValue {
 /// `desktop.libsignalNet.` keys (ts/LibsignalNetRemoteConfig.preload.ts). Android reaches the
 /// omnibus server and keeps gRPC. Not test.yml's `globalConfig`: those reach clients as `global.`
 /// keys (RemoteConfigsManager.java).
-async fn write_remote_config(http: &reqwest::Client) -> Result<()> {
+async fn write_remote_config(http: &reqwest::Client) -> Result<(), StoreError> {
     let items = DesktopGrpcRequest::VARIANTS
         .iter()
         .map(|request| WriteRequest {
@@ -993,8 +1269,8 @@ async fn write_remote_config(http: &reqwest::Client) -> Result<()> {
 }
 
 /// Signal-Server, its log passed on; the remote config written once it has started (its tables
-/// exist then); SIGTERM passed on to it.
-async fn run_server(http: &reqwest::Client) -> Result<()> {
+/// exist then); SIGTERM passed on to it. The last of [`run`].
+async fn run_server(http: &reqwest::Client) -> Result<(), Failure> {
     let classpath = testbox_tools::env_var("SIGNAL_CLASSPATH")?;
     // foundationDb.serviceContainerNamePrefix (LocalFoundationDbDatabaseFactory.java:29): the
     // database is the `foundationdb0` service
@@ -1011,9 +1287,9 @@ async fn run_server(http: &reqwest::Client) -> Result<()> {
     )?;
     tokio::select! {
         started = wait_for(heard, &[testbox_tools::JETTY_STARTED], SERVER_PATIENCE) => started?,
-        supervised = supervise(&mut server, "Signal-Server") => return supervised,
+        supervised = supervise(&mut server, "Signal-Server") => return Ok(supervised?),
     }
     write_remote_config(http).await?;
     eprintln!("{}", testbox_tools::SERVER_READY);
-    supervise(&mut server, "Signal-Server").await
+    Ok(supervise(&mut server, "Signal-Server").await?)
 }

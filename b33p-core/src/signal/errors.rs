@@ -8,7 +8,7 @@ use presage::{
     libsignal_service::prelude::{MessageSenderError, ServiceError},
 };
 
-use crate::{Error, ErrorKind};
+use crate::ErrorKind;
 
 /// The kind of `error`; see [`ErrorKind`].
 pub(crate) fn kind_of<S: std::error::Error>(error: &PresageError<S>) -> ErrorKind {
@@ -72,62 +72,33 @@ pub(crate) fn upload_kind(
     }
 }
 
-/// For `map_err` on Signal's servers directly: `error`, said after `context`, of its kind.
-pub(crate) fn service_failed(context: &str) -> impl FnOnce(ServiceError) -> Error + '_ {
-    move |error| Error::new(service_kind(&error), format!("{context}: {error}"))
-}
-
-/// For `map_err` on the storage service: an undecipherable blob won't decipher next time.
-pub(crate) fn storage_service_failed(
-    context: &str,
-) -> impl FnOnce(presage::libsignal_service::StorageServiceError) -> Error + '_ {
+/// The kind of what the storage service answered: an undecipherable blob won't decipher next
+/// time.
+pub(crate) fn storage_service_kind(
+    error: &presage::libsignal_service::StorageServiceError,
+) -> ErrorKind {
     use presage::libsignal_service::StorageServiceError;
-    move |error| {
-        let kind = match &error {
-            StorageServiceError::Service(error) => service_kind(error),
-            StorageServiceError::Invalid => ErrorKind::Refused,
-        };
-        Error::new(kind, format!("{context}: {error}"))
+    match error {
+        StorageServiceError::Service(error) => service_kind(error),
+        StorageServiceError::Invalid => ErrorKind::Refused,
     }
 }
 
-/// For `map_err`: `error`, said after `context` (e.g. "failed to send"), of its kind.
-pub(crate) fn failed<S: std::error::Error>(
-    context: &str,
-) -> impl FnOnce(PresageError<S>) -> Error + '_ {
-    move |error| Error::new(kind_of(&error), format!("{context}: {error}"))
-}
-
-/// For `map_err` on a send through the outbox: a session that ended first is
-/// [`ErrorKind::Unreachable`], since the next one may send it; presage's errors as [`failed`].
-pub(crate) fn send_failed(context: &str) -> impl FnOnce(SendFailure) -> Error + '_ {
-    move |failure| match failure {
-        SendFailure::Stopped => Error::unreachable(format!("{context}: {failure}")),
-        SendFailure::Presage(error) => failed(context)(*error),
+/// The kind of a send through the outbox: a session that ended first is
+/// [`ErrorKind::Unreachable`], since the next one may send it; presage's errors as
+/// [`kind_of`].
+pub(crate) fn send_kind(failure: &SendFailure) -> ErrorKind {
+    match failure {
+        SendFailure::Stopped => ErrorKind::Unreachable,
+        SendFailure::Presage(error) => kind_of(error),
     }
 }
 
-/// For `map_err` on presage's store (not through the manager): always
-/// [`ErrorKind::Storage`].
-pub(crate) fn store_failed<E: std::fmt::Display>(context: &str) -> impl FnOnce(E) -> Error + '_ {
-    move |error| Error::storage(format!("{context}: {error}"))
-}
-
-/// For `map_err` on the database: always [`ErrorKind::Storage`].
-pub(crate) fn db(error: sqlx::Error) -> Error {
-    Error::from(error)
-}
-
-/// For `map_err` on a reqwest request: the network, unless the server refused it.
-pub(crate) fn http(context: &str) -> impl FnOnce(reqwest::Error) -> Error + '_ {
-    move |error| {
-        let kind = match error.status() {
-            Some(status) if !status.is_server_error() && status.as_u16() != 429 => {
-                ErrorKind::Refused
-            }
-            _ => ErrorKind::Unreachable,
-        };
-        Error::new(kind, format!("{context}: {error}"))
+/// The kind of a reqwest request's failure: the network, unless the server refused it.
+pub(crate) fn http_kind(error: &reqwest::Error) -> ErrorKind {
+    match error.status() {
+        Some(status) if !status.is_server_error() && status.as_u16() != 429 => ErrorKind::Refused,
+        _ => ErrorKind::Unreachable,
     }
 }
 
@@ -154,14 +125,6 @@ mod tests {
         assert_eq!(
             kind_of(&E::MessagePipeInterruptedError),
             ErrorKind::Unreachable
-        );
-
-        let error = failed("failed to send")(timeout);
-        assert!(error.retryable());
-        assert!(
-            error.message.starts_with("failed to send: "),
-            "{}",
-            error.message
         );
     }
 

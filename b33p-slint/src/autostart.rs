@@ -15,13 +15,51 @@ use std::path::PathBuf;
 /// Starts b33p with its window closed, where the tray can take it.
 pub const HIDDEN: &str = "--hidden";
 
+/// Why starting with the system couldn't be turned on or off.
+#[derive(Debug, thiserror::Error)]
+pub enum AutostartError {
+    #[error("could not determine where b33p is")]
+    Executable(#[source] io::Error),
+    #[error("the path to b33p isn't valid UTF-8: {}", path.display())]
+    NotUtf8 { path: PathBuf },
+    #[error("could not determine a config directory")]
+    NoConfigDir,
+    #[error("failed to create {}", dir.display())]
+    CreateDir { dir: PathBuf, source: io::Error },
+    #[error("failed to write {}", path.display())]
+    Write { path: PathBuf, source: io::Error },
+    #[error("failed to remove {}", path.display())]
+    Remove { path: PathBuf, source: io::Error },
+    #[cfg(windows)]
+    #[error("failed to open the registry key {key}")]
+    OpenKey {
+        key: &'static str,
+        source: windows_registry::Error,
+    },
+    #[cfg(windows)]
+    #[error("failed to set the registry value {value}")]
+    SetValue {
+        value: &'static str,
+        source: windows_registry::Error,
+    },
+    #[cfg(windows)]
+    #[error("failed to remove the registry value {value}")]
+    RemoveValue {
+        value: &'static str,
+        source: windows_registry::Error,
+    },
+    #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+    #[error("starting with the system isn't supported here")]
+    Unsupported,
+}
+
 /// What to start: the AppImage rather than the binary unpacked from it, which moves.
 // Not on macOS, which has no autostart here yet.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-fn executable() -> io::Result<PathBuf> {
+fn executable() -> Result<PathBuf, AutostartError> {
     match std::env::var_os("APPIMAGE") {
         Some(appimage) => Ok(appimage.into()),
-        None => std::env::current_exe(),
+        None => std::env::current_exe().map_err(AutostartError::Executable),
     }
 }
 
@@ -30,11 +68,12 @@ mod platform {
     use std::io;
     use std::path::PathBuf;
 
+    use super::AutostartError;
+
     pub const SUPPORTED: bool = true;
 
-    fn entry() -> io::Result<PathBuf> {
-        let dirs = directories::BaseDirs::new()
-            .ok_or_else(|| io::Error::other("could not determine a config directory"))?;
+    fn entry() -> Result<PathBuf, AutostartError> {
+        let dirs = directories::BaseDirs::new().ok_or(AutostartError::NoConfigDir)?;
         Ok(dirs
             .config_dir()
             .join("autostart/io.github.barafael.B33p.desktop"))
@@ -44,23 +83,31 @@ mod platform {
         entry().is_ok_and(|entry| entry.exists())
     }
 
-    pub fn set(enabled: bool) -> io::Result<()> {
+    pub fn set(enabled: bool) -> Result<(), AutostartError> {
         let entry = entry()?;
         if !enabled {
             return match std::fs::remove_file(&entry) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                    Err(AutostartError::Remove {
+                        path: entry,
+                        source,
+                    })
+                }
                 _ => Ok(()),
             };
         }
-        let executable = super::executable()?;
-        let executable = executable
-            .to_str()
-            .ok_or_else(|| io::Error::other("the path to b33p isn't valid UTF-8"))?;
+        let path = super::executable()?;
+        let Some(executable) = path.to_str() else {
+            return Err(AutostartError::NotUtf8 { path });
+        };
         if let Some(dir) = entry.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(|source| AutostartError::CreateDir {
+                dir: dir.to_owned(),
+                source,
+            })?;
         }
         std::fs::write(
-            entry,
+            &entry,
             format!(
                 "[Desktop Entry]\n\
                  Type=Application\n\
@@ -73,6 +120,10 @@ mod platform {
                 super::HIDDEN
             ),
         )
+        .map_err(|source| AutostartError::Write {
+            path: entry,
+            source,
+        })
     }
 
     /// An `Exec` argument, quoted as the desktop entry specification asks.
@@ -99,9 +150,9 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use std::io;
-
     use windows_registry::CURRENT_USER;
+
+    use super::AutostartError;
 
     pub const SUPPORTED: bool = true;
 
@@ -115,24 +166,33 @@ mod platform {
             .is_ok()
     }
 
-    pub fn set(enabled: bool) -> io::Result<()> {
-        let run = CURRENT_USER.create(RUN).map_err(io::Error::other)?;
+    pub fn set(enabled: bool) -> Result<(), AutostartError> {
+        let run = CURRENT_USER
+            .create(RUN)
+            .map_err(|source| AutostartError::OpenKey { key: RUN, source })?;
         if !enabled {
             return match run.remove_value(VALUE) {
                 Ok(()) => Ok(()),
                 Err(_) if !self::enabled() => Ok(()),
-                Err(error) => Err(io::Error::other(error)),
+                Err(source) => Err(AutostartError::RemoveValue {
+                    value: VALUE,
+                    source,
+                }),
             };
         }
         let executable = super::executable()?;
         let command = format!("\"{}\" {}", executable.display(), super::HIDDEN);
-        run.set_string(VALUE, command).map_err(io::Error::other)
+        run.set_string(VALUE, command)
+            .map_err(|source| AutostartError::SetValue {
+                value: VALUE,
+                source,
+            })
     }
 }
 
 #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
 mod platform {
-    use std::io;
+    use super::AutostartError;
 
     pub const SUPPORTED: bool = false;
 
@@ -140,8 +200,8 @@ mod platform {
         false
     }
 
-    pub fn set(_: bool) -> io::Result<()> {
-        Err(io::ErrorKind::Unsupported.into())
+    pub fn set(_: bool) -> Result<(), AutostartError> {
+        Err(AutostartError::Unsupported)
     }
 }
 

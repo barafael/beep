@@ -21,3 +21,4 @@ slint = { version = "1.18.1", default-features = false, features = [
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 testbox-vnc = { path = "../vnc" }
 testbox-tools = { path = "../tools" }
+thiserror = "2"

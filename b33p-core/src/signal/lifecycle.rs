@@ -25,11 +25,10 @@ use tokio::{runtime::Runtime, task::LocalSet};
 use tracing::{info, warn};
 
 use crate::{
-    Command, Error, Event, Events, Failure, HistoryTransfer, Password, Preferences, QrMatrix,
-    attachments,
+    Classified as _, Command, Event, Events, Failure, HistoryTransfer, Password, Preferences,
+    QrMatrix, attachments,
     local::LocalStore,
     outbox::{Sending, Sends as _},
-    scrub::{scrub, scrubbed},
     transfer,
     vault::{self, KeySource, KeyringKey, NoKeyring},
 };
@@ -55,32 +54,187 @@ pub(super) enum Ending {
     Wipe,
 }
 
-/// Why an [`attempt`] failed: `message` is for the user, `detail` for the log.
-#[derive(Debug)]
-pub(super) struct Failed {
-    pub(super) failure: Failure,
-    pub(super) message: String,
-    pub(super) detail: String,
+/// Why an [`attempt`] failed. It says what went wrong for the log; [`Failed::failure`] and
+/// [`Failed::message`] are what the user is told.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum Failed {
+    #[error("could not determine a data directory")]
+    NoDataDir,
+    #[error("failed to make the data directory private")]
+    DataDir(#[source] vault::PrivateFileError),
+    #[error("failed to open the lock file {}", path.display())]
+    OpenLock {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to lock {}", path.display())]
+    Lock {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("the data directory is locked by another process")]
+    AlreadyRunning,
+    #[error("failed to delete the local data")]
+    Wipe(#[source] WipeError),
+    #[error("the record of the database key's source is damaged")]
+    KeySourceDamaged(#[source] vault::KeySourceError),
+    #[error("the database has no recorded key source")]
+    NoKeySource,
+    #[error("the database key is missing from the keyring")]
+    KeyMissing,
+    #[error("the keyring holding the database key isn't available")]
+    KeyringUnavailable(#[source] vault::KeyUnavailable),
+    #[error("the keyring is locked, and a new database key is to be kept there")]
+    KeyringLocked(#[source] NoKeyring),
+    #[error("failed to record the database key's source")]
+    WriteKeySource(#[source] vault::PrivateFileError),
+    #[error("failed to open the database")]
+    Open(#[source] OpenError),
+    #[error("failed to load the registration")]
+    LoadRegistration(#[source] PresageError<presage_store_sqlite::SqliteStoreError>),
+    #[error("failed to note that a message history transfer is under way")]
+    WriteMarker(#[source] vault::PrivateFileError),
+    #[error("failed to remove the note of a message history transfer, {}", path.display())]
+    RemoveMarker {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to forget the registration, to link again")]
+    ClearRegistration(#[source] presage_store_sqlite::SqliteStoreError),
+    #[error("failed to delete the stored contents of a half-done link")]
+    ClearContents(#[source] presage_store_sqlite::SqliteStoreError),
+    #[error("failed to delete b33p's records of a half-done link")]
+    ClearTables(#[source] sqlx::Error),
+    #[error("B33P_SIGNAL_SERVERS names neither servers nor a readable file: {name}")]
+    #[cfg(feature = "test-servers")]
+    ReadServers {
+        name: String,
+        source: std::io::Error,
+    },
+    #[error("B33P_SIGNAL_SERVERS names a file that doesn't describe servers: {name}")]
+    #[cfg(feature = "test-servers")]
+    ParseServers {
+        name: String,
+        source: toml::de::Error,
+    },
+    #[error("this store is linked to the {servers} servers, which only test builds use")]
+    TestServers { servers: String },
+    #[error("linking failed")]
+    Link(#[source] PresageError<presage_store_sqlite::SqliteStoreError>),
 }
 
 impl Failed {
-    fn new(failure: Failure, message: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            failure,
-            message: message.into(),
-            detail: detail.into(),
+    /// What the user can do about it.
+    pub(super) fn failure(&self) -> Failure {
+        match self {
+            Self::AlreadyRunning => Failure::AlreadyRunning,
+            Self::KeySourceDamaged(_) | Self::NoKeySource => Failure::NoKeyRecorded,
+            Self::KeyMissing => Failure::KeyMissing,
+            Self::KeyringUnavailable(_) => Failure::KeyringUnavailable,
+            Self::KeyringLocked(_) => Failure::KeyringLocked,
+            Self::Open(error) => error.failure(),
+            Self::Link(_) => Failure::LinkFailed,
+            _ => Failure::Other,
         }
     }
 
-    /// Something unexpected, said as it is.
-    pub(super) fn other(message: String) -> Self {
-        Self::new(Failure::Other, message.clone(), message)
+    /// What the user is told.
+    pub(super) fn message(&self) -> String {
+        match self {
+            Self::AlreadyRunning => {
+                "b33p is already running. Quit the other one, then try again.".into()
+            }
+            Self::KeySourceDamaged(_) => "The record of how your messages are protected is \
+                damaged, so they can't be opened."
+                .into(),
+            Self::NoKeySource => "b33p can't tell how your messages were protected, so they \
+                can't be opened. Start over to link this device again."
+                .into(),
+            Self::KeyMissing => "The key to your messages is missing from the system keyring, \
+                so they can't be opened. Start over to link this device again."
+                .into(),
+            Self::KeyringUnavailable(_) => "The system keyring, which holds the key to your \
+                messages, isn't available yet. Make sure it is running and unlocked; b33p keeps \
+                trying."
+                .into(),
+            Self::KeyringLocked(_) => "The system keyring is locked. Unlock it to keep the key \
+                to your messages there, or protect them with a password instead."
+                .into(),
+            Self::Open(error) => error.message().into(),
+            Self::LoadRegistration(_) => "Your account couldn't be read from the stored data. \
+                Try again; if it keeps failing, start over to link this device again."
+                .into(),
+            Self::Link(_) => {
+                "Linking this device didn't work. Check the connection and try again.".into()
+            }
+            Self::TestServers { servers } => {
+                format!(
+                    "This store is linked to the {servers} servers, which only test builds use."
+                )
+            }
+            // Something unexpected, said as it is.
+            _ => crate::Chain(self).to_string(),
+        }
     }
 }
 
-impl From<String> for Failed {
-    fn from(message: String) -> Self {
-        Self::other(message)
+/// What a session tells the user while it carries on (or starts linking again): said in
+/// words, as the causes are logged where they come up.
+#[derive(Debug, thiserror::Error)]
+enum Notice {
+    #[error(
+        "The message history transfer was interrupted. Scan the code to link this device again \
+         and retry."
+    )]
+    TransferInterrupted,
+    /// Of `kind`: the transfer's own failure, logged.
+    #[error(
+        "The message history couldn't be transferred. Scan the new code to link this device \
+         again and retry."
+    )]
+    TransferFailed { kind: crate::ErrorKind },
+    #[error(
+        "This device was removed from your Signal account. Scan the code to link it again; the \
+         messages here are kept."
+    )]
+    Removed,
+    #[error("Receiving messages failed; trying again.")]
+    ReceivingFailed,
+    #[error("The linking code couldn't be drawn. Restart b33p to try again.")]
+    QrNotDrawn,
+    #[error("the task sending messages in order has stopped")]
+    OrderedSendingStopped,
+}
+
+impl crate::Classified for Notice {
+    fn kind(&self) -> crate::ErrorKind {
+        use crate::ErrorKind::{Refused, Storage, Unreachable};
+        match self {
+            Self::TransferInterrupted | Self::ReceivingFailed => Unreachable,
+            Self::TransferFailed { kind } => *kind,
+            Self::Removed | Self::QrNotDrawn => Refused,
+            Self::OrderedSendingStopped => Storage,
+        }
+    }
+}
+
+/// Why the local data couldn't be deleted.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum WipeError {
+    #[error("could not determine a data directory")]
+    NoDataDir,
+    #[error("failed to make the data directory private")]
+    DataDir(#[source] vault::PrivateFileError),
+    #[error("Couldn't delete {}", path.display())]
+    Delete {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl crate::Classified for WipeError {
+    fn kind(&self) -> crate::ErrorKind {
+        crate::ErrorKind::Storage
     }
 }
 
@@ -94,7 +248,10 @@ pub(super) fn attempt(
     lock: &mut Option<std::fs::File>,
     use_password: bool,
 ) -> Result<Ending, Failed> {
-    let paths = Paths::new()?;
+    let paths = Paths::new().map_err(|error| match error {
+        PathsError::NoDataDir => Failed::NoDataDir,
+        PathsError::DataDir(error) => Failed::DataDir(error),
+    })?;
     if lock.is_none() {
         *lock = Some(lock_data(&paths)?);
     }
@@ -213,9 +370,24 @@ pub(super) struct Paths {
     keyring_account: String,
 }
 
+/// Why the data directory can't be had.
+pub(super) enum PathsError {
+    NoDataDir,
+    DataDir(vault::PrivateFileError),
+}
+
+impl From<PathsError> for WipeError {
+    fn from(error: PathsError) -> Self {
+        match error {
+            PathsError::NoDataDir => Self::NoDataDir,
+            PathsError::DataDir(error) => Self::DataDir(error),
+        }
+    }
+}
+
 impl Paths {
-    pub(super) fn new() -> Result<Self, String> {
-        let dir = crate::settings::data_dir().ok_or("could not determine a data directory")?;
+    pub(super) fn new() -> Result<Self, PathsError> {
+        let dir = crate::settings::data_dir().ok_or(PathsError::NoDataDir)?;
         // A separate data directory gets its own keyring entry, so it never replaces the
         // default one.
         let keyring_account = if crate::settings::custom_data_dir() {
@@ -224,12 +396,11 @@ impl Paths {
             vault::DEFAULT_ACCOUNT.to_owned()
         };
         // 0700: the database is only as private as the directory holding it.
-        vault::restrict_dir(&dir)
-            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        vault::restrict_dir(&dir).map_err(PathsError::DataDir)?;
         // Earlier versions wrote it world-readable.
         match vault::restrict_file(&dir.join("b33p.key")) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                warn!(error = %scrubbed(&error), "could not make the key source private");
+            Err(error) if error.io().kind() != std::io::ErrorKind::NotFound => {
+                warn!(error = %crate::scrub::chain(&error), "could not make the key source private");
             }
             _ => {}
         }
@@ -263,23 +434,23 @@ fn lock_data(paths: &Paths) -> Result<std::fs::File, Failed> {
         .truncate(false)
         .write(true)
         .open(paths.lock())
-        .map_err(|e| format!("failed to open {}: {e}", paths.lock().display()))?;
+        .map_err(|source| Failed::OpenLock {
+            path: paths.lock(),
+            source,
+        })?;
     match file.try_lock() {
         Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(Failed::new(
-            Failure::AlreadyRunning,
-            "b33p is already running. Quit the other one, then try again.",
-            "the data directory is locked by another process",
-        )),
-        Err(std::fs::TryLockError::Error(error)) => {
-            Err(format!("failed to lock {}: {error}", paths.lock().display()).into())
-        }
+        Err(std::fs::TryLockError::WouldBlock) => Err(Failed::AlreadyRunning),
+        Err(std::fs::TryLockError::Error(source)) => Err(Failed::Lock {
+            path: paths.lock(),
+            source,
+        }),
     }
 }
 
 /// Deletes the messages and keys stored here, for linking again from scratch. The settings
 /// (elsewhere) stay, and so does the lock this process holds.
-pub(super) fn wipe(paths: &Paths) -> Result<(), String> {
+pub(super) fn wipe(paths: &Paths) -> Result<(), WipeError> {
     info!("deleting the local data");
     for path in [
         paths.db.clone(),
@@ -288,8 +459,8 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), String> {
         paths.transfer_marker(),
     ] {
         match std::fs::remove_file(&path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(format!("Couldn't delete {}: {error}", path.display()));
+            Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+                return Err(WipeError::Delete { path, source });
             }
             _ => {}
         }
@@ -301,13 +472,13 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), String> {
     ) && let Err(error) = vault::delete_keyring_key(&paths.keyring_account)
     {
         // Harmless: a new key replaces it when linking again.
-        warn!(error = %scrubbed(&error), "could not delete the database key from the keyring");
+        warn!(error = %crate::scrub::chain(&error), "could not delete the database key from the keyring");
     }
     match std::fs::remove_file(&paths.key_source) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
-            "Couldn't delete {}: {error}",
-            paths.key_source.display()
-        )),
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => Err(WipeError::Delete {
+            path: paths.key_source.clone(),
+            source,
+        }),
         _ => Ok(()),
     }
 }
@@ -335,50 +506,23 @@ fn unlock(
     device_name: &RefCell<String>,
     use_password: bool,
 ) -> Result<Unlocked, Failed> {
-    let source = KeySource::read(&paths.key_source).map_err(|e| {
-        Failed::new(
-            Failure::NoKeyRecorded,
-            "The record of how your messages are protected is damaged, so they can't be opened.",
-            e.to_string(),
-        )
-    })?;
+    let source = KeySource::read(&paths.key_source).map_err(Failed::KeySourceDamaged)?;
     let (salt, kdf) = match source {
         Some(KeySource::Keyring) => {
             let key = match vault::keyring_key(&paths.keyring_account) {
                 KeyringKey::Found(key) => key,
-                KeyringKey::Missing => {
-                    return Err(Failed::new(
-                        Failure::KeyMissing,
-                        "The key to your messages is missing from the system keyring, so they \
-                         can't be opened. Start over to link this device again.",
-                        "the database key is missing from the keyring",
-                    ));
-                }
-                KeyringKey::Unavailable(reason) => {
-                    return Err(Failed::new(
-                        Failure::KeyringUnavailable,
-                        "The system keyring, which holds the key to your messages, isn't \
-                         available yet. Make sure it is running and unlocked; b33p keeps trying.",
-                        reason,
-                    ));
-                }
+                KeyringKey::Missing => return Err(Failed::KeyMissing),
+                KeyringKey::Unavailable(reason) => return Err(Failed::KeyringUnavailable(reason)),
             };
             return open_store(runtime, local, paths, &key)
                 .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
-                .map_err(OpenError::failed);
+                .map_err(Failed::Open);
         }
         Some(KeySource::Password { salt, kdf }) => (salt, kdf),
-        None if paths.db.exists() => {
-            return Err(Failed::new(
-                Failure::NoKeyRecorded,
-                "b33p can't tell how your messages were protected, so they can't be opened. \
-                 Start over to link this device again.",
-                "the database has no recorded key source",
-            ));
-        }
+        None if paths.db.exists() => return Err(Failed::NoKeySource),
         None => {
             let created = if use_password {
-                Err(NoKeyring::Absent("a password was chosen instead".into()))
+                Err(NoKeyring::Declined)
             } else {
                 vault::create_keyring_key(&paths.keyring_account)
             };
@@ -387,20 +531,13 @@ fn unlock(
                     write_source(paths, &KeySource::Keyring)?;
                     return open_store(runtime, local, paths, &key)
                         .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
-                        .map_err(OpenError::failed);
+                        .map_err(Failed::Open);
                 }
                 // Locked now, but it may be unlocked in a moment: a password is for good, so
                 // that is the user's choice to make.
-                Err(NoKeyring::Locked(reason)) => {
-                    return Err(Failed::new(
-                        Failure::KeyringLocked,
-                        "The system keyring is locked. Unlock it to keep the key to your \
-                         messages there, or protect them with a password instead.",
-                        reason,
-                    ));
-                }
-                Err(NoKeyring::Absent(reason)) => {
-                    info!(reason = %scrubbed(&reason), "no usable system keyring; protecting the database with a password");
+                Err(locked @ NoKeyring::Locked(_)) => return Err(Failed::KeyringLocked(locked)),
+                Err(reason) => {
+                    info!(reason = %crate::scrub::chain(&reason), "no usable system keyring; protecting the database with a password");
                     let salt = vault::random_salt();
                     let kdf = vault::Kdf::CURRENT;
                     write_source(paths, &KeySource::Password { salt, kdf })?;
@@ -425,7 +562,7 @@ fn unlock(
         };
         // The UI checks this too, but the key is the only way back into the messages, so the
         // backend doesn't take a too-short one from any frontend.
-        if new && let Err(problem) = check_new_password(password.expose()) {
+        if new && let Some(problem) = crate::state::password_problem(password.expose()) {
             error = Some(problem);
             continue;
         }
@@ -436,20 +573,15 @@ fn unlock(
                 info!("wrong password for the database");
                 error = Some("Wrong password.".into());
             }
-            Err(error) => return Err(error.failed()),
+            Err(error) => return Err(Failed::Open(error)),
         }
     }
 }
 
-fn write_source(paths: &Paths, source: &KeySource) -> Result<(), String> {
+fn write_source(paths: &Paths, source: &KeySource) -> Result<(), Failed> {
     source
         .write(&paths.key_source)
-        .map_err(|e| format!("failed to write {}: {e}", paths.key_source.display()))
-}
-
-/// The policy for a new database password, the same one the password screen applies.
-fn check_new_password(password: &str) -> Result<(), String> {
-    crate::state::password_problem(password).map_or(Ok(()), Err)
+        .map_err(Failed::WriteKeySource)
 }
 
 /// What came instead of the password the backend waits for.
@@ -478,85 +610,100 @@ fn wait_for_password(
 }
 
 /// Why [`open_store`] couldn't open the database.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(super) enum OpenError {
     /// Not the key it was encrypted with (SQLCipher then reads garbage: "file is not a
     /// database").
+    #[error("the key doesn't open the database")]
     WrongKey,
     /// Written by a newer b33p: it has migrations this one doesn't know.
+    #[error("the database has migrations this build doesn't know")]
     TooNew,
     /// Its migrations differ from this build's, or one was left half-done.
-    Incompatible(String),
-    Other(String),
+    #[error("the database's migrations differ from this build's")]
+    Incompatible(#[source] sqlx::migrate::MigrateError),
+    #[error("failed to open presage's store")]
+    Store(#[source] presage_store_sqlite::SqliteStoreError),
+    #[error("failed to open b33p's tables")]
+    Tables(#[source] crate::local::OpenError),
 }
 
 impl OpenError {
-    fn of_store(error: &presage_store_sqlite::SqliteStoreError) -> Self {
+    fn of_store(error: presage_store_sqlite::SqliteStoreError) -> Self {
         use presage_store_sqlite::SqliteStoreError;
         match error {
-            SqliteStoreError::Db(error) => Self::of_db(error),
-            SqliteStoreError::Migrate(error) => Self::of_migration(error),
-            error => Self::Other(error.to_string()),
+            SqliteStoreError::Db(error) if is_not_a_database(&error) => Self::WrongKey,
+            SqliteStoreError::Migrate(error) => Self::of_migration(error)
+                .unwrap_or_else(|error| Self::Store(SqliteStoreError::Migrate(error))),
+            error => Self::Store(error),
         }
     }
 
-    fn of_db(error: &sqlx::Error) -> Self {
-        // SQLITE_NOTADB, as sqlx gives SQLite's extended result codes.
-        if let sqlx::Error::Database(e) = error
-            && e.code().as_deref() == Some("26")
-        {
-            return Self::WrongKey;
+    fn of_tables(error: crate::local::OpenError) -> Self {
+        match error {
+            crate::local::OpenError::TooNew(_) => Self::TooNew,
+            error if error.db().is_some_and(is_not_a_database) => Self::WrongKey,
+            error => Self::Tables(error),
         }
-        Self::Other(error.to_string())
     }
 
-    fn of_migration(error: &sqlx::migrate::MigrateError) -> Self {
+    /// What `error` says about the database, if anything: else it, back.
+    fn of_migration(
+        error: sqlx::migrate::MigrateError,
+    ) -> Result<Self, sqlx::migrate::MigrateError> {
         use sqlx::migrate::MigrateError;
         match error {
             // The first read of a wrong key may come from the migrator.
-            MigrateError::Execute(e) | MigrateError::ExecuteMigration(e, _) => match Self::of_db(e)
+            MigrateError::Execute(ref e) | MigrateError::ExecuteMigration(ref e, _)
+                if is_not_a_database(e) =>
             {
-                Self::WrongKey => Self::WrongKey,
-                _ => Self::Other(error.to_string()),
-            },
-            MigrateError::VersionMissing(_) => Self::TooNew,
+                Ok(Self::WrongKey)
+            }
+            MigrateError::VersionMissing(_) => Ok(Self::TooNew),
             error @ (MigrateError::VersionMismatch(_)
             | MigrateError::VersionTooOld(..)
-            | MigrateError::Dirty(_)) => Self::Incompatible(error.to_string()),
-            error => Self::Other(error.to_string()),
+            | MigrateError::Dirty(_)) => Ok(Self::Incompatible(error)),
+            error => Err(error),
+        }
+    }
+
+    fn failure(&self) -> Failure {
+        match self {
+            Self::WrongKey => Failure::KeyMissing,
+            Self::TooNew => Failure::StoreTooNew,
+            Self::Incompatible(_) => Failure::StoreIncompatible,
+            Self::Store(_) | Self::Tables(_) => Failure::Other,
         }
     }
 
     /// What the user is told. Never that the password is wrong unless it is: they might
     /// delete their data over it.
-    fn failed(self) -> Failed {
+    fn message(&self) -> &'static str {
         match self {
-            Self::WrongKey => Failed::new(
-                Failure::KeyMissing,
+            Self::WrongKey => {
                 "The key in the system keyring doesn't open your messages. Start over to link \
-                 this device again.",
-                "the database key doesn't open the database",
-            ),
-            Self::TooNew => Failed::new(
-                Failure::StoreTooNew,
+                 this device again."
+            }
+            Self::TooNew => {
                 "Your messages were saved by a newer version of b33p. Install that version \
-                 again to open them.",
-                "the database has migrations this build doesn't know",
-            ),
-            Self::Incompatible(detail) => Failed::new(
-                Failure::StoreIncompatible,
+                 again to open them."
+            }
+            Self::Incompatible(_) => {
                 "Your messages were saved by a version of b33p that this one can't read. \
-                 Install the version you used before to open them.",
-                detail,
-            ),
-            Self::Other(detail) => Failed::new(
-                Failure::Other,
+                 Install the version you used before to open them."
+            }
+            Self::Store(_) | Self::Tables(_) => {
                 "Your messages couldn't be opened. Try again; if it keeps failing, the log \
-                 says why.",
-                detail,
-            ),
+                 says why."
+            }
         }
     }
+}
+
+/// Whether `error` is SQLite's SQLITE_NOTADB (as sqlx gives SQLite's extended result codes):
+/// what a wrong key reads as.
+fn is_not_a_database(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(e) if e.code().as_deref() == Some("26"))
 }
 
 fn open_store(
@@ -598,17 +745,14 @@ fn open_store(
             runtime,
             SqliteStore::open_with_options(options.clone(), OnNewIdentity::Trust),
         )
-        .map_err(|e| OpenError::of_store(&e))?;
+        .map_err(OpenError::of_store)?;
     // Same options, so the same key and close guard.
     let tables = local
         .block_on(runtime, LocalStore::open(options))
-        .map_err(|e| match e {
-            crate::local::OpenError::Db(e) => OpenError::of_db(&e),
-            crate::local::OpenError::TooNew(_) => OpenError::TooNew,
-        })?;
+        .map_err(OpenError::of_tables)?;
     // Once presage's tables are there. Only for speed: without it everything still works.
     if let Err(error) = local.block_on(runtime, tables.index_messages()) {
-        warn!(error = %scrubbed(&error), "could not index the stored messages");
+        warn!(error = %crate::scrub::chain(&error), "could not index the stored messages");
     }
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
@@ -618,9 +762,9 @@ fn open_store(
         paths.db.with_extension("db3-shm"),
     ] {
         if let Err(error) = vault::restrict_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
+            && error.io().kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %scrubbed(&path.display()), error = %scrubbed(&error), "could not make a database file private");
+            warn!(error = %crate::scrub::chain(&error), "could not make a database file private");
         }
     }
     Ok((store, tables, closed))
@@ -646,10 +790,7 @@ async fn session(
             }
             Some(marker) => {
                 unlink(manager).await;
-                events.send(Event::Error(Error::unreachable(
-                    "The message history transfer was interrupted. Scan the code to link this \
-                     device again and retry.",
-                )));
+                events.send(Event::Error(Notice::TransferInterrupted.into()));
                 reset(store.clone(), &tables, paths, marker.keeps()).await?;
                 link_with_history(
                     store.clone(),
@@ -684,14 +825,7 @@ async fn session(
             )
             .await?
         }
-        Err(error) => {
-            return Err(Failed::new(
-                Failure::Other,
-                "Your account couldn't be read from the stored data. Try again; if it keeps \
-                 failing, start over to link this device again.",
-                format!("failed to load registration: {error}"),
-            ));
-        }
+        Err(error) => return Err(Failed::LoadRegistration(error)),
     };
     // Runs until the UI goes away; if Signal removes this device meanwhile, links it again.
     loop {
@@ -714,10 +848,7 @@ async fn session(
             Ended::Unlinked => return Ok(Ending::Wipe),
             Ended::Removed => {}
         }
-        events.send(Event::Error(Error::refused(
-            "This device was removed from your Signal account. Scan the code to link it again; \
-             the messages here are kept.",
-        )));
+        events.send(Event::Error(Notice::Removed.into()));
         // Linking clears the dead registration; the conversations stay.
         linked = link_with_history(
             store.clone(),
@@ -796,7 +927,7 @@ async fn run_linked(
         // The answer arrives through `receive` as `Received::Contacts`.
         info!("no contacts yet; requesting them from the primary device");
         if let Err(error) = ctx.outbox.request_contacts().await {
-            warn!(error = %scrubbed(&error), "failed to request contacts");
+            warn!(error = %crate::scrub::chain(&error), "failed to request contacts");
         }
     }
     if !storage_read {
@@ -865,10 +996,8 @@ async fn run_linked(
                     let Err(error) = finished else { break Ended::Removed };
                     // Anything else it couldn't handle: start over, rather than look connected
                     // while nothing arrives; later and later should it keep failing.
-                    warn!(error = %scrubbed(&error), "receiving failed");
-                    events.send(Event::Error(Error::unreachable(
-                        "Receiving messages failed; trying again.",
-                    )));
+                    warn!(error = %crate::scrub::chain(&error), "receiving failed");
+                    events.send(Event::Error(Notice::ReceivingFailed.into()));
                     failures += 1;
                     let after = Duration::from_secs(5 << failures.min(6));
                     receiving = start_receiving(
@@ -897,7 +1026,7 @@ async fn run_linked(
         if outgoing(&command) {
             // Kept from here until it went out: should b33p stop before, it shows as failed.
             if let Err(error) = ctx.tables.keep_unsent(&command).await {
-                warn!(%error, "failed to keep a message until it is sent");
+                warn!(error = %crate::scrub::chain(&error), "failed to keep a message until it is sent");
             }
             // It fails only if the task taking them in order panicked: then say the message
             // failed rather than show it as on its way. It is kept, so it shows as failed at
@@ -915,11 +1044,7 @@ async fn run_linked(
                         retryable: false,
                     });
                 }
-                command_failed(
-                    &events,
-                    Error::storage("the task sending messages in order has stopped"),
-                    command,
-                );
+                command_failed(&events, Notice::OrderedSendingStopped.into(), command);
             }
             continue;
         }
@@ -1017,12 +1142,10 @@ async fn link_with_history(
             }
             Ok(transfer::Outcome::Relink) => info!("the phone asked to link again"),
             Err(error) => {
-                warn!(error = %scrub(&error.message), kind = ?error.kind, "message history transfer failed");
-                events.send(Event::Error(Error::new(
-                    error.kind,
-                    "The message history couldn't be transferred. Scan the new code to link \
-                     this device again and retry.",
-                )));
+                warn!(error = %crate::scrub::chain(&error), kind = ?error.kind(), "message history transfer failed");
+                events.send(Event::Error(
+                    Notice::TransferFailed { kind: error.kind() }.into(),
+                ));
             }
         }
         unlink(manager).await;
@@ -1034,7 +1157,7 @@ async fn link_with_history(
 /// devices doesn't fill up with dead entries. Best effort: linking again works regardless.
 async fn unlink(manager: Mgr) {
     if let Err(error) = manager.unlink_self().await {
-        warn!(error = %scrubbed(&error), "failed to remove this device from the account");
+        warn!(error = %crate::scrub::chain(&error), "failed to remove this device from the account");
     }
 }
 
@@ -1058,21 +1181,22 @@ impl Marker {
         })
     }
 
-    fn write(self, paths: &Paths) -> Result<(), String> {
+    fn write(self, paths: &Paths) -> Result<(), Failed> {
         let text = match self {
             Self::Link => "link\n",
             Self::Relink => "relink\n",
         };
-        vault::write_private(&paths.transfer_marker(), text.as_bytes())
-            .map_err(|e| format!("failed to write {}: {e}", paths.transfer_marker().display()))
+        vault::write_private(&paths.transfer_marker(), text.as_bytes()).map_err(Failed::WriteMarker)
     }
 
-    fn remove(paths: &Paths) -> Result<(), String> {
+    fn remove(paths: &Paths) -> Result<(), Failed> {
         match std::fs::remove_file(paths.transfer_marker()) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!(
-                "failed to remove {}: {error}",
-                paths.transfer_marker().display()
-            )),
+            Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+                Err(Failed::RemoveMarker {
+                    path: paths.transfer_marker(),
+                    source,
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -1102,20 +1226,17 @@ async fn reset(
     tables: &LocalStore,
     paths: &Paths,
     keep: Keep,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     store
         .clear_registration()
         .await
-        .map_err(|e| format!("failed to reset the database: {e}"))?;
+        .map_err(Failed::ClearRegistration)?;
     if keep == Keep::Nothing {
         store
             .clear_contents()
             .await
-            .map_err(|e| format!("failed to reset the database: {e}"))?;
-        tables
-            .clear()
-            .await
-            .map_err(|e| format!("failed to reset the database: {e}"))?;
+            .map_err(Failed::ClearContents)?;
+        tables.clear().await.map_err(Failed::ClearTables)?;
     }
     Marker::remove(paths)
 }
@@ -1127,7 +1248,7 @@ compile_error!("the `test-servers` feature is for test builds: build without `--
 
 /// The servers a new link goes to: Signal's.
 #[cfg(not(feature = "test-servers"))]
-fn link_servers() -> Result<SignalServers, String> {
+fn link_servers() -> Result<SignalServers, Failed> {
     Ok(SignalServers::Production)
 }
 
@@ -1135,28 +1256,33 @@ fn link_servers() -> Result<SignalServers, String> {
 /// file describing servers of one's own, such as the testbox's, in the form presage-cli's
 /// `--servers-file` reads.
 #[cfg(feature = "test-servers")]
-fn link_servers() -> Result<SignalServers, String> {
+fn link_servers() -> Result<SignalServers, Failed> {
     let Ok(name) = std::env::var("B33P_SIGNAL_SERVERS") else {
         return Ok(SignalServers::Production);
     };
     if let Ok(servers) = name.parse() {
         return Ok(servers);
     }
-    let text = std::fs::read_to_string(&name)
-        .map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+    let text = match std::fs::read_to_string(&name) {
+        Ok(text) => text,
+        Err(source) => return Err(Failed::ReadServers { name, source }),
+    };
     let configuration: presage::libsignal_service::configuration::ServiceConfiguration =
-        toml::from_str(&text).map_err(|error| format!("B33P_SIGNAL_SERVERS {name}: {error}"))?;
+        match toml::from_str(&text) {
+            Ok(configuration) => configuration,
+            Err(source) => return Err(Failed::ParseServers { name, source }),
+        };
     Ok(SignalServers::Custom(Box::new(configuration)))
 }
 
 /// A store linked to other servers ([`link_servers`]) stays out of builds without them.
-fn test_servers_unless_production(servers: &SignalServers) -> Result<(), String> {
+fn test_servers_unless_production(servers: &SignalServers) -> Result<(), Failed> {
     if cfg!(feature = "test-servers") || *servers == SignalServers::Production {
         Ok(())
     } else {
-        Err(format!(
-            "This store is linked to the {servers} servers, which only test builds use."
-        ))
+        Err(Failed::TestServers {
+            servers: servers.to_string(),
+        })
     }
 }
 
@@ -1182,21 +1308,13 @@ async fn link(
                 // that never completes.
                 events.send(match QrMatrix::encode(url.as_str()) {
                     Some(qr) => Event::LinkQr(qr),
-                    None => Event::Error(Error::refused(
-                        "The linking code couldn't be drawn. Restart b33p to try again.",
-                    )),
+                    None => Event::Error(Notice::QrNotDrawn.into()),
                 });
             }
         },
     )
     .await;
-    let manager = linked.map_err(|e| {
-        Failed::new(
-            Failure::LinkFailed,
-            "Linking this device didn't work. Check the connection and try again.",
-            format!("linking failed: {e}"),
-        )
-    })?;
+    let manager = linked.map_err(Failed::Link)?;
     let history_key = manager.registration_data().ephemeral_backup_key();
     Ok((manager, history_key))
 }
@@ -1220,9 +1338,10 @@ pub(super) mod tests {
     /// fourteen bytes, and eight are enough.
     #[test]
     fn new_passwords_need_eight_characters_not_bytes() {
-        assert!(check_new_password("").is_err());
-        assert!(check_new_password("äöüäöüä").is_err());
-        assert!(check_new_password("äöüäöüäö").is_ok());
+        use crate::state::password_problem;
+        assert!(password_problem("").is_some());
+        assert!(password_problem("äöüäöüä").is_some());
+        assert!(password_problem("äöüäöüäö").is_none());
     }
 
     #[test]
@@ -1340,9 +1459,9 @@ pub(super) mod tests {
         .unwrap();
         let reopened = open_and_close(&paths, &key, async |_, _| {});
         assert!(matches!(reopened, Err(OpenError::TooNew)), "{reopened:?}");
-        let failed = reopened.unwrap_err().failed();
-        assert_eq!(failed.failure, Failure::StoreTooNew);
-        assert!(!failed.message.to_lowercase().contains("password"));
+        let failed = Failed::Open(reopened.unwrap_err());
+        assert_eq!(failed.failure(), Failure::StoreTooNew);
+        assert!(!failed.message().to_lowercase().contains("password"));
     }
 
     /// Linking again after the device was removed keeps the messages, whatever becomes of the
@@ -1448,7 +1567,7 @@ pub(super) mod tests {
         let held = lock_data(&paths).unwrap();
         let second = lock_data(&paths);
         assert!(
-            matches!(&second, Err(failed) if failed.failure == Failure::AlreadyRunning),
+            matches!(&second, Err(failed) if failed.failure() == Failure::AlreadyRunning),
             "{second:?}"
         );
         drop(held);

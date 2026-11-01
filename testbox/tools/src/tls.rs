@@ -3,6 +3,7 @@
 //! the NSS key log format (testbox/capture/pod.yaml). rustls reads the variable itself; unset,
 //! the secrets go nowhere.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rustls::pki_types::pem::PemObject;
@@ -10,19 +11,48 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{KeyLogFile, ServerConfig};
 
 use crate::keys::KeyFile;
-use crate::{Describe, Error, Result};
+
+/// The keys' certificate and key, which a server's configuration couldn't take.
+#[derive(Debug, thiserror::Error)]
+pub enum TlsError {
+    #[error("reading the keys' certificate {}", path.display())]
+    Certificate {
+        path: PathBuf,
+        #[source]
+        source: rustls::pki_types::pem::Error,
+    },
+    #[error("reading the keys' key {}", path.display())]
+    Key {
+        path: PathBuf,
+        #[source]
+        source: rustls::pki_types::pem::Error,
+    },
+    /// The certificate and key, read, that rustls refuses as a pair.
+    #[error("serving with the keys' certificate")]
+    Config(#[source] rustls::Error),
+    /// Another provider than ring, installed before.
+    #[error("a TLS provider is installed already")]
+    ProviderInstalled,
+}
 
 /// A server's configuration with the keys' certificate and the key log, offering `alpn`.
-pub fn server_config(alpn: &[&str]) -> Result<ServerConfig> {
-    let certificates = CertificateDer::pem_file_iter(KeyFile::TlsCertificate.path())
-        .describe("the keys' certificate")?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .describe("the keys' certificate")?;
-    let key = PrivateKeyDer::from_pem_file(KeyFile::TlsKey.path()).describe("the keys' key")?;
+pub fn server_config(alpn: &[&str]) -> Result<ServerConfig, TlsError> {
+    let path = KeyFile::TlsCertificate.path();
+    let certificate = |source| TlsError::Certificate {
+        path: path.clone(),
+        source,
+    };
+    let certificates = CertificateDer::pem_file_iter(&path)
+        .map_err(certificate)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(certificate)?;
+    let path = KeyFile::TlsKey.path();
+    let key =
+        PrivateKeyDer::from_pem_file(&path).map_err(|source| TlsError::Key { path, source })?;
     let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificates, key)
-        .describe("the keys' certificate")?;
+        .map_err(TlsError::Config)?;
     config.alpn_protocols = alpn
         .iter()
         .map(|protocol| protocol.as_bytes().to_vec())
@@ -32,10 +62,10 @@ pub fn server_config(alpn: &[&str]) -> Result<ServerConfig> {
 }
 
 /// rustls' provider, once: ring, as the keys are made with it (testbox/tools Cargo.toml).
-pub fn install_provider() -> Result<()> {
+pub fn install_provider() -> Result<(), TlsError> {
     rustls::crypto::ring::default_provider()
         .install_default()
-        .map_err(|_installed| Error::Failed("a TLS provider is installed already".to_owned()))
+        .map_err(|_installed| TlsError::ProviderInstalled)
 }
 
 /// Where this server's secrets go, said once at its start.

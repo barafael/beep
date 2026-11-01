@@ -15,8 +15,7 @@
 
 use std::collections::HashSet;
 
-use crate::error::Result;
-use crate::pod::{Pod, Service};
+use crate::pod::{Pod, PodError, Service};
 
 /// b33p's lines for a lost message (b33p-core/src/signal.rs, `Received::DecryptionError`).
 const B33P: [&str; 2] = [
@@ -36,8 +35,9 @@ const DESKTOP_DECRYPTED: &str = "queueing decrypted envelope ";
 pub(super) const LOGCAT: &str = "/tmp/logcat.txt";
 /// Signal-Desktop's logs, app.log and main.log, in its user data (testbox/desktop/driver.ts).
 pub(super) const DESKTOP_LOGS: &str = "cat /home/desktop/data/logs/*.log";
-/// Every line of the clients' logs that tells of a lost message.
-pub(super) fn found(containers: &Pod) -> Result<Vec<String>> {
+/// Every line of the clients' logs that tells of a lost message; fails if a log can't be read,
+/// as the pod's own error, which names the service.
+pub(super) fn found(containers: &Pod) -> Result<Vec<String>, PodError> {
     let mut lost = Vec::new();
     for b33p in containers.b33ps() {
         let log = containers.log(b33p)?;

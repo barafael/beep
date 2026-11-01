@@ -1,18 +1,81 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use b33p_harness::{
     Action, AttachmentKind, AttachmentSnapshot, Download, Saved, Snapshot, StickersSnapshot,
 };
 
-use super::b33p::{b33p_chat, b33p_shows, incoming_index, select, type_and_send};
+use super::b33p::{
+    b33p_chat, b33p_shows, incoming_index, message_timestamp, select, type_and_send,
+};
 use super::setup::{LinkedBox, restart_b33p};
-use super::{Checks, PATIENCE, PATIENCE_MS};
+use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
 use crate::Sockets;
-use crate::error::{Context, Error, Result};
-use crate::harness::Harness;
+use crate::harness::{Harness, HarnessError};
 use crate::pod::{Pod, Service};
 use crate::process;
 use testbox_tools::drivers;
+
+/// What the attachment checks find b33p not doing, or fail at on the way.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum AttachmentsError {
+    /// The picture the checks send, copied where the clients see the test files.
+    #[error("copying {} to {}", from.display(), to.display())]
+    CopyPicture {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("waiting for b33p's {step} of {id}")]
+    Waiting {
+        id: String,
+        step: Step,
+        #[source]
+        source: HarnessError,
+    },
+    /// b33p shows the download or the saving of an attachment failed, with its own words.
+    #[error("b33p's {step} of {id} failed: {error}")]
+    Failed {
+        id: String,
+        step: Step,
+        error: String,
+    },
+    /// b33p's sticker picker lists installed packs, not the one seeded.
+    #[error("b33p lists the packs {installed:?}, not the pack {pack} (or it has no sticker)")]
+    NoPack {
+        pack: String,
+        installed: Vec<String>,
+    },
+}
+
+/// What b33p does with a received attachment, which [`AttachmentsError`] waits for.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Step {
+    Download,
+    Save,
+}
+
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Download => "download",
+            Self::Save => "saving",
+        })
+    }
+}
+
+/// Copies `picture` into `files` as `picture.png`, where the clients see it as
+/// `/files/picture.png`.
+pub(super) fn stage_picture(picture: &Path, files: &Path) -> Result<(), AttachmentsError> {
+    let to = files.join("picture.png");
+    std::fs::copy(picture, &to)
+        .map(drop)
+        .map_err(|source| AttachmentsError::CopyPicture {
+            from: picture.to_owned(),
+            to,
+            source,
+        })
+}
 
 /// Pictures, files and audio through CDN3 between b33p and Signal-Desktop, in `desktop`'s box,
 /// then a profile picture and a sticker pack through CDN0. `files` is where both see the test
@@ -24,7 +87,7 @@ pub(super) fn attachments(
     sockets: &Sockets,
     files: &Path,
     picture: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let LinkedBox {
         primary,
         primary_aci,
@@ -35,7 +98,7 @@ pub(super) fn attachments(
     } = linked;
 
     // The directory `cargo testbox up` made (xtask/src/pod.rs FILES).
-    std::fs::copy(picture, files.join("picture.png")).context(picture.display().to_string())?;
+    stage_picture(picture, files)?;
     testbox_tools::write(&files.join("notes.txt"), "testbox attachments: a file\n")?;
     testbox_tools::write(&files.join("tone.wav"), b33p_core::mock_voice_message())?;
     let in_box = |name: &str| format!("/files/{name}");
@@ -50,10 +113,10 @@ pub(super) fn attachments(
         desktop.call(drivers::Desktop::OpenConversation {
             aci: primary_aci.clone(),
         })?;
-        desktop.call(drivers::Desktop::WaitForImage {
+        Ok(desktop.call(drivers::Desktop::WaitForImage {
             text: picture_text.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     checks.record("a file from b33p reaches Desktop", || {
@@ -61,10 +124,10 @@ pub(super) fn attachments(
             paths: vec![in_box("notes.txt")],
         })?;
         type_and_send(b33p, "testbox attachments: a file from b33p")?;
-        desktop.call(drivers::Desktop::WaitForFile {
+        Ok(desktop.call(drivers::Desktop::WaitForFile {
             file_name: "notes.txt".to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     checks.record(
@@ -77,7 +140,7 @@ pub(super) fn attachments(
             })?;
             let id = incoming_attachment(b33p, Some(text), AttachmentKind::Image)?;
             b33p.act(Action::FetchAttachment { id: id.clone() })?;
-            downloaded(b33p, &id)
+            Ok(downloaded(b33p, &id)?)
         },
     );
 
@@ -87,19 +150,14 @@ pub(super) fn attachments(
         || {
             let text = "testbox attachments: a picture from Desktop";
             let index = incoming_index(b33p, text)?;
-            let timestamp = b33p
-                .snapshot()?
-                .messages
-                .iter()
-                .find(|message| message.index == index)
-                .map(|message| message.timestamp)
-                .ok_or("Desktop's picture went from b33p's view")?;
+            let timestamp =
+                message_timestamp(b33p, "Desktop's picture", |message| message.index == index)?;
             desktop.call(drivers::Desktop::DeleteForEveryone {
                 text: text.to_owned(),
             })?;
-            b33p_shows(b33p, "Desktop's picture deleted", |message| {
+            Ok(b33p_shows(b33p, "Desktop's picture deleted", |message| {
                 message.timestamp == timestamp && message.deleted && message.attachments.is_empty()
-            })
+            })?)
         },
     );
 
@@ -111,7 +169,7 @@ pub(super) fn attachments(
         })?;
         let id = incoming_attachment(b33p, Some(text), AttachmentKind::File)?;
         b33p.act(Action::SaveAttachment { id: id.clone() })?;
-        saved(b33p, &id)
+        Ok(saved(b33p, &id)?)
     });
 
     // TESTPLAN.md §3.2. A voice message has no text, and b33p records none: what it sends the
@@ -120,7 +178,7 @@ pub(super) fn attachments(
         desktop.call(drivers::Desktop::SendVoiceMessage)?;
         let id = incoming_attachment(b33p, None, AttachmentKind::VoiceNote)?;
         b33p.act(Action::SaveAttachment { id: id.clone() })?;
-        saved(b33p, &id)
+        Ok(saved(b33p, &id)?)
     });
 
     checks.record("an audio file from b33p reaches Desktop as audio", || {
@@ -128,9 +186,9 @@ pub(super) fn attachments(
             paths: vec![in_box("tone.wav")],
         })?;
         type_and_send(b33p, "testbox attachments: audio from b33p")?;
-        desktop.call(drivers::Desktop::WaitForIncomingAudio {
+        Ok(desktop.call(drivers::Desktop::WaitForIncomingAudio {
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     // CDN0: Desktop uploads the picture with a POST policy (testbox/tools `cdn0`). b33p
@@ -142,9 +200,12 @@ pub(super) fn attachments(
     checks.record("a profile picture set on Desktop shows in b33p", || {
         desktop.call(drivers::Desktop::SetProfileAvatar)?;
         *b33p = restart_b33p(containers, &sockets.b33p)?;
-        b33p_chat(b33p, conversation, "with the peer's picture", |chat| {
-            chat.avatar
-        })
+        Ok(b33p_chat(
+            b33p,
+            conversation,
+            "with the peer's picture",
+            |chat| chat.avatar,
+        )?)
     });
 
     // TESTPLAN.md §2.11: a pack seeded on CDN0, installed on the primary as on a
@@ -188,15 +249,16 @@ pub(super) fn attachments(
                         .find(|installed| installed.id == pack)
                         .and_then(|installed| installed.stickers.first())
                         .map(|sticker| sticker.id)
-                        .ok_or_else(|| {
-                            Error::Failed(format!("b33p lists {packs:?}, not the pack {pack}"))
+                        .ok_or_else(|| AttachmentsError::NoPack {
+                            pack: pack.clone(),
+                            installed: packs.iter().map(|installed| installed.id.clone()).collect(),
                         }),
                 )
             })??;
             b33p.act(Action::SendSticker { pack, sticker })?;
-            desktop.call(drivers::Desktop::WaitForSticker {
+            Ok(desktop.call(drivers::Desktop::WaitForSticker {
                 timeout_ms: PATIENCE_MS,
-            })
+            })?)
         },
     );
 
@@ -209,7 +271,7 @@ pub(super) fn incoming_attachment(
     b33p: &mut Harness,
     text: Option<&str>,
     kind: AttachmentKind,
-) -> Result<String> {
+) -> Result<String, HarnessError> {
     b33p.wait_for(
         &format!("{text:?} with a {kind:?} in b33p"),
         PATIENCE,
@@ -226,29 +288,49 @@ pub(super) fn incoming_attachment(
 }
 
 /// Waits until the attachment `id`, fetched, is downloaded and decrypted.
-pub(super) fn downloaded(b33p: &mut Harness, id: &str) -> Result<()> {
-    b33p.wait_for(
-        &format!("{id} downloaded"),
-        PATIENCE,
-        |snapshot| match &attachment(snapshot, id)?.download {
+pub(super) fn downloaded(b33p: &mut Harness, id: &str) -> Result<(), AttachmentsError> {
+    settled(b33p, id, Step::Download, |attachment| {
+        match &attachment.download {
             Some(Download::Ready) => Some(Ok(())),
-            Some(Download::Failed(error)) => Some(Err(Error::Failed(error.clone()))),
+            Some(Download::Failed(error)) => Some(Err(error.clone())),
             Some(Download::Loading) | None => None,
-        },
-    )?
+        }
+    })
 }
 
 /// Waits until the attachment `id` is saved.
-pub(super) fn saved(b33p: &mut Harness, id: &str) -> Result<()> {
-    b33p.wait_for(
-        &format!("{id} saved"),
-        PATIENCE,
-        |snapshot| match &attachment(snapshot, id)?.saved {
-            Some(Saved::Saved(_)) => Some(Ok(())),
-            Some(Saved::Failed(error)) => Some(Err(Error::Failed(error.clone()))),
-            Some(Saved::Saving) | None => None,
-        },
-    )?
+pub(super) fn saved(b33p: &mut Harness, id: &str) -> Result<(), AttachmentsError> {
+    settled(b33p, id, Step::Save, |attachment| match &attachment.saved {
+        Some(Saved::Saved(_)) => Some(Ok(())),
+        Some(Saved::Failed(error)) => Some(Err(error.clone())),
+        Some(Saved::Saving) | None => None,
+    })
+}
+
+/// Waits until `outcome` says the attachment `id`'s `step` is done, or failed with b33p's words.
+fn settled(
+    b33p: &mut Harness,
+    id: &str,
+    step: Step,
+    outcome: impl Fn(&AttachmentSnapshot) -> Option<Result<(), String>>,
+) -> Result<(), AttachmentsError> {
+    let waiting = match step {
+        Step::Download => format!("{id} downloaded"),
+        Step::Save => format!("{id} saved"),
+    };
+    b33p.wait_for(&waiting, PATIENCE, |snapshot| {
+        outcome(attachment(snapshot, id)?)
+    })
+    .map_err(|source| AttachmentsError::Waiting {
+        id: id.to_owned(),
+        step,
+        source,
+    })?
+    .map_err(|error| AttachmentsError::Failed {
+        id: id.to_owned(),
+        step,
+        error,
+    })
 }
 
 fn attachment<'a>(snapshot: &'a Snapshot, id: &str) -> Option<&'a AttachmentSnapshot> {

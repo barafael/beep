@@ -8,7 +8,7 @@ use presage::proto::{
 };
 use tracing::warn;
 
-use crate::{Event, Preferences, local::AccountPreferences, scrub::scrubbed};
+use crate::{Event, Preferences, local::AccountPreferences};
 
 use super::{
     Ctx, Mgr,
@@ -52,7 +52,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ctx) {
             }
             // E.g. offline at the start; try again later.
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to read the storage service");
+                warn!(error = %crate::scrub::chain(&error), "failed to read the storage service");
                 tokio::select! {
                     () = tokio::time::sleep(RETRY) => {}
                     () = ctx.storage_changed.notified() => {}
@@ -110,7 +110,7 @@ async fn take_verifications(
         if let Err(error) =
             remember_verification(manager, ctx, *who, &key, verification.state, verifier).await
         {
-            warn!(error = %scrubbed(&error), "failed to keep a verification from the phone");
+            warn!(error = %crate::scrub::chain(&error), "failed to keep a verification from the phone");
         }
     }
     if let Err(error) = ctx
@@ -118,7 +118,7 @@ async fn take_verifications(
         .set_remote_verifications(&verifications.now)
         .await
     {
-        warn!(error = %scrubbed(&error), "failed to keep what the phone says about verifications");
+        warn!(error = %crate::scrub::chain(&error), "failed to keep what the phone says about verifications");
     }
 }
 
@@ -135,7 +135,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
                         take_preferences(ctx, synced.preferences);
                     }
                     Err(error) => {
-                        warn!(error = %scrubbed(&error), "failed to read the storage service");
+                        warn!(error = %crate::scrub::chain(&error), "failed to read the storage service");
                         return;
                     }
                 }
@@ -154,7 +154,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ctx) {
             }
             Ok(Written::Nothing | Written::NoKey) => return,
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to write to the storage service");
+                warn!(error = %crate::scrub::chain(&error), "failed to write to the storage service");
                 return;
             }
         }

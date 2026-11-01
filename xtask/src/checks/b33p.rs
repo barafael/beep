@@ -7,10 +7,9 @@ use b33p_harness::{
     ScreenSnapshot, Snapshot,
 };
 
-use super::PATIENCE;
 use super::presage::Presage;
-use crate::error::{Error, Result};
-use crate::harness::Harness;
+use super::{Failure, PATIENCE};
+use crate::harness::{Harness, HarnessError};
 
 /// At least 8 characters: b33p refuses shorter ones ("Use at least 8 characters.").
 const STORE_PASSWORD: &str = "testbox-store";
@@ -18,13 +17,84 @@ const STORE_PASSWORD: &str = "testbox-store";
 pub(super) const REQUEST_ACCEPTED: &str =
     "the peer's first message is a message request in b33p, accepted";
 
+/// What the helpers here find b33p not doing, or fail at in its harness on the way.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum B33pError {
+    /// b33p's chat list has no such conversation.
+    #[error("no {conversation} in b33p")]
+    NoChat { conversation: String },
+    #[error("reading {group}'s name in b33p")]
+    Title {
+        group: String,
+        #[source]
+        source: HarnessError,
+    },
+    /// No message in b33p's open conversation matched, in time; with what it showed instead,
+    /// as of its last screen.
+    #[error("{what} not shown in b33p ({})", shown(selected.as_deref(), last))]
+    NotShown {
+        what: String,
+        /// The conversation open.
+        selected: Option<String>,
+        /// Its last few messages' texts, newest first.
+        last: Vec<String>,
+        #[source]
+        source: HarnessError,
+    },
+    #[error("reading {what} in b33p's details, after {notice:?}")]
+    Details {
+        notice: String,
+        what: String,
+        #[source]
+        source: HarnessError,
+    },
+    #[error("looking for the story {text:?} in b33p")]
+    Story {
+        text: String,
+        #[source]
+        source: HarnessError,
+    },
+    /// The open conversation's stories, stepped through, had none with the text.
+    #[error("no story {text:?} among the {count}")]
+    NoStory { text: String, count: usize },
+    #[error("sending {text:?} in b33p")]
+    Send {
+        text: String,
+        #[source]
+        source: HarnessError,
+    },
+    /// b33p's send button sent no command to its backend.
+    #[error("b33p sent nothing for {text:?}")]
+    NothingSent { text: String },
+    #[error("reading the timestamp of {what} in b33p")]
+    Timestamp {
+        what: String,
+        #[source]
+        source: HarnessError,
+    },
+    /// A message the check had seen is no longer in b33p's open conversation.
+    #[error("{what} went from b33p's view")]
+    Gone { what: String },
+}
+
+/// What [`B33pError::NotShown`] says b33p showed.
+fn shown(selected: Option<&str>, last: &[String]) -> String {
+    format!(
+        "open {selected:?}, its last messages {}",
+        last.iter()
+            .map(|text| format!("{text:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 /// Waits until b33p's chat list shows `conversation` as `wanted` says.
 pub(super) fn b33p_chat(
     b33p: &mut Harness,
     conversation: &str,
     what: &str,
     wanted: impl Fn(&ConversationSnapshot) -> bool,
-) -> Result<()> {
+) -> Result<(), HarnessError> {
     b33p.wait_for(&format!("the chat {what} in b33p"), PATIENCE, |snapshot| {
         snapshot
             .conversations
@@ -35,17 +105,23 @@ pub(super) fn b33p_chat(
 }
 
 /// The name b33p shows for `group`, from one snapshot: no wait.
-pub(super) fn b33p_title(b33p: &mut Harness, group: &str) -> Result<String> {
-    b33p.snapshot()?
+pub(super) fn b33p_title(b33p: &mut Harness, group: &str) -> Result<String, B33pError> {
+    b33p.snapshot()
+        .map_err(|source| B33pError::Title {
+            group: group.to_owned(),
+            source,
+        })?
         .conversations
         .into_iter()
         .find(|chat| chat.id == group)
         .map(|chat| chat.title)
-        .ok_or_else(|| Error::Failed(format!("no {group} in b33p")))
+        .ok_or_else(|| B33pError::NoChat {
+            conversation: group.to_owned(),
+        })
 }
 
 /// Waits for b33p's outgoing `text` to show as delivered (or read).
-pub(super) fn delivered(b33p: &mut Harness, text: &str) -> Result<()> {
+pub(super) fn delivered(b33p: &mut Harness, text: &str) -> Result<(), HarnessError> {
     b33p.wait_for(
         &format!("\"delivered\" on {text:?}"),
         PATIENCE,
@@ -58,7 +134,7 @@ pub(super) fn delivered(b33p: &mut Harness, text: &str) -> Result<()> {
 }
 
 /// Waits for b33p's outgoing `text` to show as read.
-pub(super) fn read(b33p: &mut Harness, text: &str) -> Result<()> {
+pub(super) fn read(b33p: &mut Harness, text: &str) -> Result<(), HarnessError> {
     b33p.wait_for(&format!("\"read\" on {text:?}"), PATIENCE, |snapshot| {
         (outgoing_delivery(snapshot, text) == Some(Delivery::Read)).then_some(())
     })
@@ -71,16 +147,21 @@ pub(super) fn b33p_details<Found>(
     notice: &str,
     what: &str,
     pick: impl Fn(&DetailsSnapshot) -> Option<Found>,
-) -> Result<Found> {
+) -> Result<Found, B33pError> {
     b33p_shows(b33p, &format!("{notice:?}"), |message| {
         message.notice && message.text == notice
     })?;
-    b33p.act(Action::OpenDetails)?;
+    let details = |source| B33pError::Details {
+        notice: notice.to_owned(),
+        what: what.to_owned(),
+        source,
+    };
+    b33p.act(Action::OpenDetails).map_err(details)?;
     let found = b33p.wait_for(&format!("{what} in b33p's details"), PATIENCE, |snapshot| {
         snapshot.details.as_ref().and_then(&pick)
     });
-    b33p.act(Action::CloseDetails)?;
-    found
+    b33p.act(Action::CloseDetails).map_err(details)?;
+    found.map_err(details)
 }
 
 /// Waits for a message in b33p's open conversation that `matches`.
@@ -88,41 +169,39 @@ pub(super) fn b33p_shows(
     b33p: &mut Harness,
     what: &str,
     matches: impl Fn(&MessageSnapshot) -> bool,
-) -> Result<()> {
-    let waited = b33p.wait_for(&format!("{what} in b33p"), PATIENCE, |snapshot| {
-        snapshot.messages.iter().any(&matches).then_some(())
-    });
-    // What it showed instead: which chat was open, and its last messages.
-    waited.map_err(|error| {
-        let shown = b33p.snapshot().map_or_else(
-            |snapshot_error| format!("no snapshot: {snapshot_error}"),
-            |snapshot| {
-                let last: Vec<String> = snapshot
-                    .messages
-                    .iter()
-                    .rev()
-                    .take(4)
-                    .map(|message| format!("{:?}", message.text))
-                    .collect();
-                format!(
-                    "open {:?}, its last messages {}",
-                    snapshot.selected,
-                    last.join(", ")
-                )
-            },
-        );
-        Error::Failed(format!("{error}; {shown}"))
+) -> Result<(), B33pError> {
+    // What it showed instead, as of the last screen: which chat was open, and its last messages.
+    let (mut selected, mut last) = (None, Vec::new());
+    b33p.wait_for(&format!("{what} in b33p"), PATIENCE, |snapshot| {
+        if snapshot.messages.iter().any(&matches) {
+            return Some(());
+        }
+        selected.clone_from(&snapshot.selected);
+        last = snapshot
+            .messages
+            .iter()
+            .rev()
+            .take(4)
+            .map(|message| message.text.clone())
+            .collect();
+        None
+    })
+    .map_err(|source| B33pError::NotShown {
+        what: what.to_owned(),
+        selected,
+        last,
+        source,
     })
 }
 
-pub(super) fn wait_for_chats(b33p: &mut Harness, patience: Duration) -> Result<()> {
+pub(super) fn wait_for_chats(b33p: &mut Harness, patience: Duration) -> Result<(), HarnessError> {
     b33p.wait_for("b33p's chats", patience, |snapshot| {
         matches!(snapshot.screen, ScreenSnapshot::Chats).then_some(())
     })
 }
 
 /// Unlocks b33p's store, or sets its password on the first start.
-pub(super) fn unlock(b33p: &mut Harness) -> Result<()> {
+pub(super) fn unlock(b33p: &mut Harness) -> Result<(), HarnessError> {
     b33p.act(Action::Unlock {
         password: STORE_PASSWORD.to_owned(),
         confirmation: STORE_PASSWORD.to_owned(),
@@ -134,36 +213,51 @@ pub(super) fn unlock(b33p: &mut Harness) -> Result<()> {
 /// stories under the group, b33p-core `stories::on_story`), and closes it. The viewer opens on
 /// the first story not viewed yet, or the first of all: the others are stepped to. It is
 /// opened again until it shows: before the story came, there was none to open.
-pub(super) fn story_shows(b33p: &mut Harness, conversation: &str, text: &str) -> Result<()> {
+pub(super) fn story_shows(
+    b33p: &mut Harness,
+    conversation: &str,
+    text: &str,
+) -> Result<(), B33pError> {
+    let story = |source| B33pError::Story {
+        text: text.to_owned(),
+        source,
+    };
     let deadline = Instant::now() + PATIENCE;
     let shown = loop {
         b33p.act(Action::OpenStory {
             conversation: conversation.to_owned(),
-        })?;
+        })
+        .map_err(story)?;
         let shown = story_stepped_to(b33p, text);
         if shown.is_ok() || Instant::now() >= deadline {
             break shown;
         }
     };
-    b33p.act(Action::CloseStory)?;
+    b33p.act(Action::CloseStory).map_err(story)?;
     shown
 }
 
 /// Steps through the open conversation's stories to the one with `text`, from the one shown
 /// to the last, then from the first. A story's `position` counts from 1.
-fn story_stepped_to(b33p: &mut Harness, text: &str) -> Result<()> {
+fn story_stepped_to(b33p: &mut Harness, text: &str) -> Result<(), B33pError> {
+    let looking = |source| B33pError::Story {
+        text: text.to_owned(),
+        source,
+    };
     let current = |snapshot: &Snapshot| snapshot.story.clone();
-    let mut story = b33p.wait_for("a story open", Duration::from_secs(5), current)?;
+    let mut story = b33p
+        .wait_for("a story open", Duration::from_secs(5), current)
+        .map_err(looking)?;
     let mut steps = 0;
     loop {
         if story.text.as_deref() == Some(text) {
             return Ok(());
         }
         if steps >= story.count {
-            return Err(Error::Failed(format!(
-                "no story {text:?} among the {}",
-                story.count
-            )));
+            return Err(B33pError::NoStory {
+                text: text.to_owned(),
+                count: story.count,
+            });
         }
         // Past the last, the viewer closes: back to the first then.
         let by = if story.position >= story.count {
@@ -172,15 +266,17 @@ fn story_stepped_to(b33p: &mut Harness, text: &str) -> Result<()> {
             1
         };
         let position = story.position;
-        b33p.act(Action::StepStory { by })?;
-        story = b33p.wait_for("the next story", Duration::from_secs(5), |snapshot| {
-            current(snapshot).filter(|story| story.position != position)
-        })?;
+        b33p.act(Action::StepStory { by }).map_err(looking)?;
+        story = b33p
+            .wait_for("the next story", Duration::from_secs(5), |snapshot| {
+                current(snapshot).filter(|story| story.position != position)
+            })
+            .map_err(looking)?;
         steps += 1;
     }
 }
 
-pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<()> {
+pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<(), HarnessError> {
     b33p.act(Action::Select {
         conversation: conversation.to_owned(),
     })
@@ -189,7 +285,7 @@ pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<()> {
 
 /// The account b33p is linked to: its Note to Self is `c:` and the account's ACI
 /// (b33p-core/src/signal.rs `conversation_id`).
-pub(super) fn own_aci(b33p: &mut Harness) -> Result<String> {
+pub(super) fn own_aci(b33p: &mut Harness) -> Result<String, HarnessError> {
     b33p.wait_for("b33p's Note to Self", PATIENCE, |snapshot| {
         snapshot
             .conversations
@@ -205,7 +301,11 @@ pub(super) fn own_aci(b33p: &mut Harness) -> Result<String> {
 /// what reads it next, a presage-cli `sync` that stops at an empty queue say, finds it there. By
 /// the message b33p sent, newer than any outgoing one before: its text isn't `text` once b33p
 /// has formatted it (`*bold*`).
-pub(super) fn type_and_send(b33p: &mut Harness, text: &str) -> Result<()> {
+pub(super) fn type_and_send(b33p: &mut Harness, text: &str) -> Result<(), B33pError> {
+    let sending = |source| B33pError::Send {
+        text: text.to_owned(),
+        source,
+    };
     // Messages, not notices: b33p's own notices are outgoing too ("You created the group.").
     let sent = |message: &&MessageSnapshot| message.outgoing && !message.notice;
     let newest = |snapshot: &Snapshot| {
@@ -216,13 +316,8 @@ pub(super) fn type_and_send(b33p: &mut Harness, text: &str) -> Result<()> {
             .map(|message| message.timestamp)
             .max()
     };
-    let before = newest(&b33p.snapshot()?);
-    b33p.act(Action::Type {
-        text: text.to_owned(),
-    })?;
-    if !b33p.act(Action::Send)? {
-        return Err(Error::Failed(format!("b33p sent nothing for {text:?}")));
-    }
+    let before = newest(&b33p.snapshot().map_err(sending)?);
+    send_text(b33p, text)?;
     b33p.wait_for(
         &format!("the server taking b33p's {text:?}"),
         PATIENCE,
@@ -236,11 +331,53 @@ pub(super) fn type_and_send(b33p: &mut Harness, text: &str) -> Result<()> {
                 .map(drop)
         },
     )
+    .map_err(sending)
+}
+
+/// Types and sends `text` in b33p's open conversation, as its send button does: no wait for
+/// the server, only that a command went to the backend.
+pub(super) fn send_text(b33p: &mut Harness, text: &str) -> Result<(), B33pError> {
+    let sending = |source| B33pError::Send {
+        text: text.to_owned(),
+        source,
+    };
+    b33p.act(Action::Type {
+        text: text.to_owned(),
+    })
+    .map_err(sending)?;
+    if b33p.act(Action::Send).map_err(sending)? {
+        Ok(())
+    } else {
+        Err(B33pError::NothingSent {
+            text: text.to_owned(),
+        })
+    }
+}
+
+/// The timestamp of the message `what` names in b33p's open conversation, the first that
+/// `matches`, from one snapshot: no wait.
+pub(super) fn message_timestamp(
+    b33p: &mut Harness,
+    what: &str,
+    matches: impl Fn(&MessageSnapshot) -> bool,
+) -> Result<u64, B33pError> {
+    b33p.snapshot()
+        .map_err(|source| B33pError::Timestamp {
+            what: what.to_owned(),
+            source,
+        })?
+        .messages
+        .iter()
+        .find(|message| matches(message))
+        .map(|message| message.timestamp)
+        .ok_or_else(|| B33pError::Gone {
+            what: what.to_owned(),
+        })
 }
 
 /// Edits b33p's message at `index` to `text`, as its edit and send buttons do. An edit keeps its
 /// message's timestamp, so [`type_and_send`]'s wait for a newer message doesn't apply.
-pub(super) fn edit(b33p: &mut Harness, index: u32, text: &str) -> Result<()> {
+pub(super) fn edit(b33p: &mut Harness, index: u32, text: &str) -> Result<(), HarnessError> {
     b33p.act(Action::Edit { index })?;
     b33p.act(Action::Type {
         text: text.to_owned(),
@@ -249,7 +386,7 @@ pub(super) fn edit(b33p: &mut Harness, index: u32, text: &str) -> Result<()> {
 }
 
 /// The harness index of b33p's own message with `text` in the open conversation.
-pub(super) fn outgoing_index(b33p: &mut Harness, text: &str) -> Result<u32> {
+pub(super) fn outgoing_index(b33p: &mut Harness, text: &str) -> Result<u32, HarnessError> {
     b33p.wait_for(&format!("b33p's {text:?}"), PATIENCE, |snapshot| {
         snapshot
             .messages
@@ -261,7 +398,7 @@ pub(super) fn outgoing_index(b33p: &mut Harness, text: &str) -> Result<u32> {
 
 /// The harness index of the newest message from someone else with `text` in the open
 /// conversation.
-pub(super) fn incoming_index(b33p: &mut Harness, text: &str) -> Result<u32> {
+pub(super) fn incoming_index(b33p: &mut Harness, text: &str) -> Result<u32, HarnessError> {
     b33p.wait_for(&format!("the incoming {text:?}"), PATIENCE, |snapshot| {
         snapshot
             .messages
@@ -275,7 +412,7 @@ pub(super) fn incoming_index(b33p: &mut Harness, text: &str) -> Result<u32> {
 /// A first message from someone the account hasn't accepted is a message request, which b33p
 /// knows once it has read the storage service (b33p-core/src/state.rs `requests_known`), and
 /// won't let anyone write to before it is accepted.
-pub(super) fn accept_request(b33p: &mut Harness, conversation: &str) -> Result<()> {
+pub(super) fn accept_request(b33p: &mut Harness, conversation: &str) -> Result<(), HarnessError> {
     b33p_chat(b33p, conversation, "a message request", |chat| chat.request)?;
     select(b33p, conversation)?;
     b33p.act(Action::Respond {
@@ -290,13 +427,13 @@ pub(super) fn peer_text_reaches(
     peer: &Presage<'_>,
     recipient_aci: &str,
     text: &str,
-) -> Result<String> {
+) -> Result<String, Failure> {
     peer.send(recipient_aci, text)?;
-    chat_previewing(b33p, text)
+    Ok(chat_previewing(b33p, text)?)
 }
 
 /// The conversation b33p's chat list shows `text` as the last message of, once it does.
-pub(super) fn chat_previewing(b33p: &mut Harness, text: &str) -> Result<String> {
+pub(super) fn chat_previewing(b33p: &mut Harness, text: &str) -> Result<String, HarnessError> {
     b33p.wait_for(
         &format!("{text:?} in b33p's chat list"),
         PATIENCE,

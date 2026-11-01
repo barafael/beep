@@ -1,8 +1,8 @@
 //! What each command from the UI does in a linked session.
 
-use super::errors::{db, failed, send_failed, store_failed};
-use crate::outbox::Sends as _;
-use crate::{Error, ErrorKind, scrub::scrubbed};
+use super::errors::{kind_of, send_kind};
+use crate::outbox::{SendFailure, Sends as _};
+use crate::{Error, ErrorKind, MessageRef};
 use std::rc::Rc;
 
 use presage::libsignal_service::prelude::ProtobufMessage as _;
@@ -22,7 +22,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     AttachmentKind, ChatMessage, Command, ConversationId, Event, Events, Reaction, apply_reaction,
-    attachments, format, now_millis, scrub::scrub,
+    attachments, format, now_millis,
 };
 
 use super::{
@@ -60,7 +60,7 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
     let unsent = match ctx.tables.unsent().await {
         Ok(unsent) => unsent,
         Err(error) => {
-            warn!(%error, "failed to read the messages that didn't go out");
+            warn!(error = %crate::scrub::chain(&error), "failed to read the messages that didn't go out");
             return;
         }
     };
@@ -85,7 +85,7 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
         };
         if stored.is_some_and(|content| is_outgoing(manager, &content)) {
             if let Err(error) = ctx.tables.sent(conversation, *timestamp).await {
-                warn!(%error, "failed to forget a message that went out");
+                warn!(error = %crate::scrub::chain(&error), "failed to forget a message that went out");
             }
         } else {
             interrupted.push(send);
@@ -100,12 +100,156 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
     }
 }
 
+/// What fails in carrying out a command itself, rather than in what it calls on.
+#[derive(Debug, thiserror::Error)]
+enum CommandError {
+    #[error("unknown conversation")]
+    UnknownConversation { conversation: ConversationId },
+    #[error("not a group")]
+    NotAGroup { conversation: ConversationId },
+    #[error("stories go to groups here")]
+    StoryNotToGroup { conversation: ConversationId },
+    #[error("nothing was uploaded of the story's picture")]
+    StoryNotUploaded,
+    #[error("failed to post the story")]
+    PostStory(#[source] SendFailure),
+    #[error("failed to keep the story posted")]
+    KeepStory(#[source] sqlx::Error),
+    #[error("{PHONE_NUMBER_ONLY}")]
+    MemberByNumber,
+    #[error("failed to create the group")]
+    CreateGroup(#[source] SendFailure),
+    #[error("failed to take the request to join back")]
+    CancelJoinRequest(#[source] PresageError),
+    /// `what`: the kind of change, as [`edit_kind`] names it.
+    #[error("failed to change the group ({what})")]
+    ChangeGroup {
+        what: &'static str,
+        source: SendFailure,
+    },
+    #[error("couldn't look the group up")]
+    GroupJoinInfo(#[source] PresageError),
+    #[error("This group's invite link is turned off.")]
+    InviteLinkOff,
+    #[error("couldn't join the group")]
+    JoinGroup(#[source] SendFailure),
+    #[error("failed to accept the group")]
+    AcceptGroup {
+        conversation: ConversationId,
+        source: sqlx::Error,
+    },
+    #[error("failed to delete the message")]
+    DeleteHere {
+        conversation: ConversationId,
+        target: MessageRef,
+        source: presage_store_sqlite::SqliteStoreError,
+    },
+    #[error("failed to forget the deleted message")]
+    ForgetDeleted {
+        conversation: ConversationId,
+        target: MessageRef,
+        source: sqlx::Error,
+    },
+    #[error("failed to note that the message went out")]
+    MarkSent {
+        conversation: ConversationId,
+        timestamp: u64,
+        source: sqlx::Error,
+    },
+    #[error("failed to drop the message that didn't go out")]
+    DropUnsent {
+        conversation: ConversationId,
+        timestamp: u64,
+        source: sqlx::Error,
+    },
+    #[error("failed to note that the story was viewed")]
+    StoryViewed {
+        story: MessageRef,
+        source: sqlx::Error,
+    },
+    #[error("failed to keep the text from before the edit")]
+    RecordEdit {
+        conversation: ConversationId,
+        target: MessageRef,
+        source: sqlx::Error,
+    },
+    #[error("failed to note that the edited message is on its way again")]
+    SentAgain {
+        conversation: ConversationId,
+        target: MessageRef,
+        source: sqlx::Error,
+    },
+    #[error("failed to keep the chat's change: {change}")]
+    ChangeChat {
+        conversation: ConversationId,
+        change: ChatChange,
+        source: sqlx::Error,
+    },
+    #[error("failed to keep the order of the pinned chats")]
+    SetPins(#[source] sqlx::Error),
+}
+
+type PresageError = presage::Error<presage_store_sqlite::SqliteStoreError>;
+
+/// A change to a chat's own settings, kept here.
+#[derive(Debug, Clone, Copy)]
+enum ChatChange {
+    Block(bool),
+    MarkRead,
+    MarkUnread,
+    Mute,
+    Archive(bool),
+}
+
+impl std::fmt::Display for ChatChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Block(true) => "blocked",
+            Self::Block(false) => "unblocked",
+            Self::MarkRead => "read",
+            Self::MarkUnread => "marked unread",
+            Self::Mute => "muted",
+            Self::Archive(true) => "archived",
+            Self::Archive(false) => "taken out of the archive",
+        })
+    }
+}
+
+impl crate::Classified for CommandError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::UnknownConversation { .. }
+            | Self::NotAGroup { .. }
+            | Self::StoryNotToGroup { .. }
+            | Self::MemberByNumber
+            | Self::InviteLinkOff => ErrorKind::Refused,
+            Self::StoryNotUploaded => ErrorKind::Unreachable,
+            Self::PostStory(source)
+            | Self::CreateGroup(source)
+            | Self::ChangeGroup { source, .. }
+            | Self::JoinGroup(source) => send_kind(source),
+            Self::CancelJoinRequest(source) | Self::GroupJoinInfo(source) => kind_of(source),
+            Self::KeepStory(_)
+            | Self::AcceptGroup { .. }
+            | Self::DeleteHere { .. }
+            | Self::ForgetDeleted { .. }
+            | Self::MarkSent { .. }
+            | Self::DropUnsent { .. }
+            | Self::StoryViewed { .. }
+            | Self::RecordEdit { .. }
+            | Self::SentAgain { .. }
+            | Self::ChangeChat { .. }
+            | Self::SetPins(_) => ErrorKind::Storage,
+        }
+    }
+}
+
 /// Says why `command` failed: in the log, and to the user, who may try it again.
 pub(super) fn command_failed(events: &Events, error: Error, command: Command) {
-    match error.kind {
-        ErrorKind::Storage => error!(error = %scrub(&error.message), "command failed"),
+    match error.kind() {
+        ErrorKind::Storage => error!(error = %crate::scrub::chain(&error), "command failed"),
         ErrorKind::Unreachable | ErrorKind::Refused => {
-            warn!(error = %scrub(&error.message), kind = ?error.kind, "command failed")
+            warn!(error = %crate::scrub::chain(&error), kind = ?error.kind(), "command failed")
         }
     }
     events.send(Event::CommandFailed { error, command });
@@ -209,7 +353,9 @@ async fn handle_command(
             .borrow()
             .get(id)
             .cloned()
-            .ok_or_else(|| Error::refused("unknown conversation"))
+            .ok_or_else(|| CommandError::UnknownConversation {
+                conversation: id.clone(),
+            })
     };
     match command {
         // In the background, so commands keep flowing while files download.
@@ -346,7 +492,9 @@ async fn handle_command(
             mentions,
         } => {
             let sent = async {
-                let pointers = attachments::upload(manager, &files).await?;
+                let pointers = attachments::upload(manager, &files)
+                    .await
+                    .map_err(Error::from)?;
                 let preview = if ctx.preferences.get().link_previews {
                     link_preview(manager, &body).await
                 } else {
@@ -361,7 +509,9 @@ async fn handle_command(
                     preview,
                     sticker: None,
                 };
-                send_new(manager, ctx, conversation.clone(), outgoing, timestamp).await
+                send_new(manager, ctx, conversation.clone(), outgoing, timestamp)
+                    .await
+                    .map_err(Error::from)
             };
             if let Err(error) = sent.await {
                 ctx.events.send(Event::SendFailed {
@@ -374,18 +524,29 @@ async fn handle_command(
             ctx.tables
                 .sent(&conversation, timestamp)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::MarkSent {
+                    conversation,
+                    timestamp,
+                    source,
+                })?;
         }
         Command::DropUnsent {
             conversation,
             timestamp,
-        } => ctx
-            .tables
-            .sent(&conversation, timestamp)
-            .await
-            .map_err(db)?,
+        } => {
+            if let Err(source) = ctx.tables.sent(&conversation, timestamp).await {
+                return Err(CommandError::DropUnsent {
+                    conversation,
+                    timestamp,
+                    source,
+                }
+                .into());
+            }
+        }
         Command::ViewStory(story) => {
-            ctx.tables.story_viewed(&story).await.map_err(db)?;
+            if let Err(source) = ctx.tables.story_viewed(&story).await {
+                return Err(CommandError::StoryViewed { story, source }.into());
+            }
             send_stories(manager, ctx).await;
             let receipts = ctx.preferences.get().read_receipts;
             tokio::task::spawn_local(send_viewed(
@@ -400,7 +561,7 @@ async fn handle_command(
             story,
         } => {
             let Thread::Group(key) = thread(&conversation)? else {
-                return Err(Error::refused("stories go to groups here"));
+                return Err(CommandError::StoryNotToGroup { conversation }.into());
             };
             let timestamp = now_millis();
             let mut stored = crate::local::StoredStory {
@@ -434,7 +595,7 @@ async fn handle_command(
                     let pointer = attachments::upload(manager, &[path])
                         .await?
                         .pop()
-                        .ok_or_else(|| Error::unreachable("nothing uploaded"))?;
+                        .ok_or(CommandError::StoryNotUploaded)?;
                     stored.pointer = Some(pointer.encode_to_vec());
                     presage::proto::story_message::Attachment::FileAttachment(pointer)
                 }
@@ -448,8 +609,10 @@ async fn handle_command(
             ctx.outbox
                 .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
                 .await
-                .map_err(send_failed("failed to post the story"))?;
-            keep_story(ctx, &stored).await.map_err(db)?;
+                .map_err(CommandError::PostStory)?;
+            keep_story(ctx, &stored)
+                .await
+                .map_err(CommandError::KeepStory)?;
             send_stories(manager, ctx).await;
             // Sending tells our other devices of data messages only; this one they hear of here,
             // at the story's time: Desktop files a sent story under its envelope's.
@@ -469,20 +632,24 @@ async fn handle_command(
                 .iter()
                 .map(|id| member_aci(id))
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| Error::refused(PHONE_NUMBER_ONLY))?;
+                .ok_or(CommandError::MemberByNumber)?;
             let (key, timestamp) = ctx
                 .outbox
                 .create_group(title.trim().to_owned(), members)
                 .await
-                .map_err(send_failed("failed to create the group"))?;
+                .map_err(CommandError::CreateGroup)?;
             let thread = Thread::Group(key);
             // Ours, so not a request: accepted before it is first shown, and said so should it
             // be shown already (a chat listed again keeps the settings it had).
+            let conversation = conversation_id(&thread);
             let settings = ctx
                 .tables
-                .update(&conversation_id(&thread), |s| s.accepted = true)
+                .update(&conversation, |s| s.accepted = true)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::AcceptGroup {
+                    conversation,
+                    source,
+                })?;
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             events.send(Event::Settings {
                 conversation: id.clone(),
@@ -494,13 +661,13 @@ async fn handle_command(
         }
         Command::EditGroup { conversation, edit } => {
             let Thread::Group(key) = thread(&conversation)? else {
-                return Err(Error::refused("not a group"));
+                return Err(CommandError::NotAGroup { conversation }.into());
             };
             if edit == crate::GroupEdit::CancelJoinRequest {
                 manager
                     .cancel_join_request(&key)
                     .await
-                    .map_err(failed("failed to take the request back"))?;
+                    .map_err(CommandError::CancelJoinRequest)?;
                 debug!("took a request to join back");
                 refresh_group(manager, ctx, key).await;
                 return Ok(());
@@ -516,7 +683,7 @@ async fn handle_command(
                 .outbox
                 .change_group(key, edit)
                 .await
-                .map_err(send_failed("failed to change the group"))?;
+                .map_err(|source| CommandError::ChangeGroup { what: kind, source })?;
             debug!(kind, timestamp, "changed a group, and sent the change");
             refresh_group(manager, ctx, key).await;
             if picture {
@@ -534,12 +701,12 @@ async fn handle_command(
             let info = manager
                 .group_join_info(&parsed)
                 .await
-                .map_err(failed("couldn't look the group up"))?;
+                .map_err(CommandError::GroupJoinInfo)?;
             use presage::libsignal_service::groups_v2::AccessRequired;
             let approval = match info.add_from_invite_link {
                 AccessRequired::Any => false,
                 AccessRequired::Administrator => true,
-                _ => return Err(Error::refused("This group's invite link is turned off.")),
+                _ => return Err(CommandError::InviteLinkOff.into()),
             };
             events.send(Event::GroupPreview(crate::GroupPreview {
                 link: link.trim().to_owned(),
@@ -560,7 +727,7 @@ async fn handle_command(
                 .outbox
                 .join_group(parsed)
                 .await
-                .map_err(send_failed("couldn't join the group"))?;
+                .map_err(CommandError::JoinGroup)?;
             let thread = Thread::Group(key);
             let id = ensure_conversation(manager, ctx, thread.clone(), 0).await;
             // Our doing, so not a request; said so, as the chat may be listed already (a chat
@@ -569,7 +736,10 @@ async fn handle_command(
                 .tables
                 .update(&id, |s| s.accepted = true)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::AcceptGroup {
+                    conversation: id.clone(),
+                    source,
+                })?;
             events.send(Event::Settings {
                 conversation: id.clone(),
                 settings,
@@ -613,7 +783,11 @@ async fn handle_command(
             ctx.tables
                 .update(&conversation, |s| s.blocked = blocked)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation,
+                    change: ChatChange::Block(blocked),
+                    source,
+                })?;
             send_blocked(manager, ctx).await;
         }
         Command::Respond {
@@ -657,7 +831,9 @@ async fn handle_command(
                         });
                         send_contact_avatar(manager.clone(), ctx, aci).await;
                     }
-                    Err(error) => debug!(error = %scrubbed(&error), "couldn't refresh a profile"),
+                    Err(error) => {
+                        debug!(error = %crate::scrub::chain(&error), "couldn't refresh a profile")
+                    }
                 }
             }
             // The stored group shows at once; an admin's again once fetched, with the requests
@@ -685,7 +861,9 @@ async fn handle_command(
                             messages,
                         });
                     }
-                    Err(error) => command_failed(&events, error, Command::LoadMedia(conversation)),
+                    Err(error) => {
+                        command_failed(&events, error.into(), Command::LoadMedia(conversation))
+                    }
                 }
             });
         }
@@ -712,7 +890,7 @@ async fn handle_command(
                             conversation,
                             query,
                         };
-                        command_failed(&events, error, retry);
+                        command_failed(&events, error.into(), retry);
                     }
                 }
             });
@@ -828,11 +1006,19 @@ async fn handle_command(
             ctx.tables
                 .record_edit(&conversation, &target, timestamp, &previous)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::RecordEdit {
+                    conversation: conversation.clone(),
+                    target: target.clone(),
+                    source,
+                })?;
             ctx.tables
                 .sent_again(&conversation, target.timestamp)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::SentAgain {
+                    conversation: conversation.clone(),
+                    target: target.clone(),
+                    source,
+                })?;
             // Shown as it will be read back: the edit in the message's place.
             let edited = stored.map(|mut content| {
                 content.body = ContentBody::EditMessage(EditMessage {
@@ -887,14 +1073,24 @@ async fn handle_command(
         } => {
             let thread = thread(&conversation)?;
             let mut store = manager.store().clone();
-            store
-                .delete_message(&thread, target.timestamp)
-                .await
-                .map_err(store_failed("failed to delete"))?;
-            ctx.tables
-                .forget(&[(conversation, target)])
-                .await
-                .map_err(db)?;
+            if let Err(source) = store.delete_message(&thread, target.timestamp).await {
+                return Err(CommandError::DeleteHere {
+                    conversation,
+                    target,
+                    source,
+                }
+                .into());
+            }
+            let forgotten = [(conversation, target)];
+            if let Err(source) = ctx.tables.forget(&forgotten).await {
+                let [(conversation, target)] = forgotten;
+                return Err(CommandError::ForgetDeleted {
+                    conversation,
+                    target,
+                    source,
+                }
+                .into());
+            }
             checkpoint(ctx).await;
         }
         Command::Typing {
@@ -926,7 +1122,11 @@ async fn handle_command(
             ctx.tables
                 .mark_read(&conversation, newest)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation: conversation.clone(),
+                    change: ChatChange::MarkRead,
+                    source,
+                })?;
             if messages.is_empty() {
                 return Ok(());
             }
@@ -942,9 +1142,17 @@ async fn handle_command(
             ctx.tables
                 .update(&conversation, |s| s.marked_unread = true)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation,
+                    change: ChatChange::MarkUnread,
+                    source,
+                })?;
         }
-        Command::SetPins(order) => ctx.tables.set_pins(&order).await.map_err(db)?,
+        Command::SetPins(order) => ctx
+            .tables
+            .set_pins(&order)
+            .await
+            .map_err(CommandError::SetPins)?,
         Command::Mute {
             conversation,
             until,
@@ -952,7 +1160,11 @@ async fn handle_command(
             ctx.tables
                 .update(&conversation, |s| s.muted_until = until)
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation,
+                    change: ChatChange::Mute,
+                    source,
+                })?;
         }
         Command::Archive {
             conversation,
@@ -961,7 +1173,11 @@ async fn handle_command(
             ctx.tables
                 .update(&conversation, |s| s.set_archived(archived))
                 .await
-                .map_err(db)?;
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation,
+                    change: ChatChange::Archive(archived),
+                    source,
+                })?;
         }
         Command::SetTimer {
             conversation,
@@ -970,11 +1186,12 @@ async fn handle_command(
             let thread = thread(&conversation)?;
             if let Thread::Group(key) = thread {
                 let edit = presage::manager::GroupEdit::Timer(seconds);
+                let what = edit_kind(&edit);
                 let timestamp = ctx
                     .outbox
                     .change_group(key, edit)
                     .await
-                    .map_err(send_failed("failed to change the group"))?;
+                    .map_err(|source| CommandError::ChangeGroup { what, source })?;
                 refresh_group(manager, ctx, key).await;
                 show_stored(manager, ctx, &conversation, &thread, timestamp).await;
                 return Ok(());

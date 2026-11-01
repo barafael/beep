@@ -1,14 +1,14 @@
 use std::borrow::Cow;
+use std::fmt;
 
-use crate::error::{Error, Result};
-use crate::pod::{Pod, Service};
+use crate::pod::{Pod, PodError, Service};
 use testbox_tools::keys::KeyFile;
 
 /// What presage-cli prints for a message it failed to decrypt (presage-cli/src/main.rs).
 const LOST: &str = "failed to decrypt a message";
 
 /// A presage-cli account of the box's.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Account {
     /// The account b33p links to.
     Primary,
@@ -55,6 +55,50 @@ impl Account {
     }
 }
 
+/// The account by its name, as the clients show it.
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name())
+    }
+}
+
+/// What failed driving a presage-cli account in the `presage` container.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PresageError {
+    /// A presage-cli command of the account's: `command` is its subcommand, as "send".
+    #[error("presage-cli {command} for {account}")]
+    Command {
+        account: Account,
+        command: &'static str,
+        #[source]
+        source: PodError,
+    },
+    /// [`Presage::send_all`]'s `count` sends, in one `podman exec`.
+    #[error("{account} sending {count} messages with presage-cli")]
+    SendAll {
+        account: Account,
+        count: usize,
+        #[source]
+        source: PodError,
+    },
+    #[error("seeding the sticker pack for {account}")]
+    SeedStickers {
+        account: Account,
+        #[source]
+        source: PodError,
+    },
+    /// presage-cli's `whoami` printed no ACI where it prints one.
+    #[error("no aci in {account}'s whoami: {whoami}")]
+    NoAci { account: Account, whoami: String },
+    /// A sync that should have received `expected` didn't print it.
+    #[error("{account}'s sync printed no {expected:?}:\n{received}")]
+    NotPrinted {
+        account: Account,
+        expected: String,
+        received: String,
+    },
+}
+
 /// An account of the `presage` service's.
 pub(super) struct Presage<'pod> {
     pub(super) containers: &'pod Pod,
@@ -74,10 +118,26 @@ impl<'pod> Presage<'pod> {
         self.account.name()
     }
 
-    fn cli(&self, arguments: &[&str], stdin: &str) -> Result<String> {
+    /// Runs presage-cli's `command` with `arguments` on the account's store; what it printed.
+    fn cli(
+        &self,
+        command: &'static str,
+        arguments: &[&str],
+        stdin: &str,
+    ) -> Result<String, PresageError> {
         let db = self.account.db();
-        let argv = [&["presage-cli", "--sqlite-db-path", &db][..], arguments].concat();
-        self.containers.exec(Service::Presage, &argv, stdin)
+        let argv = [
+            &["presage-cli", "--sqlite-db-path", &db, command][..],
+            arguments,
+        ]
+        .concat();
+        self.containers
+            .exec(Service::Presage, &argv, stdin)
+            .map_err(|source| PresageError::Command {
+                account: self.account,
+                command,
+                source,
+            })
     }
 
     /// `output`, after noting each message it says presage-cli lost (its
@@ -107,7 +167,7 @@ impl<'pod> Presage<'pod> {
         else {
             return false;
         };
-        self.cli(&["list-messages", "-u", aci, "--from", timestamp], "")
+        self.cli("list-messages", &["-u", aci, "--from", timestamp], "")
             .is_ok_and(|listed| listed.contains(&format!(" @ {timestamp}: ")))
     }
 
@@ -115,11 +175,10 @@ impl<'pod> Presage<'pod> {
     /// The test server accepts any verification code and the captcha
     /// `noop.noop.registration.noop` (Signal-Server TESTING.md). A name, since Desktop won't
     /// write a profile without one ("writeProfile: Cannot set an empty profile name").
-    pub(super) fn register(&self) -> Result<String> {
+    pub(super) fn register(&self) -> Result<String, PresageError> {
         let servers = KeyFile::Servers.path();
         let servers = servers.to_string_lossy();
         let register = [
-            "register",
             "--force",
             // The box's servers, from the keys (testbox/tools `provision`).
             "--servers-file",
@@ -131,28 +190,33 @@ impl<'pod> Presage<'pod> {
         ];
         // presage-cli reads the verification code from stdin.
         self.cli(
+            "register",
             &register,
             &format!("{}\n", testbox_tools::VERIFICATION_CODE),
         )?;
         self.cli(
-            &["update-profile", "--given-name", &self.account.name()],
+            "update-profile",
+            &["--given-name", &self.account.name()],
             "",
         )?;
-        let whoami = self.cli(&["whoami"], "")?;
+        let whoami = self.cli("whoami", &[], "")?;
         // presage-cli prints `WhoAmIResponse { aci: <uuid>, ... }`.
         whoami
             .split_once("aci: ")
             .and_then(|(_, rest)| rest.get(..36))
             .map(str::to_owned)
-            .ok_or_else(|| Error::Failed(format!("no aci in whoami: {whoami}")))
+            .ok_or_else(|| PresageError::NoAci {
+                account: self.account,
+                whoami: whoami.clone(),
+            })
     }
 
-    pub(super) fn add_device(&self, url: &str) -> Result<()> {
-        self.cli(&["add-device", "--url", url], "").map(drop)
+    pub(super) fn add_device(&self, url: &str) -> Result<(), PresageError> {
+        self.cli("add-device", &["--url", url], "").map(drop)
     }
 
     /// Seeds the box's sticker pack and installs it on this account (testbox/stickers); its id.
-    pub(super) fn seed_stickers(&self) -> Result<String> {
+    pub(super) fn seed_stickers(&self) -> Result<String, PresageError> {
         self.containers
             .exec(
                 Service::Presage,
@@ -160,24 +224,23 @@ impl<'pod> Presage<'pod> {
                 "",
             )
             .map(|id| id.trim().to_owned())
+            .map_err(|source| PresageError::SeedStickers {
+                account: self.account,
+                source,
+            })
     }
 
-    pub(super) fn send(&self, recipient_aci: &str, text: &str) -> Result<()> {
-        self.cli(&["send", "--uuid", recipient_aci, "--message", text], "")
+    pub(super) fn send(&self, recipient_aci: &str, text: &str) -> Result<(), PresageError> {
+        self.cli("send", &["--uuid", recipient_aci, "--message", text], "")
             .map(drop)
     }
 
     /// Sends `text` to the group whose master key is `master_key` (hex), which this account
     /// knows from a message it received in it.
-    pub(super) fn send_to_group(&self, master_key: &str, text: &str) -> Result<()> {
+    pub(super) fn send_to_group(&self, master_key: &str, text: &str) -> Result<(), PresageError> {
         self.cli(
-            &[
-                "send-to-group",
-                "--master-key",
-                master_key,
-                "--message",
-                text,
-            ],
+            "send-to-group",
+            &["--master-key", master_key, "--message", text],
             "",
         )
         .map(drop)
@@ -185,7 +248,11 @@ impl<'pod> Presage<'pod> {
 
     /// Sends `texts` to `recipient_aci` one after another, in one `podman exec`: as fast as
     /// presage-cli sends. Stops at the first that fails.
-    pub(super) fn send_all(&self, recipient_aci: &str, texts: &[String]) -> Result<()> {
+    pub(super) fn send_all(
+        &self,
+        recipient_aci: &str,
+        texts: &[String],
+    ) -> Result<(), PresageError> {
         let script = r#"db=$1; to=$2; shift 2
 for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$text" || exit 1; done"#;
         let db = self.account.db();
@@ -194,44 +261,61 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
         self.containers
             .exec(Service::Presage, &argv, "")
             .map(|output| drop(self.noting_lost(output)))
+            .map_err(|source| PresageError::SendAll {
+                account: self.account,
+                count: texts.len(),
+                source,
+            })
     }
 
     /// Sends `text` with the file at `path`, as presage-cli names it: by its file name, its
     /// type guessed from the extension.
-    pub(super) fn send_file(&self, recipient_aci: &str, text: &str, path: &str) -> Result<()> {
+    pub(super) fn send_file(
+        &self,
+        recipient_aci: &str,
+        text: &str,
+        path: &str,
+    ) -> Result<(), PresageError> {
         self.send_files(recipient_aci, text, &[path])
     }
 
     /// [`Self::send_file`] with each of `paths`, in one message.
-    pub(super) fn send_files(&self, recipient_aci: &str, text: &str, paths: &[&str]) -> Result<()> {
-        let mut argv = vec!["send", "--uuid", recipient_aci, "--message", text];
+    pub(super) fn send_files(
+        &self,
+        recipient_aci: &str,
+        text: &str,
+        paths: &[&str],
+    ) -> Result<(), PresageError> {
+        let mut argv = vec!["--uuid", recipient_aci, "--message", text];
         for path in paths {
             argv.extend(["--attach", path]);
         }
-        self.cli(&argv, "").map(drop)
+        self.cli("send", &argv, "").map(drop)
     }
 
     /// Receives what is queued, answering what asks for an answer; what presage-cli printed.
     /// What presage-cli's store holds of its chat with `aci`: one line per message, ending in
     /// " / " and its text.
-    pub(super) fn messages_with(&self, aci: &str) -> Result<String> {
-        self.cli(&["list-messages", "-u", aci], "")
+    pub(super) fn messages_with(&self, aci: &str) -> Result<String, PresageError> {
+        self.cli("list-messages", &["-u", aci], "")
     }
 
-    pub(super) fn sync(&self) -> Result<String> {
-        self.cli(&["sync", "--stop-after-empty-queue"], "")
+    pub(super) fn sync(&self) -> Result<String, PresageError> {
+        self.cli("sync", &["--stop-after-empty-queue"], "")
             .map(|received| self.noting_lost(received))
     }
 
     /// Receives what is queued; fails unless presage-cli printed `expected`.
-    pub(super) fn sync_printing(&self, expected: &str) -> Result<()> {
+    pub(super) fn sync_printing(&self, expected: &str) -> Result<(), PresageError> {
         let received = self.sync()?;
         if received.contains(expected) {
             Ok(())
         } else {
-            Err(Error::Failed(format!(
-                "the peer's sync printed no {expected:?}:\n{received}"
-            )))
+            Err(PresageError::NotPrinted {
+                account: self.account,
+                expected: expected.to_owned(),
+                received,
+            })
         }
     }
 }

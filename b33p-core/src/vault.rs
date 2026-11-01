@@ -44,34 +44,52 @@ impl Kdf {
     pub const CURRENT: Self = Self::V2;
 }
 
+/// Why the recorded key source couldn't be read.
+#[derive(Debug, thiserror::Error)]
+pub enum KeySourceError {
+    #[error("failed to read the key source {}", path.display())]
+    Read { path: PathBuf, source: io::Error },
+    #[error("the key source {} names no known way to derive the key", path.display())]
+    Unrecognized { path: PathBuf },
+    #[error("the salt in the key source {} isn't 16 bytes of hex", path.display())]
+    Salt {
+        path: PathBuf,
+        source: hex::FromHexError,
+    },
+}
+
 impl KeySource {
     /// `None` when no source has been recorded yet.
-    pub fn read(path: &Path) -> io::Result<Option<Self>> {
+    pub fn read(path: &Path) -> Result<Option<Self>, KeySourceError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let invalid = || {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unrecognized {}", path.display()),
-            )
+            Err(source) => {
+                return Err(KeySourceError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
         };
         match text.split_whitespace().collect::<Vec<_>>()[..] {
             ["keyring"] => Ok(Some(Self::Keyring)),
             [tag @ ("password" | "password2"), salt] => {
                 let mut bytes = [0; 16];
-                hex::decode_to_slice(salt, &mut bytes).map_err(|_| invalid())?;
+                hex::decode_to_slice(salt, &mut bytes).map_err(|source| KeySourceError::Salt {
+                    path: path.to_owned(),
+                    source,
+                })?;
                 let kdf = if tag == "password" { Kdf::V1 } else { Kdf::V2 };
                 Ok(Some(Self::Password { salt: bytes, kdf }))
             }
-            _ => Err(invalid()),
+            _ => Err(KeySourceError::Unrecognized {
+                path: path.to_owned(),
+            }),
         }
     }
 
     /// Writes the source atomically and private to its owner; see [`write_private`].
-    pub fn write(&self, path: &Path) -> io::Result<()> {
+    pub fn write(&self, path: &Path) -> Result<(), PrivateFileError> {
         let text = match self {
             Self::Keyring => "keyring\n".to_string(),
             Self::Password { salt, kdf: Kdf::V1 } => format!("password {}\n", hex::encode(salt)),
@@ -81,10 +99,45 @@ impl KeySource {
     }
 }
 
+/// Why a private file or directory couldn't be written or made private: each step, with the
+/// path it was at.
+#[derive(Debug, thiserror::Error)]
+pub enum PrivateFileError {
+    #[error("failed to create the directory {}", dir.display())]
+    CreateDir { dir: PathBuf, source: io::Error },
+    #[error("failed to restrict {} to its owner", path.display())]
+    Restrict { path: PathBuf, source: io::Error },
+    #[error("failed to create a temporary file in {}", dir.display())]
+    CreateTemp { dir: PathBuf, source: io::Error },
+    #[error("failed to write {}", path.display())]
+    Write { path: PathBuf, source: io::Error },
+    #[error("failed to flush {} to the disk", path.display())]
+    Sync { path: PathBuf, source: io::Error },
+    #[error("failed to put the new {} in place", path.display())]
+    Persist { path: PathBuf, source: io::Error },
+    #[error("failed to make the rename in {} last", dir.display())]
+    SyncDir { dir: PathBuf, source: io::Error },
+}
+
+impl PrivateFileError {
+    /// The I/O error underneath, e.g. to tell a missing file from another failure.
+    pub fn io(&self) -> &io::Error {
+        match self {
+            Self::CreateDir { source, .. }
+            | Self::Restrict { source, .. }
+            | Self::CreateTemp { source, .. }
+            | Self::Write { source, .. }
+            | Self::Sync { source, .. }
+            | Self::Persist { source, .. }
+            | Self::SyncDir { source, .. } => source,
+        }
+    }
+}
+
 /// Writes `bytes` to `path` readable by its owner only, never leaving a half-written file: the
 /// key source records how to derive the database key, so a truncated one would lock the user
 /// out of their history.
-pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), PrivateFileError> {
     let mut file = write_private_file(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -94,14 +147,23 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Creates `dir` if missing and restricts it to its owner, so other users on the machine can't
 /// copy the database inside and attack its password offline. Also tightens a directory an
 /// earlier version left world-readable.
-pub fn restrict_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    restrict(dir, 0o700)
+pub fn restrict_dir(dir: &Path) -> Result<(), PrivateFileError> {
+    fs::create_dir_all(dir).map_err(|source| PrivateFileError::CreateDir {
+        dir: dir.to_owned(),
+        source,
+    })?;
+    restrict(dir, 0o700).map_err(|source| PrivateFileError::Restrict {
+        path: dir.to_owned(),
+        source,
+    })
 }
 
 /// Restricts `path` to its owner.
-pub fn restrict_file(path: &Path) -> io::Result<()> {
-    restrict(path, 0o600)
+pub fn restrict_file(path: &Path) -> Result<(), PrivateFileError> {
+    restrict(path, 0o600).map_err(|source| PrivateFileError::Restrict {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 #[cfg(unix)]
@@ -123,12 +185,18 @@ fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
 /// A file built under a temporary name beside `path` (created 0600 by `tempfile`) and renamed
 /// over it by [`PendingFile::persist`], for contents that arrive in pieces. Dropping it instead
 /// deletes the temporary and leaves any previous file untouched.
-pub fn write_private_file(path: &Path) -> io::Result<PendingFile> {
+pub fn write_private_file(path: &Path) -> Result<PendingFile, PrivateFileError> {
     let dir = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let temp = tempfile::Builder::new().prefix(".b33p-").tempfile_in(dir)?;
+    let temp = tempfile::Builder::new()
+        .prefix(".b33p-")
+        .tempfile_in(dir)
+        .map_err(|source| PrivateFileError::CreateTemp {
+            dir: dir.to_owned(),
+            source,
+        })?;
     Ok(PendingFile {
         temp,
         path: path.to_path_buf(),
@@ -141,36 +209,53 @@ pub struct PendingFile {
 }
 
 impl PendingFile {
-    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        io::Write::write_all(&mut self.temp, bytes)
+    pub fn write_all(&mut self, bytes: &[u8]) -> Result<(), PrivateFileError> {
+        io::Write::write_all(&mut self.temp, bytes).map_err(|source| PrivateFileError::Write {
+            path: self.path.clone(),
+            source,
+        })
     }
 
-    pub fn sync_all(&mut self) -> io::Result<()> {
-        self.temp.as_file().sync_all()
-    }
-
-    pub fn persist(self) -> io::Result<()> {
+    pub fn sync_all(&mut self) -> Result<(), PrivateFileError> {
         self.temp
-            .persist(&self.path)
-            .map(drop)
-            .map_err(|error| error.error)?;
-        sync_parent(&self.path)
+            .as_file()
+            .sync_all()
+            .map_err(|source| PrivateFileError::Sync {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    pub fn persist(self) -> Result<(), PrivateFileError> {
+        match self.temp.persist(&self.path) {
+            Ok(_) => sync_parent(&self.path),
+            Err(error) => Err(PrivateFileError::Persist {
+                path: self.path,
+                source: error.error,
+            }),
+        }
     }
 }
 
 /// Makes a rename into `path`'s directory durable: without it, a power cut right after can
 /// bring back the old file (or none).
 #[cfg(unix)]
-pub fn sync_parent(path: &Path) -> io::Result<()> {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => fs::File::open(parent)?.sync_all(),
-        _ => fs::File::open(".")?.sync_all(),
-    }
+pub fn sync_parent(path: &Path) -> Result<(), PrivateFileError> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    fs::File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|source| PrivateFileError::SyncDir {
+            dir: dir.to_owned(),
+            source,
+        })
 }
 
 /// Windows can't open a directory as a file; NTFS journals the rename itself.
 #[cfg(not(unix))]
-pub fn sync_parent(_path: &Path) -> io::Result<()> {
+pub fn sync_parent(_path: &Path) -> Result<(), PrivateFileError> {
     Ok(())
 }
 
@@ -178,7 +263,16 @@ pub fn sync_parent(_path: &Path) -> io::Result<()> {
 pub enum KeyringKey {
     Found(Key),
     Missing,
-    Unavailable(String),
+    Unavailable(KeyUnavailable),
+}
+
+/// Why the key in the OS credential store can't be had, though it may be there.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyUnavailable {
+    #[error("failed to read the database key from the keyring")]
+    Read(#[source] KeyringError),
+    #[error("the keyring holds a database key of {len} bytes, not 32")]
+    WrongLength { len: usize },
 }
 
 /// `account` names the keyring entry; each data directory needs its own.
@@ -186,36 +280,39 @@ pub fn keyring_key(account: &str) -> KeyringKey {
     match entry(account).and_then(|entry| entry.get_secret()) {
         Ok(secret) => match <[u8; 32]>::try_from(&secret[..]) {
             Ok(key) => KeyringKey::Found(Zeroizing::new(key)),
-            Err(_) => KeyringKey::Unavailable("the stored key has the wrong length".into()),
+            Err(_) => KeyringKey::Unavailable(KeyUnavailable::WrongLength { len: secret.len() }),
         },
         Err(KeyringError::NoEntry) => KeyringKey::Missing,
-        Err(error) => KeyringKey::Unavailable(error.to_string()),
+        Err(error) => KeyringKey::Unavailable(KeyUnavailable::Read(error)),
     }
 }
 
 /// Why [`create_keyring_key`] couldn't store a key.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum NoKeyring {
     /// There is a credential store, but it is locked or refused access (a dismissed prompt):
     /// it may well work in a moment.
-    Locked(String),
-    /// No usable credential store at all.
-    Absent(String),
+    #[error("the keyring is locked or refused access")]
+    Locked(#[source] KeyringError),
+    #[error("no usable keyring")]
+    Open(#[source] KeyringError),
+    #[error("the keyring didn't take the database key")]
+    Store(#[source] KeyringError),
+    #[error("the keyring took the database key but can't give it back")]
+    ReadBack(#[source] KeyringError),
+    #[error("the keyring gave back another key than the one it took")]
+    Changed,
+    /// The user chose a password rather than the keyring.
+    #[error("a password was chosen instead")]
+    Declined,
 }
 
-impl std::fmt::Display for NoKeyring {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Locked(reason) | Self::Absent(reason) => f.write_str(reason),
-        }
-    }
-}
-
-impl From<KeyringError> for NoKeyring {
-    fn from(error: KeyringError) -> Self {
-        match error {
-            KeyringError::NoStorageAccess(_) => Self::Locked(error.to_string()),
-            error => Self::Absent(error.to_string()),
+impl NoKeyring {
+    /// `error` from the step `step`, unless the store is only locked.
+    fn at(step: fn(KeyringError) -> Self) -> impl FnOnce(KeyringError) -> Self {
+        move |error| match error {
+            KeyringError::NoStorageAccess(_) => Self::Locked(error),
+            error => step(error),
         }
     }
 }
@@ -223,23 +320,28 @@ impl From<KeyringError> for NoKeyring {
 /// Generates a key and stores it in the OS credential store; `Err` if there is no usable store.
 pub fn create_keyring_key(account: &str) -> Result<Key, NoKeyring> {
     let key = random_key();
-    let entry = entry(account)?;
-    entry.set_secret(&key[..])?;
+    let entry = entry(account).map_err(NoKeyring::at(NoKeyring::Open))?;
+    entry
+        .set_secret(&key[..])
+        .map_err(NoKeyring::at(NoKeyring::Store))?;
     // Read it back: a store that accepted the write but can't return it is no store at all.
     match entry.get_secret() {
         Ok(stored) if stored[..] == key[..] => Ok(key),
-        Ok(_) => Err(NoKeyring::Absent(
-            "the keyring returned a different key".into(),
-        )),
-        Err(error) => Err(error.into()),
+        Ok(_) => Err(NoKeyring::Changed),
+        Err(error) => Err(NoKeyring::at(NoKeyring::ReadBack)(error)),
     }
 }
 
+/// Why the key couldn't be removed from the OS credential store.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to delete the database key from the keyring")]
+pub struct KeyNotDeleted(#[source] KeyringError);
+
 /// Removes the key from the OS credential store; done if there was none.
-pub fn delete_keyring_key(account: &str) -> Result<(), String> {
+pub fn delete_keyring_key(account: &str) -> Result<(), KeyNotDeleted> {
     match entry(account).and_then(|entry| entry.delete_credential()) {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(KeyNotDeleted(error)),
     }
 }
 
@@ -392,7 +494,9 @@ mod tests {
     fn keyring_is_reachable() {
         match keyring_key(DEFAULT_ACCOUNT) {
             KeyringKey::Found(_) | KeyringKey::Missing => {}
-            KeyringKey::Unavailable(reason) => panic!("keyring unavailable: {reason}"),
+            KeyringKey::Unavailable(reason) => {
+                panic!("keyring unavailable: {}", crate::Chain(&reason))
+            }
         }
     }
 

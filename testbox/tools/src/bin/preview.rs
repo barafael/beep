@@ -14,16 +14,31 @@ use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use testbox_tools::keys;
-use testbox_tools::{Context, Result, tls};
+use testbox_tools::tls;
 
 const PICTURE: &[u8] = include_bytes!("../../assets/preview.png");
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> std::process::ExitCode {
-    testbox_tools::exit("preview", serve().await)
+/// The server, stopped serving.
+#[derive(Debug, thiserror::Error)]
+#[error("serving the preview page on {address}")]
+struct ServeError {
+    address: SocketAddr,
+    #[source]
+    source: std::io::Error,
 }
 
-async fn serve() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> std::process::ExitCode {
+    match serve().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("preview: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tls::install_provider()?;
     let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls::server_config(&[
         "http/1.1",
@@ -45,7 +60,8 @@ async fn serve() -> Result<()> {
     listener
         .serve(app.into_make_service())
         .await
-        .context("serving the preview page")
+        .map_err(|source| ServeError { address, source })?;
+    Ok(())
 }
 
 async fn page(Path(n): Path<u32>) -> Response {

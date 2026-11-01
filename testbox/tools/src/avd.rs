@@ -3,7 +3,18 @@
 
 use std::fmt;
 
-use crate::{Error, Result};
+/// A `config.ini` that isn't as the box's AVD needs it, or a screen size that isn't one.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// A setting the AVD hasn't: a key misspelt, or an emulator that names it otherwise.
+    #[error("config.ini has no {key}")]
+    NoSetting { key: String },
+    #[error("a screen of {size}, not <width>x<height>")]
+    Size { size: String },
+    /// The system image's path not where avdmanager puts it.
+    #[error("config.ini's {SYSDIR} is {sysdir}")]
+    Sysdir { sysdir: String },
+}
 
 /// The Pixel 5's width in pixels and its density (the AVD's device: testbox/android/Containerfile
 /// `avdmanager create … -d pixel_5`). At another width the screen keeps its width in dp, and so
@@ -33,19 +44,22 @@ impl Config {
         )
     }
 
-    pub fn get(&self, key: &str) -> Result<&str> {
+    /// The setting `key`'s value.
+    pub fn get(&self, key: &str) -> Result<&str, ConfigError> {
         self.0
             .iter()
             .find_map(|line| match line {
                 Line::Setting { key: name, value } if name == key => Some(value.as_str()),
                 _ => None,
             })
-            .ok_or_else(|| Error::Failed(format!("config.ini has no {key}")))
+            .ok_or_else(|| ConfigError::NoSetting {
+                key: key.to_owned(),
+            })
     }
 
     /// Sets a setting the AVD has: one it doesn't have is a key misspelt, or an emulator that
     /// names it otherwise.
-    pub fn set(&mut self, key: &str, to: &str) -> Result<()> {
+    pub fn set(&mut self, key: &str, to: &str) -> Result<(), ConfigError> {
         let value = self
             .0
             .iter_mut()
@@ -53,7 +67,9 @@ impl Config {
                 Line::Setting { key: name, value } if name == key => Some(value),
                 _ => None,
             })
-            .ok_or_else(|| Error::Failed(format!("config.ini has no {key}")))?;
+            .ok_or_else(|| ConfigError::NoSetting {
+                key: key.to_owned(),
+            })?;
         to.clone_into(value);
         Ok(())
     }
@@ -62,20 +78,22 @@ impl Config {
     /// hardware keyboard, so the on-screen one doesn't cover what the driver taps; the system
     /// image's path, which avdmanager writes relative to /opt, as the command-line tools aren't in
     /// the cmdline-tools/latest layout it expects. The same each time.
-    pub fn for_box(&mut self, size: &str) -> Result<()> {
+    pub fn for_box(&mut self, size: &str) -> Result<(), ConfigError> {
         let (width, height) = size
             .split_once('x')
             .and_then(|(width, height)| {
                 Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
             })
-            .ok_or_else(|| Error::Failed(format!("a screen of {size}: <width>x<height>")))?;
+            .ok_or_else(|| ConfigError::Size {
+                size: size.to_owned(),
+            })?;
         let sysdir = self.get(SYSDIR)?;
         let sysdir = sysdir
             .strip_prefix("android-sdk/")
             .unwrap_or(sysdir)
             .to_owned();
         if !sysdir.starts_with("system-images/") {
-            return Err(Error::Failed(format!("config.ini's {SYSDIR} is {sysdir}")));
+            return Err(ConfigError::Sysdir { sysdir });
         }
         self.set(SYSDIR, &sysdir)?;
         self.set("hw.keyboard", "yes")?;

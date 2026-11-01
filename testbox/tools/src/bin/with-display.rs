@@ -8,15 +8,15 @@
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Child, Command};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus};
 
 use rustix::fs::Mode;
 use rustix::process::{Pid, Signal};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use strum::VariantArray;
-use testbox_tools::{Context, Describe, Error, Result, View};
+use testbox_tools::View;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, QueueHandle};
@@ -35,12 +35,72 @@ const DATA_CONTROL: [&str; 2] = [
     "ext_data_control_manager_v1",
 ];
 
-fn main() -> std::process::ExitCode {
-    testbox_tools::exit("with-display", run())
+/// What keeps the display from serving, or ends it with a failure.
+#[derive(Debug, thiserror::Error)]
+enum DisplayError {
+    #[error("usage: {USAGE}")]
+    Usage,
+    #[error("creating {}", path.display())]
+    CreateRuntime {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("finding with-display's own path")]
+    OwnPath(#[source] std::io::Error),
+    #[error("starting {program}")]
+    Start {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("waiting for {program}")]
+    Wait {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("stopping wayvnc")]
+    StopWayvnc(#[source] std::io::Error),
+    #[error("cage's pid {pid}, not a process group's")]
+    CagePid { pid: u32 },
+    #[error("setting up the stop signals' handler")]
+    Signals(#[source] std::io::Error),
+    #[error("cage exited: {status}")]
+    CageExited { status: ExitStatus },
+    /// The application's own failure: [`testbox_tools::APPLICATION_FAILED`] first, which what
+    /// waits for the application looks for.
+    #[error("{}: {program} exited: {status}", testbox_tools::APPLICATION_FAILED)]
+    ApplicationExited { program: String, status: ExitStatus },
 }
 
+/// What keeps the session from refusing a compositor that would share the clipboard.
+#[derive(Debug, thiserror::Error)]
+enum DataControlError {
+    #[error("connecting to cage")]
+    Connect(#[source] wayland_client::ConnectError),
+    #[error("reading cage's globals")]
+    Globals(#[source] wayland_client::globals::GlobalError),
+    #[error(
+        "cage offers {protocol}, through which wayvnc would share the clipboard with the viewers"
+    )]
+    Offered { protocol: &'static str },
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("with-display: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+type Failure = Box<dyn std::error::Error + Send + Sync>;
+
 /// `with-display session …`, with the same arguments, is what cage runs.
-fn run() -> Result<()> {
+fn run() -> Result<(), Failure> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let (in_cage, arguments) = match arguments.split_first() {
         Some((first, rest)) if first == "session" => (true, rest),
@@ -61,7 +121,7 @@ fn run() -> Result<()> {
                 serve(directory, geometry, program, program_arguments)
             }
         }
-        _ => Err(Error::Failed(format!("usage: {USAGE}"))),
+        _ => Err(DisplayError::Usage.into()),
     }
 }
 
@@ -70,7 +130,7 @@ fn serve(
     geometry: &str,
     program: &str,
     program_arguments: &[String],
-) -> Result<()> {
+) -> Result<(), Failure> {
     // The sockets, the runtime directory and the application's files are the owner's only.
     rustix::process::umask(Mode::from_raw_mode(0o077));
     // Left by this container before it restarted (`restartPolicy: Always`): wayvnc doesn't bind
@@ -79,11 +139,14 @@ fn serve(
         let name: &'static str = view.into();
         testbox_tools::remove_if_present(&directory.join(name))?;
     }
-    std::fs::create_dir_all(RUNTIME).context(RUNTIME)?;
+    std::fs::create_dir_all(RUNTIME).map_err(|source| DisplayError::CreateRuntime {
+        path: RUNTIME.into(),
+        source,
+    })?;
     // The application's pid, likewise when the container was killed with it: until the session
     // writes the new one, a stop signal would go to whatever has that pid now.
     testbox_tools::remove_if_present(&Path::new(RUNTIME).join(APPLICATION))?;
-    let this = std::env::current_exe().context("with-display's path")?;
+    let this = std::env::current_exe().map_err(DisplayError::OwnPath)?;
     let mut cage = Command::new("cage")
         .arg("-d")
         .arg("--")
@@ -101,13 +164,19 @@ fn serve(
         .env("WLR_LIBINPUT_NO_DEVICES", "1")
         .process_group(0)
         .spawn()
-        .context("cage")?;
+        .map_err(|source| DisplayError::Start {
+            program: "cage".to_owned(),
+            source,
+        })?;
     stop_with_container(&cage)?;
-    let status = cage.wait().context("cage")?;
+    let status = cage.wait().map_err(|source| DisplayError::Wait {
+        program: "cage".to_owned(),
+        source,
+    })?;
     if status.success() {
         Ok(())
     } else {
-        Err(Error::Failed(format!("cage exited: {status}")))
+        Err(DisplayError::CageExited { status }.into())
     }
 }
 
@@ -116,13 +185,12 @@ fn serve(
 /// session then ends, and cage with it. Before the application runs, there is nothing to end
 /// cleanly: they go to cage's whole process group. As PID 1 without a handler, this process would
 /// ignore them.
-fn stop_with_container(cage: &Child) -> Result<()> {
+fn stop_with_container(cage: &Child) -> Result<(), DisplayError> {
     let group = i32::try_from(cage.id())
         .ok()
         .and_then(Pid::from_raw)
-        .ok_or("cage's pid")?;
-    let mut signals =
-        Signals::new([SIGTERM, SIGINT, SIGHUP]).context("the stop signals' handler")?;
+        .ok_or(DisplayError::CagePid { pid: cage.id() })?;
+    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP]).map_err(DisplayError::Signals)?;
     std::thread::spawn(move || {
         for raw in signals.forever() {
             let Some(signal) = Signal::from_named_raw(raw) else {
@@ -146,7 +214,7 @@ fn session(
     geometry: &str,
     program: &str,
     program_arguments: &[String],
-) -> Result<()> {
+) -> Result<(), Failure> {
     refuse_data_control()?;
     let mut wlr_randr = Command::new("wlr-randr");
     wlr_randr.args(["--output", OUTPUT, "--custom-mode", geometry]);
@@ -154,17 +222,23 @@ fn session(
     let servers = View::VARIANTS
         .iter()
         .map(|&view| wayvnc(directory, view))
-        .collect::<Result<Vec<Child>>>()?;
+        .collect::<Result<Vec<Child>, DisplayError>>()?;
     // A group of its own: what it leaves running when it exits goes with it below.
     let mut application = Command::new(program)
         .args(program_arguments)
         .env(testbox_tools::DISPLAY_SIZE, geometry)
         .process_group(0)
         .spawn()
-        .context(program)?;
+        .map_err(|source| DisplayError::Start {
+            program: program.to_owned(),
+            source,
+        })?;
     let pid = Path::new(RUNTIME).join(APPLICATION);
     testbox_tools::write(&pid, application.id().to_string())?;
-    let status = application.wait().context(program)?;
+    let status = application.wait().map_err(|source| DisplayError::Wait {
+        program: program.to_owned(),
+        source,
+    })?;
     testbox_tools::remove_if_present(&pid)?;
     // Left running, its children (the Android driver's emulator) keep cage, and so the
     // container, up: it would look alive to whatever waits for it, doing nothing.
@@ -175,16 +249,20 @@ fn session(
         }
     }
     for mut server in servers {
-        server.kill().context("wayvnc")?;
-        server.wait().context("wayvnc")?;
+        server.kill().map_err(DisplayError::StopWayvnc)?;
+        server.wait().map_err(|source| DisplayError::Wait {
+            program: "wayvnc".to_owned(),
+            source,
+        })?;
     }
     if status.success() {
         Ok(())
     } else {
-        Err(Error::Failed(format!(
-            "{}: {program} exited: {status}",
-            testbox_tools::APPLICATION_FAILED
-        )))
+        Err(DisplayError::ApplicationExited {
+            program: program.to_owned(),
+            status,
+        }
+        .into())
     }
 }
 
@@ -195,7 +273,7 @@ fn application() -> Option<Pid> {
 }
 
 /// wayvnc on `view`'s socket in `directory`.
-fn wayvnc(directory: &Path, view: View) -> Result<Child> {
+fn wayvnc(directory: &Path, view: View) -> Result<Child, DisplayError> {
     let name: &'static str = view.into();
     let mut wayvnc = Command::new("wayvnc");
     wayvnc
@@ -206,7 +284,13 @@ fn wayvnc(directory: &Path, view: View) -> Result<Child> {
     if view == View::Watch {
         wayvnc.arg("--disable-input");
     }
-    wayvnc.arg(directory.join(name)).spawn().context("wayvnc")
+    wayvnc
+        .arg(directory.join(name))
+        .spawn()
+        .map_err(|source| DisplayError::Start {
+            program: "wayvnc".to_owned(),
+            source,
+        })
 }
 
 /// The globals' list, which `registry_queue_init` keeps; nothing to do on its events.
@@ -224,10 +308,10 @@ impl Dispatch<WlRegistry, GlobalListContents> for Registry {
     }
 }
 
-fn refuse_data_control() -> Result<()> {
-    let connection = Connection::connect_to_env().describe("cage")?;
+fn refuse_data_control() -> Result<(), DataControlError> {
+    let connection = Connection::connect_to_env().map_err(DataControlError::Connect)?;
     let globals = registry_queue_init::<Registry>(&connection)
-        .describe("cage's globals")?
+        .map_err(DataControlError::Globals)?
         .0;
     let offered = globals.contents().with_list(|list| {
         DATA_CONTROL
@@ -235,10 +319,7 @@ fn refuse_data_control() -> Result<()> {
             .find(|protocol| list.iter().any(|global| global.interface == *protocol))
     });
     match offered {
-        Some(protocol) => Err(Error::Failed(format!(
-            "cage offers {protocol}, through which wayvnc would share the clipboard with the \
-             viewers"
-        ))),
+        Some(protocol) => Err(DataControlError::Offered { protocol }),
         None => Ok(()),
     }
 }

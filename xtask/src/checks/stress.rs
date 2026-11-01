@@ -17,10 +17,9 @@ use super::b33p::{
 use super::clients::desktop_shows;
 use super::presage::Presage;
 use super::setup::{PlainBox, linked_desktop, plain_box, started_b33p};
-use super::{Checks, HISTORY_PATIENCE, PATIENCE, env_number, rng};
+use super::{Checks, EnvNumberError, Failure, HISTORY_PATIENCE, PATIENCE, env_number, rng};
 use crate::Sockets;
-use crate::error::{Error, Result};
-use crate::harness::Harness;
+use crate::harness::{Harness, HarnessError};
 use crate::pod::{B33P, Pod, Service};
 use crate::process;
 use testbox_tools::drivers;
@@ -46,8 +45,225 @@ const MEMORY_BUDGET: u64 = 1 << 30;
 /// The longest file name Linux takes is 255 bytes; saved again, " (1)" makes this one too long.
 const LONG_NAME: usize = 254;
 
+/// What the stress phases found b33p, or the peer, doing other than they should.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum StressError {
+    /// The thread sending `sender`'s messages panicked rather than return.
+    #[error("{sender}'s sending panicked")]
+    Panicked { sender: &'static str },
+    /// The messages of ours that `found`, a burst numbered by [`numbered`], should show once
+    /// each and in order.
+    #[error(
+        "b33p shows {found} of {expected}; missing {missing:?}; more than once {repeated:?}; \
+         first out of order {out_of_order:?}"
+    )]
+    NotInOrderOnce {
+        found: usize,
+        expected: usize,
+        missing: Vec<String>,
+        repeated: Vec<String>,
+        out_of_order: Option<(String, String)>,
+    },
+    /// What b33p was sending when it was killed, neither reached the peer and shown so nor shown
+    /// as failed.
+    #[error("{}", lines(sends))]
+    Unaccounted { sends: Vec<Unaccounted> },
+    /// A message of ours b33p showed as failed is no longer in the chat to send again.
+    #[error("{text:?} is gone from the chat")]
+    Gone { text: String },
+    /// b33p answered [`Action::RetrySend`] for it with no.
+    #[error("b33p didn't send {text:?} again")]
+    NotRetried { text: String },
+    /// Messages sent again that reached the peer other than once, with how often each did.
+    #[error("sent again, these didn't reach the peer once: {received:?}")]
+    RetriedNotOnce { received: Vec<(String, usize)> },
+    /// b33p answered [`Action::SaveAttachment`] for it with no.
+    #[error("b33p didn't start saving attachment {id}{}", if *again { " again" } else { "" })]
+    NotSaving { id: String, again: bool },
+    /// b33p's attachment row says saving failed, as `error`.
+    #[error("b33p failed to save attachment {id}: {error}")]
+    SaveFailed { id: String, error: String },
+    /// Messages of b33p's that the peer's presage-cli didn't receive as sent: `missing` of the
+    /// `sent`.
+    #[error("the peer didn't get {} of b33p's {sent} as sent: {missing:?}", missing.len())]
+    PeerMissing { missing: Vec<String>, sent: usize },
+    /// The [`awkward_texts`] b33p doesn't show as they were sent.
+    #[error("{}", lines(texts))]
+    Mangled { texts: Vec<Mangled> },
+    /// b33p's memory peak while it showed `pictures` bytes of pictures.
+    #[error(
+        "b33p took {} MiB at once, over {} MiB, for {} KiB of pictures",
+        peak >> 20,
+        budget >> 20,
+        pictures >> 10
+    )]
+    OverBudget {
+        peak: u64,
+        budget: u64,
+        pictures: usize,
+    },
+    /// The files with [`odd_names`] that weren't saved, or not where they should be.
+    #[error("{}", lines(saves))]
+    OddSaves { saves: Vec<OddSave> },
+    /// The message deleted for everyone shows as not deleted after all.
+    #[error("the message no longer shows as deleted")]
+    NotDeleted,
+    /// The message shows as deleted, yet texts it had show still.
+    #[error("deleted, yet these show: {shown:?}")]
+    DeletedShows { shown: Vec<String> },
+    /// What [`soak`] samples, grown over the run.
+    #[error("{}", growth.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
+    Growing { growth: Vec<Growth> },
+    /// A snapshot took longer than a second: b33p's window too busy to answer.
+    #[error("a snapshot took {took:?}")]
+    Unresponsive { took: Duration },
+    /// The open conversation's messages didn't stay the same for a while within `patience`.
+    #[error("the conversation kept changing for {patience:?}")]
+    KeptChanging { patience: Duration },
+    /// `service`'s log has Rust panics: their lines.
+    #[error("{service} panicked:\n{}", panics.join("\n"))]
+    Panics {
+        service: String,
+        panics: Vec<String>,
+    },
+    /// The number after `key` in `what`, read from b33p's container, isn't there.
+    #[error("no {} in {what}", key.trim_end())]
+    NoField {
+        key: &'static str,
+        what: &'static str,
+    },
+    #[error("encoding a picture of {side} px a side")]
+    EncodePicture {
+        side: u32,
+        #[source]
+        source: image::ImageError,
+    },
+    /// A burst of no texts, whose last b33p can't be waited for.
+    #[error("no texts to wait for")]
+    NoTexts,
+}
+
+/// Each of `items`, a line each.
+fn lines<T: std::fmt::Display>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A message b33p was sending when it was killed: whether it `reached` the peer, and how b33p
+/// shows it, if at all.
+#[derive(Debug)]
+pub(super) struct Unaccounted {
+    text: String,
+    reached: bool,
+    shown: Option<Delivery>,
+}
+
+impl std::fmt::Display for Unaccounted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            text,
+            reached,
+            shown,
+        } = self;
+        match (reached, shown) {
+            (true, None) => write!(f, "{text:?} reached the peer, b33p lost it"),
+            (false, None) => write!(
+                f,
+                "{text:?} didn't reach the peer, and b33p doesn't show it at all"
+            ),
+            (true, Some(delivery)) => {
+                write!(f, "{text:?} reached the peer, b33p shows it {delivery:?}")
+            }
+            (false, Some(delivery)) => write!(
+                f,
+                "{text:?} didn't reach the peer, b33p shows it {delivery:?}"
+            ),
+        }
+    }
+}
+
+/// One of [`awkward_texts`], named `what`, that b33p doesn't show as sent: as a text of
+/// `shown` characters, if it shows something close, instead of `sent`.
+#[derive(Debug)]
+pub(super) struct Mangled {
+    what: &'static str,
+    shown: Option<usize>,
+    sent: usize,
+}
+
+impl std::fmt::Display for Mangled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { what, shown, sent } = self;
+        match shown {
+            Some(shown) => write!(f, "{what}: shown as {shown} chars instead of {sent}"),
+            None => write!(f, "{what}: not shown"),
+        }
+    }
+}
+
+/// How a file with one of [`odd_names`] wasn't saved as it should be.
+#[derive(Debug)]
+pub(super) enum OddSave {
+    /// Saved, but at `path`: outside the downloads folder.
+    Outside { name: String, path: String },
+    /// Not saved the `time` time (first or second), b33p saying `error`.
+    Failed {
+        name: String,
+        time: &'static str,
+        error: String,
+    },
+}
+
+impl std::fmt::Display for OddSave {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Outside { name, path } => write!(f, "{name:?} saved at {path:?}"),
+            Self::Failed { name, time, error } => {
+                write!(f, "{name:?} not saved the {time} time: {error}")
+            }
+        }
+    }
+}
+
+/// What [`growing`] found grown between the first and the last third of the samples.
+#[derive(Debug)]
+pub(super) enum Growth {
+    /// b33p's memory, in bytes.
+    Memory {
+        from: u64,
+        to: u64,
+    },
+    OpenFiles {
+        from: u64,
+        to: u64,
+    },
+    /// A snapshot in the last third took `took`, over a second.
+    Slow {
+        took: Duration,
+    },
+}
+
+impl std::fmt::Display for Growth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Memory { from, to } => {
+                write!(f, "memory grew from {} to {} MiB", from >> 20, to >> 20)
+            }
+            Self::OpenFiles { from, to } => write!(f, "open files grew from {from} to {to}"),
+            Self::Slow { took } => write!(f, "a snapshot took {took:?}"),
+        }
+    }
+}
+
 /// Bursts of messages from the peer, with b33p running and with it stopped.
-pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+pub(crate) fn volume(
+    checks: &mut Checks,
+    containers: &Pod,
+    sockets: &Sockets,
+) -> Result<(), Failure> {
     let PlainBox {
         peer,
         primary_aci,
@@ -70,7 +286,10 @@ pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
             memory(containers, "after the burst");
             responsive(&mut b33p)?;
             select(&mut b33p, &conversation)?;
-            in_order_once(&all_texts(&mut b33p, "testbox stress: burst ")?, &texts)
+            Ok(in_order_once(
+                &all_texts(&mut b33p, "testbox stress: burst ")?,
+                &texts,
+            )?)
         },
     );
 
@@ -89,10 +308,10 @@ pub(crate) fn volume(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -
             memory(containers, "after catching up");
             responsive(&mut b33p)?;
             select(&mut b33p, &conversation)?;
-            in_order_once(
+            Ok(in_order_once(
                 &all_texts(&mut b33p, "testbox stress: while stopped ")?,
                 &texts,
-            )
+            )?)
         },
     );
 
@@ -106,7 +325,7 @@ pub(crate) fn interrupt(
     containers: &Pod,
     sockets: &Sockets,
     files: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let PlainBox {
         peer,
         primary_aci,
@@ -121,29 +340,34 @@ pub(crate) fn interrupt(
         // Three times: each kill loses what was acknowledged and not yet stored only if it
         // comes at that moment.
         let kills = [BURST / 5, BURST / 2, BURST * 4 / 5];
-        thread::scope(|scope| {
+        thread::scope(|scope| -> Result<(), Failure> {
             let sending = scope.spawn(|| peer.send_all(&primary_aci, &texts));
-            let killed = kills.iter().try_for_each(|&killed_at| {
-                let shown = b33p.wait_for(
-                    &format!("message {killed_at} in b33p's chat list"),
-                    PATIENCE,
-                    |snapshot| {
-                        preview_number(snapshot, &conversation, prefix)
-                            .filter(|shown| *shown >= killed_at)
-                    },
-                )?;
-                println!("  killed b33p at message {shown}");
-                b33p = kill_and_start(containers, sockets)?;
-                Ok(())
-            });
-            let sent = sending
-                .join()
-                .unwrap_or_else(|_| Err("the peer's sending panicked".into()));
-            killed.and(sent)
+            let killed = kills
+                .iter()
+                .try_for_each(|&killed_at| -> Result<(), Failure> {
+                    let shown = b33p.wait_for(
+                        &format!("message {killed_at} in b33p's chat list"),
+                        PATIENCE,
+                        |snapshot| {
+                            preview_number(snapshot, &conversation, prefix)
+                                .filter(|shown| *shown >= killed_at)
+                        },
+                    )?;
+                    println!("  killed b33p at message {shown}");
+                    b33p = kill_and_start(containers, sockets)?;
+                    Ok(())
+                });
+            let sent = sending.join();
+            killed?;
+            sent.map_err(|_| StressError::Panicked { sender: "the peer" })??;
+            Ok(())
         })?;
         chat_previewing(&mut b33p, last(&texts)?)?;
         select(&mut b33p, &conversation)?;
-        in_order_once(&all_texts(&mut b33p, &format!("{prefix} "))?, &texts)
+        Ok(in_order_once(
+            &all_texts(&mut b33p, &format!("{prefix} "))?,
+            &texts,
+        )?)
     });
 
     checks.record(
@@ -189,20 +413,15 @@ pub(crate) fn interrupt(
                     // time, which the peer takes for the same message.
                     (true, Some(Delivery::Sent | Delivery::Delivered | Delivery::Read))
                     | (_, Some(Delivery::Failed)) => {}
-                    (true, None) => wrong.push(format!("{text:?} reached the peer, b33p lost it")),
-                    (false, None) => wrong.push(format!(
-                        "{text:?} didn't reach the peer, and b33p doesn't show it at all"
-                    )),
-                    (true, Some(delivery)) => wrong.push(format!(
-                        "{text:?} reached the peer, b33p shows it {delivery:?}"
-                    )),
-                    (false, Some(delivery)) => wrong.push(format!(
-                        "{text:?} didn't reach the peer, b33p shows it {delivery:?}"
-                    )),
+                    (reached, shown) => wrong.push(Unaccounted {
+                        text: text.clone(),
+                        reached,
+                        shown,
+                    }),
                 }
             }
             if !wrong.is_empty() {
-                return Err(Error::Failed(wrong.join("\n")));
+                return Err(StressError::Unaccounted { sends: wrong }.into());
             }
             // Those that failed, sent again: they reach the peer, once each.
             let failed: Vec<String> = shown
@@ -217,9 +436,9 @@ pub(crate) fn interrupt(
                     .iter()
                     .find(|message| message.outgoing && &message.text == text)
                     .map(|message| message.index)
-                    .ok_or_else(|| Error::Failed(format!("{text:?} is gone from the chat")))?;
+                    .ok_or_else(|| StressError::Gone { text: text.clone() })?;
                 if !b33p.act(Action::RetrySend { index })? {
-                    return Err(Error::Failed(format!("b33p didn't send {text:?} again")));
+                    return Err(StressError::NotRetried { text: text.clone() }.into());
                 }
             }
             b33p.wait_for("those that failed sent again", PATIENCE, |snapshot| {
@@ -235,17 +454,16 @@ pub(crate) fn interrupt(
                     .then_some(())
             })?;
             let received = peer.sync()?;
-            let twice: Vec<&String> = failed
+            let twice: Vec<(String, usize)> = failed
                 .iter()
-                .filter(|text| received.matches(text.as_str()).count() != 1)
+                .map(|text| (text.clone(), received.matches(text.as_str()).count()))
+                .filter(|(_, count)| *count != 1)
                 .collect();
             if twice.is_empty() {
                 println!("  sent again: {failed:?}");
                 Ok(())
             } else {
-                Err(Error::Failed(format!(
-                    "sent again, these didn't reach the peer once: {twice:?}"
-                )))
+                Err(StressError::RetriedNotOnce { received: twice }.into())
             }
         },
     );
@@ -261,7 +479,11 @@ pub(crate) fn interrupt(
             let id = incoming_attachment(&mut b33p, Some(text), AttachmentKind::File)?;
             // A file is saved, not fetched: b33p fetches only what it shows inline.
             if !b33p.act(Action::SaveAttachment { id: id.clone() })? {
-                return Err("b33p didn't start saving it".into());
+                return Err(StressError::NotSaving {
+                    id: id.clone(),
+                    again: false,
+                }
+                .into());
             }
             b33p.wait_for("the saving under way", PATIENCE, |snapshot| {
                 snapshot
@@ -277,7 +499,11 @@ pub(crate) fn interrupt(
             select(&mut b33p, &conversation)?;
             incoming_attachment(&mut b33p, Some(text), AttachmentKind::File)?;
             if !b33p.act(Action::SaveAttachment { id: id.clone() })? {
-                return Err("b33p didn't start saving it again".into());
+                return Err(StressError::NotSaving {
+                    id: id.clone(),
+                    again: true,
+                }
+                .into());
             }
             let started = Instant::now();
             // Downloading and decrypting 90 MiB takes minutes in the box's debug build.
@@ -292,7 +518,10 @@ pub(crate) fn interrupt(
                     .saved
                 {
                     Some(Saved::Saved(_)) => Some(Ok(())),
-                    Some(Saved::Failed(error)) => Some(Err(Error::Failed(error.clone()))),
+                    Some(Saved::Failed(error)) => Some(Err(StressError::SaveFailed {
+                        id: id.clone(),
+                        error: error.clone(),
+                    })),
                     Some(Saved::Saving) | None => None,
                 },
             )??;
@@ -320,7 +549,7 @@ pub(crate) fn interrupt(
             select(&mut b33p, &conversation)?;
             let text = "testbox stress: from b33p after the hang";
             type_and_send(&mut b33p, text)?;
-            peer.sync_printing(text)
+            Ok(peer.sync_printing(text)?)
         },
     );
 
@@ -335,7 +564,7 @@ pub(crate) fn content(
     containers: &Pod,
     sockets: &Sockets,
     files: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let PlainBox {
         peer,
         primary_aci,
@@ -359,7 +588,7 @@ pub(crate) fn content(
             .filter(|message| !message.outgoing)
             .map(|message| message.text)
             .collect();
-        missing_texts(&shown)
+        Ok(missing_texts(&shown)?)
     });
 
     checks.record("awkward texts from b33p reach the peer as sent", || {
@@ -375,17 +604,19 @@ pub(crate) fn content(
             type_and_send(&mut b33p, text)?;
         }
         let received = peer.sync()?;
-        let missing: Vec<&str> = texts
+        let missing: Vec<String> = texts
             .iter()
             .filter(|(_, text)| !received.contains(text.as_str()))
-            .map(|(what, _)| *what)
+            .map(|(what, _)| (*what).to_owned())
             .collect();
         if missing.is_empty() {
             Ok(())
         } else {
-            Err(Error::Failed(format!(
-                "the peer didn't get these as typed: {missing:?}"
-            )))
+            Err(StressError::PeerMissing {
+                missing,
+                sent: texts.len(),
+            }
+            .into())
         }
     });
 
@@ -440,11 +671,12 @@ pub(crate) fn content(
             memory(containers, "after showing them");
             responsive(&mut b33p)?;
             if peak > MEMORY_BUDGET {
-                return Err(Error::Failed(format!(
-                    "b33p took {} MiB at once for {} KiB of pictures",
-                    peak >> 20,
-                    (picture.len() * HUGE_PICTURES) >> 10
-                )));
+                return Err(StressError::OverBudget {
+                    peak,
+                    budget: MEMORY_BUDGET,
+                    pictures: picture.len() * HUGE_PICTURES,
+                }
+                .into());
             }
             Ok(())
         },
@@ -473,17 +705,22 @@ pub(crate) fn content(
                                 path.escape_debug()
                             )
                         }
-                        Ok(path) => wrong.push(format!("{name:?} saved at {path:?}")),
-                        Err(error) => {
-                            wrong.push(format!("{name:?} not saved the {time} time: {error}"))
-                        }
+                        Ok(path) => wrong.push(OddSave::Outside {
+                            name: name.clone(),
+                            path,
+                        }),
+                        Err(error) => wrong.push(OddSave::Failed {
+                            name: name.clone(),
+                            time,
+                            error,
+                        }),
                     }
                 }
             }
             if wrong.is_empty() {
                 Ok(())
             } else {
-                Err(Error::Failed(wrong.join("\n")))
+                Err(StressError::OddSaves { saves: wrong }.into())
             }
         },
     );
@@ -494,7 +731,11 @@ pub(crate) fn content(
 
 /// Desktop (linked to the peer), presage-cli (the peer's primary) and b33p sending at once; and
 /// one message edited, reacted to and deleted close together, with b33p running and stopped.
-pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Sockets) -> Result<()> {
+pub(crate) fn concurrency(
+    checks: &mut Checks,
+    containers: &Pod,
+    sockets: &Sockets,
+) -> Result<(), Failure> {
     let PlainBox {
         peer,
         primary_aci,
@@ -504,9 +745,9 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
     let mut desktop = linked_desktop(checks, &sockets.desktop, &peer)?;
     let conversation = accepted(checks, &mut b33p, &peer, &primary_aci, "concurrency")?;
     checks.require("Desktop opens the chat with b33p", || {
-        desktop.call(drivers::Desktop::OpenConversation {
+        Ok(desktop.call(drivers::Desktop::OpenConversation {
             aci: primary_aci.clone(),
-        })
+        })?)
     })?;
 
     checks.record(
@@ -516,7 +757,7 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
             let from_desktop = numbered("testbox stress: from Desktop", 15);
             let from_b33p = numbered("testbox stress: from b33p", 15);
             select(&mut b33p, &conversation)?;
-            thread::scope(|scope| {
+            thread::scope(|scope| -> Result<(), Failure> {
                 let cli = scope.spawn(|| peer.send_all(&primary_aci, &from_cli));
                 let desktop = scope.spawn(|| {
                     from_desktop.iter().try_for_each(|text| {
@@ -527,12 +768,13 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
                     b33p.act(Action::Type { text: text.clone() })?;
                     b33p.act(Action::Send).map(drop)
                 });
-                let joined = |handle: thread::ScopedJoinHandle<'_, Result<()>>| {
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| Err("a sender panicked".into()))
-                };
-                mine.and(joined(cli)).and(joined(desktop))
+                let (cli, desktop) = (cli.join(), desktop.join());
+                mine?;
+                cli.map_err(|_| StressError::Panicked {
+                    sender: "presage-cli",
+                })??;
+                desktop.map_err(|_| StressError::Panicked { sender: "Desktop" })??;
+                Ok(())
             })?;
             for last in [last(&from_cli)?, last(&from_desktop)?] {
                 b33p_shows(&mut b33p, &format!("{last:?}"), |message| message.text == last)?;
@@ -648,13 +890,13 @@ pub(crate) fn concurrency(checks: &mut Checks, containers: &Pod, sockets: &Socke
 }
 
 /// Fails unless the message at `timestamp` shows as deleted, and none of `texts` shows.
-fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<()> {
+fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<(), Failure> {
     let snapshot = b33p.snapshot()?;
-    let shown: Vec<&str> = snapshot
+    let shown: Vec<String> = snapshot
         .messages
         .iter()
         .filter(|message| texts.contains(&message.text.as_str()))
-        .map(|message| message.text.as_str())
+        .map(|message| message.text.clone())
         .collect();
     let deleted = snapshot
         .messages
@@ -662,8 +904,8 @@ fn still_deleted(b33p: &mut Harness, timestamp: u64, texts: &[&str]) -> Result<(
         .any(|message| message.timestamp == timestamp && message.deleted);
     match (deleted, shown.is_empty()) {
         (true, true) => Ok(()),
-        (false, _) => Err("the message no longer shows as deleted".into()),
-        (true, false) => Err(Error::Failed(format!("deleted, yet these show: {shown:?}"))),
+        (false, _) => Err(StressError::NotDeleted.into()),
+        (true, false) => Err(StressError::DeletedShows { shown }.into()),
     }
 }
 
@@ -679,7 +921,7 @@ pub(crate) fn soak(
     containers: &Pod,
     sockets: &Sockets,
     files: &Path,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let PlainBox {
         peer,
         primary_aci,
@@ -771,22 +1013,23 @@ pub(crate) fn soak(
             let mine = all_texts(&mut b33p, "testbox soak: b33p ")?;
             peer.sync()?;
             let listed = peer.messages_with(&primary_aci)?;
-            let missing: Vec<&String> = mine
+            let missing: Vec<String> = mine
                 .iter()
                 .filter(|text| {
                     !listed
                         .lines()
                         .any(|line| line.ends_with(&format!(" / {text}")))
                 })
+                .cloned()
                 .collect();
             if !missing.is_empty() {
-                return Err(Error::Failed(format!(
-                    "the peer didn't get {} of b33p's {}: {missing:?}",
-                    missing.len(),
-                    mine.len()
-                )));
+                return Err(StressError::PeerMissing {
+                    missing,
+                    sent: mine.len(),
+                }
+                .into());
             }
-            growing(&samples)
+            Ok(growing(&samples)?)
         },
     );
 
@@ -795,7 +1038,7 @@ pub(crate) fn soak(
 }
 
 /// How long [`soak`] runs: `TESTBOX_SOAK_MINUTES`, or half an hour.
-fn soak_minutes() -> Result<u64> {
+fn soak_minutes() -> Result<u64, EnvNumberError> {
     Ok(env_number("TESTBOX_SOAK_MINUTES")?.unwrap_or(30))
 }
 
@@ -841,7 +1084,11 @@ impl std::fmt::Display for Sample {
 }
 
 /// What `service`'s b33p uses and how fast it answers, now.
-pub(super) fn sample(containers: &Pod, service: Service, b33p: &mut Harness) -> Result<Sample> {
+pub(super) fn sample(
+    containers: &Pod,
+    service: Service,
+    b33p: &mut Harness,
+) -> Result<Sample, Failure> {
     let started = Instant::now();
     b33p.snapshot()?;
     let answer = started.elapsed();
@@ -866,7 +1113,7 @@ done"#;
 }
 
 /// The number after `key` on its line of `text`, which is `what`.
-fn field(text: &str, key: &str, what: &str) -> Result<u64> {
+fn field(text: &str, key: &'static str, what: &'static str) -> Result<u64, StressError> {
     text.lines()
         .find_map(|line| {
             line.strip_prefix(key)?
@@ -875,12 +1122,12 @@ fn field(text: &str, key: &str, what: &str) -> Result<u64> {
                 .parse()
                 .ok()
         })
-        .ok_or_else(|| Error::Failed(format!("no {} in {what}", key.trim_end())))
+        .ok_or(StressError::NoField { key, what })
 }
 
 /// Fails if the last third of `samples` is well above the first third: memory by half and
 /// 64 MiB, open files by 32, the answering time past a second.
-pub(super) fn growing(samples: &[Sample]) -> Result<()> {
+pub(super) fn growing(samples: &[Sample]) -> Result<(), StressError> {
     let third = samples.len() / 3;
     if third == 0 {
         return Ok(());
@@ -894,23 +1141,25 @@ pub(super) fn growing(samples: &[Sample]) -> Result<()> {
     let mut wrong = Vec::new();
     let memory = (median(first, |s| s.memory), median(last, |s| s.memory));
     if memory.1 > memory.0 + memory.0 / 2 && memory.1 > memory.0 + (64 << 20) {
-        wrong.push(format!(
-            "memory grew from {} to {} MiB",
-            memory.0 >> 20,
-            memory.1 >> 20
-        ));
+        wrong.push(Growth::Memory {
+            from: memory.0,
+            to: memory.1,
+        });
     }
     let files = (median(first, |s| s.files), median(last, |s| s.files));
     if files.1 > files.0 + 32 {
-        wrong.push(format!("open files grew from {} to {}", files.0, files.1));
+        wrong.push(Growth::OpenFiles {
+            from: files.0,
+            to: files.1,
+        });
     }
     if let Some(slow) = last.iter().find(|s| s.answer > Duration::from_secs(1)) {
-        wrong.push(format!("a snapshot took {:?}", slow.answer));
+        wrong.push(Growth::Slow { took: slow.answer });
     }
     if wrong.is_empty() {
         Ok(())
     } else {
-        Err(Error::Failed(wrong.join("; ")))
+        Err(StressError::Growing { growth: wrong })
     }
 }
 
@@ -970,8 +1219,8 @@ fn awkward_texts() -> Vec<(&'static str, String)> {
 }
 
 /// Fails, naming them, unless `shown` has each of [`awkward_texts`] as it is.
-fn missing_texts(shown: &[String]) -> Result<()> {
-    let wrong: Vec<String> = awkward_texts()
+fn missing_texts(shown: &[String]) -> Result<(), StressError> {
+    let wrong: Vec<Mangled> = awkward_texts()
         .into_iter()
         .filter(|(_, text)| !shown.contains(text))
         .map(|(what, text)| {
@@ -981,25 +1230,22 @@ fn missing_texts(shown: &[String]) -> Result<()> {
                     || shown.chars().count() > 100
                         && text.starts_with(&shown[..shown.floor_char_boundary(50)])
             });
-            match close {
-                Some(close) => format!(
-                    "{what}: shown as {} chars instead of {}",
-                    close.chars().count(),
-                    text.chars().count()
-                ),
-                None => format!("{what}: not shown"),
+            Mangled {
+                what,
+                shown: close.map(|close| close.chars().count()),
+                sent: text.chars().count(),
             }
         })
         .collect();
     if wrong.is_empty() {
         Ok(())
     } else {
-        Err(Error::Failed(wrong.join("\n")))
+        Err(StressError::Mangled { texts: wrong })
     }
 }
 
 /// Fetches the pictures of the message `text` until each is shown or refused; how each ended.
-fn fetched(b33p: &mut Harness, text: &str, count: usize) -> Result<Vec<String>> {
+fn fetched(b33p: &mut Harness, text: &str, count: usize) -> Result<Vec<String>, HarnessError> {
     let ids: Vec<String> = b33p.wait_for(
         &format!("{count} attachments of {text:?}"),
         PATIENCE,
@@ -1029,13 +1275,17 @@ fn fetched(b33p: &mut Harness, text: &str, count: usize) -> Result<Vec<String>> 
 }
 
 /// Saves the attachment `id`: where to, or why it wasn't.
-fn save(b33p: &mut Harness, id: &str) -> Result<std::result::Result<String, String>> {
+fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure> {
     if !b33p.act(Action::SaveAttachment { id: id.to_owned() })? {
-        return Err("b33p didn't start saving it".into());
+        return Err(StressError::NotSaving {
+            id: id.to_owned(),
+            again: false,
+        }
+        .into());
     }
     // The state the save before left: wait for this one's.
     thread::sleep(Duration::from_millis(500));
-    b33p.wait_for("saved, or not", PATIENCE, |snapshot| {
+    Ok(b33p.wait_for("saved, or not", PATIENCE, |snapshot| {
         let attachment = snapshot
             .messages
             .iter()
@@ -1046,7 +1296,7 @@ fn save(b33p: &mut Harness, id: &str) -> Result<std::result::Result<String, Stri
             Some(Saved::Failed(error)) => Some(Err(error.clone())),
             Some(Saved::Saving) | None => None,
         }
-    })
+    })?)
 }
 
 /// Pictures a decoder may trip on, by file name: their type is guessed from it.
@@ -1071,11 +1321,14 @@ fn broken_pictures() -> Vec<(String, Vec<u8>)> {
 }
 
 /// [`HUGE_SIDE`] a side, RGBA, all one colour: small as a file, 484 MB decoded.
-fn huge_picture() -> Result<Vec<u8>> {
+fn huge_picture() -> Result<Vec<u8>, StressError> {
     let mut png = Vec::new();
     image::RgbaImage::from_pixel(HUGE_SIDE, HUGE_SIDE, image::Rgba([10, 120, 200, 255]))
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|error| Error::Failed(error.to_string()))?;
+        .map_err(|source| StressError::EncodePicture {
+            side: HUGE_SIDE,
+            source,
+        })?;
     Ok(png)
 }
 
@@ -1122,7 +1375,7 @@ fn accepted(
     peer: &Presage<'_>,
     primary_aci: &str,
     phase: &str,
-) -> Result<String> {
+) -> Result<String, Failure> {
     let conversation = checks.require("text from the peer reaches b33p", || {
         peer_text_reaches(
             b33p,
@@ -1131,7 +1384,9 @@ fn accepted(
             &format!("testbox stress {phase}: from the peer"),
         )
     })?;
-    checks.require(REQUEST_ACCEPTED, || accept_request(b33p, &conversation))?;
+    checks.require(REQUEST_ACCEPTED, || {
+        Ok(accept_request(b33p, &conversation)?)
+    })?;
     Ok(conversation)
 }
 
@@ -1140,11 +1395,8 @@ fn numbered(prefix: &str, count: usize) -> Vec<String> {
     (1..=count).map(|n| format!("{prefix} {n:03}")).collect()
 }
 
-fn last(texts: &[String]) -> Result<&str> {
-    texts
-        .last()
-        .map(String::as_str)
-        .ok_or_else(|| "no texts".into())
+fn last(texts: &[String]) -> Result<&str, StressError> {
+    texts.last().map(String::as_str).ok_or(StressError::NoTexts)
 }
 
 /// b33p's own messages in the open conversation that start with `prefix`, and how far each got.
@@ -1177,7 +1429,7 @@ fn preview_number(snapshot: &Snapshot, conversation: &str, prefix: &str) -> Opti
 
 /// The texts of the open conversation's messages that start with `prefix`, oldest first, all of
 /// them: loading older pages until none comes.
-fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>> {
+fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>, HarnessError> {
     let mut quiet = 0;
     let mut seen = 0;
     loop {
@@ -1203,7 +1455,7 @@ fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>> {
 }
 
 /// Waits until the open conversation's messages stay the same for a while.
-fn settled(b33p: &mut Harness) -> Result<()> {
+fn settled(b33p: &mut Harness) -> Result<(), Failure> {
     let deadline = Instant::now() + PATIENCE;
     let mut last = None;
     let mut quiet = 0;
@@ -1225,34 +1477,40 @@ fn settled(b33p: &mut Harness) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(500));
     }
-    Err("the conversation kept changing".into())
+    Err(StressError::KeptChanging { patience: PATIENCE }.into())
 }
 
 /// Fails, saying how, unless `found` is `expected`.
-fn in_order_once(found: &[String], expected: &[String]) -> Result<()> {
+fn in_order_once(found: &[String], expected: &[String]) -> Result<(), StressError> {
     if found == expected {
         return Ok(());
     }
-    let missing: Vec<&String> = expected
+    let missing: Vec<String> = expected
         .iter()
         .filter(|text| !found.contains(text))
+        .cloned()
         .collect();
-    let mut repeated: Vec<&String> = found
+    let mut repeated: Vec<String> = found
         .iter()
         .filter(|text| found.iter().filter(|other| other == text).count() > 1)
+        .cloned()
         .collect();
     repeated.dedup();
-    let out_of_order = found.windows(2).find(|pair| pair[0] > pair[1]);
-    Err(Error::Failed(format!(
-        "b33p shows {} of {}; missing {missing:?}; more than once {repeated:?}; first out of \
-         order {out_of_order:?}",
-        found.len(),
-        expected.len()
-    )))
+    let out_of_order = found
+        .windows(2)
+        .find(|pair| pair[0] > pair[1])
+        .map(|pair| (pair[0].clone(), pair[1].clone()));
+    Err(StressError::NotInOrderOnce {
+        found: found.len(),
+        expected: expected.len(),
+        missing,
+        repeated,
+        out_of_order,
+    })
 }
 
 /// Kills b33p's container, starts it again, and connects to it unlocked.
-fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness> {
+fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness, Failure> {
     let since = process::now()?;
     containers.kill(B33P)?;
     // The pod may have started it again already (`restartPolicy: Always`): then this does
@@ -1262,13 +1520,13 @@ fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness> {
 }
 
 /// Fails if a snapshot takes over a second: b33p's window too busy to answer.
-fn responsive(b33p: &mut Harness) -> Result<()> {
+fn responsive(b33p: &mut Harness) -> Result<(), Failure> {
     let started = Instant::now();
     b33p.snapshot()?;
     let took = started.elapsed();
     println!("  a snapshot took {took:?}");
     if took > Duration::from_secs(1) {
-        return Err(Error::Failed(format!("a snapshot took {took:?}")));
+        return Err(StressError::Unresponsive { took }.into());
     }
     Ok(())
 }
@@ -1276,21 +1534,29 @@ fn responsive(b33p: &mut Harness) -> Result<()> {
 fn memory(containers: &Pod, when: &str) {
     match containers.memory(B33P) {
         Ok(usage) => println!("  b33p's memory {when}: {usage}"),
-        Err(error) => println!("  b33p's memory {when}: unknown ({error})"),
+        Err(error) => println!(
+            "  b33p's memory {when}: unknown ({})",
+            testbox_tools::Report(&error)
+        ),
     }
 }
 
 /// Fails, quoting them, if `service`'s b33p's log has a Rust panic.
-pub(super) fn no_panic(containers: &Pod, service: Service) -> Result<()> {
+pub(super) fn no_panic(containers: &Pod, service: Service) -> Result<(), Failure> {
     let log = containers.log(service)?;
-    let panics: Vec<&str> = log
+    let panics: Vec<String> = log
         .lines()
         .filter(|line| line.contains("panicked at"))
+        .map(str::to_owned)
         .collect();
     if panics.is_empty() {
         Ok(())
     } else {
-        Err(Error::Failed(panics.join("\n")))
+        Err(StressError::Panics {
+            service: service.name(),
+            panics,
+        }
+        .into())
     }
 }
 
@@ -1348,11 +1614,17 @@ mod tests {
             expected[0].clone(),
             expected[0].clone(),
         ];
-        let Err(Error::Failed(reason)) = in_order_once(&found, &expected) else {
+        let Err(StressError::NotInOrderOnce {
+            missing,
+            repeated,
+            out_of_order,
+            ..
+        }) = in_order_once(&found, &expected)
+        else {
             panic!("passed");
         };
-        assert!(reason.contains("missing [\"p 003\"]"), "{reason}");
-        assert!(reason.contains("more than once [\"p 001\"]"), "{reason}");
-        assert!(reason.contains("Some([\"p 002\", \"p 001\"])"), "{reason}");
+        assert_eq!(missing, ["p 003"]);
+        assert_eq!(repeated, ["p 001"]);
+        assert_eq!(out_of_order, Some(("p 002".to_owned(), "p 001".to_owned())));
     }
 }

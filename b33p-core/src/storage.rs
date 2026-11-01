@@ -18,12 +18,114 @@ use presage::{
 };
 use tracing::{debug, info};
 
-use crate::signal::errors::{failed, http, service_failed, storage_service_failed};
+use crate::signal::errors::{http_kind, kind_of, service_kind, storage_service_kind};
 use crate::{
-    ChatSettings, ConversationId, Error, Event, Events,
+    ChatSettings, ConversationId, ErrorKind, Event, Events,
     local::{AccountPreferences, LocalStore, Verification},
     signal::Mgr,
 };
+
+type PresageError = presage::Error<presage_store_sqlite::SqliteStoreError>;
+type ServiceError = presage::libsignal_service::prelude::ServiceError;
+type StorageServiceError = presage::libsignal_service::StorageServiceError;
+
+/// What fails in reading the storage service or writing to it.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StorageError {
+    #[error("failed to reach the storage service")]
+    Reach(#[source] PresageError),
+    #[error("failed to read the storage manifest")]
+    ReadManifest(#[source] StorageServiceError),
+    #[error("failed to read storage records")]
+    ReadRecords(#[source] StorageServiceError),
+    #[error("the storage key has {len} bytes, not 32")]
+    KeyLength { len: usize },
+    #[error("failed to make a request to the storage service's {endpoint}")]
+    Request {
+        endpoint: &'static str,
+        source: ServiceError,
+    },
+    #[error("the storage service's {endpoint} failed")]
+    Http {
+        endpoint: &'static str,
+        source: reqwest::Error,
+    },
+    #[error("the storage service's {endpoint} answered with something other than {what}")]
+    Decode {
+        endpoint: &'static str,
+        what: &'static str,
+        source: prost::DecodeError,
+    },
+    #[error("a storage blob of {len} bytes doesn't decrypt")]
+    Decrypt { len: usize },
+    /// The manifest as read, which is to be changed to write records.
+    #[error("the storage manifest doesn't decode")]
+    InvalidManifest(#[source] prost::DecodeError),
+    #[error("the storage manifest couldn't be changed")]
+    ManifestUnchangeable,
+    #[error("the changed storage manifest doesn't decode")]
+    ChangedManifestInvalid(#[source] prost::DecodeError),
+    #[error("the changed storage manifest doesn't add up; not writing it")]
+    ChangedManifestWrong,
+    #[error("failed to {step}")]
+    Tables { step: Step, source: sqlx::Error },
+}
+
+/// What was being done with b33p's records of the storage service.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Step {
+    ReadVersion,
+    ReadVerificationsRead,
+    ReadPreferences,
+    KeepPreferences,
+    KeepFolders,
+    ReadVerifications,
+    TakeSettings,
+    ReadSettings,
+    ReadRemote,
+    KeepWritten,
+}
+
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ReadVersion => "read the storage manifest's version last read",
+            Self::ReadVerificationsRead => "read whether the phone's verifications were read",
+            Self::ReadPreferences => "read the account's settings as the phone said them last",
+            Self::KeepPreferences => "keep the account's settings as the phone says them",
+            Self::KeepFolders => "keep the chat folders",
+            Self::ReadVerifications => "read the verifications as the phone said them last",
+            Self::TakeSettings => "take over the chats' settings from the phone",
+            Self::ReadSettings => "read the chats' settings",
+            Self::ReadRemote => "read the chats' settings as the phone said them last",
+            Self::KeepWritten => "keep what was written to the storage service",
+        })
+    }
+}
+
+impl crate::Classified for StorageError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Reach(error) => kind_of(error),
+            Self::ReadManifest(error) | Self::ReadRecords(error) => storage_service_kind(error),
+            Self::Request { source, .. } => service_kind(source),
+            Self::Http { source, .. } => http_kind(source),
+            Self::KeyLength { .. }
+            | Self::Decode { .. }
+            | Self::Decrypt { .. }
+            | Self::InvalidManifest(_)
+            | Self::ManifestUnchangeable
+            | Self::ChangedManifestInvalid(_)
+            | Self::ChangedManifestWrong => ErrorKind::Refused,
+            Self::Tables { .. } => ErrorKind::Storage,
+        }
+    }
+}
+
+/// For `map_err` on b33p's records: failing at `step`.
+fn at(step: Step) -> impl FnOnce(sqlx::Error) -> StorageError {
+    move |source| StorageError::Tables { step, source }
+}
 
 /// Items read per request.
 const BATCH: usize = 500;
@@ -53,29 +155,32 @@ pub(crate) async fn sync(
     manager: &Mgr,
     tables: &LocalStore,
     events: &Events,
-) -> Result<Synced, Error> {
+) -> Result<Synced, StorageError> {
     let Some(service) = manager
         .storage_service()
         .await
-        .map_err(failed("failed to reach the storage service"))?
+        .map_err(StorageError::Reach)?
     else {
         debug!("no storage key yet; the phone hasn't sent it");
         return Ok(Synced::default());
     };
     // Verifications came later than the rest: read everything again once to get them.
-    let first = !tables.remote_verifications_read().await.map_err(db)?;
+    let first = !tables
+        .remote_verifications_read()
+        .await
+        .map_err(at(Step::ReadVerificationsRead))?;
     let known = if first {
         0
     } else {
-        tables.storage_version().await.map_err(db)?
-    };
-    let Some(manifest) =
-        service
-            .manifest_if_changed(known)
+        tables
+            .storage_version()
             .await
-            .map_err(storage_service_failed(
-                "failed to read the storage manifest",
-            ))?
+            .map_err(at(Step::ReadVersion))?
+    };
+    let Some(manifest) = service
+        .manifest_if_changed(known)
+        .await
+        .map_err(StorageError::ReadManifest)?
     else {
         return Ok(Synced {
             known: true,
@@ -171,19 +276,34 @@ pub(crate) async fn sync(
         }
     }
     let preferences = match account_preferences {
-        Some(now) if tables.remote_preferences().await.map_err(db)? != Some(now) => {
-            tables.set_remote_preferences(now).await.map_err(db)?;
+        Some(now)
+            if tables
+                .remote_preferences()
+                .await
+                .map_err(at(Step::ReadPreferences))?
+                != Some(now) =>
+        {
+            tables
+                .set_remote_preferences(now)
+                .await
+                .map_err(at(Step::KeepPreferences))?;
             Some(now)
         }
         Some(_) | None => None,
     };
     folders.sort_by_key(|(position, _)| *position);
     let folders: Vec<_> = folders.into_iter().map(|(_, folder)| folder).collect();
-    tables.set_folders(&folders).await.map_err(db)?;
+    tables
+        .set_folders(&folders)
+        .await
+        .map_err(at(Step::KeepFolders))?;
     events.send(Event::Folders(folders));
     // Verifications the phone changed since last time; ours stand otherwise. The caller takes
     // them over (with notes in the chats) and then keeps what the phone said.
-    let verified_before = tables.remote_verifications().await.map_err(db)?;
+    let verified_before = tables
+        .remote_verifications()
+        .await
+        .map_err(at(Step::ReadVerifications))?;
     let verified_changed: Vec<(ServiceId, Verification)> =
         changed_verifications(&verified_before, &verifications)
             .into_iter()
@@ -198,7 +318,7 @@ pub(crate) async fn sync(
     let changed = tables
         .take_remote(&remote, manifest.version, merge)
         .await
-        .map_err(db)?;
+        .map_err(at(Step::TakeSettings))?;
     info!(
         version = manifest.version,
         changed = changed.len(),
@@ -274,11 +394,11 @@ async fn read(
     service: &StorageService,
     keys: Vec<Vec<u8>>,
     ikm: Option<&[u8]>,
-) -> Result<Vec<Record>, Error> {
+) -> Result<Vec<Record>, StorageError> {
     let records = service
         .read_items(keys, ikm)
         .await
-        .map_err(storage_service_failed("failed to read storage records"))?;
+        .map_err(StorageError::ReadRecords)?;
     Ok(records.into_iter().filter_map(|r| r.record).collect())
 }
 
@@ -332,12 +452,6 @@ fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
         included: ids(&folder.included_recipients),
         excluded: ids(&folder.excluded_recipients),
     }
-}
-
-fn db(error: sqlx::Error) -> Error {
-    Error::storage(format!(
-        "failed to save the storage service's settings: {error}"
-    ))
 }
 
 /// The local settings to change: those the phone changed since it said `before` (or that it
@@ -417,25 +531,33 @@ const MAX_PINS: usize = 4;
 /// Writes what was changed here (pins, mutes, archive, blocks, accepted requests) to the
 /// storage service. Records are changed in their bytes, field by field, so fields b33p
 /// doesn't know stay as the phone wrote them; and only on top of the version b33p last read.
-pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, Error> {
+pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, StorageError> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     let Some((service, key)) = manager
         .storage_access()
         .await
-        .map_err(failed("failed to reach the storage service"))?
+        .map_err(StorageError::Reach)?
     else {
         return Ok(Written::NoKey);
     };
     let key: [u8; 32] = Vec::from(key)
         .try_into()
-        .map_err(|_| Error::refused("a storage key has 32 bytes"))?;
+        .map_err(|key: Vec<u8>| StorageError::KeyLength { len: key.len() })?;
     let client = Client::new(service).await?;
     let (manifest, manifest_bytes) = client.manifest(&key).await?;
-    if manifest.version != tables.storage_version().await.map_err(db)? {
+    if manifest.version
+        != tables
+            .storage_version()
+            .await
+            .map_err(at(Step::ReadVersion))?
+    {
         return Ok(Written::Stale);
     }
-    let local = tables.conversations().await.map_err(db)?;
-    let before = tables.remote().await.map_err(db)?;
+    let local = tables
+        .conversations()
+        .await
+        .map_err(at(Step::ReadSettings))?;
+    let before = tables.remote().await.map_err(at(Step::ReadRemote))?;
     let pins = wanted_pins(&local);
     let pins_changed = pins != pinned_order(&before);
     let changed: HashMap<&ConversationId, ChatSettings> = local
@@ -540,7 +662,7 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
     tables
         .set_remote(&remote_after, version)
         .await
-        .map_err(db)?;
+        .map_err(at(Step::KeepWritten))?;
     info!(
         records = replaced.len(),
         version, "wrote to the storage service"
@@ -557,10 +679,10 @@ fn next_manifest(
     version: u64,
     device: u32,
     replaced: &[(Vec<u8>, Vec<u8>)],
-) -> Result<Vec<u8>, Error> {
+) -> Result<Vec<u8>, StorageError> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
-    let before = presage::proto::ManifestRecord::decode(manifest)
-        .map_err(|_| Error::refused("invalid storage manifest"))?;
+    let before =
+        presage::proto::ManifestRecord::decode(manifest).map_err(StorageError::InvalidManifest)?;
     let next = crate::wire::set_varint(manifest, 1, version)
         .and_then(|m| crate::wire::set_varint(&m, 3, u64::from(device)))
         .and_then(|m| {
@@ -572,9 +694,9 @@ fn next_manifest(
                 crate::wire::set_bytes(identifier, 1, new)
             })
         })
-        .ok_or_else(|| Error::refused("the storage manifest couldn't be changed"))?;
+        .ok_or(StorageError::ManifestUnchangeable)?;
     let check = presage::proto::ManifestRecord::decode(&*next)
-        .map_err(|_| Error::refused("the changed storage manifest is invalid"))?;
+        .map_err(StorageError::ChangedManifestInvalid)?;
     let written: Vec<&Vec<u8>> = check.identifiers.iter().map(|id| &id.raw).collect();
     let adds_up = check.version == version
         && check.source_device == device
@@ -584,9 +706,7 @@ fn next_manifest(
             .iter()
             .all(|(old, new)| !written.contains(&old) && written.contains(&new));
     if !adds_up {
-        return Err(Error::refused(
-            "the changed storage manifest doesn't add up; not writing it",
-        ));
+        return Err(StorageError::ChangedManifestWrong);
     }
     Ok(next)
 }
@@ -666,27 +786,35 @@ struct Client {
 impl Client {
     async fn new(
         service: presage::libsignal_service::push_service::PushService,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, StorageError> {
         use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
         #[derive(serde::Deserialize)]
         struct Auth {
             username: String,
             password: String,
         }
+        const AUTH: &str = "/v1/storage/auth";
+        let http = |source| StorageError::Http {
+            endpoint: AUTH,
+            source,
+        };
         let auth: Auth = service
             .request(
                 reqwest::Method::GET,
-                Endpoint::service("/v1/storage/auth"),
+                Endpoint::service(AUTH),
                 HttpAuthOverride::NoOverride,
             )
-            .map_err(service_failed("storage service"))?
+            .map_err(|source| StorageError::Request {
+                endpoint: AUTH,
+                source,
+            })?
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
-            .map_err(http("storage service"))?
+            .map_err(http)?
             .json()
             .await
-            .map_err(http("storage service"))?;
+            .map_err(http)?;
         Ok(Self {
             service,
             auth: presage::libsignal_service::push_service::HttpAuth {
@@ -699,38 +827,52 @@ impl Client {
     fn request(
         &self,
         method: reqwest::Method,
-        path: &str,
-    ) -> Result<reqwest::RequestBuilder, Error> {
+        endpoint: &'static str,
+    ) -> Result<reqwest::RequestBuilder, StorageError> {
         use presage::libsignal_service::{configuration::Endpoint, push_service::HttpAuthOverride};
         self.service
             .request(
                 method,
-                Endpoint::storage(path.to_owned()),
+                Endpoint::storage(endpoint.to_owned()),
                 HttpAuthOverride::Identified(self.auth.clone()),
             )
-            .map_err(service_failed("storage service"))
+            .map_err(|source| StorageError::Request { endpoint, source })
+    }
+
+    /// The body of a successful answer from `endpoint`.
+    async fn body(
+        endpoint: &'static str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<prost::bytes::Bytes, StorageError> {
+        let http = |source| StorageError::Http { endpoint, source };
+        request
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(http)?
+            .bytes()
+            .await
+            .map_err(http)
     }
 
     /// The manifest, decoded and as its bytes (to change those).
     async fn manifest(
         &self,
         key: &[u8; 32],
-    ) -> Result<(presage::proto::ManifestRecord, Vec<u8>), Error> {
+    ) -> Result<(presage::proto::ManifestRecord, Vec<u8>), StorageError> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
-        let bytes = self
-            .request(reqwest::Method::GET, "/v1/storage/manifest")?
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(http("storage manifest"))?
-            .bytes()
-            .await
-            .map_err(http("storage manifest"))?;
-        let manifest = presage::proto::StorageManifest::decode(bytes)
-            .map_err(|_| Error::refused("invalid storage manifest"))?;
+        const MANIFEST: &str = "/v1/storage/manifest";
+        let bytes = Self::body(MANIFEST, self.request(reqwest::Method::GET, MANIFEST)?).await?;
+        let manifest = presage::proto::StorageManifest::decode(bytes).map_err(|source| {
+            StorageError::Decode {
+                endpoint: MANIFEST,
+                what: "a manifest",
+                source,
+            }
+        })?;
         let plaintext = decrypt(&manifest_key(key, manifest.version), &manifest.value)?;
         let record = presage::proto::ManifestRecord::decode(&*plaintext)
-            .map_err(|_| Error::refused("invalid storage manifest"))?;
+            .map_err(StorageError::InvalidManifest)?;
         Ok((record, plaintext))
     }
 
@@ -740,22 +882,21 @@ impl Client {
         key: &[u8; 32],
         ids: Vec<Vec<u8>>,
         ikm: Option<&[u8]>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StorageError> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
+        const READ: &str = "/v1/storage/read";
         let body = presage::proto::ReadOperation { read_key: ids }.encode_to_vec();
-        let bytes = self
-            .request(reqwest::Method::PUT, "/v1/storage/read")?
+        let request = self
+            .request(reqwest::Method::PUT, READ)?
             .header("Content-Type", "application/x-protobuf")
-            .body(body)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(http("storage records"))?
-            .bytes()
-            .await
-            .map_err(http("storage records"))?;
-        let items = presage::proto::StorageItems::decode(bytes)
-            .map_err(|_| Error::refused("invalid storage records"))?;
+            .body(body);
+        let bytes = Self::body(READ, request).await?;
+        let items =
+            presage::proto::StorageItems::decode(bytes).map_err(|source| StorageError::Decode {
+                endpoint: READ,
+                what: "records",
+                source,
+            })?;
         items
             .items
             .into_iter()
@@ -767,19 +908,27 @@ impl Client {
     }
 
     /// Writes; `false` if the manifest changed meanwhile (409).
-    async fn write(&self, operation: &presage::proto::WriteOperation) -> Result<bool, Error> {
+    async fn write(
+        &self,
+        operation: &presage::proto::WriteOperation,
+    ) -> Result<bool, StorageError> {
         use presage::libsignal_service::prelude::ProtobufMessage as _;
+        const WRITE: &str = "/v1/storage";
+        let http = |source| StorageError::Http {
+            endpoint: WRITE,
+            source,
+        };
         let response = self
-            .request(reqwest::Method::PUT, "/v1/storage")?
+            .request(reqwest::Method::PUT, WRITE)?
             .header("Content-Type", "application/x-protobuf")
             .body(operation.encode_to_vec())
             .send()
             .await
-            .map_err(http("storage write"))?;
+            .map_err(http)?;
         if response.status() == reqwest::StatusCode::CONFLICT {
             return Ok(false);
         }
-        response.error_for_status().map_err(http("storage write"))?;
+        response.error_for_status().map_err(http)?;
         Ok(true)
     }
 }
@@ -824,14 +973,15 @@ fn item_key(storage_key: &[u8; 32], raw_id: &[u8], ikm: Option<&[u8]>) -> [u8; 3
     }
 }
 
-fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, Error> {
+fn decrypt(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, StorageError> {
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    let undecryptable = || StorageError::Decrypt { len: blob.len() };
     let (iv, ciphertext) = blob
         .split_first_chunk::<IV_LEN>()
-        .ok_or_else(|| Error::refused("invalid storage blob"))?;
+        .ok_or_else(undecryptable)?;
     Aes256Gcm::new(key.into())
         .decrypt(iv.into(), ciphertext)
-        .map_err(|_| Error::refused("invalid storage blob"))
+        .map_err(|_| undecryptable())
 }
 
 fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {

@@ -3951,10 +3951,10 @@ dependencies = [
 name = "testbox-tools"
 version = "0.0.0"
 dependencies = [
- "derive_more",
  "serde",
  "serde_json",
  "strum 0.27.2",
+ "thiserror 2.0.21",
  "typeshare",
 ]
 
@@ -3965,6 +3965,7 @@ dependencies = [
  "slint",
  "testbox-tools",
  "testbox-vnc",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3974,6 +3975,7 @@ version = "0.0.0"
 dependencies = [
  "landlock",
  "testbox-tools",
+ "thiserror 2.0.21",
  "tokio",
  "vnc-rs",
 ]

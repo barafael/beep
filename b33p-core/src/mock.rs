@@ -7,6 +7,33 @@ use crate::{
     now_millis,
 };
 
+/// What the mock backend fails with, said as the real one says it.
+#[derive(Debug, thiserror::Error)]
+enum MockFailure {
+    #[error("Nobody on Signal has the number {number}.")]
+    NumberNotFound { number: String },
+    #[error("That isn't a Signal group link.")]
+    NotAGroupLink,
+    #[error("couldn't look the group up: mock timeout")]
+    GroupLookupTimedOut,
+    #[error("failed to send: mock timeout")]
+    SendTimedOut,
+    #[error("failed to send: recipient is not registered")]
+    RecipientNotRegistered,
+}
+
+impl crate::Classified for MockFailure {
+    fn kind(&self) -> crate::ErrorKind {
+        use crate::ErrorKind::{Refused, Unreachable};
+        match self {
+            Self::NumberNotFound { .. } | Self::NotAGroupLink | Self::RecipientNotRegistered => {
+                Refused
+            }
+            Self::GroupLookupTimedOut | Self::SendTimedOut => Unreachable,
+        }
+    }
+}
+
 const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("alice", "Alice", false),
     ("rust", "Rustaceans 🦀", true),
@@ -608,9 +635,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         then,
                     });
                 } else {
-                    events.send(Event::Error(Error::refused(format!(
-                        "Nobody on Signal has the number {number}."
-                    ))));
+                    events.send(Event::Error(MockFailure::NumberNotFound { number }.into()));
                 }
             }
             // Any group link previews as a climbing group; one ending in "approve" has its
@@ -619,14 +644,12 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::PreviewGroupLink(link)) => {
                 let link = link.trim().to_owned();
                 if !link.starts_with("https://signal.group/#") {
-                    events.send(Event::Error(Error::refused(
-                        "That isn't a Signal group link.",
-                    )));
+                    events.send(Event::Error(MockFailure::NotAGroupLink.into()));
                     continue;
                 }
                 if link.ends_with("offline") {
                     events.send(Event::CommandFailed {
-                        error: Error::unreachable("couldn't look the group up: mock timeout"),
+                        error: MockFailure::GroupLookupTimedOut.into(),
                         command: Command::PreviewGroupLink(link),
                     });
                     continue;
@@ -779,11 +802,11 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 // `/refuse` as if Signal refused it (not).
                 std::thread::sleep(Duration::from_millis(1200));
                 if body == "/fail" || body == "/refuse" {
-                    let error = if body == "/fail" {
-                        Error::unreachable("failed to send: mock timeout")
+                    let error = Error::from(if body == "/fail" {
+                        MockFailure::SendTimedOut
                     } else {
-                        Error::refused("failed to send: recipient is not registered")
-                    };
+                        MockFailure::RecipientNotRegistered
+                    });
                     events.send(Event::SendFailed {
                         conversation: conversation.clone(),
                         timestamp,

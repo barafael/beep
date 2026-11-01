@@ -14,7 +14,7 @@
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,8 +26,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
-use testbox_tools::{Context, Describe, Error, Result};
-use testbox_vnc::{Frame, NamedKey, Region, VncClient, X11Event};
+use testbox_tools::Report;
+use testbox_vnc::{Frame, FrameError, NamedKey, Region, VncClient, X11Event};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
@@ -81,7 +81,87 @@ impl Asset {
 }
 
 fn main() -> std::process::ExitCode {
-    testbox_tools::exit("testbox-web", run())
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("testbox-web: {}", Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// What the server itself fails at; testbox-vnc's failures come as its own.
+#[derive(Debug, thiserror::Error)]
+enum WebError {
+    #[error("starting a tokio runtime")]
+    Runtime {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("listening on {address}")]
+    Bind {
+        address: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("finding the port 127.0.0.1 listens on")]
+    Port {
+        #[source]
+        source: std::io::Error,
+    },
+    /// The page's messages name a display in a byte.
+    #[error("{count} displays, more than a byte counts")]
+    TooManyDisplays { count: usize },
+    #[error("drawing random bytes for the token")]
+    Token {
+        #[source]
+        source: getrandom::Error,
+    },
+    #[error("serving on {address}")]
+    Serve {
+        address: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Why a page's session ended early: it is refused, or its WebSocket failed.
+#[derive(Debug, thiserror::Error)]
+enum PageError {
+    #[error("no token within {patience:?}")]
+    TokenTimeout { patience: Duration },
+    #[error("the page closed before its token")]
+    ClosedBeforeToken,
+    /// Its first message, of another kind than text.
+    #[error("a {kind} message in place of the token")]
+    TokenNotText { kind: &'static str },
+    /// Its first message, text but not a token message. Its text isn't kept: it may hold the
+    /// token, mistyped.
+    #[error("reading the token message")]
+    ParseToken {
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("input before the token")]
+    InputBeforeToken,
+    #[error("a wrong token")]
+    WrongToken,
+    #[error("receiving from the page")]
+    Receive {
+        #[source]
+        source: axum::Error,
+    },
+    #[error("sending to the page")]
+    Send {
+        #[source]
+        source: axum::Error,
+    },
+    #[error("reading input {text:?}")]
+    ParseInput {
+        text: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 /// What a display's task shares with the pages: its frame as it is now, its changes as they
@@ -104,31 +184,44 @@ struct Served {
     displays: Vec<Arc<Display>>,
 }
 
-fn run() -> Result<()> {
+/// The server, until it fails; any failure, to be reported, whoever's type it is.
+fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (interactive, targets) = testbox_vnc::arguments("testbox-web")?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("a tokio runtime")?;
+        .map_err(|source| WebError::Runtime { source })?;
     runtime.block_on(serve(interactive, targets))
 }
 
-async fn serve(interactive: bool, targets: Vec<testbox_vnc::Target>) -> Result<()> {
+/// [`run`]'s async part: its failures, too, only to be reported.
+async fn serve(
+    interactive: bool,
+    targets: Vec<testbox_vnc::Target>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Loopback only; the port the kernel picks, on both families (this host resolves
     // `*.localhost` to ::1 first).
-    let ipv4 = TcpListener::bind("127.0.0.1:0")
-        .await
-        .context("127.0.0.1")?;
-    let port = ipv4.local_addr().context("the port")?.port();
-    let ipv6 = TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))
-        .await
-        .context("[::1]")?;
+    let bind = async |address: SocketAddr| {
+        TcpListener::bind(address)
+            .await
+            .map_err(|source| WebError::Bind { address, source })
+    };
+    let ipv4 = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let port = ipv4
+        .local_addr()
+        .map_err(|source| WebError::Port { source })?
+        .port();
+    let ipv6_address = SocketAddr::from((Ipv6Addr::LOCALHOST, port));
+    let ipv6 = bind(ipv6_address).await?;
+    let ipv4_address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut displays = Vec::new();
     let mut connected = Vec::new();
     for (index, target) in targets.iter().enumerate() {
         let (input, events) = mpsc::unbounded_channel();
         let display = Arc::new(Display {
-            index: u8::try_from(index).map_err(|_| "more displays than a byte counts")?,
+            index: u8::try_from(index).map_err(|_| WebError::TooManyDisplays {
+                count: targets.len(),
+            })?,
             name: target.name.clone(),
             frame: Mutex::new(Frame::default()),
             ended: Mutex::new(None),
@@ -137,7 +230,7 @@ async fn serve(interactive: bool, targets: Vec<testbox_vnc::Target>) -> Result<(
         });
         match testbox_vnc::connect(&target.socket).await {
             Ok(client) => connected.push((display.clone(), client, events)),
-            Err(error) => eprintln!("testbox-web: {}: {error}", target.name),
+            Err(error) => eprintln!("testbox-web: {}: {}", target.name, Report(&error)),
         }
         displays.push(display);
     }
@@ -171,16 +264,30 @@ async fn serve(interactive: bool, targets: Vec<testbox_vnc::Target>) -> Result<(
         .with_state(served);
     let on_ipv6 = app.clone();
     tokio::try_join!(
-        async { axum::serve(ipv4, app).await.context("serving on 127.0.0.1") },
-        async { axum::serve(ipv6, on_ipv6).await.context("serving on [::1]") },
-    )
-    .map(drop)
+        async {
+            axum::serve(ipv4, app)
+                .await
+                .map_err(|source| WebError::Serve {
+                    address: ipv4_address,
+                    source,
+                })
+        },
+        async {
+            axum::serve(ipv6, on_ipv6)
+                .await
+                .map_err(|source| WebError::Serve {
+                    address: ipv6_address,
+                    source,
+                })
+        },
+    )?;
+    Ok(())
 }
 
 /// 32 random bytes, in hex.
-fn token() -> Result<String> {
+fn token() -> Result<String, WebError> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).describe("random bytes")?;
+    getrandom::fill(&mut bytes).map_err(|source| WebError::Token { source })?;
     Ok(hex::encode(bytes))
 }
 
@@ -230,7 +337,7 @@ async fn websocket(
     }
     upgrade.on_upgrade(move |socket| async move {
         if let Err(error) = page_session(served, socket).await {
-            eprintln!("testbox-web: a page: {error}");
+            eprintln!("testbox-web: a page: {}", Report(&error));
         }
     })
 }
@@ -293,7 +400,7 @@ fn json(message: &ToPage<'_>) -> Option<Message> {
 
 /// A region's pixels as the page draws them: [u8 display][u16 x][u16 y][u16 width][u16 height],
 /// little-endian, then RGBA row by row (page/viewer.js `draw`).
-fn pixels(index: u8, region: Region, frame: &Frame) -> Result<Message> {
+fn pixels(index: u8, region: Region, frame: &Frame) -> Result<Message, FrameError> {
     let mut message = vec![index];
     for value in [region.x, region.y, region.width, region.height] {
         message.extend_from_slice(&value.to_le_bytes());
@@ -302,20 +409,28 @@ fn pixels(index: u8, region: Region, frame: &Frame) -> Result<Message> {
     Ok(Message::Binary(message.into()))
 }
 
-async fn page_session(served: Arc<Served>, mut socket: WebSocket) -> Result<()> {
+async fn page_session(served: Arc<Served>, mut socket: WebSocket) -> Result<(), PageError> {
     let first = tokio::time::timeout(TOKEN_PATIENCE, socket.recv())
         .await
-        .map_err(|_| Error::Failed("no token in time".to_owned()))?;
-    let Some(Ok(Message::Text(first))) = first else {
-        return Err("no token".into());
+        .map_err(|_elapsed| PageError::TokenTimeout {
+            patience: TOKEN_PATIENCE,
+        })?
+        .ok_or(PageError::ClosedBeforeToken)?
+        .map_err(|source| PageError::Receive { source })?;
+    let first = match first {
+        Message::Text(first) => first,
+        Message::Binary(_) => return Err(PageError::TokenNotText { kind: "binary" }),
+        Message::Ping(_) => return Err(PageError::TokenNotText { kind: "ping" }),
+        Message::Pong(_) => return Err(PageError::TokenNotText { kind: "pong" }),
+        Message::Close(_) => return Err(PageError::TokenNotText { kind: "close" }),
     };
-    let FromPage::Token { token } =
-        serde_json::from_str::<FromPage>(first.as_str()).context("the token")?
+    let FromPage::Token { token } = serde_json::from_str::<FromPage>(first.as_str())
+        .map_err(|source| PageError::ParseToken { source })?
     else {
-        return Err("input before the token".into());
+        return Err(PageError::InputBeforeToken);
     };
     if !same(token.as_bytes(), served.token.as_bytes()) {
-        return Err("a wrong token".into());
+        return Err(PageError::WrongToken);
     }
     let hello = ToPage::Hello {
         displays: served
@@ -326,7 +441,10 @@ async fn page_session(served: Arc<Served>, mut socket: WebSocket) -> Result<()> 
         interactive: served.interactive,
     };
     if let Some(hello) = json(&hello) {
-        socket.send(hello).await.describe("sending to the page")?;
+        socket
+            .send(hello)
+            .await
+            .map_err(|source| PageError::Send { source })?;
     }
     let (frames, mut updates) = mpsc::channel(BACKLOG);
     // Ended with the page.
@@ -341,15 +459,22 @@ async fn page_session(served: Arc<Served>, mut socket: WebSocket) -> Result<()> 
                 let Some(message) = outgoing else {
                     return Ok(());
                 };
-                socket.send(message).await.describe("sending to the page")?;
+                socket
+                    .send(message)
+                    .await
+                    .map_err(|source| PageError::Send { source })?;
             }
             incoming = socket.recv() => {
                 let Some(message) = incoming else {
                     return Ok(());
                 };
-                match message.describe("the page")? {
+                match message.map_err(|source| PageError::Receive { source })? {
                     Message::Text(text) if served.interactive => {
-                        let input = serde_json::from_str::<FromPage>(text.as_str()).context("input")?;
+                        let input = serde_json::from_str::<FromPage>(text.as_str())
+                            .map_err(|source| PageError::ParseInput {
+                                text: text.as_str().to_owned(),
+                                source,
+                            })?;
                         take_input(&served, input);
                     }
                     Message::Close(_) => return Ok(()),
@@ -417,7 +542,9 @@ fn whole_frame(display: &Display, frame: &Frame) -> Vec<Message> {
         height: frame.height(),
     });
     let whole = pixels(display.index, frame.whole(), frame)
-        .inspect_err(|error| eprintln!("testbox-web: {}'s frame: {error}", display.name))
+        .inspect_err(|error| {
+            eprintln!("testbox-web: {}'s frame: {}", display.name, Report(error));
+        })
         .ok();
     resized.into_iter().chain(whole).collect()
 }
@@ -447,13 +574,14 @@ async fn follow(
         match pixels(display.index, region, frame) {
             Ok(message) => publish(&display, message),
             Err(error) => {
-                eprintln!("testbox-web: {}: {error}", display.name);
-                publish_state(&display, &error.to_string());
+                let state = Report(&error).to_string();
+                eprintln!("testbox-web: {}: {state}", display.name);
+                publish_state(&display, &state);
             }
         }
     })
     .await;
-    let state = ended.to_string();
+    let state = Report(&ended).to_string();
     if let Ok(mut kept) = display.ended.lock() {
         *kept = Some(state.clone());
     }

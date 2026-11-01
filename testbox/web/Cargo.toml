@@ -17,4 +17,5 @@ serde_json = "1"
 getrandom = "0.4.3"
 hex = "0.4"
 testbox-tools = { path = "../tools" }
+thiserror = "2"
 testbox-vnc = { path = "../vnc" }

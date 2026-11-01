@@ -32,6 +32,26 @@ pub(crate) use render::render;
 use render::*;
 
 /// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
+/// What the agent harness asked of the window that it couldn't do.
+#[cfg(all(feature = "harness", target_family = "unix"))]
+#[derive(Debug, thiserror::Error)]
+pub enum HarnessError {
+    #[error("can't take a screenshot")]
+    Snapshot(#[source] slint::PlatformError),
+    #[error("can't create {}", path.display())]
+    Create {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    #[error("can't write the screenshot to {}", path.display())]
+    Encode {
+        path: std::path::PathBuf,
+        source: png::EncodingError,
+    },
+    #[error("nothing called {what} to show")]
+    NothingToShow { what: String },
+}
+
 pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     let window = AppWindow::new()?;
     if Backend::mock_requested() {
@@ -160,21 +180,27 @@ impl Window {
 
     /// Writes the window as drawn to `path`, a PNG; its size in pixels.
     #[cfg(all(feature = "harness", target_family = "unix"))]
-    pub fn screenshot(&self, path: &std::path::Path) -> Result<(u32, u32), String> {
+    pub fn screenshot(&self, path: &std::path::Path) -> Result<(u32, u32), HarnessError> {
         let pixels = self
             .0
             .window()
             .take_snapshot()
-            .map_err(|error| format!("can't take a screenshot: {error}"))?;
+            .map_err(HarnessError::Snapshot)?;
         let (width, height) = (pixels.width(), pixels.height());
-        let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
+        let file = std::fs::File::create(path).map_err(|source| HarnessError::Create {
+            path: path.to_owned(),
+            source,
+        })?;
         let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder
             .write_header()
             .and_then(|mut writer| writer.write_image_data(pixels.as_bytes()))
-            .map_err(|error| error.to_string())?;
+            .map_err(|source| HarnessError::Encode {
+                path: path.to_owned(),
+                source,
+            })?;
         Ok((width, height))
     }
 
@@ -189,7 +215,7 @@ impl Window {
     /// Opens or closes what only the window keeps open, as its own buttons do; see the
     /// harness's `show` action.
     #[cfg(all(feature = "harness", target_family = "unix"))]
-    pub fn show_part(&self, what: &str, open: bool, chat: &ChatState) -> Result<(), String> {
+    pub fn show_part(&self, what: &str, open: bool, chat: &ChatState) -> Result<(), HarnessError> {
         let window = &self.0;
         match what {
             "settings" => window.global::<Prefs>().set_settings_open(open),
@@ -208,7 +234,11 @@ impl Window {
                     _ => Confirm::StartOver,
                 })
             }
-            _ => return Err(format!("nothing called {what} to show")),
+            _ => {
+                return Err(HarnessError::NothingToShow {
+                    what: what.to_owned(),
+                });
+            }
         }
         Ok(())
     }
@@ -308,13 +338,13 @@ fn open_folder(dir: Option<std::path::PathBuf>) {
     // The log folder only exists once something was logged to it.
     if let Err(error) = std::fs::create_dir_all(&dir) {
         tracing::warn!(
-            error = %b33p_core::scrub::scrubbed(&error),
+            error = %b33p_core::scrub::chain(&error),
             path = %b33p_core::scrub::scrubbed(&dir.display()),
             "could not make a folder"
         );
     }
     if let Err(error) = open::that_detached(&dir) {
-        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a folder");
+        tracing::warn!(error = %b33p_core::scrub::chain(&error), "could not open a folder");
     }
 }
 

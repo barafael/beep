@@ -16,9 +16,29 @@ use std::{
 /// Directories made by [`dir`] in the shared temporary directory, by name.
 static PER_RUN: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
 
+/// Why a scratch directory couldn't be had.
+#[derive(Debug, thiserror::Error)]
+pub enum ScratchError {
+    #[error("failed to create the scratch directory {}", path.display())]
+    Create { path: PathBuf, source: io::Error },
+    #[error("failed to look at the scratch directory {}", path.display())]
+    Inspect { path: PathBuf, source: io::Error },
+    #[error("{} is there already, and not a directory", path.display())]
+    NotADirectory { path: PathBuf },
+    #[error("failed to keep others out of the scratch directory {}", path.display())]
+    Restrict { path: PathBuf, source: io::Error },
+    /// In the shared temporary directory, every name tried was taken.
+    #[error("failed to create a scratch directory {name:?} in {}", base.display())]
+    AllTaken {
+        name: String,
+        base: PathBuf,
+        source: io::Error,
+    },
+}
+
 /// A directory called `name`, readable by this user only, created if need be. In the shared
 /// temporary directory, one made by this run.
-pub fn dir(name: &str) -> io::Result<PathBuf> {
+pub fn dir(name: &str) -> Result<PathBuf, ScratchError> {
     if let Some(base) = runtime_dir() {
         let path = base.join(name);
         return match create_private(&path) {
@@ -26,17 +46,19 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 // Ours, from earlier in this run; the runtime directory is private, so
                 // nobody else could have put it there.
-                if fs::symlink_metadata(&path)?.is_dir() {
-                    restrict(&path)?;
-                    Ok(path)
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!("{} is not a directory", path.display()),
-                    ))
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(source) => return Err(ScratchError::Inspect { path, source }),
+                };
+                if !metadata.is_dir() {
+                    return Err(ScratchError::NotADirectory { path });
+                }
+                match restrict(&path) {
+                    Ok(()) => Ok(path),
+                    Err(source) => Err(ScratchError::Restrict { path, source }),
                 }
             }
-            Err(error) => Err(error),
+            Err(source) => Err(ScratchError::Create { path, source }),
         };
     }
     let mut per_run = PER_RUN.lock().unwrap_or_else(|e| e.into_inner());
@@ -62,7 +84,11 @@ pub fn dir(name: &str) -> io::Result<PathBuf> {
             Err(e) => error = Some(e),
         }
     }
-    Err(error.expect("at least one attempt"))
+    Err(ScratchError::AllTaken {
+        name: name.to_owned(),
+        base,
+        source: error.expect("at least one attempt"),
+    })
 }
 
 /// Removes the directory `name`: what an earlier run left in the runtime directory (whose
@@ -86,7 +112,7 @@ pub fn clean(name: &str) {
 fn remove(path: &Path) {
     match fs::remove_dir_all(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => tracing::warn!(
-            error = %crate::scrub::scrubbed(&error),
+            error = %crate::scrub::chain(&error),
             path = %crate::scrub::scrubbed(&path.display()),
             "failed to remove a scratch directory"
         ),

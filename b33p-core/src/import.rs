@@ -113,9 +113,8 @@ impl Importer {
     }
 
     /// Converts one encoded `Frame` (not the leading `BackupInfo`).
-    pub(crate) fn frame(&mut self, bytes: &[u8]) -> Result<Vec<Record>, String> {
-        let frame = proto::Frame::parse_from_bytes(bytes)
-            .map_err(|e| format!("malformed history frame: {e}"))?;
+    pub(crate) fn frame(&mut self, bytes: &[u8]) -> Result<Vec<Record>, ImportError> {
+        let frame = proto::Frame::parse_from_bytes(bytes).map_err(ImportError::Frame)?;
         let mut records = Vec::new();
         match frame.item {
             Some(proto::frame::Item::Recipient(recipient)) => {
@@ -638,15 +637,49 @@ fn datetime(millis: u64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp_millis(millis as i64).unwrap_or_default()
 }
 
+/// What fails in importing the message history's records.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ImportError {
+    #[error("malformed history frame")]
+    Frame(#[source] protobuf::Error),
+    /// `what`: the kind of record (contact, group, message, timer).
+    #[error("failed to store a {what} of the message history")]
+    Store {
+        what: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("failed to keep when the message history's disappearing messages go")]
+    Expiry {
+        conversation: crate::ConversationId,
+        source: sqlx::Error,
+    },
+}
+
+impl crate::Classified for ImportError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            Self::Frame(_) => crate::ErrorKind::Refused,
+            Self::Store { .. } | Self::Expiry { .. } => crate::ErrorKind::Storage,
+        }
+    }
+}
+
 /// Stores one record. Messages are keyed by timestamp and thread, so importing twice is harmless.
 pub(crate) async fn store<S: ContentsStore>(
     store: &mut S,
     tables: &crate::local::LocalStore,
     record: Record,
-) -> Result<(), crate::Error>
+) -> Result<(), ImportError>
 where
-    S::ContentsStoreError: std::fmt::Display,
+    S::ContentsStoreError: std::error::Error + Send + Sync + 'static,
 {
+    let what = match &record {
+        Record::Contact { .. } => "contact",
+        Record::Group { .. } => "group",
+        Record::Message { .. } => "message",
+        Record::Timer { .. } => "timer",
+        Record::Expiry { .. } => "disappearing message",
+    };
     let result = match record {
         Record::Contact {
             contact,
@@ -681,15 +714,19 @@ where
             at,
         } => {
             let conversation = crate::signal::conversation_id(&thread);
-            return tables
-                .set_expiries(&conversation, &[(message, at)])
-                .await
-                .map_err(|e| {
-                    crate::Error::storage(format!("failed to store the message history: {e}"))
-                });
+            return match tables.set_expiries(&conversation, &[(message, at)]).await {
+                Ok(()) => Ok(()),
+                Err(source) => Err(ImportError::Expiry {
+                    conversation,
+                    source,
+                }),
+            };
         }
     };
-    result.map_err(|e| crate::Error::storage(format!("failed to store the message history: {e}")))
+    result.map_err(|source| ImportError::Store {
+        what,
+        source: Box::new(source),
+    })
 }
 
 #[cfg(test)]

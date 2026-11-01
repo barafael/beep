@@ -13,7 +13,59 @@
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::error::{Context, Error, Result};
+/// What fails reading the capture and the key logs, or writing them down as one pcapng.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PcapError {
+    #[error("reading the capture {}", path.display())]
+    ReadCapture {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Shorter than pcap's header.
+    #[error("{} is {len} bytes, a pcap header {HEADER}", path.display())]
+    Short { path: PathBuf, len: usize },
+    /// Not a magic of pcap's, in either byte order or resolution.
+    #[error("{} is not a pcap: its magic is {magic:#010x}", path.display())]
+    Magic { path: PathBuf, magic: u32 },
+    #[error("listing {} for its key logs", path.display())]
+    ListKeyLogs {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading the key log {}", path.display())]
+    ReadKeyLog {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("creating {}", path.display())]
+    Create {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A block's total length is 32 bits.
+    #[error("{block} would be a block of {len} bytes, over 4 GiB")]
+    BlockTooLarge { block: &'static str, len: usize },
+    /// The secrets' length is 32 bits.
+    #[error("the key logs are {len} bytes, over 4 GiB")]
+    KeyLogTooLarge { len: usize },
+    #[error("writing {block} to {}", path.display())]
+    Write {
+        path: PathBuf,
+        block: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("flushing {}", path.display())]
+    Flush {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// What tcpdump writes in the capture's directory (testbox/capture/pod.yaml).
 pub(super) const CAPTURE: &str = "capture.pcap";
@@ -21,18 +73,24 @@ pub(super) const CAPTURE: &str = "capture.pcap";
 pub(super) const PCAPNG: &str = "capture.pcapng";
 
 /// `raw`'s [`CAPTURE`], whole; `None` without one (a record from before there was one).
-pub(super) fn read(raw: &Path) -> Result<Option<Vec<u8>>> {
+pub(super) fn read(raw: &Path) -> Result<Option<Vec<u8>>, PcapError> {
     let capture = raw.join(CAPTURE);
     match std::fs::read(&capture) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context(capture.display().to_string()),
+        Err(source) => Err(PcapError::ReadCapture {
+            path: capture,
+            source,
+        }),
     }
 }
 
-/// The frames in a pcap, each with when it came (nanoseconds since the epoch).
-pub(super) fn frames(pcap: &[u8]) -> Result<Vec<(u64, &[u8])>> {
-    let header = header(pcap)?;
+/// The frames in a pcap, `capture`'s, each with when it came (nanoseconds since the epoch).
+pub(super) fn frames<'a>(
+    capture: &Path,
+    pcap: &'a [u8],
+) -> Result<Vec<(u64, &'a [u8])>, PcapError> {
+    let header = header(capture, pcap)?;
     Ok(packets(&header, pcap)
         .into_iter()
         .map(|(at, _original, bytes)| (at, bytes))
@@ -41,9 +99,12 @@ pub(super) fn frames(pcap: &[u8]) -> Result<Vec<(u64, &[u8])>> {
 
 /// Every key log in `raw` as one: the servers' `keys-<server>.log`, and a `keys.log` from
 /// before, in name order.
-fn key_logs(raw: &Path) -> Result<Vec<u8>> {
+pub(super) fn key_logs(raw: &Path) -> Result<Vec<u8>, PcapError> {
     let mut names: Vec<PathBuf> = std::fs::read_dir(raw)
-        .context(raw.display().to_string())?
+        .map_err(|source| PcapError::ListKeyLogs {
+            path: raw.to_owned(),
+            source,
+        })?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -53,7 +114,11 @@ fn key_logs(raw: &Path) -> Result<Vec<u8>> {
     names.sort();
     let mut keys = Vec::new();
     for path in names {
-        keys.extend_from_slice(&std::fs::read(&path).context(path.display().to_string())?);
+        let read = std::fs::read(&path).map_err(|source| PcapError::ReadKeyLog {
+            path: path.clone(),
+            source,
+        })?;
+        keys.extend_from_slice(&read);
         if keys.last().is_some_and(|&byte| byte != b'\n') {
             keys.push(b'\n');
         }
@@ -63,23 +128,27 @@ fn key_logs(raw: &Path) -> Result<Vec<u8>> {
 
 /// Writes `wire`'s [`PCAPNG`] from `raw`'s [`CAPTURE`] and its key logs: how many packets it
 /// holds and whether the secrets are in it; nothing, without a capture.
-pub(super) fn assemble(raw: &Path, wire: &Path) -> Result<Option<Assembled>> {
+pub(super) fn assemble(raw: &Path, wire: &Path) -> Result<Option<Assembled>, PcapError> {
     let capture = raw.join(CAPTURE);
     let Some(pcap) = read(raw)? else {
         return Ok(None);
     };
+    let header = header(&capture, &pcap)?;
     let keys = Some(key_logs(raw)?);
     let path = wire.join(PCAPNG);
-    let file = std::fs::File::create(&path).context(path.display().to_string())?;
-    let mut out = BufWriter::new(file);
-    let packets = write_pcapng(&mut out, &pcap, keys.as_deref()).map_err(|error| match error {
-        Error::Io { what, source } => Error::Io {
-            what: format!("{}: {what}", path.display()),
-            source,
-        },
-        other => Error::Failed(format!("{}: {other}", capture.display())),
+    let file = std::fs::File::create(&path).map_err(|source| PcapError::Create {
+        path: path.clone(),
+        source,
     })?;
-    out.flush().context(path.display().to_string())?;
+    let mut out = Out {
+        out: BufWriter::new(file),
+        path: &path,
+    };
+    let packets = write_pcapng(&mut out, &header, &pcap, keys.as_deref())?;
+    out.out.flush().map_err(|source| PcapError::Flush {
+        path: path.clone(),
+        source,
+    })?;
     Ok(Some(Assembled {
         packets,
         secrets: keys.is_some_and(|keys| !keys.is_empty()),
@@ -104,12 +173,13 @@ struct Header {
 const HEADER: usize = 24;
 const RECORD: usize = 16;
 
-fn header(pcap: &[u8]) -> Result<Header> {
+/// `capture`'s header, `pcap`'s first bytes.
+fn header(capture: &Path, pcap: &[u8]) -> Result<Header, PcapError> {
     if pcap.len() < HEADER {
-        return Err(Error::Failed(format!(
-            "a pcap header is {HEADER} bytes, this file {}",
-            pcap.len()
-        )));
+        return Err(PcapError::Short {
+            path: capture.to_owned(),
+            len: pcap.len(),
+        });
     }
     let magic = u32::from_le_bytes([pcap[0], pcap[1], pcap[2], pcap[3]]);
     let (swapped, resolution) = match magic {
@@ -117,10 +187,11 @@ fn header(pcap: &[u8]) -> Result<Header> {
         0xD4C3_B2A1 => (true, 6),
         0xA1B2_3C4D => (false, 9),
         0x4D3C_B2A1 => (true, 9),
-        other => {
-            return Err(Error::Failed(format!(
-                "not a pcap: its magic is {other:#010x}"
-            )));
+        magic => {
+            return Err(PcapError::Magic {
+                path: capture.to_owned(),
+                magic,
+            });
         }
     };
     let word = |at: usize| {
@@ -172,17 +243,33 @@ fn packets<'a>(header: &Header, pcap: &'a [u8]) -> Vec<(u64, u32, &'a [u8])> {
     found
 }
 
-/// pcapng's blocks: each a type, its total length, its body padded to 32 bits, and the total
-/// length again, so that it reads backwards too.
-fn block(out: &mut impl Write, kind: u32, body: &[u8]) -> std::io::Result<()> {
-    let padding = (4 - body.len() % 4) % 4;
-    let total = u32::try_from(12 + body.len() + padding)
-        .map_err(|_| std::io::Error::other("a block over 4 GiB"))?;
-    out.write_all(&kind.to_le_bytes())?;
-    out.write_all(&total.to_le_bytes())?;
-    out.write_all(body)?;
-    out.write_all(&[0; 4][..padding])?;
-    out.write_all(&total.to_le_bytes())
+/// Where the pcapng goes, and the file it is, to say.
+struct Out<'a, W> {
+    out: W,
+    path: &'a Path,
+}
+
+impl<W: Write> Out<'_, W> {
+    /// pcapng's blocks: each a type, its total length, its body padded to 32 bits, and the
+    /// total length again, so that it reads backwards too. `what` says which, to say.
+    fn block(&mut self, what: &'static str, kind: u32, body: &[u8]) -> Result<(), PcapError> {
+        let padding = (4 - body.len() % 4) % 4;
+        let len = 12 + body.len() + padding;
+        let total =
+            u32::try_from(len).map_err(|_| PcapError::BlockTooLarge { block: what, len })?;
+        let write = |out: &mut W| -> std::io::Result<()> {
+            out.write_all(&kind.to_le_bytes())?;
+            out.write_all(&total.to_le_bytes())?;
+            out.write_all(body)?;
+            out.write_all(&[0; 4][..padding])?;
+            out.write_all(&total.to_le_bytes())
+        };
+        write(&mut self.out).map_err(|source| PcapError::Write {
+            path: self.path.to_owned(),
+            block: what,
+            source,
+        })
+    }
 }
 
 /// One option of a block: its code, its length, its value padded to 32 bits.
@@ -201,17 +288,13 @@ const DECRYPTION_SECRETS: u32 = 0x0000_000A;
 /// The secrets' type: a TLS key log, as `SSLKEYLOGFILE`'s.
 const TLS_KEY_LOG: u32 = 0x544C_534B;
 
-/// An I/O failure while writing `what`.
-fn io(what: &'static str) -> impl Fn(std::io::Error) -> Error {
-    move |source| Error::Io {
-        what: what.to_owned(),
-        source,
-    }
-}
-
-/// How many packets it wrote.
-fn write_pcapng(out: &mut impl Write, pcap: &[u8], keys: Option<&[u8]>) -> Result<usize> {
-    let header = header(pcap)?;
+/// Writes the pcap's packets, `header`'s, as pcapng, with `keys`: how many packets it wrote.
+fn write_pcapng<W: Write>(
+    out: &mut Out<'_, W>,
+    header: &Header,
+    pcap: &[u8],
+    keys: Option<&[u8]>,
+) -> Result<usize, PcapError> {
     let mut section = Vec::new();
     section.extend_from_slice(&0x1A2B_3C4Du32.to_le_bytes());
     section.extend_from_slice(&1u16.to_le_bytes());
@@ -224,7 +307,7 @@ fn write_pcapng(out: &mut impl Write, pcap: &[u8], keys: Option<&[u8]>) -> Resul
         b"b33p testbox: tcpdump on the pod's loopback, the tap's TLS secrets",
     );
     option(&mut section, END_OF_OPTIONS, &[]);
-    block(out, SECTION_HEADER, &section).map_err(io("the section header"))?;
+    out.block("the section header", SECTION_HEADER, &section)?;
 
     let mut interface = Vec::new();
     interface.extend_from_slice(&header.link_type.to_le_bytes());
@@ -233,21 +316,21 @@ fn write_pcapng(out: &mut impl Write, pcap: &[u8], keys: Option<&[u8]>) -> Resul
     option(&mut interface, 2, b"lo");
     option(&mut interface, 9, &[header.resolution]);
     option(&mut interface, END_OF_OPTIONS, &[]);
-    block(out, INTERFACE_DESCRIPTION, &interface).map_err(io("the interface"))?;
+    out.block("the interface", INTERFACE_DESCRIPTION, &interface)?;
 
     if let Some(keys) = keys.filter(|keys| !keys.is_empty()) {
         let mut secrets = Vec::new();
         secrets.extend_from_slice(&TLS_KEY_LOG.to_le_bytes());
         secrets.extend_from_slice(
             &u32::try_from(keys.len())
-                .map_err(|_| Error::Failed("a key log over 4 GiB".to_owned()))?
+                .map_err(|_| PcapError::KeyLogTooLarge { len: keys.len() })?
                 .to_le_bytes(),
         );
         secrets.extend_from_slice(keys);
-        block(out, DECRYPTION_SECRETS, &secrets).map_err(io("the secrets"))?;
+        out.block("the secrets", DECRYPTION_SECRETS, &secrets)?;
     }
 
-    let packets = packets(&header, pcap);
+    let packets = packets(header, pcap);
     for &(at, original, bytes) in &packets {
         let mut packet = Vec::with_capacity(20 + bytes.len());
         packet.extend_from_slice(&0u32.to_le_bytes());
@@ -256,16 +339,30 @@ fn write_pcapng(out: &mut impl Write, pcap: &[u8], keys: Option<&[u8]>) -> Resul
         packet.extend_from_slice(&u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_le_bytes());
         packet.extend_from_slice(&original.to_le_bytes());
         packet.extend_from_slice(bytes);
-        block(out, ENHANCED_PACKET, &packet).map_err(io("a packet"))?;
+        out.block("a packet", ENHANCED_PACKET, &packet)?;
     }
     Ok(packets.len())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{
-        DECRYPTION_SECRETS, ENHANCED_PACKET, INTERFACE_DESCRIPTION, SECTION_HEADER, write_pcapng,
+        DECRYPTION_SECRETS, ENHANCED_PACKET, INTERFACE_DESCRIPTION, Out, PcapError, SECTION_HEADER,
+        header, write_pcapng,
     };
+
+    /// `capture` written as pcapng with `keys`: the pcapng, and how many packets it holds.
+    fn pcapng(capture: &[u8], keys: Option<&[u8]>) -> Result<(Vec<u8>, usize), PcapError> {
+        let header = header(Path::new("capture.pcap"), capture)?;
+        let mut out = Out {
+            out: Vec::new(),
+            path: Path::new("capture.pcapng"),
+        };
+        let written = write_pcapng(&mut out, &header, capture, keys)?;
+        Ok((out.out, written))
+    }
 
     /// A pcap as tcpdump writes it with `--time-stamp-precision=nano` on a little-endian host:
     /// `packets`' (seconds, nanoseconds, bytes), then `tail` as a record cut short.
@@ -315,8 +412,7 @@ mod tests {
             &[1, 2, 3],
         );
         let keys = b"CLIENT_RANDOM 00 11\n";
-        let mut out = Vec::new();
-        let written = write_pcapng(&mut out, &capture, Some(keys)).expect("a pcapng");
+        let (out, written) = pcapng(&capture, Some(keys)).expect("a pcapng");
         assert_eq!(written, 2);
         let blocks = blocks(&out);
         let kinds: Vec<u32> = blocks.iter().map(|(kind, _)| *kind).collect();
@@ -348,8 +444,7 @@ mod tests {
     #[test]
     fn without_secrets_there_is_no_secrets_block() {
         let capture = pcap(&[(1, 0, b"x")], &[]);
-        let mut out = Vec::new();
-        write_pcapng(&mut out, &capture, Some(b"")).expect("a pcapng");
+        let (out, _) = pcapng(&capture, Some(b"")).expect("a pcapng");
         let kinds: Vec<u32> = blocks(&out).iter().map(|(kind, _)| *kind).collect();
         assert_eq!(
             kinds,
@@ -369,8 +464,8 @@ mod tests {
         capture.extend_from_slice(&1u32.to_be_bytes());
         capture.extend_from_slice(&1u32.to_be_bytes());
         capture.push(b'q');
-        let mut out = Vec::new();
-        assert_eq!(write_pcapng(&mut out, &capture, None).expect("a pcapng"), 1);
+        let (out, written) = pcapng(&capture, None).expect("a pcapng");
+        assert_eq!(written, 1);
         let blocks = blocks(&out);
         assert!(blocks[1].1.windows(5).any(|w| w == [9, 0, 1, 0, 6]));
         let packet = blocks[2].1;
@@ -379,8 +474,16 @@ mod tests {
 
     #[test]
     fn not_a_pcap_is_said() {
-        let error = write_pcapng(&mut Vec::new(), b"not a pcap at all, not even close", None)
-            .expect_err("no pcapng");
-        assert!(error.to_string().contains("not a pcap"), "{error}");
+        let error = pcapng(b"not a pcap at all, not even close", None).expect_err("no pcapng");
+        assert!(
+            matches!(
+                error,
+                PcapError::Magic {
+                    magic: 0x2074_6f6e,
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 }

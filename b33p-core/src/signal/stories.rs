@@ -14,7 +14,7 @@ use presage::{
 use tracing::{debug, warn};
 
 use crate::outbox::{Outbox, Sends as _};
-use crate::{ConversationId, Event, MessageRef, attachments, now_millis, scrub::scrubbed};
+use crate::{ConversationId, Event, MessageRef, attachments, now_millis};
 
 use super::{
     Ctx, Mgr,
@@ -142,7 +142,7 @@ pub(super) async fn on_story(
         None => return,
     }
     if let Err(error) = keep_story(ctx, &stored).await {
-        warn!(error = %scrubbed(&error), "failed to keep a story");
+        warn!(error = %crate::scrub::chain(&error), "failed to keep a story");
         return;
     }
     send_stories(manager, ctx).await;
@@ -165,7 +165,7 @@ pub(super) async fn send_stories(manager: &Mgr, ctx: &Ctx) -> Option<u64> {
     let stored = match ctx.tables.stories(since).await {
         Ok(stored) => stored,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read the stories");
+            warn!(error = %crate::scrub::chain(&error), "failed to read the stories");
             return Some(now_millis() + RETRY.as_millis() as u64);
         }
     };

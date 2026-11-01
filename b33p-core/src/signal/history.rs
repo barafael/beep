@@ -1,7 +1,53 @@
 //! A chat's stored messages: pages of history, media, search, erasing, disappearing timers.
 
-use super::errors::{db, store_failed};
-use crate::Error;
+type StoreError = presage_store_sqlite::SqliteStoreError;
+
+/// What fails in reading a chat's stored messages, or in erasing one.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum HistoryError {
+    #[error("failed to load history")]
+    Page {
+        before: Option<u64>,
+        source: StoreError,
+    },
+    #[error("failed to gather media")]
+    Media {
+        conversation: ConversationId,
+        source: StoreError,
+    },
+    #[error("failed to search")]
+    Search {
+        conversation: ConversationId,
+        source: StoreError,
+    },
+    #[error("searching stopped")]
+    SearchStopped(#[source] tokio::task::JoinError),
+    #[error("failed to look up a deleted message")]
+    FindDeleted {
+        target: MessageRef,
+        source: StoreError,
+    },
+    #[error("failed to erase a deleted message")]
+    EraseDeleted {
+        target: MessageRef,
+        source: StoreError,
+    },
+    #[error("failed to note that a message was deleted")]
+    NoteDeleted {
+        conversation: ConversationId,
+        target: MessageRef,
+        source: sqlx::Error,
+    },
+}
+
+impl crate::Classified for HistoryError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            Self::SearchStopped(_) => crate::ErrorKind::Refused,
+            _ => crate::ErrorKind::Storage,
+        }
+    }
+}
 use std::{collections::HashMap, time::Duration};
 
 use presage::{
@@ -24,7 +70,6 @@ use crate::{
     attachments,
     format::{self, RangeValue, WireRange},
     now_millis,
-    scrub::scrubbed,
 };
 
 use super::{
@@ -72,7 +117,7 @@ pub(super) async fn history_page(
     manager: &Mgr,
     thread: &Thread,
     before: Option<u64>,
-) -> Result<(Vec<Content>, Option<u64>), Error> {
+) -> Result<(Vec<Content>, Option<u64>), HistoryError> {
     // Receipts, reactions and the like are stored between messages; read a bit more.
     const BATCH: u32 = 200;
     let mut contents = Vec::new();
@@ -82,7 +127,10 @@ pub(super) async fn history_page(
             .store()
             .messages_before(thread, cursor, BATCH)
             .await
-            .map_err(store_failed("failed to load history"))?;
+            .map_err(|source| HistoryError::Page {
+                before: cursor,
+                source,
+            })?;
         let exhausted = batch.len() < BATCH as usize;
         cursor = batch.last().map(stored_at).or(cursor);
         contents.extend(batch);
@@ -169,7 +217,7 @@ pub(super) async fn sweep_expired(ctx: Ctx) {
         let (due, next) = match ctx.tables.due(now_millis()).await {
             Ok(found) => found,
             Err(error) => {
-                warn!(error = %scrubbed(&error), "failed to look for disappearing messages");
+                warn!(error = %crate::scrub::chain(&error), "failed to look for disappearing messages");
                 tokio::time::sleep(RETRY).await;
                 continue;
             }
@@ -185,7 +233,7 @@ pub(super) async fn sweep_expired(ctx: Ctx) {
         if !deleted.is_empty()
             && let Err(error) = ctx.tables.delete_messages(&deleted).await
         {
-            warn!(error = %scrubbed(&error), "failed to delete disappearing messages");
+            warn!(error = %crate::scrub::chain(&error), "failed to delete disappearing messages");
             tokio::time::sleep(RETRY).await;
             continue;
         }
@@ -231,7 +279,7 @@ pub(super) async fn start_timers(
         return;
     }
     if let Err(error) = ctx.tables.set_expiries(conversation, &expiries).await {
-        warn!(error = %scrubbed(&error), "failed to start disappearing timers");
+        warn!(error = %crate::scrub::chain(&error), "failed to start disappearing timers");
         return;
     }
     ctx.expiring.notify_one();
@@ -360,7 +408,7 @@ pub(super) async fn erase_deleted(
     conversation: &ConversationId,
     thread: &Thread,
     target: &MessageRef,
-) -> Result<bool, Error> {
+) -> Result<bool, HistoryError> {
     let mut store = manager.store().clone();
     if !erase_from_store(&mut store, thread, target).await? {
         return Ok(false);
@@ -368,7 +416,11 @@ pub(super) async fn erase_deleted(
     ctx.tables
         .record_deleted(conversation, target)
         .await
-        .map_err(db)?;
+        .map_err(|source| HistoryError::NoteDeleted {
+            conversation: conversation.clone(),
+            target: target.clone(),
+            source,
+        })?;
     checkpoint(ctx).await;
     Ok(true)
 }
@@ -379,7 +431,9 @@ pub(super) async fn checkpoint(ctx: &Ctx) {
     match ctx.tables.checkpoint().await {
         Ok(true) => {}
         Ok(false) => warn!("a reader kept the database's log from emptying"),
-        Err(error) => warn!(error = %scrubbed(&error), "failed to checkpoint the database"),
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to checkpoint the database")
+        }
     }
 }
 
@@ -390,11 +444,14 @@ async fn erase_from_store(
     store: &mut SqliteStore,
     thread: &Thread,
     target: &MessageRef,
-) -> Result<bool, Error> {
+) -> Result<bool, HistoryError> {
     let stored = store
         .message(thread, target.timestamp)
         .await
-        .map_err(store_failed("failed to look up a deleted message"))?;
+        .map_err(|source| HistoryError::FindDeleted {
+            target: target.clone(),
+            source,
+        })?;
     let Some(content) = stored else {
         return Ok(false);
     };
@@ -407,7 +464,10 @@ async fn erase_from_store(
     store
         .delete_message(thread, target.timestamp)
         .await
-        .map_err(store_failed("failed to erase a deleted message"))
+        .map_err(|source| HistoryError::EraseDeleted {
+            target: target.clone(),
+            source,
+        })
 }
 
 /// What presage leaves of a message deleted for everyone: a null message from nobody.
@@ -605,7 +665,7 @@ pub(super) async fn media(
     manager: &Mgr,
     thread: &Thread,
     conversation: &ConversationId,
-) -> Result<Vec<ChatMessage>, Error> {
+) -> Result<Vec<ChatMessage>, HistoryError> {
     const MEDIA_MESSAGES: usize = 2000;
     const BATCH: u32 = 500;
     let mut names = Names::new();
@@ -616,7 +676,10 @@ pub(super) async fn media(
             .store()
             .messages_before(thread, before, BATCH)
             .await
-            .map_err(store_failed("failed to gather media"))?;
+            .map_err(|source| HistoryError::Media {
+                conversation: conversation.clone(),
+                source,
+            })?;
         for content in &batch {
             let wanted = data_of(content).is_some_and(|(data, _)| {
                 data.attachments
@@ -651,7 +714,7 @@ pub(super) async fn search(
     thread: &Thread,
     conversation: &ConversationId,
     query: &str,
-) -> Result<Vec<ChatMessage>, Error> {
+) -> Result<Vec<ChatMessage>, HistoryError> {
     const SEARCH_HITS: usize = 100;
     const BATCH: u32 = 500;
     let query = query.trim().to_lowercase();
@@ -666,7 +729,10 @@ pub(super) async fn search(
             .store()
             .messages_before(thread, before, BATCH)
             .await
-            .map_err(store_failed("failed to search"))?;
+            .map_err(|source| HistoryError::Search {
+                conversation: conversation.clone(),
+                source,
+            })?;
         // Cheap test first: most messages don't match. Off this thread, though: lowercasing
         // every text of a long history adds up.
         let (batch, matching) = {
@@ -682,7 +748,7 @@ pub(super) async fn search(
                 (batch, matching)
             })
             .await
-            .map_err(|e| Error::refused(e.to_string()))?
+            .map_err(HistoryError::SearchStopped)?
         };
         for content in matching.iter().map(|&at| &batch[at]) {
             if let Some(message) =

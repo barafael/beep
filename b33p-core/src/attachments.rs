@@ -20,11 +20,132 @@ use presage::{
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::signal::errors::{failed, upload_kind};
+use crate::signal::errors::{kind_of, service_kind, upload_kind};
 use crate::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, Error, Event, Events, Picture,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ErrorKind, Event, Events, Picture,
 };
-use presage::libsignal_service::sender::AttachmentUploadError;
+use presage::libsignal_service::{
+    attachment_cipher::AttachmentCipherError, push_service::ServiceError,
+    sender::AttachmentUploadError,
+};
+
+/// What fails in getting an attachment: downloading and decrypting it, and showing, saving or
+/// opening it.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum AttachmentError {
+    #[error("the attachment's pointer doesn't decode")]
+    Pointer(#[source] prost::DecodeError),
+    #[error("This attachment is no longer available on Signal's servers.")]
+    Gone,
+    #[error("failed to download the attachment")]
+    Fetch(#[source] ServiceError),
+    #[error("failed to download the attachment")]
+    Read(#[source] std::io::Error),
+    #[error("the attachment has no valid key")]
+    Key { len: usize },
+    #[error("The attachment doesn't match what the sender sent.")]
+    Digest,
+    #[error("The attachment is incomplete.")]
+    Incomplete { len: usize },
+    #[error("failed to decrypt the attachment")]
+    Decrypt(#[source] AttachmentCipherError),
+    #[error("This message is too long to show.")]
+    TooLong { size: u64 },
+    #[error("This image can't be shown.")]
+    NotShowable,
+    #[error("could not determine the downloads folder")]
+    NoDownloadsDir,
+    #[error("too many files named “{name}” in {}", dir.display())]
+    TooManyNamed { name: String, dir: PathBuf },
+    #[error("failed to write {}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(
+        "{name} is a kind of file the desktop would run rather than show, so it isn't opened \
+         from here. Save it if you trust the sender, and open it from there."
+    )]
+    Dangerous { name: String },
+    #[error("couldn't make a private directory")]
+    ScratchDir(#[source] crate::scratch::ScratchError),
+    #[error("couldn't write the attachment privately")]
+    WritePrivate(#[source] crate::vault::PrivateFileError),
+    #[error("couldn't open {}", path.display())]
+    Open {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// A blocking step (decrypting, decoding, writing) panicked or was cancelled.
+    #[error("{step} stopped")]
+    Stopped {
+        step: &'static str,
+        source: tokio::task::JoinError,
+    },
+    #[error("the session is ending")]
+    Ending(#[source] tokio::sync::AcquireError),
+}
+
+impl crate::Classified for AttachmentError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Fetch(error) => service_kind(error),
+            Self::Read(_) | Self::Ending(_) => ErrorKind::Unreachable,
+            Self::NoDownloadsDir
+            | Self::TooManyNamed { .. }
+            | Self::Write { .. }
+            | Self::ScratchDir(_)
+            | Self::WritePrivate(_)
+            | Self::Open { .. } => ErrorKind::Storage,
+            Self::Pointer(_)
+            | Self::Gone
+            | Self::Key { .. }
+            | Self::Digest
+            | Self::Incomplete { .. }
+            | Self::Decrypt(_)
+            | Self::TooLong { .. }
+            | Self::NotShowable
+            | Self::Dangerous { .. }
+            | Self::Stopped { .. } => ErrorKind::Refused,
+        }
+    }
+}
+
+/// What fails in uploading files to send.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UploadError {
+    #[error("can't read “{name}”")]
+    ReadFile {
+        name: String,
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("“{name}” is larger than Signal's limit of 100 MB.")]
+    TooLarge { name: String, size: u64 },
+    #[error("stripping the metadata of “{name}” stopped")]
+    StripStopped {
+        name: String,
+        source: tokio::task::JoinError,
+    },
+    #[error("failed to upload")]
+    Upload(#[source] presage::Error<presage_store_sqlite::SqliteStoreError>),
+    #[error("failed to upload “{name}”")]
+    Attachment {
+        name: String,
+        source: AttachmentUploadError,
+    },
+}
+
+impl crate::Classified for UploadError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::ReadFile { .. } => ErrorKind::Storage,
+            Self::TooLarge { .. } | Self::StripStopped { .. } => ErrorKind::Refused,
+            Self::Upload(error) => kind_of(error),
+            Self::Attachment { source, .. } => upload_kind(source),
+        }
+    }
+}
 
 /// Content type Signal uses for the full text of long messages.
 pub(crate) const LONG_TEXT: &str = "text/x-signal-plain";
@@ -162,53 +283,48 @@ impl Downloads {
 }
 
 /// Downloads and decrypts an attachment; see [`decrypt`].
-async fn download(cdn: &PushService, attachment: &Attachment) -> Result<Vec<u8>, Error> {
-    let pointer = AttachmentPointer::decode(&*attachment.pointer)
-        .map_err(|e| Error::refused(format!("invalid attachment: {e}")))?;
+async fn download(cdn: &PushService, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
+    let pointer =
+        AttachmentPointer::decode(&*attachment.pointer).map_err(AttachmentError::Pointer)?;
     // A copy shares the client, and with it the connections.
     let mut download = cdn
         .clone()
         .get_attachment(&pointer)
         .await
         .map_err(|e| match e {
-            presage::libsignal_service::push_service::ServiceError::NotFoundError => {
-                Error::refused("This attachment is no longer available on Signal's servers.")
-            }
-            e => Error::new(
-                crate::signal::errors::service_kind(&e),
-                format!("failed to download the attachment: {e}"),
-            ),
+            ServiceError::NotFoundError => AttachmentError::Gone,
+            e => AttachmentError::Fetch(e),
         })?;
     let mut data = Vec::with_capacity(download.content_length.unwrap_or_default() as usize);
     download
         .stream
         .read_to_end(&mut data)
         .await
-        .map_err(|e| Error::unreachable(format!("failed to download the attachment: {e}")))?;
+        .map_err(AttachmentError::Read)?;
     tokio::task::spawn_blocking(move || decrypt(&pointer, data))
         .await
-        .map_err(|e| Error::refused(e.to_string()))?
-        .map_err(Error::refused)
+        .map_err(|source| AttachmentError::Stopped {
+            step: "decrypting the attachment",
+            source,
+        })?
 }
 
 /// Checks and decrypts a downloaded attachment. The HMAC under the attachment's own key always
 /// authenticates it; the digest of the encrypted file is checked too when the pointer has one
 /// (pointers from the history archive for media the phone already downloaded don't).
-fn decrypt(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, String> {
-    let key: [u8; 64] = pointer
-        .key()
-        .try_into()
-        .map_err(|_| "the attachment has no valid key".to_string())?;
+fn decrypt(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, AttachmentError> {
+    let key: [u8; 64] = pointer.key().try_into().map_err(|_| AttachmentError::Key {
+        len: pointer.key().len(),
+    })?;
     if let Some(digest) = &pointer.digest
         && Sha256::digest(&data)[..] != digest[..]
     {
-        return Err("The attachment doesn't match what the sender sent.".into());
+        return Err(AttachmentError::Digest);
     }
     if data.len() < 16 + 32 {
-        return Err("The attachment is incomplete.".into());
+        return Err(AttachmentError::Incomplete { len: data.len() });
     }
-    decrypt_in_place(key, &mut data)
-        .map_err(|e| format!("failed to decrypt the attachment: {e}"))?;
+    decrypt_in_place(key, &mut data).map_err(AttachmentError::Decrypt)?;
     // Ciphertexts are padded; the pointer tells the real size.
     if let Some(size) = pointer.size.map(|size| size as usize)
         && size < data.len()
@@ -222,10 +338,16 @@ fn decrypt(pointer: &AttachmentPointer, mut data: Vec<u8>) -> Result<Vec<u8>, St
 pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     let content = async {
         if attachment.kind == AttachmentKind::LongText && attachment.size > LONG_TEXT_FETCHED {
-            return Err(Error::refused("This message is too long to show."));
+            return Err(AttachmentError::TooLong {
+                size: attachment.size,
+            });
         }
         let data = {
-            let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+            let _permit = downloads
+                .limit
+                .acquire()
+                .await
+                .map_err(AttachmentError::Ending)?;
             download(&downloads.cdn, &attachment).await?
         };
         match attachment.kind {
@@ -235,12 +357,19 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
             }
             _ => {
                 let bounds = picture_bounds(&attachment);
-                let _decoding = downloads.decoding.acquire().await.map_err(stopped)?;
+                let _decoding = downloads
+                    .decoding
+                    .acquire()
+                    .await
+                    .map_err(AttachmentError::Ending)?;
                 tokio::task::spawn_blocking(move || decode_picture(&data, bounds))
                     .await
-                    .map_err(|e| Error::refused(e.to_string()))?
+                    .map_err(|source| AttachmentError::Stopped {
+                        step: "decoding the picture",
+                        source,
+                    })?
                     .map(|picture| AttachmentContent::Picture(Arc::new(picture)))
-                    .ok_or_else(|| Error::refused("This image can't be shown."))
+                    .ok_or(AttachmentError::NotShowable)
             }
         }
     }
@@ -250,12 +379,12 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
             tracing::debug!(kind = ?attachment.kind, size = attachment.size, "fetched attachment")
         }
         Err(error) => {
-            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::scrubbed(&error), "failed to fetch attachment")
+            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::chain(error), "failed to fetch attachment")
         }
     }
     events.send(Event::Attachment {
         id: attachment.id,
-        content,
+        content: content.map_err(crate::Error::from),
     });
 }
 
@@ -274,12 +403,16 @@ fn shown_text(data: &[u8]) -> String {
 pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     tracing::debug!(kind = ?attachment.kind, size = attachment.size, "saving attachment");
     let path = async {
-        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
-        let data = download(&downloads.cdn, &attachment).await?;
-        let path = free_path(&attachment).map_err(Error::storage)?;
-        tokio::fs::write(&path, data)
+        let _permit = downloads
+            .limit
+            .acquire()
             .await
-            .map_err(|e| Error::storage(format!("failed to write {}: {e}", path.display())))?;
+            .map_err(AttachmentError::Ending)?;
+        let data = download(&downloads.cdn, &attachment).await?;
+        let path = free_path(&attachment)?;
+        if let Err(source) = tokio::fs::write(&path, data).await {
+            return Err(AttachmentError::Write { path, source });
+        }
         mark_downloaded(&path);
         Ok(path)
     }
@@ -289,12 +422,12 @@ pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, event
             tracing::debug!(kind = ?attachment.kind, size = attachment.size, "saved attachment")
         }
         Err(error) => {
-            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::scrubbed(&error), "failed to save attachment")
+            tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::chain(error), "failed to save attachment")
         }
     }
     events.send(Event::AttachmentSaved {
         id: attachment.id,
-        path,
+        path: path.map_err(crate::Error::from),
     });
 }
 
@@ -337,49 +470,41 @@ pub(crate) async fn upload_bytes(
     name: &str,
     content_type: &str,
     data: Vec<u8>,
-) -> Result<AttachmentPointer, Error> {
+) -> Result<AttachmentPointer, UploadError> {
     let spec = spec(name.to_owned(), content_type.to_owned(), &data);
     manager
         .upload_attachment(spec, data)
         .await
-        .map_err(failed("failed to upload"))?
-        .map_err(upload_failed)
-}
-
-/// A failed upload, of its kind.
-fn upload_failed(error: AttachmentUploadError) -> Error {
-    Error::new(upload_kind(&error), format!("failed to upload: {error}"))
-}
-
-/// The download limit's semaphore closed: the session is ending.
-fn stopped(error: tokio::sync::AcquireError) -> Error {
-    Error::unreachable(error.to_string())
+        .map_err(UploadError::Upload)?
+        .map_err(|source| UploadError::Attachment {
+            name: name.to_owned(),
+            source,
+        })
 }
 
 /// Uploads `files` for sending, as the pointers to put in the message.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
     files: &[PathBuf],
-) -> Result<Vec<AttachmentPointer>, Error> {
+) -> Result<Vec<AttachmentPointer>, UploadError> {
     let mut uploads = Vec::new();
+    let mut names = Vec::new();
     for path in files {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("attachment")
             .to_owned();
-        let size = tokio::fs::metadata(path)
-            .await
-            .map_err(|e| Error::storage(format!("can't read “{name}”: {e}")))?
-            .len();
+        let unreadable = |source| UploadError::ReadFile {
+            name: name.clone(),
+            path: path.clone(),
+            source,
+        };
+        let size = tokio::fs::metadata(path).await.map_err(unreadable)?.len();
         if size > MAX_UPLOAD_BYTES {
-            return Err(Error::refused(format!(
-                "“{name}” is larger than Signal's limit of 100 MB."
-            )));
+            return Err(UploadError::TooLarge { name, size });
         }
-        let data = tokio::fs::read(path)
-            .await
-            .map_err(|e| Error::storage(format!("can't read “{name}”: {e}")))?;
+        let data = tokio::fs::read(path).await.map_err(unreadable)?;
         let content_type = mime_guess::from_path(path)
             .first_or_octet_stream()
             .essence_str()
@@ -388,18 +513,23 @@ pub(crate) async fn upload(
             let content_type = content_type.clone();
             tokio::task::spawn_blocking(move || without_metadata(&content_type, data))
                 .await
-                .map_err(|e| Error::refused(e.to_string()))?
+                .map_err(|source| UploadError::StripStopped {
+                    name: name.clone(),
+                    source,
+                })?
         };
-        let spec = spec(name, content_type, &data);
+        let spec = spec(name.clone(), content_type, &data);
         uploads.push((spec, data));
+        names.push(name);
     }
     let results = manager
         .upload_attachments(uploads)
         .await
-        .map_err(failed("failed to upload"))?;
+        .map_err(UploadError::Upload)?;
     results
         .into_iter()
-        .map(|result| result.map_err(upload_failed))
+        .zip(names)
+        .map(|(result, name)| result.map_err(|source| UploadError::Attachment { name, source }))
         .collect()
 }
 
@@ -538,7 +668,7 @@ fn mark_downloaded(path: &std::path::Path) {
         Ok(())
     };
     if let Err(error) = marked {
-        tracing::debug!(error = %crate::scrub::scrubbed(&error), "couldn't mark a file as downloaded");
+        tracing::debug!(error = %crate::scrub::chain(&error), "couldn't mark a file as downloaded");
     }
 }
 
@@ -556,36 +686,36 @@ pub(crate) async fn open(downloads: Rc<Downloads>, attachment: Attachment, event
     let opened = async {
         let name = safe_name(&attachment);
         if is_dangerous(&name) {
-            return Err(Error::refused(format!(
-                "{name} is a kind of file the desktop would run rather than show, so it isn't \
-                 opened from here. Save it if you trust the sender, and open it from there."
-            )));
+            return Err(AttachmentError::Dangerous { name });
         }
-        let _permit = downloads.limit.acquire().await.map_err(stopped)?;
+        let _permit = downloads
+            .limit
+            .acquire()
+            .await
+            .map_err(AttachmentError::Ending)?;
         let data = download(&downloads.cdn, &attachment).await?;
         // One directory per attachment, so two files with the same name don't collide.
         let subdir = hex::encode(&Sha256::digest(attachment.id.0.as_bytes())[..8]);
         // Writing up to 100 MB takes a while: not on this thread.
         tokio::task::spawn_blocking(move || {
             let dir = crate::scratch::dir(OPENED)
-                .map_err(|e| format!("couldn't make a private directory: {e}"))?
+                .map_err(AttachmentError::ScratchDir)?
                 .join(subdir);
-            crate::vault::restrict_dir(&dir).map_err(|e| e.to_string())?;
+            crate::vault::restrict_dir(&dir).map_err(AttachmentError::WritePrivate)?;
             let path = dir.join(name);
-            crate::vault::write_private(&path, &data)
-                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            crate::vault::write_private(&path, &data).map_err(AttachmentError::WritePrivate)?;
             mark_downloaded(&path);
-            open::that_detached(&path).map_err(|e| format!("couldn't open {}: {e}", path.display()))
+            open::that_detached(&path).map_err(|source| AttachmentError::Open { path, source })
         })
         .await
-        .map_err(|e| e.to_string())
-        .flatten()
-        // Writing the file, or the desktop opening it.
-        .map_err(Error::storage)
+        .map_err(|source| AttachmentError::Stopped {
+            step: "writing the attachment to open it",
+            source,
+        })?
     }
     .await;
     if let Err(error) = opened {
-        events.send(Event::Error(error));
+        events.send(Event::Error(error.into()));
     }
 }
 
@@ -640,7 +770,7 @@ fn without_metadata(content_type: &str, data: Vec<u8>) -> Vec<u8> {
     match redraw() {
         Ok(redrawn) => redrawn,
         Err(error) => {
-            tracing::warn!(error = %crate::scrub::scrubbed(&error), "couldn't take the metadata out of a picture; sending it as it is");
+            tracing::warn!(error = %crate::scrub::chain(&error), "couldn't take the metadata out of a picture; sending it as it is");
             data
         }
     }
@@ -689,8 +819,8 @@ fn fitted(stem: &str, suffix: &str, ext: &str) -> String {
     format!("{}{suffix}{ext}", &stem[..stem.floor_char_boundary(room)])
 }
 
-fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
-    let dirs = directories::UserDirs::new().ok_or("could not determine the downloads folder")?;
+fn free_path(attachment: &Attachment) -> Result<PathBuf, AttachmentError> {
+    let dirs = directories::UserDirs::new().ok_or(AttachmentError::NoDownloadsDir)?;
     let dir = dirs.download_dir().unwrap_or(dirs.home_dir()).to_path_buf();
     let name = safe_name(attachment);
     let path = std::path::Path::new(&name);
@@ -714,7 +844,10 @@ fn free_path(attachment: &Attachment) -> Result<PathBuf, String> {
             dir.join(fitted(&stem, &suffix, &ext))
         })
         .find(|candidate| !candidate.exists())
-        .ok_or_else(|| format!("too many files named “{name}” in {}", dir.display()))
+        .ok_or_else(|| AttachmentError::TooManyNamed {
+            name: name.clone(),
+            dir: dir.clone(),
+        })
 }
 
 fn extension(content_type: &str) -> &str {
@@ -930,7 +1063,10 @@ mod tests {
             digest: None,
             ..pointer
         };
-        assert!(decrypt(&pointer, data).unwrap_err().contains("decrypt"));
+        assert!(matches!(
+            decrypt(&pointer, data),
+            Err(AttachmentError::Decrypt(_))
+        ));
         assert!(decrypt(&pointer, vec![0; 10]).is_err());
     }
 

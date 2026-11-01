@@ -23,7 +23,7 @@ pub fn pasted() -> Option<Vec<PathBuf>> {
     match save_png(&image) {
         Ok(path) => Some(vec![path]),
         Err(error) => {
-            tracing::warn!(%error, "couldn't keep a pasted picture");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "couldn't keep a pasted picture");
             None
         }
     }
@@ -37,11 +37,33 @@ pub fn clean() {
     b33p_core::scratch::clean(PASTED);
 }
 
-fn save_png(image: &arboard::ImageData) -> std::io::Result<PathBuf> {
-    let dir = b33p_core::scratch::dir(PASTED)?;
+/// Why a pasted picture couldn't be kept as a file.
+#[derive(Debug, thiserror::Error)]
+enum SaveError {
+    #[error("no private directory for pasted pictures")]
+    Dir(#[source] b33p_core::scratch::ScratchError),
+    #[error("failed to create {}", path.display())]
+    Create {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to write the pasted picture ({width}×{height}) as a PNG to {}", path.display())]
+    Encode {
+        path: PathBuf,
+        width: usize,
+        height: usize,
+        source: png::EncodingError,
+    },
+}
+
+fn save_png(image: &arboard::ImageData) -> Result<PathBuf, SaveError> {
+    let dir = b33p_core::scratch::dir(PASTED).map_err(SaveError::Dir)?;
     let name = format!("pasted-{}.png", b33p_core::now_millis());
     let path = dir.join(name);
-    let file = std::fs::File::create(&path)?;
+    let file = match std::fs::File::create(&path) {
+        Ok(file) => file,
+        Err(source) => return Err(SaveError::Create { path, source }),
+    };
     let mut encoder = png::Encoder::new(
         std::io::BufWriter::new(file),
         image.width as u32,
@@ -49,9 +71,16 @@ fn save_png(image: &arboard::ImageData) -> std::io::Result<PathBuf> {
     );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    encoder
+    match encoder
         .write_header()
         .and_then(|mut writer| writer.write_image_data(&image.bytes))
-        .map_err(std::io::Error::other)?;
-    Ok(path)
+    {
+        Ok(()) => Ok(path),
+        Err(source) => Err(SaveError::Encode {
+            path,
+            width: image.width,
+            height: image.height,
+            source,
+        }),
+    }
 }

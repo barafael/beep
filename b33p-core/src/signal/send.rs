@@ -1,7 +1,7 @@
 //! Sending: messages, stickers, link previews, edits, and what our other devices are told.
 
-use super::errors::{db, send_failed, store_failed};
-use crate::Error;
+use super::errors::send_kind;
+use crate::attachments::UploadError;
 use crate::outbox::{Outbox, SendFailure, Sends as _};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -28,7 +28,6 @@ use crate::{
     attachments,
     format::{self, RangeValue, WireRange},
     now_millis,
-    scrub::scrubbed,
 };
 
 use super::{
@@ -73,7 +72,7 @@ pub(super) async fn request_sync(
         .message(own, ContentBody::SynchronizeMessage(sync), now_millis())
         .await
     {
-        warn!(error = %scrubbed(&error), ?kind, "failed to ask the primary device");
+        warn!(error = %crate::scrub::chain(&error), ?kind, "failed to ask the primary device");
     }
 }
 
@@ -97,21 +96,64 @@ pub(super) async fn group_context(manager: &Mgr, key: &[u8; 32]) -> GroupContext
     }
 }
 
-/// Why sending failed: the store refused the identity a contact has now for sending (one other
-/// than the verified one pinned for them, see [`pin_verified`]), or anything else.
-enum SendError {
-    Untrusted(ServiceId),
-    Other(Error),
+/// What fails in sending a message, or in what comes with it.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SendError {
+    /// The store refused the identity a contact has now for sending: one other than the
+    /// verified one pinned for them, see [`pin_verified`]. The refusal itself says no more.
+    #[error("Their safety number changed since you verified it: confirm it to send.")]
+    Untrusted { who: ServiceId },
+    #[error(
+        "Not sent: your safety number with “{}” changed since you verified it. Confirm it in \
+         their chat first.",
+        names.join(", ")
+    )]
+    MembersHeld { names: Vec<String> },
+    #[error("failed to send")]
+    Send(#[source] SendFailure),
+    #[error("unknown conversation")]
+    UnknownConversation { conversation: ConversationId },
+    #[error("failed to upload the whole of a long text")]
+    LongText(#[source] UploadError),
+    #[error("unknown sticker pack")]
+    UnknownPack { pack: String },
+    #[error("unknown sticker")]
+    UnknownSticker { pack: String, sticker: u32 },
+    #[error("the sticker isn't downloaded")]
+    StickerMissing { pack: String, sticker: u32 },
+    #[error("failed to upload the sticker")]
+    UploadSticker(#[source] UploadError),
+    #[error("failed to accept the message request")]
+    Accept {
+        conversation: ConversationId,
+        source: sqlx::Error,
+    },
+    #[error("failed to delete the chat")]
+    DeleteChat {
+        conversation: ConversationId,
+        source: presage_store_sqlite::SqliteStoreError,
+    },
+    #[error("failed to block the chat")]
+    Block {
+        conversation: ConversationId,
+        source: sqlx::Error,
+    },
 }
 
-impl From<SendError> for Error {
-    fn from(error: SendError) -> Self {
-        match error {
+impl crate::Classified for SendError {
+    fn kind(&self) -> crate::ErrorKind {
+        use crate::ErrorKind::{Refused, Storage};
+        match self {
             // Not until it is confirmed: as it is, it won't go.
-            SendError::Untrusted(_) => Error::refused(
-                "Their safety number changed since you verified it: confirm it to send.",
-            ),
-            SendError::Other(error) => error,
+            Self::Untrusted { .. }
+            | Self::MembersHeld { .. }
+            | Self::UnknownConversation { .. }
+            | Self::UnknownPack { .. }
+            | Self::UnknownSticker { .. }
+            | Self::StickerMissing { .. } => Refused,
+            Self::Send(failure) => send_kind(failure),
+            Self::LongText(error) | Self::UploadSticker(error) => error.kind(),
+            Self::Accept { .. } | Self::DeleteChat { .. } | Self::Block { .. } => Storage,
         }
     }
 }
@@ -150,9 +192,9 @@ async fn send_to(
     };
     sent.map_err(|failure| match &failure {
         SendFailure::Presage(error) if let Some(who) = untrusted(error) => {
-            SendError::Untrusted(who)
+            SendError::Untrusted { who }
         }
-        _ => SendError::Other(send_failed("failed to send")(failure)),
+        _ => SendError::Send(failure),
     })
 }
 
@@ -166,24 +208,18 @@ async fn deliver(
     thread: &Thread,
     body: ContentBody,
     timestamp: u64,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     if let Thread::Group(key) = thread {
-        let held = held_members(manager, ctx, key).await;
-        if !held.is_empty() {
-            return Err(Error::refused(format!(
-                "Not sent: your safety number with “{}” changed since you verified it. Confirm it \
-                 in their chat first.",
-                held.join(", ")
-            )));
+        let names = held_members(manager, ctx, key).await;
+        if !names.is_empty() {
+            return Err(SendError::MembersHeld { names });
         }
     }
-    match send_to(&ctx.outbox, thread, body, timestamp).await {
-        Err(SendError::Untrusted(who)) => {
-            hold_changed(manager, ctx, who).await;
-            Err(SendError::Untrusted(who).into())
-        }
-        sent => sent.map_err(Error::from),
+    let sent = send_to(&ctx.outbox, thread, body, timestamp).await;
+    if let Err(SendError::Untrusted { who }) = &sent {
+        hold_changed(manager, ctx, *who).await;
     }
+    sent
 }
 
 /// The names of the members of group `key` whose verified safety number changed and isn't
@@ -215,7 +251,7 @@ pub(super) async fn send_data(
     thread: &Thread,
     mut message: DataMessage,
     timestamp: u64,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     if let Thread::Group(key) = thread {
         message.group_v2 = Some(group_context(manager, key).await);
     }
@@ -237,7 +273,7 @@ pub(super) async fn send_edit(
     target: u64,
     mut message: DataMessage,
     timestamp: u64,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     if let Thread::Group(key) = thread {
         message.group_v2 = Some(group_context(manager, key).await);
     }
@@ -266,7 +302,7 @@ pub(super) async fn inline_text(
         Vec<WireRange>,
         Option<presage::proto::AttachmentPointer>,
     ),
-    Error,
+    SendError,
 > {
     let (inline, ranges, whole) = split_long(text, ranges);
     let pointer = match whole {
@@ -277,7 +313,8 @@ pub(super) async fn inline_text(
                 attachments::LONG_TEXT,
                 whole.into_bytes(),
             )
-            .await?,
+            .await
+            .map_err(SendError::LongText)?,
         ),
         None => None,
     };
@@ -353,7 +390,7 @@ pub(super) async fn send_new(
     conversation: ConversationId,
     outgoing: Outgoing,
     timestamp: u64,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     let Outgoing {
         body,
         styles,
@@ -369,7 +406,9 @@ pub(super) async fn send_new(
         .borrow()
         .get(&conversation)
         .cloned()
-        .ok_or_else(|| Error::refused("unknown conversation"))?;
+        .ok_or_else(|| SendError::UnknownConversation {
+            conversation: conversation.clone(),
+        })?;
     let (text, ranges) = format::encode(&body, &styles, &mentions);
     let (text, ranges, long_text) = inline_text(manager, text, ranges).await?;
     let mut pointers = pointers;
@@ -442,7 +481,7 @@ pub(super) async fn send_new(
         .set_delivery(&conversation, timestamp, Delivery::Sent)
         .await
     {
-        warn!(error = %scrubbed(&error), "failed to save that a message was sent");
+        warn!(error = %crate::scrub::chain(&error), "failed to save that a message was sent");
     }
     wrote_to(ctx, &conversation).await;
     start_timers(ctx, &conversation, &[(reference, timer)], timestamp).await;
@@ -493,9 +532,12 @@ pub(super) async fn sticker_message(
     manager: &Mgr,
     pack: &str,
     sticker: u32,
-) -> Result<presage::proto::data_message::Sticker, Error> {
-    let unknown = || Error::refused("unknown sticker pack");
+) -> Result<presage::proto::data_message::Sticker, SendError> {
+    let unknown = || SendError::UnknownPack {
+        pack: pack.to_owned(),
+    };
     let pack_id = hex::decode(pack).map_err(|_| unknown())?;
+    let pack_name = pack;
     let pack = manager
         .store()
         .sticker_pack(&pack_id)
@@ -508,17 +550,25 @@ pub(super) async fn sticker_message(
         .stickers
         .iter()
         .find(|s| s.id == sticker)
-        .ok_or_else(|| Error::refused("unknown sticker"))?;
+        .ok_or_else(|| SendError::UnknownSticker {
+            pack: pack_name.to_owned(),
+            sticker,
+        })?;
     let bytes = found
         .bytes
         .clone()
-        .ok_or_else(|| Error::refused("the sticker isn't downloaded"))?;
+        .ok_or_else(|| SendError::StickerMissing {
+            pack: pack_name.to_owned(),
+            sticker,
+        })?;
     let content_type = found
         .content_type
         .clone()
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "image/webp".into());
-    let pointer = attachments::upload_bytes(manager, "sticker", &content_type, bytes).await?;
+    let pointer = attachments::upload_bytes(manager, "sticker", &content_type, bytes)
+        .await
+        .map_err(SendError::UploadSticker)?;
     Ok(presage::proto::data_message::Sticker {
         pack_id: Some(pack.id.clone()),
         pack_key: Some(pack.key.clone()),
@@ -545,7 +595,7 @@ pub(super) async fn link_preview(
         match attachments::upload_bytes(manager, "preview", &content_type, bytes).await {
             Ok(uploaded) => pointer = Some(uploaded),
             Err(error) => {
-                debug!(error = %scrubbed(&error), "couldn't upload a link preview's picture")
+                debug!(error = %crate::scrub::chain(&error), "couldn't upload a link preview's picture")
             }
         }
     }
@@ -583,7 +633,7 @@ pub(super) async fn send_sync_at(
         .message(own, ContentBody::SynchronizeMessage(sync), timestamp)
         .await
     {
-        warn!(error = %scrubbed(&error), "failed to tell our other devices");
+        warn!(error = %crate::scrub::chain(&error), "failed to tell our other devices");
     }
 }
 
@@ -617,7 +667,7 @@ pub(super) async fn respond(
     conversation: &ConversationId,
     thread: &Thread,
     response: crate::RequestResponse,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     use crate::RequestResponse;
     use sync_message::message_request_response::Type;
     let kind = match response {
@@ -625,7 +675,10 @@ pub(super) async fn respond(
             ctx.tables
                 .update(conversation, |s| s.accepted = true)
                 .await
-                .map_err(db)?;
+                .map_err(|source| SendError::Accept {
+                    conversation: conversation.clone(),
+                    source,
+                })?;
             // Accepting shares our profile (name, picture) with them: presage puts our profile
             // key into every data message.
             let message = DataMessage {
@@ -640,7 +693,10 @@ pub(super) async fn respond(
             store
                 .clear_thread(thread)
                 .await
-                .map_err(store_failed("failed to delete the chat"))?;
+                .map_err(|source| SendError::DeleteChat {
+                    conversation: conversation.clone(),
+                    source,
+                })?;
             checkpoint(ctx).await;
             ctx.events.send(Event::Cleared(conversation.clone()));
             Type::Delete
@@ -649,7 +705,10 @@ pub(super) async fn respond(
             ctx.tables
                 .update(conversation, |s| s.blocked = true)
                 .await
-                .map_err(db)?;
+                .map_err(|source| SendError::Block {
+                    conversation: conversation.clone(),
+                    source,
+                })?;
             send_blocked(manager, ctx).await;
             Type::Block
         }
@@ -720,7 +779,7 @@ pub(super) async fn send_read(
                 ..message
             }),
             Ok(None) => {}
-            Err(error) => warn!(error = %scrubbed(&error), "failed to look up an edit"),
+            Err(error) => warn!(error = %crate::scrub::chain(&error), "failed to look up an edit"),
         }
     }
     let read = messages

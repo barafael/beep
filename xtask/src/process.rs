@@ -6,7 +6,50 @@ use std::time::{Duration, Instant, SystemTime};
 use testbox_tools::process::describe;
 pub use testbox_tools::process::{output, run};
 
-use crate::error::{Context, Error, Result, WithContext};
+/// The clock reads a time before the epoch.
+#[derive(Debug, thiserror::Error)]
+#[error("the clock is before 1970")]
+pub struct ClockError(#[source] std::time::SystemTimeError);
+
+/// Following a command's output for a line ([`await_lines`]) that failed, short of the output
+/// ending.
+#[derive(Debug, thiserror::Error)]
+pub enum FollowError {
+    #[error("starting {command}")]
+    Start {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading the output of {command}")]
+    Read {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{command}: {heard} of {times} {needle:?} within {} s", patience.as_secs())]
+    Timeout {
+        command: String,
+        needle: String,
+        heard: usize,
+        times: usize,
+        patience: Duration,
+    },
+    #[error("stopping {command}")]
+    Stop {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("waiting for {command}")]
+    Wait {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("a reader of {command} panicked")]
+    ReaderPanicked { command: String },
+}
 
 /// What following a log came to, short of running out of time.
 pub enum Heard {
@@ -16,11 +59,11 @@ pub enum Heard {
 }
 
 /// The time in seconds since the epoch, as `since` for [`crate::pod::Pod::await_log`].
-pub fn now() -> Result<u64> {
+pub fn now() -> Result<u64, ClockError> {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
-        .map_err(|error| Error::Failed(format!("the clock is before 1970: {error}")))
+        .map_err(ClockError)
 }
 
 /// Reads `command`'s stdout and stderr until `times` lines have contained `needle` or the output
@@ -30,12 +73,15 @@ pub fn await_lines(
     needle: &str,
     times: usize,
     patience: Duration,
-) -> Result<Heard> {
+) -> Result<Heard, FollowError> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context(describe(&command))?;
+        .map_err(|source| FollowError::Start {
+            command: describe(&command),
+            source,
+        })?;
     let (found, seen) = mpsc::channel();
     let readers = [
         child
@@ -61,17 +107,19 @@ pub fn await_lines(
                 }
             }
             Ok(Err(source)) => {
-                break Err(Error::Io {
-                    what: format!("reading the output of {}", describe(&command)),
+                break Err(FollowError::Read {
+                    command: describe(&command),
                     source,
                 });
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                break Err(Error::Failed(format!(
-                    "{}: {heard} of {times} {needle:?} within {}s",
-                    describe(&command),
-                    patience.as_secs()
-                )));
+                break Err(FollowError::Timeout {
+                    command: describe(&command),
+                    needle: needle.to_owned(),
+                    heard,
+                    times,
+                    patience,
+                });
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break Ok(Heard::Ended),
         }
@@ -79,13 +127,19 @@ pub fn await_lines(
     match child.kill() {
         // Already exited, when its output ended.
         Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-        stopped => stopped.with_context(|| format!("stopping {}", describe(&command)))?,
+        stopped => stopped.map_err(|source| FollowError::Stop {
+            command: describe(&command),
+            source,
+        })?,
     }
-    child.wait().context(describe(&command))?;
+    child.wait().map_err(|source| FollowError::Wait {
+        command: describe(&command),
+        source,
+    })?;
     for reader in readers.into_iter().flatten() {
-        reader
-            .join()
-            .map_err(|_| Error::Failed(format!("a reader of {} panicked", describe(&command))))?;
+        reader.join().map_err(|_| FollowError::ReaderPanicked {
+            command: describe(&command),
+        })?;
     }
     outcome
 }

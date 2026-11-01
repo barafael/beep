@@ -342,7 +342,7 @@ fn render_always(chat: &ChatState, draft: &str) -> usize {
     n += chat.unread_total() as usize;
     n += usize::from(chat.can_load_older());
     n += usize::from(chat.connection() == Connection::Online);
-    n += chat.error().map_or(0, str::len);
+    n += chat.error().map_or(0, |error| error.len());
     n
 }
 

@@ -9,23 +9,16 @@ use std::path::Path;
 use testbox_tools::connections::{Connection, Direction, Record};
 use testbox_tools::keys::CAPTURED_PORTS;
 
+use super::pcap::{self, PcapError};
 use super::stream::Stream;
 use super::tls::KeyLog;
-use super::{pcap, tcp, tls};
-use crate::error::{Context, Result};
+use super::{tcp, tls};
 
 /// Every key log in `raw`: the servers' `keys-<server>.log`, and a `keys.log` from before.
-pub(super) fn key_log(raw: &Path) -> Result<KeyLog> {
-    let mut text = String::new();
-    for entry in std::fs::read_dir(raw).context(raw.display().to_string())? {
-        let path = entry.context(raw.display().to_string())?.path();
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with("keys") && name.ends_with(".log") {
-            text.push_str(&testbox_tools::read(&path)?);
-            text.push('\n');
-        }
-    }
-    Ok(KeyLog::parse(&text))
+pub(super) fn key_log(raw: &Path) -> Result<KeyLog, PcapError> {
+    Ok(KeyLog::parse(&String::from_utf8_lossy(&pcap::key_logs(
+        raw,
+    )?)))
 }
 
 /// A connection as the rest of the decoding reads it: what it was, and its plaintext records.
@@ -33,11 +26,11 @@ pub(super) type Decoded = (Connection, Vec<Record>);
 
 /// The connections in `raw`'s capture, with their plaintext; `None` without a capture (a
 /// record from before, whose `raw/` holds the relay's files instead).
-pub(super) fn connections(raw: &Path) -> Result<Option<Vec<Decoded>>> {
+pub(super) fn connections(raw: &Path) -> Result<Option<Vec<Decoded>>, PcapError> {
     let Some(bytes) = pcap::read(raw)? else {
         return Ok(None);
     };
-    let frames = pcap::frames(&bytes)?;
+    let frames = pcap::frames(&raw.join(pcap::CAPTURE), &bytes)?;
     let log = key_log(raw)?;
     println!(
         "wire: {} frames, the key logs' secrets for {} sessions",

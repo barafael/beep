@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, LineWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Condvar, Mutex, MutexGuard, mpsc};
 use std::time::Duration;
 
@@ -26,10 +26,8 @@ use serde::Serialize;
 use strum::VariantArray;
 use testbox_tools::drivers::{self, Android, Answer, ChatMenuItem, MemberChange, Numbered};
 use testbox_tools::keys::{self, DesktopConfig, KeyFile};
-use testbox_tools::process::output;
-use testbox_tools::{
-    Context, Describe, Error, Result, WithContext, env_var, read, remove_if_present, write,
-};
+use testbox_tools::process::{CommandError, describe, output};
+use testbox_tools::{EnvError, FileError, env_var, read, remove_if_present, write};
 use testbox_tools::{agent, avd};
 
 /// What `android config` writes for the image's `app` stage: the local flavor's values
@@ -65,56 +63,467 @@ const AGENT_SOCKET: &str = "/tmp/agent.sock";
 /// What StorageSyncJob.kt logs once it has taken in a newer manifest.
 const STORAGE_SYNCED: &str = "[Remote Sync] Saved new manifest";
 
+const USAGE: &str =
+    "android [config | verification <metadata> <group> <version> <out> | show-qr <url>]";
+
+/// What a command of the tool, or a call of the driver's, reports: the errors below, or the
+/// library's.
+type Failure = Box<dyn std::error::Error + Send + Sync>;
+
+/// The tool was given arguments it doesn't take.
+#[derive(Debug, thiserror::Error)]
+#[error("usage: {USAGE}")]
+struct UsageError;
+
+/// What keeps an image stage's output (`config`, `verification`) from being written.
+#[derive(Debug, thiserror::Error)]
+enum StageError {
+    #[error("creating {}", path.display())]
+    CreateDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// What keeps the local flavor's values from being made of the box's keys, or the image's APK
+/// from serving them.
+#[derive(Debug, thiserror::Error)]
+enum LocalConfigError {
+    #[error("reading the box's keys")]
+    Keys(#[source] FileError),
+    #[error("parsing {}", path.display())]
+    Desktop {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("{} has no certificate", path.display())]
+    NoCertificate { path: PathBuf },
+    #[error("{} has no trust root", path.display())]
+    NoTrustRoot { path: PathBuf },
+    #[error("serializing the local configuration")]
+    Serialize(#[source] serde_json::Error),
+    #[error(
+        "the image's APK was built for other keys than the box's ({}): build the android image \
+         after the server image, which holds the keys",
+        path.display()
+    )]
+    OtherKeys { path: PathBuf },
+}
+
+/// A program whose output the driver follows, which didn't start ([`spawn_piped`]).
+#[derive(Debug, thiserror::Error)]
+enum SpawnError {
+    #[error("starting {command}")]
+    Start {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{command}'s stdout isn't piped")]
+    NoStdout { command: String },
+}
+
+/// What keeps the emulator from booting, or Android on it from being set up for the box.
+#[derive(Debug, thiserror::Error)]
+enum BootError {
+    #[error("listing the AVD {}", path.display())]
+    ListAvd {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("removing the AVD's lock {}", path.display())]
+    RemoveLock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Its files, or the environment that says where they are and the display's size.
+    #[error("configuring the AVD")]
+    AvdFile(#[source] FileError),
+    #[error("configuring the AVD")]
+    AvdEnvironment(#[source] EnvError),
+    #[error("configuring the AVD {}", path.display())]
+    AvdConfig {
+        path: PathBuf,
+        #[source]
+        source: avd::ConfigError,
+    },
+    #[error("starting adb's server")]
+    AdbServer(#[source] CommandError),
+    #[error("booting the emulator")]
+    Emulator(#[source] SpawnError),
+    #[error("the emulator exited while booting: {status}")]
+    EmulatorExited { status: ExitStatus },
+    #[error("the emulator's output ended while booting")]
+    EmulatorOutputEnded,
+    #[error("looking at the emulator, whose output ended while booting")]
+    EmulatorGone(#[source] std::io::Error),
+    #[error("asking Android whether it booted")]
+    BootCompleted(#[source] CommandError),
+    #[error("the emulator says it booted, Android's sys.boot_completed {boot_completed:?}")]
+    NotBooted { boot_completed: String },
+    #[error("getting adb root")]
+    Root(#[source] CommandError),
+    #[error("raising Android's ANR timeouts")]
+    Timeouts(#[source] CommandError),
+    #[error("ro.hw_timeout_multiplier is {seen:?}, not {wanted}")]
+    Multiplier { seen: String, wanted: u32 },
+    #[error("following Android's event log")]
+    EventLog(#[source] SpawnError),
+    #[error("the event log ended before the framework started")]
+    EventLogEnded,
+    #[error("stopping {command}")]
+    Stop {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("forwarding the device's port {port} to the pod's")]
+    Reverse {
+        port: u16,
+        #[source]
+        source: CommandError,
+    },
+    #[error("setting {namespace} {name}")]
+    Setting {
+        namespace: String,
+        name: String,
+        #[source]
+        source: CommandError,
+    },
+    #[error("{namespace} {name} reads {seen:?}, not {wanted}")]
+    SettingReads {
+        namespace: String,
+        name: String,
+        seen: String,
+        wanted: String,
+    },
+    #[error("turning the gesture navigation on")]
+    GestureNavigation(#[source] CommandError),
+    #[error("following logcat")]
+    Logcat(#[source] SpawnError),
+    #[error("creating {}", path.display())]
+    CreateLog {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// What keeps the APK from being installed, or its launcher activity from being found.
+#[derive(Debug, thiserror::Error)]
+enum InstallError {
+    #[error("installing {}", apk.display())]
+    Install {
+        apk: PathBuf,
+        #[source]
+        source: CommandError,
+    },
+    #[error("listing the installed packages")]
+    Packages(#[source] CommandError),
+    #[error("not one local package: {packages:?}")]
+    NotOneLocalPackage { packages: Vec<String> },
+    #[error("resolving {package}'s launcher activity")]
+    Launcher {
+        package: String,
+        #[source]
+        source: CommandError,
+    },
+    #[error("no launcher activity for {package}")]
+    NoLauncher { package: String },
+}
+
+/// What keeps the on-device agent from being installed, started or reached.
+#[derive(Debug, thiserror::Error)]
+enum AgentStartError {
+    #[error("installing {}", apk.display())]
+    Install {
+        apk: PathBuf,
+        #[source]
+        source: CommandError,
+    },
+    #[error("starting the agent's instrumentation")]
+    Instrumentation(#[source] SpawnError),
+    #[error("the agent's instrumentation ended before it listened")]
+    NotListening,
+    #[error("clearing adb's end of the agent's socket")]
+    Socket(#[source] FileError),
+    #[error("forwarding the agent's socket")]
+    Forward(#[source] CommandError),
+    #[error("connecting to {}", path.display())]
+    Connect {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// A call to the on-device agent that failed, the call with it.
+#[derive(Debug, thiserror::Error)]
+enum AgentError {
+    #[error("serializing {call:?}")]
+    Serialize {
+        call: agent::Call,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("sending {call:?}")]
+    Send {
+        call: agent::Call,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading the answer to {call:?}")]
+    Receive {
+        call: agent::Call,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the agent hung up on {call:?} ({})", instrumentation(*status))]
+    HungUp {
+        call: agent::Call,
+        /// The instrumentation's exit, if it exited.
+        status: Option<ExitStatus>,
+    },
+    #[error("the agent hung up on {call:?}; looking at its instrumentation")]
+    Instrumentation {
+        call: agent::Call,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the answer to {call:?}, {reply}")]
+    Reply {
+        call: agent::Call,
+        reply: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The agent's own word on why (Agent.kt).
+    #[error("{call:?}: {message}")]
+    Failed { call: agent::Call, message: String },
+    #[error("the agent answered call {answered}, not {id} ({call:?})")]
+    OtherCall {
+        call: agent::Call,
+        id: u32,
+        answered: u32,
+    },
+    /// Boxed: an outcome may carry a whole screen.
+    #[error("the agent answered {call:?} with {outcome:?}")]
+    Unexpected {
+        call: agent::Call,
+        outcome: Box<agent::Outcome>,
+    },
+}
+
+impl From<AgentError> for UiError {
+    fn from(error: AgentError) -> Self {
+        Self::Agent(Box::new(error))
+    }
+}
+
+/// The instrumentation, as [`AgentError::HungUp`] says it.
+fn instrumentation(status: Option<ExitStatus>) -> String {
+    match status {
+        Some(status) => format!("its instrumentation exited: {status}"),
+        None => "its instrumentation runs".to_owned(),
+    }
+}
+
+/// What keeps a step on the app's screens from being done, or shows it wasn't.
+#[derive(Debug, thiserror::Error)]
+enum UiError {
+    /// Boxed: a call carries the screen it waited on, which would make every `UiError` large.
+    #[error("asking the on-device agent")]
+    Agent(#[source] Box<AgentError>),
+    #[error("pressing {key}")]
+    Key {
+        key: &'static str,
+        #[source]
+        source: CommandError,
+    },
+    #[error("tapping ({x}, {y})")]
+    TapAt {
+        x: u32,
+        y: u32,
+        #[source]
+        source: CommandError,
+    },
+    #[error("launching {activity}")]
+    Launch {
+        activity: String,
+        #[source]
+        source: CommandError,
+    },
+    #[error("showing the QR of {url}")]
+    ShowQr {
+        url: String,
+        #[source]
+        source: CommandError,
+    },
+    #[error("reading the screen's size")]
+    ScreenSize(#[source] CommandError),
+    #[error("wm size answered {answer:?}")]
+    ScreenSizeAnswer { answer: String },
+    #[error("running adb exec-out screencap")]
+    Screencap(#[source] std::io::Error),
+    #[error("adb exec-out screencap: {status}, {length} bytes")]
+    ScreencapFailed { status: ExitStatus, length: usize },
+    #[error("screencap format {format}, not RGBA_8888")]
+    ScreencapFormat { format: u32 },
+    /// The screenshot is kept at `kept`.
+    #[error("no reaction bar above or below {text:?} on the screen ({kept})")]
+    NoReactionBar { text: String, kept: String },
+    #[error("{seconds} s isn't one of the app's presets")]
+    Preset { seconds: u32 },
+    #[error("not back in the conversation")]
+    NotBackInConversation,
+    #[error("the menu of {text:?} has no {item:?}")]
+    MenuItem { text: String, item: ChatMenuItem },
+    #[error("the menu of {text:?} offers no {missing:?}, but {offered:?}")]
+    MenuOffers {
+        text: String,
+        missing: Vec<ChatMenuItem>,
+        offered: Vec<ChatMenuItem>,
+    },
+    #[error("no Add for the folder {folder:?}")]
+    NoAdd { folder: String },
+    #[error("no Approve for {member:?}")]
+    NoApprove { member: String },
+    #[error("no {row:?} row")]
+    NoRow { row: String },
+    /// `level` describes the nodes level with the row's text.
+    #[error("the switch of {row:?} isn't on; level with it: {}", level.join("; "))]
+    SwitchOff { row: String, level: Vec<String> },
+    #[error("no title {group:?}")]
+    NoTitle { group: String },
+    #[error("no {button:?} by {message:?}")]
+    NoButton { button: String, message: String },
+    #[error("{number}: only +1 numbers, the default country")]
+    NotPlusOne { number: String },
+    #[error("not one switch for ANR crashes: {count}")]
+    Switches { count: usize },
+    #[error("no message field")]
+    NoMessageField,
+}
+
+/// A wait on logcat's lines that failed ([`Logcat`]).
+#[derive(Debug, thiserror::Error)]
+enum LogcatError {
+    #[error("logcat's follower panicked")]
+    Poisoned,
+    #[error("logcat's line count")]
+    Count(#[source] std::num::TryFromIntError),
+    #[error("the logcat mark {after}")]
+    Mark {
+        after: u64,
+        #[source]
+        source: std::num::TryFromIntError,
+    },
+    #[error("no {needle:?} in logcat within {} ms", patience.as_millis())]
+    Timeout { needle: String, patience: Duration },
+}
+
+/// What keeps the driver from serving its socket.
+#[derive(Debug, thiserror::Error)]
+enum ServeError {
+    #[error("clearing the driver's socket")]
+    Clear(#[source] FileError),
+    #[error("listening on {}", path.display())]
+    Bind {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("making {} the owner's only", path.display())]
+    Permissions {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("accepting a connection")]
+    Accept(#[source] std::io::Error),
+}
+
+/// What ends a connection to the driver.
+#[derive(Debug, thiserror::Error)]
+enum ConnectionError {
+    #[error("a second handle to the connection")]
+    Clone(#[source] std::io::Error),
+    #[error("reading a call")]
+    Read(#[source] std::io::Error),
+    #[error("serializing an answer")]
+    Serialize(#[source] serde_json::Error),
+    #[error("answering")]
+    Write(#[source] std::io::Error),
+}
+
 fn main() -> std::process::ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let outcome = match arguments.as_slice() {
         [] => start(),
         [command] if command == "config" => config(),
-        [command, metadata, group, version, out] if command == "verification" => {
-            verification(Path::new(metadata), Path::new(group), version, Path::new(out))
-        }
+        [command, metadata, group, version, out] if command == "verification" => verification(
+            Path::new(metadata),
+            Path::new(group),
+            version,
+            Path::new(out),
+        ),
         // Beside a running driver, which serves one connection at a time: `cargo testbox qr`.
-        [show, url] if show == "show-qr" => show_qr(url),
-        _ => Err(Error::Failed(
-            "usage: android [config | verification <metadata> <group> <version> <out> | show-qr <url>]"
-                .to_owned(),
-        )),
+        [show, url] if show == "show-qr" => show_qr(url).map_err(Failure::from),
+        _ => Err(UsageError.into()),
     };
-    testbox_tools::exit("android", outcome)
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("android: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Creates `path` and its parents.
+fn create_dir_all(path: &Path) -> Result<(), StageError> {
+    std::fs::create_dir_all(path).map_err(|source| StageError::CreateDirectory {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// The image's `config` stage: the local flavor's values the APK is built with for the box's keys
 /// (testbox/android/Containerfile; the keys come from the server image). The same bytes
 /// for the same keys, so that Gradle builds again only for new keys.
-fn config() -> Result<()> {
+fn config() -> Result<(), Failure> {
     let (_config, text) = local_config_json()?;
     let out = Path::new(CONFIG_OUT);
-    std::fs::create_dir_all(out).context(CONFIG_OUT)?;
-    write(&out.join(CONFIG), text)
+    create_dir_all(out)?;
+    Ok(write(&out.join(CONFIG), text)?)
 }
 
 /// The image's `verification` stage: Signal-Android's `metadata` with the patched libsignal's
 /// artifacts in (`testbox_tools::verification`), from `group` (a Maven repository's
 /// `org/signal`) at `version`, into `out`. The same bytes for the same artifacts, so that Gradle
 /// builds again only for new ones.
-fn verification(metadata: &Path, group: &Path, version: &str, out: &Path) -> Result<()> {
+fn verification(metadata: &Path, group: &Path, version: &str, out: &Path) -> Result<(), Failure> {
     let components = testbox_tools::verification::components(group, version)?;
     let patched =
         testbox_tools::verification::with_components(&read(metadata)?, version, &components)?;
     if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir).context(dir.display().to_string())?;
+        create_dir_all(dir)?;
     }
-    write(out, patched)
+    Ok(write(out, patched)?)
 }
 
-fn start() -> Result<()> {
+fn start() -> Result<(), Failure> {
     let socket = testbox_tools::env_var("ANDROID_DRIVER_SOCKET")?;
     let (config, text) = local_config_json()?;
     if read(Path::new(APK_CONFIG))? != text {
-        return Err(Error::Failed(format!(
-            "the image's APK was built for other keys than the box's ({APK_CONFIG}): build the \
-             android image after the server image, which holds the keys"
-        )));
+        return Err(LocalConfigError::OtherKeys {
+            path: APK_CONFIG.into(),
+        }
+        .into());
     }
     boot_emulator(&config)?;
     let launcher = install(Path::new(APK))?;
@@ -125,7 +534,7 @@ fn start() -> Result<()> {
     no_soft_keyboard()?;
     gesture_navigation()?;
     driver.launch()?;
-    serve(&mut driver, Path::new(&socket))
+    Ok(serve(&mut driver, Path::new(&socket))?)
 }
 
 /// The `local` flavor's values (testbox/patches/signal-android-local.patch reads them as the
@@ -148,12 +557,21 @@ struct LocalConfig {
 
 /// Desktop's values (testbox/tools `provision`), but Jetty's HTTP/2 port for the app's REST
 /// requests; the chat takes the omnibus port, as Desktop's does.
-fn local_config() -> Result<LocalConfig> {
+fn local_config() -> Result<LocalConfig, LocalConfigError> {
     let desktop_path = KeyFile::Desktop.path();
-    let desktop: DesktopConfig =
-        serde_json::from_str(&read(&desktop_path)?).context(desktop_path.display().to_string())?;
-    let der = keys::pem_body(&read(&KeyFile::TlsCa.path())?, "CERTIFICATE")
-        .ok_or_else(|| Error::Failed(format!("{} has no certificate", KeyFile::TlsCa)))?;
+    let desktop: DesktopConfig = serde_json::from_str(
+        &read(&desktop_path).map_err(LocalConfigError::Keys)?,
+    )
+    .map_err(|source| LocalConfigError::Desktop {
+        path: desktop_path.clone(),
+        source,
+    })?;
+    let ca_path = KeyFile::TlsCa.path();
+    let der = keys::pem_body(
+        &read(&ca_path).map_err(LocalConfigError::Keys)?,
+        "CERTIFICATE",
+    )
+    .ok_or(LocalConfigError::NoCertificate { path: ca_path })?;
     Ok(LocalConfig {
         service_url: keys::localhost(keys::LIBSIGNAL_NET_PORT),
         storage_url: desktop.storage_url,
@@ -166,7 +584,7 @@ fn local_config() -> Result<LocalConfig> {
             .server_trust_roots
             .into_iter()
             .next()
-            .ok_or_else(|| Error::Failed("desktop-config.json has no trust root".to_owned()))?,
+            .ok_or(LocalConfigError::NoTrustRoot { path: desktop_path })?,
         zkgroup_server_public_params: desktop.server_public_params,
         generic_server_public_params: desktop.generic_server_public_params,
         backup_server_public_params: desktop.backup_server_public_params,
@@ -184,9 +602,9 @@ fn local_config() -> Result<LocalConfig> {
 }
 
 /// The local configuration, and its JSON as the image's APK was built with it.
-fn local_config_json() -> Result<(LocalConfig, String)> {
+fn local_config_json() -> Result<(LocalConfig, String), LocalConfigError> {
     let config = local_config()?;
-    let text = serde_json::to_string_pretty(&config).context("the local configuration")?;
+    let text = serde_json::to_string_pretty(&config).map_err(LocalConfigError::Serialize)?;
     Ok((config, text))
 }
 
@@ -215,7 +633,7 @@ fn print_device_state() {
     for part in parts {
         match adb(part) {
             Ok(said) => println!("adb {}:\n{said}", part.join(" ")),
-            Err(error) => println!("adb {}: {error}", part.join(" ")),
+            Err(error) => println!("adb {}: {}", part.join(" "), testbox_tools::Report(&error)),
         }
     }
 }
@@ -226,46 +644,69 @@ const ROOT_TRIES: u32 = 5;
 /// `adb root`, once adb reaches the device. Right after boot the emulator's transport can go
 /// offline for a moment (`adb devices`: `offline`; the emulator's own `adb shell` fails then too),
 /// and `adb root` answers "unable to connect for root: closed": tried again once it is back.
-fn root() -> Result<()> {
+fn root() -> Result<(), BootError> {
     let mut tries = 0;
     loop {
         // `wait-for-device` waits for the `device` state, past `offline`.
-        adb(&["wait-for-device"])?;
+        adb(&["wait-for-device"]).map_err(BootError::Root)?;
         match adb(&["root"]) {
             Ok(_) => return Ok(()),
             Err(error) if tries + 1 < ROOT_TRIES => {
                 tries += 1;
-                println!("android: adb root: {error}; again once the device is back");
+                println!(
+                    "android: adb root: {}; again once the device is back",
+                    testbox_tools::Report(&error)
+                );
             }
             Err(error) => {
                 // What the device says, for the next time.
                 print_device_state();
-                return Err(error);
+                return Err(BootError::Root(error));
             }
         }
     }
 }
 
-fn adb(args: &[&str]) -> Result<String> {
+fn adb(args: &[&str]) -> Result<String, CommandError> {
     let mut command = Command::new("adb");
     command.args(args);
     output(command, "")
 }
 
-fn back() -> Result<()> {
-    adb(&["shell", "input", "keyevent", "KEYCODE_BACK"]).map(drop)
+/// Starts `command` with its stdout piped, which it returns.
+fn spawn_piped(command: &mut Command) -> Result<(Child, ChildStdout), SpawnError> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|source| SpawnError::Start {
+            command: describe(command),
+            source,
+        })?;
+    let stdout = child.stdout.take().ok_or_else(|| SpawnError::NoStdout {
+        command: describe(command),
+    })?;
+    Ok((child, stdout))
+}
+
+fn back() -> Result<(), UiError> {
+    const KEY: &str = "KEYCODE_BACK";
+    adb(&["shell", "input", "keyevent", KEY])
+        .map(drop)
+        .map_err(|source| UiError::Key { key: KEY, source })
 }
 
 /// The screen's size in pixels (`wm size`, "Physical size: 720x1560", an override's line after
 /// it if there is one).
-fn screen_size() -> Result<(u32, u32)> {
-    let size = adb(&["shell", "wm", "size"])?;
+fn screen_size() -> Result<(u32, u32), UiError> {
+    let size = adb(&["shell", "wm", "size"]).map_err(UiError::ScreenSize)?;
     size.lines()
         .filter_map(|line| line.split_once(": "))
         .filter_map(|(_, size)| size.trim().split_once('x'))
         .filter_map(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .next_back()
-        .ok_or_else(|| Error::Failed(format!("wm size: {size:?}")))
+        .ok_or_else(|| UiError::ScreenSizeAnswer {
+            answer: size.clone(),
+        })
 }
 
 /// The screen as pixels (`screencap` without `-p`: width, height, format and colour space as
@@ -276,20 +717,21 @@ struct Screenshot {
     pixels: Vec<u8>,
 }
 
-fn screenshot() -> Result<Screenshot> {
+fn screenshot() -> Result<Screenshot, UiError> {
     let taken = Command::new("adb")
         .args(["exec-out", "screencap"])
         .output()
-        .context("adb exec-out screencap")?;
+        .map_err(UiError::Screencap)?;
     if !taken.status.success() || taken.stdout.len() < 16 {
-        return Err(Error::Failed(format!("screencap: {}", taken.status)));
+        return Err(UiError::ScreencapFailed {
+            status: taken.status,
+            length: taken.stdout.len(),
+        });
     }
     let word = |at: usize| u32::from_le_bytes(taken.stdout[at..at + 4].try_into().unwrap());
     let (width, height, format) = (word(0), word(4), word(8));
     if format != 1 {
-        return Err(Error::Failed(format!(
-            "screencap format {format}, not RGBA_8888"
-        )));
+        return Err(UiError::ScreencapFormat { format });
     }
     let bytes = (width as usize) * (height as usize) * 4;
     let start = taken.stdout.len() - bytes;
@@ -363,7 +805,8 @@ impl Screenshot {
 /// vendor_init may set it, but this image leaves it unset and makes adb's root shell permissive
 /// (its sepolicy: `(typepermissive su)`); the emulator's `-prop` takes only `qemu.*`. The
 /// framework reads it as it starts, so this restarts it.
-fn raise_anr_timeouts() -> Result<()> {
+fn raise_anr_timeouts() -> Result<(), BootError> {
+    let adb = |args: &[&str]| adb(args).map_err(BootError::Timeouts);
     root()?;
     adb(&["wait-for-device"])?;
     adb(&[
@@ -374,29 +817,26 @@ fn raise_anr_timeouts() -> Result<()> {
     ])?;
     let multiplier = adb(&["shell", "getprop", "ro.hw_timeout_multiplier"])?;
     if multiplier.trim().parse() != Ok(HW_TIMEOUT_MULTIPLIER) {
-        return Err(Error::Failed(format!(
-            "ro.hw_timeout_multiplier is {multiplier:?}, not {HW_TIMEOUT_MULTIPLIER}"
-        )));
+        return Err(BootError::Multiplier {
+            seen: multiplier,
+            wanted: HW_TIMEOUT_MULTIPLIER,
+        });
     }
     adb(&["shell", "stop"])?;
     // Only this start's lines: the first boot's are cleared.
     adb(&["logcat", "-b", "events", "-c"])?;
-    let mut events = Command::new("adb")
-        .args(["logcat", "-b", "events"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("adb logcat -b events")?;
-    let stdout = events
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Failed("the event log's stdout isn't piped".to_owned()))?;
+    let mut command = Command::new("adb");
+    command.args(["logcat", "-b", "events"]);
+    let (mut events, stdout) = spawn_piped(&mut command).map_err(BootError::EventLog)?;
     let started = announced(stdout, "Android's event log", "events: ", FRAMEWORK_STARTED);
     adb(&["shell", "start"])?;
-    let heard = started
-        .recv()
-        .map_err(|_| Error::Failed("the event log ended before the framework started".to_owned()));
-    events.kill().context("adb logcat -b events")?;
-    events.wait().context("adb logcat -b events")?;
+    let heard = started.recv().map_err(|_| BootError::EventLogEnded);
+    let stopped = |source| BootError::Stop {
+        command: describe(&command),
+        source,
+    };
+    events.kill().map_err(stopped)?;
+    events.wait().map_err(stopped)?;
     heard?;
     adb(&["unroot"])?;
     adb(&["wait-for-device"]).map(drop)
@@ -405,9 +845,13 @@ fn raise_anr_timeouts() -> Result<()> {
 /// The AVD's locks from an emulator of this container before it restarted (`restartPolicy:
 /// Always`): its processes went with it, and the emulator refuses an AVD it finds locked
 /// ("Running multiple emulators with the same AVD").
-fn clear_avd_locks(avd: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(avd).context(avd.display().to_string())? {
-        let path = entry.context(avd.display().to_string())?.path();
+fn clear_avd_locks(avd: &Path) -> Result<(), BootError> {
+    let listed = |source| BootError::ListAvd {
+        path: avd.to_owned(),
+        source,
+    };
+    for entry in std::fs::read_dir(avd).map_err(listed)? {
+        let path = entry.map_err(listed)?.path();
         if path
             .extension()
             .is_some_and(|extension| extension == "lock")
@@ -419,17 +863,20 @@ fn clear_avd_locks(avd: &Path) -> Result<()> {
 }
 
 /// A lock is a file or, for the snapshot's, a directory.
-fn remove_lock(path: &Path) -> Result<()> {
+fn remove_lock(path: &Path) -> Result<(), BootError> {
     let removed = if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     };
-    removed.context(path.display().to_string())
+    removed.map_err(|source| BootError::RemoveLock {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// `url`'s QR on the wall poster in the camera's scene (testbox/android/Toren1BD.posters).
-fn show_qr(url: &str) -> Result<()> {
+fn show_qr(url: &str) -> Result<(), CommandError> {
     let mut qrencode = Command::new("qrencode");
     qrencode.args(["-s", "10", "-m", "4", "-o", QR, "--", url]);
     output(qrencode, "")?;
@@ -446,32 +893,41 @@ fn localhost_port(url: &str) -> Option<u16> {
 }
 
 /// The AVD's hardware for the box ([`avd::Config::for_box`]), at the display's size.
-fn configure_avd(avd: &Path) -> Result<()> {
+fn configure_avd(avd: &Path) -> Result<(), BootError> {
     let path = avd.join("config.ini");
-    let mut config = avd::Config::parse(&read(&path)?);
-    config.for_box(&env_var(testbox_tools::DISPLAY_SIZE)?)?;
-    write(&path, config.to_string())
+    let mut config = avd::Config::parse(&read(&path).map_err(BootError::AvdFile)?);
+    let size = env_var(testbox_tools::DISPLAY_SIZE).map_err(BootError::AvdEnvironment)?;
+    config
+        .for_box(&size)
+        .map_err(|source| BootError::AvdConfig {
+            path: path.clone(),
+            source,
+        })?;
+    write(&path, config.to_string()).map_err(BootError::AvdFile)
 }
 
 /// The device at the scale the AVD's user config names, which the emulator caps at 80% of the
 /// display (its default leaves most of the display black). Read at start
 /// (`user_config_get_window_scale`), written at exit.
-fn set_window_scale(avd: &Path) -> Result<()> {
+fn set_window_scale(avd: &Path) -> Result<(), BootError> {
     let user_config = avd.join("emulator-user.ini");
     write(
         &user_config,
         "window.x = 0\nwindow.y = 0\nwindow.scale = 1.0\n",
     )
+    .map_err(BootError::AvdFile)
 }
 
-fn boot_emulator(config: &LocalConfig) -> Result<()> {
-    let avd = Path::new(&env_var("HOME")?).join(".android/avd/box.avd");
+fn boot_emulator(config: &LocalConfig) -> Result<(), BootError> {
+    let home = env_var("HOME").map_err(BootError::AvdEnvironment)?;
+    let avd = Path::new(&home).join(".android/avd/box.avd");
     clear_avd_locks(&avd)?;
     configure_avd(&avd)?;
     set_window_scale(&avd)?;
     // The adb server first, so it finds the emulator as it comes up.
-    adb(&["start-server"])?;
-    let mut emulator = Command::new("emulator")
+    adb(&["start-server"]).map_err(BootError::AdbServer)?;
+    let mut command = Command::new("emulator");
+    command
         .args(["-avd", "box", "-no-audio", "-no-boot-anim", "-no-snapshot"])
         .args([
             "-no-metrics",
@@ -480,30 +936,22 @@ fn boot_emulator(config: &LocalConfig) -> Result<()> {
             "-memory",
             "3072",
         ])
-        .args(["-camera-back", "virtualscene"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("the emulator")?;
-    let stdout = emulator
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Failed("the emulator's stdout isn't piped".to_owned()))?;
+        .args(["-camera-back", "virtualscene"]);
+    let (mut emulator, stdout) = spawn_piped(&mut command).map_err(BootError::Emulator)?;
     let boot = announced(stdout, "the emulator's output", "", BOOTED);
     // The channel closes when the emulator's output ends: it exited.
     boot.recv().map_err(|_| match emulator.try_wait() {
-        Ok(Some(status)) => Error::Failed(format!("the emulator exited while booting: {status}")),
-        Ok(None) => Error::Failed("the emulator's output ended while booting".to_owned()),
-        Err(error) => Error::Io {
-            what: "the emulator, whose output ended while booting".to_owned(),
-            source: error,
-        },
+        Ok(Some(status)) => BootError::EmulatorExited { status },
+        Ok(None) => BootError::EmulatorOutputEnded,
+        Err(error) => BootError::EmulatorGone(error),
     })?;
-    adb(&["wait-for-device"])?;
-    let completed = adb(&["shell", "getprop", "sys.boot_completed"])?;
+    adb(&["wait-for-device"]).map_err(BootError::BootCompleted)?;
+    let completed =
+        adb(&["shell", "getprop", "sys.boot_completed"]).map_err(BootError::BootCompleted)?;
     if completed.trim() != "1" {
-        return Err(Error::Failed(format!(
-            "the emulator says it booted, Android's sys.boot_completed {completed:?}"
-        )));
+        return Err(BootError::NotBooted {
+            boot_completed: completed,
+        });
     }
     raise_anr_timeouts()?;
 
@@ -522,7 +970,7 @@ fn boot_emulator(config: &LocalConfig) -> Result<()> {
         .collect();
     for port in ports {
         let tcp = format!("tcp:{port}");
-        adb(&["reverse", &tcp, &tcp])?;
+        adb(&["reverse", &tcp, &tcp]).map_err(|source| BootError::Reverse { port, source })?;
     }
     // A new message's notification stays in the shade instead of popping over the app's top for
     // seconds (`Settings.Global.HEADS_UP_NOTIFICATIONS_ENABLED`): one over a row makes the agent
@@ -544,14 +992,14 @@ fn boot_emulator(config: &LocalConfig) -> Result<()> {
 /// agent. The keyboard app stays bound, which Compose's fields need. Set once the device is set
 /// up: set right after boot, it reads 1 again by registration. Agent.kt `tap` also refuses a tap
 /// a window in front would take.
-fn no_soft_keyboard() -> Result<()> {
+fn no_soft_keyboard() -> Result<(), BootError> {
     setting("secure", "show_ime_with_hard_keyboard", "0")
 }
 
 /// Navigation by gestures, a thin bar, in place of the three buttons' bar: the emulator's default
 /// bar lies over the bottom of the app's windows, where Signal puts a story's Share and Send,
 /// and the agent refuses a tap another window would take.
-fn gesture_navigation() -> Result<()> {
+fn gesture_navigation() -> Result<(), BootError> {
     adb(&[
         "shell",
         "cmd",
@@ -560,18 +1008,27 @@ fn gesture_navigation() -> Result<()> {
         "com.android.internal.systemui.navbar.gestural",
     ])
     .map(drop)
+    .map_err(BootError::GestureNavigation)
 }
 
 /// Sets `name` in `namespace` (`settings put`) to `value`, and reads it back.
-fn setting(namespace: &str, name: &str, value: &str) -> Result<()> {
-    adb(&["shell", "settings", "put", namespace, name, value])?;
-    let now = adb(&["shell", "settings", "get", namespace, name])?;
+fn setting(namespace: &str, name: &str, value: &str) -> Result<(), BootError> {
+    let failed = |source| BootError::Setting {
+        namespace: namespace.to_owned(),
+        name: name.to_owned(),
+        source,
+    };
+    adb(&["shell", "settings", "put", namespace, name, value]).map_err(failed)?;
+    let now = adb(&["shell", "settings", "get", namespace, name]).map_err(failed)?;
     if now.trim() == value {
         Ok(())
     } else {
-        Err(Error::Failed(format!(
-            "{namespace} {name} reads {now:?}, not {value}"
-        )))
+        Err(BootError::SettingReads {
+            namespace: namespace.to_owned(),
+            name: name.to_owned(),
+            seen: now,
+            wanted: value.to_owned(),
+        })
     }
 }
 
@@ -618,17 +1075,23 @@ fn announced(
 }
 
 /// Installs the APK; the launcher activity of the app it installed, `package/activity`.
-fn install(apk: &Path) -> Result<String> {
+fn install(apk: &Path) -> Result<String, InstallError> {
     let path = apk.display().to_string();
-    adb(&["install", "-r", "-g", &path])?;
-    let packages = adb(&["shell", "pm", "list", "packages", PACKAGE_PREFIX])?;
+    adb(&["install", "-r", "-g", &path]).map_err(|source| InstallError::Install {
+        apk: apk.to_owned(),
+        source,
+    })?;
+    let packages = adb(&["shell", "pm", "list", "packages", PACKAGE_PREFIX])
+        .map_err(InstallError::Packages)?;
     let local: Vec<&str> = packages
         .split_whitespace()
         .filter_map(|line| line.strip_prefix("package:"))
         .filter(|package| package.ends_with(".local"))
         .collect();
     let [package] = local.as_slice() else {
-        return Err(Error::Failed(format!("not one local package: {local:?}")));
+        return Err(InstallError::NotOneLocalPackage {
+            packages: local.iter().map(|&package| package.to_owned()).collect(),
+        });
     };
     let resolved = adb(&[
         "shell",
@@ -639,12 +1102,18 @@ fn install(apk: &Path) -> Result<String> {
         "-c",
         "android.intent.category.LAUNCHER",
         package,
-    ])?;
+    ])
+    .map_err(|source| InstallError::Launcher {
+        package: (*package).to_owned(),
+        source,
+    })?;
     resolved
         .split_whitespace()
         .last()
         .map(str::to_owned)
-        .ok_or_else(|| Error::Failed(format!("no launcher activity for {package}")))
+        .ok_or_else(|| InstallError::NoLauncher {
+            package: (*package).to_owned(),
+        })
 }
 
 /// The logcat lines a wait is for, since the driver started: Signal-Android's own word on what it
@@ -662,18 +1131,16 @@ static LOGCAT_LINES: Logcat = Logcat {
 impl Logcat {
     /// Follows `adb logcat` to [`LOGCAT`] for the box's logs, and into [`LOGCAT_LINES`] the lines
     /// a wait is for ([`STORAGE_SYNCED`]): the rest, the most of it, isn't kept in memory.
-    fn follow() -> Result<()> {
-        let mut logcat = Command::new("adb")
-            .args(["logcat", "-v", "time"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("adb logcat")?;
-        let stdout = logcat
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Failed("adb logcat's stdout isn't piped".to_owned()))?;
+    fn follow() -> Result<(), BootError> {
+        let mut command = Command::new("adb");
+        command.args(["logcat", "-v", "time"]);
+        let (_logcat, stdout) = spawn_piped(&mut command).map_err(BootError::Logcat)?;
         // A line at a time, as it is read: whole lines in the file for the box's logs.
-        let mut file = LineWriter::new(std::fs::File::create(LOGCAT).context(LOGCAT)?);
+        let file = std::fs::File::create(LOGCAT).map_err(|source| BootError::CreateLog {
+            path: LOGCAT.into(),
+            source,
+        })?;
+        let mut file = LineWriter::new(file);
         each_line(stdout, "logcat", move |line| {
             if let Err(error) = writeln!(file, "{line}") {
                 eprintln!("android: writing {LOGCAT}: {error}");
@@ -691,21 +1158,20 @@ impl Logcat {
         Ok(())
     }
 
-    fn lines(&self) -> Result<MutexGuard<'_, Vec<String>>> {
-        self.lines
-            .lock()
-            .map_err(|_poisoned| Error::Failed("logcat's follower panicked".to_owned()))
+    fn lines(&self) -> Result<MutexGuard<'_, Vec<String>>, LogcatError> {
+        self.lines.lock().map_err(|_poisoned| LogcatError::Poisoned)
     }
 
-    fn mark(&self) -> Result<u64> {
+    fn mark(&self) -> Result<u64, LogcatError> {
         let count = self.lines()?.len();
-        u64::try_from(count).describe("logcat's line count")
+        u64::try_from(count).map_err(LogcatError::Count)
     }
 
     /// Waits, woken by each new line, until a line after `after` contains `needle`.
-    fn await_line(&self, after: u64, needle: &str, patience: Duration) -> Result<()> {
+    fn await_line(&self, after: u64, needle: &str, patience: Duration) -> Result<(), LogcatError> {
         // Each wake looks at the lines that came since the last one only.
-        let mut scanned = usize::try_from(after).describe("a logcat mark")?;
+        let mut scanned =
+            usize::try_from(after).map_err(|source| LogcatError::Mark { after, source })?;
         let (_lines, waited) = self
             .grew
             .wait_timeout_while(self.lines()?, patience, |lines| {
@@ -715,12 +1181,12 @@ impl Logcat {
                 scanned = scanned.max(lines.len());
                 !found
             })
-            .map_err(|_poisoned| Error::Failed("logcat's lines are poisoned".to_owned()))?;
+            .map_err(|_poisoned| LogcatError::Poisoned)?;
         if waited.timed_out() {
-            Err(Error::Failed(format!(
-                "no {needle:?} in logcat within {} ms",
-                patience.as_millis()
-            )))
+            Err(LogcatError::Timeout {
+                needle: needle.to_owned(),
+                patience,
+            })
         } else {
             Ok(())
         }
@@ -737,36 +1203,37 @@ struct Agent {
 
 impl Agent {
     /// Installs and starts it, and connects once it says it listens.
-    fn start() -> Result<Self> {
-        adb(&["install", "-r", AGENT_APK])?;
-        let mut instrumentation = Command::new("adb")
-            .args([
-                "shell",
-                "am",
-                "instrument",
-                "-w",
-                "-r",
-                AGENT_INSTRUMENTATION,
-            ])
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("the agent's instrumentation")?;
-        let stdout = instrumentation
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Failed("the instrumentation's stdout isn't piped".to_owned()))?;
+    fn start() -> Result<Self, AgentStartError> {
+        adb(&["install", "-r", AGENT_APK]).map_err(|source| AgentStartError::Install {
+            apk: AGENT_APK.into(),
+            source,
+        })?;
+        let mut command = Command::new("adb");
+        command.args([
+            "shell",
+            "am",
+            "instrument",
+            "-w",
+            "-r",
+            AGENT_INSTRUMENTATION,
+        ]);
+        let (instrumentation, stdout) =
+            spawn_piped(&mut command).map_err(AgentStartError::Instrumentation)?;
         announced(stdout, "the agent's output", "agent: ", AGENT_ABSTRACT)
             .recv()
-            .map_err(|_closed| {
-                Error::Failed("the agent's instrumentation ended before it listened".to_owned())
-            })?;
-        remove_if_present(Path::new(AGENT_SOCKET))?;
+            .map_err(|_closed| AgentStartError::NotListening)?;
+        remove_if_present(Path::new(AGENT_SOCKET)).map_err(AgentStartError::Socket)?;
         adb(&[
             "forward",
             &format!("localfilesystem:{AGENT_SOCKET}"),
             &format!("localabstract:{AGENT_ABSTRACT}"),
-        ])?;
-        let stream = UnixStream::connect(AGENT_SOCKET).context(AGENT_SOCKET)?;
+        ])
+        .map_err(AgentStartError::Forward)?;
+        let stream =
+            UnixStream::connect(AGENT_SOCKET).map_err(|source| AgentStartError::Connect {
+                path: AGENT_SOCKET.into(),
+                source,
+            })?;
         Ok(Self {
             instrumentation,
             calls: BufReader::new(stream),
@@ -775,63 +1242,82 @@ impl Agent {
     }
 
     /// A wait's answer: the screen it found.
-    fn look(&mut self, call: agent::Call) -> Result<agent::Found> {
+    fn look(&mut self, call: agent::Call) -> Result<agent::Found, AgentError> {
         match self.call(call)? {
-            agent::Outcome::Done(found) => Ok(found),
-            other => Err(Error::Failed(format!(
-                "the agent answered a wait with {other:?}"
-            ))),
+            (_, agent::Outcome::Done(found)) => Ok(found),
+            (call, outcome) => Err(AgentError::Unexpected {
+                call,
+                outcome: Box::new(outcome),
+            }),
         }
     }
 
     /// An action's answer: done.
-    fn act(&mut self, call: agent::Call) -> Result<()> {
+    fn act(&mut self, call: agent::Call) -> Result<(), AgentError> {
         match self.call(call)? {
-            agent::Outcome::Acted => Ok(()),
-            other => Err(Error::Failed(format!(
-                "the agent answered an action with {other:?}"
-            ))),
+            (_, agent::Outcome::Acted) => Ok(()),
+            (call, outcome) => Err(AgentError::Unexpected {
+                call,
+                outcome: Box::new(outcome),
+            }),
         }
     }
 
     /// Taps (or long-presses) `node` of the last answer's screen.
-    fn click(&mut self, node: &agent::Node, long: bool) -> Result<()> {
+    fn click(&mut self, node: &agent::Node, long: bool) -> Result<(), AgentError> {
         self.act(agent::Call::Click {
             handle: node.handle,
             long,
         })
     }
 
-    fn call(&mut self, call: agent::Call) -> Result<agent::Outcome> {
+    /// The agent's answer to `call`, and the call back, for what the caller makes of it.
+    fn call(&mut self, call: agent::Call) -> Result<(agent::Call, agent::Outcome), AgentError> {
         let id = self.next_id;
         self.next_id += 1;
-        let line =
-            serde_json::to_string(&agent::Request { id, call }).context("a call to the agent")?;
-        writeln!(self.calls.get_mut(), "{line}").context("calling the agent")?;
-        let mut reply = String::new();
-        let read = self
-            .calls
-            .read_line(&mut reply)
-            .context("the agent's reply")?;
-        if read == 0 {
-            return Err(Error::Failed(format!(
-                "the agent hung up ({})",
-                match self.instrumentation.try_wait() {
-                    Ok(Some(status)) => format!("its instrumentation exited: {status}"),
-                    Ok(None) => "its instrumentation runs".to_owned(),
-                    Err(error) => format!("its instrumentation: {error}"),
-                }
-            )));
+        let request = agent::Request { id, call };
+        let line = match serde_json::to_string(&request) {
+            Ok(line) => line,
+            Err(source) => {
+                return Err(AgentError::Serialize {
+                    call: request.call,
+                    source,
+                });
+            }
+        };
+        let call = request.call;
+        if let Err(source) = writeln!(self.calls.get_mut(), "{line}") {
+            return Err(AgentError::Send { call, source });
         }
-        let reply: agent::Reply =
-            serde_json::from_str(&reply).with_context(|| format!("the agent's reply {reply}"))?;
+        let mut reply = String::new();
+        let read = match self.calls.read_line(&mut reply) {
+            Ok(read) => read,
+            Err(source) => return Err(AgentError::Receive { call, source }),
+        };
+        if read == 0 {
+            return Err(match self.instrumentation.try_wait() {
+                Ok(status) => AgentError::HungUp { call, status },
+                Err(source) => AgentError::Instrumentation { call, source },
+            });
+        }
+        let reply: agent::Reply = match serde_json::from_str(&reply) {
+            Ok(parsed) => parsed,
+            Err(source) => {
+                return Err(AgentError::Reply {
+                    call,
+                    reply,
+                    source,
+                });
+            }
+        };
         match reply.outcome {
-            agent::Outcome::Failed(error) => Err(Error::Failed(error)),
-            _ if reply.id != id => Err(Error::Failed(format!(
-                "the agent answered call {}, not {id}",
-                reply.id
-            ))),
-            outcome => Ok(outcome),
+            agent::Outcome::Failed(message) => Err(AgentError::Failed { call, message }),
+            _ if reply.id != id => Err(AgentError::OtherCall {
+                call,
+                id,
+                answered: reply.id,
+            }),
+            outcome => Ok((call, outcome)),
         }
     }
 }
@@ -848,7 +1334,7 @@ struct Driver {
 }
 
 impl Driver {
-    fn answer(&mut self, call: Android) -> Result<Answered> {
+    fn answer(&mut self, call: Android) -> Result<Answered, Failure> {
         let done = match call {
             Android::Register { number, name } => self.register(&number, &name),
             Android::NoteToSelf { text } => self.note_to_self(&text),
@@ -878,12 +1364,17 @@ impl Driver {
             } => self.group_member(&group, &member, change),
             Android::GroupLink { group, approval } => self.group_link(&group, approval),
             Android::ApproveRequest { group, member } => self.approve_request(&group, &member),
-            Android::LogMark => return LOGCAT_LINES.mark().map(Answered::Mark),
+            Android::LogMark => return Ok(LOGCAT_LINES.mark().map(Answered::Mark)?),
             Android::AwaitStorageSync { after, timeout_ms } => {
-                LOGCAT_LINES.await_line(after, STORAGE_SYNCED, Duration::from_millis(timeout_ms))
+                LOGCAT_LINES.await_line(
+                    after,
+                    STORAGE_SYNCED,
+                    Duration::from_millis(timeout_ms),
+                )?;
+                Ok(())
             }
         };
-        done.map(|()| Answered::Done)
+        Ok(done.map(|()| Answered::Done)?)
     }
 
     /// Long-presses the message with `text`, which opens its menu and, above the message, the
@@ -891,7 +1382,7 @@ impl Driver {
     /// chosen by touch. The bar is found on a screenshot, the long white band above the message
     /// on the dimmed screen, and its first emoji tapped: ❤️, the account's first preferred
     /// reaction.
-    fn react_to_message(&mut self, text: &str) -> Result<()> {
+    fn react_to_message(&mut self, text: &str) -> Result<(), UiError> {
         let found = self.long_press(text)?;
         // The bar slides into place after the menu shows.
         std::thread::sleep(Duration::from_millis(600));
@@ -901,30 +1392,33 @@ impl Driver {
         if let Ok(png) = Command::new("adb")
             .args(["exec-out", "screencap", "-p"])
             .output()
+            && let Err(error) = std::fs::write(&kept, png.stdout)
         {
-            let _ = std::fs::write(&kept, png.stdout);
+            eprintln!("android: keeping the screenshot at {kept}: {error}");
         }
-        let (left, y) = shot.reaction_bar(found.node.y).ok_or_else(|| {
-            Error::Failed(format!(
-                "no reaction bar above or below {text:?} on the screen ({kept})"
-            ))
-        })?;
+        let (left, y) = shot
+            .reaction_bar(found.node.y)
+            .ok_or_else(|| UiError::NoReactionBar {
+                text: text.to_owned(),
+                kept: kept.clone(),
+            })?;
         // The first emoji's middle: a fourteenth of the screen's width in from the bar's left end.
         let x = left + shot.width / 14;
         eprintln!(
             "android: the reaction bar at ({left}, {y}) above the message at {}; tapping ({x}, {y})",
             found.node.y
         );
-        adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()])?;
+        adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()])
+            .map_err(|source| UiError::TapAt { x, y, source })?;
         // The overlay goes with the tap; its menu too.
-        self.agent.act(agent::Call::WaitGone {
+        Ok(self.agent.act(agent::Call::WaitGone {
             wanted: vec![agent::Wanted::label("Reply")],
             timeout_ms: timeout_ms(PATIENCE),
-        })
+        })?)
     }
 
     /// Taps the chat list's row showing `text`, scrolled to if the list is long.
-    fn open_row(&mut self, text: &str) -> Result<()> {
+    fn open_row(&mut self, text: &str) -> Result<(), UiError> {
         if self
             .first_shown(vec![agent::Wanted::control(text)], GLANCE)
             .is_err()
@@ -940,7 +1434,7 @@ impl Driver {
 
     /// Long-presses the message with `text` in it, and waits for its menu; a menu left open
     /// by a call before is closed first, as it would take the press.
-    fn long_press(&mut self, text: &str) -> Result<agent::Found> {
+    fn long_press(&mut self, text: &str) -> Result<agent::Found, UiError> {
         // A message's menu, or a text selection's bar, left by a call before.
         let open = || {
             vec![
@@ -964,7 +1458,7 @@ impl Driver {
     /// The open conversation's timer, from its chat settings (ConversationSettingsFragment,
     /// "Disappearing messages": a radio list of the app's presets and Save, strings.xml
     /// `ExpirationDialog_*`); then back to the conversation.
-    fn set_timer(&mut self, seconds: u32) -> Result<()> {
+    fn set_timer(&mut self, seconds: u32) -> Result<(), UiError> {
         let label = match seconds {
             0 => "Off",
             2_419_200 => "4 weeks",
@@ -974,11 +1468,7 @@ impl Driver {
             3_600 => "1 hour",
             300 => "5 minutes",
             30 => "30 seconds",
-            other => {
-                return Err(Error::Failed(format!(
-                    "{other} s isn't one of the app's presets"
-                )));
-            }
+            seconds => return Err(UiError::Preset { seconds }),
         };
         self.tap("More options", PATIENCE)?;
         self.tap("Chat settings", PATIENCE)?;
@@ -991,7 +1481,7 @@ impl Driver {
 
     /// Back until the conversation's composer shows (its content description, strings.xml
     /// `conversation_activity__compose_message`).
-    fn back_to_conversation(&mut self) -> Result<()> {
+    fn back_to_conversation(&mut self) -> Result<(), UiError> {
         for _ in 0..4 {
             if self
                 .first_shown(vec![agent::Wanted::label("Message composition")], GLANCE)
@@ -1001,13 +1491,13 @@ impl Driver {
             }
             back()?;
         }
-        Err(Error::Failed("not back in the conversation".to_owned()))
+        Err(UiError::NotBackInConversation)
     }
 
     /// A text story to `group`: the Stories tab's camera, its Text mode, the text typed and
     /// done, the editor's next arrow (unlabelled: at its place on the screen), the group chosen
     /// on "Send to", Send; then the chats.
-    fn post_story(&mut self, group: &str, text: &str) -> Result<()> {
+    fn post_story(&mut self, group: &str, text: &str) -> Result<(), UiError> {
         self.launch()?;
         self.tap("Stories", PATIENCE)?;
         self.tap("Open Camera", PATIENCE)?;
@@ -1020,13 +1510,9 @@ impl Driver {
         // The arrow's place with the gesture navigation bar (`gesture_navigation`): bottom
         // right, above the bar.
         let (width, height) = screen_size()?;
-        adb(&[
-            "shell",
-            "input",
-            "tap",
-            &(width * 91 / 100).to_string(),
-            &(height * 925 / 1000).to_string(),
-        ])?;
+        let (x, y) = (width * 91 / 100, height * 925 / 1000);
+        adb(&["shell", "input", "tap", &x.to_string(), &y.to_string()])
+            .map_err(|source| UiError::TapAt { x, y, source })?;
         self.element("Send to", PATIENCE)?;
         // A group the account never posted to isn't offered: it is added as a group story
         // (New, Group story, its introduction the first time, the group, Share), and comes
@@ -1065,7 +1551,7 @@ impl Driver {
     /// window, by its last item, Delete, which shows with all of them (ConversationListFragment.java
     /// `onConversationLongClick`, strings.xml `ConversationListFragment_delete`): its items, not
     /// their namesakes behind it.
-    fn open_chat_menu(&mut self, text: &str) -> Result<Vec<agent::Node>> {
+    fn open_chat_menu(&mut self, text: &str) -> Result<Vec<agent::Node>, UiError> {
         self.launch()?;
         let row = self.element(text, PATIENCE)?.node;
         self.agent.click(&row, true)?;
@@ -1078,12 +1564,15 @@ impl Driver {
             .collect())
     }
 
-    fn chat_menu(&mut self, text: &str, item: ChatMenuItem) -> Result<()> {
+    fn chat_menu(&mut self, text: &str, item: ChatMenuItem) -> Result<(), UiError> {
         let menu = self.open_chat_menu(text)?;
         let entry = menu
             .iter()
             .find(|node| node.labelled(item.label()))
-            .ok_or_else(|| Error::Failed(format!("the menu of {text:?} has no {item:?}")))?;
+            .ok_or_else(|| UiError::MenuItem {
+                text: text.to_owned(),
+                item,
+            })?;
         self.tap_at(entry)?;
         if item == ChatMenuItem::Mute {
             // MuteDialog.kt's last option (`arrays__always`).
@@ -1094,9 +1583,9 @@ impl Driver {
 
     /// Opens the row's menu once and reads it: a menu shows the chat as it was when opened, so
     /// the caller waits for what it expects to have happened first ([`Android::AwaitStorageSync`]).
-    fn chat_menu_offers(&mut self, text: &str, items: &[ChatMenuItem]) -> Result<()> {
+    fn chat_menu_offers(&mut self, text: &str, items: &[ChatMenuItem]) -> Result<(), UiError> {
         let menu = self.open_chat_menu(text)?;
-        adb(&["shell", "input", "keyevent", "KEYCODE_BACK"])?;
+        back()?;
         // Gone before whatever comes next: relaunching on a cleared task while the menu closes
         // crashes Signal-Android ("ConversationListFragment … is not currently in the
         // FragmentManager", from Compose disposing the menu's content).
@@ -1109,23 +1598,26 @@ impl Driver {
             .copied()
             .filter(|item| menu.iter().any(|node| node.labelled(item.label())))
             .collect();
-        let missing: Vec<&ChatMenuItem> = items
+        let missing: Vec<ChatMenuItem> = items
             .iter()
+            .copied()
             .filter(|item| !offered.contains(item))
             .collect();
         if missing.is_empty() {
             Ok(())
         } else {
-            Err(Error::Failed(format!(
-                "the menu of {text:?} offers no {missing:?}, but {offered:?}"
-            )))
+            Err(UiError::MenuOffers {
+                text: text.to_owned(),
+                missing,
+                offered,
+            })
         }
     }
 
     /// Settings, Chats, "Add a chat folder", then the `Add` in the suggestion's row. Whether the
     /// folder came is for its storage sync to show (the xtask waits for it in b33p): the app's
     /// own word, a snackbar (`ChatFoldersFragment__folder_added`), is gone in a moment.
-    fn add_suggested_folder(&mut self, name: &str) -> Result<()> {
+    fn add_suggested_folder(&mut self, name: &str) -> Result<(), UiError> {
         self.settings()?;
         self.tap("Chats", PATIENCE)?;
         self.tap("Add a chat folder", PATIENCE)?;
@@ -1145,12 +1637,19 @@ impl Driver {
             .iter()
             .filter(|node| node.labelled("Add"))
             .min_by_key(|node| node.y.abs_diff(row))
-            .ok_or_else(|| Error::Failed(format!("no Add for the folder {name:?}")))?;
+            .ok_or_else(|| UiError::NoAdd {
+                folder: name.to_owned(),
+            })?;
         self.tap_at(add)
     }
 
     /// The group's settings, the member's sheet, its item, then the confirmation.
-    fn group_member(&mut self, group: &str, member: &str, change: MemberChange) -> Result<()> {
+    fn group_member(
+        &mut self,
+        group: &str,
+        member: &str,
+        change: MemberChange,
+    ) -> Result<(), UiError> {
         self.group_settings_row(group, member)?;
         self.tap(change.item(), PATIENCE)?;
         let (message, button) = change.confirmation();
@@ -1159,7 +1658,7 @@ impl Driver {
 
     /// The invite link's page (ShareableGroupLinkFragment): its switch, then, once the link is on,
     /// the approval's, each by its row's label, whose tap toggles it.
-    fn group_link(&mut self, group: &str, approval: bool) -> Result<()> {
+    fn group_link(&mut self, group: &str, approval: bool) -> Result<(), UiError> {
         self.group_settings_row(group, "Group link")?;
         // The page, by the approval's row (strings.xml
         // `ShareableGroupLinkDialogFragment__require_admin_approval`), there while the link is off
@@ -1170,7 +1669,9 @@ impl Driver {
             .iter()
             .filter(|node| node.labelled("Group link"))
             .max_by_key(|node| node.y)
-            .ok_or("no \"Group link\" row")?;
+            .ok_or_else(|| UiError::NoRow {
+                row: "Group link".to_owned(),
+            })?;
         self.tap_at(row)?;
         // On once the app has turned the link on with the server: a tap on the approval before
         // that was lost, and the link stayed open to anyone.
@@ -1187,7 +1688,7 @@ impl Driver {
     /// role of a switch, checked when on, level with the row's text; while the row's change is
     /// under way, a progress indicator stands in its place. Each look waits for the screen to
     /// settle.
-    fn switch_on(&mut self, row: &str) -> Result<()> {
+    fn switch_on(&mut self, row: &str) -> Result<(), UiError> {
         /// How far a row's switch may sit from its text, in pixels.
         const LEVEL: u32 = 100;
         let deadline = std::time::Instant::now() + PATIENCE;
@@ -1198,7 +1699,9 @@ impl Driver {
                 .iter()
                 .filter(|node| node.labelled(row))
                 .max_by_key(|node| node.y)
-                .ok_or_else(|| Error::Failed(format!("no {row:?} row")))?;
+                .ok_or_else(|| UiError::NoRow {
+                    row: row.to_owned(),
+                })?;
             let level: Vec<&agent::Node> = shown
                 .screen
                 .iter()
@@ -1221,10 +1724,10 @@ impl Driver {
                         )
                     })
                     .collect();
-                return Err(Error::Failed(format!(
-                    "the switch of {row:?} isn't on; level with it: {}",
-                    nodes.join("; ")
-                )));
+                return Err(UiError::SwitchOff {
+                    row: row.to_owned(),
+                    level: nodes,
+                });
             }
         }
     }
@@ -1233,7 +1736,7 @@ impl Driver {
     /// `PendingMembersActivity_requests`): its Approve beside `member`'s name
     /// (`GroupRecipientListItem_approve_description`), then the confirmation's Add
     /// (`RequestConfirmationDialog_add_s_to_the_group`, `RequestConfirmationDialog_add`).
-    fn approve_request(&mut self, group: &str, member: &str) -> Result<()> {
+    fn approve_request(&mut self, group: &str, member: &str) -> Result<(), UiError> {
         self.group_settings_row(group, "Requests & invites")?;
         let mut shown = self.first_shown(
             vec![
@@ -1252,13 +1755,15 @@ impl Driver {
             .iter()
             .filter(|node| node.labelled("Approve"))
             .min_by_key(|node| node.y.abs_diff(row))
-            .ok_or_else(|| Error::Failed(format!("no Approve for {member:?}")))?;
+            .ok_or_else(|| UiError::NoApprove {
+                member: member.to_owned(),
+            })?;
         self.tap_at(approve)?;
         self.confirm("to the group?", "Add")
     }
 
     /// The group `group` names, opened at its settings, scrolled to `row`, which is tapped.
-    fn group_settings_row(&mut self, group: &str, row: &str) -> Result<()> {
+    fn group_settings_row(&mut self, group: &str, row: &str) -> Result<(), UiError> {
         self.launch()?;
         self.tap(group, PATIENCE)?;
         // The conversation, by its composer (the chat list has no field), whose title opens its
@@ -1269,7 +1774,9 @@ impl Driver {
             .iter()
             .filter(|node| node.labelled(group))
             .min_by_key(|node| node.y)
-            .ok_or_else(|| Error::Failed(format!("no title {group:?}")))?;
+            .ok_or_else(|| UiError::NoTitle {
+                group: group.to_owned(),
+            })?;
         self.tap_at(title)?;
         // The settings, by their first row (strings.xml
         // `ConversationSettingsFragment__disappearing_messages`), before a member is looked for.
@@ -1283,13 +1790,16 @@ impl Driver {
 
     /// The button `button` of the dialog whose message has `message` in it: in the dialog's
     /// window, not a namesake behind it ("Make admin" is both).
-    fn confirm(&mut self, message: &str, button: &str) -> Result<()> {
+    fn confirm(&mut self, message: &str, button: &str) -> Result<(), UiError> {
         let dialog = self.first_shown(vec![agent::Wanted::containing(message)], PATIENCE)?;
         let confirm = dialog
             .screen
             .iter()
             .find(|node| node.window == dialog.node.window && node.labelled(button))
-            .ok_or_else(|| Error::Failed(format!("no {button:?} by {message:?}")))?;
+            .ok_or_else(|| UiError::NoButton {
+                button: button.to_owned(),
+                message: message.to_owned(),
+            })?;
         self.tap_at(confirm)
     }
 
@@ -1300,7 +1810,7 @@ impl Driver {
     /// menu, closing) crashes Signal-Android now and then ("ConversationListFragment … is not
     /// currently in the FragmentManager"), and the list's controls going away doesn't say when
     /// that is done.
-    fn launch(&mut self) -> Result<()> {
+    fn launch(&mut self) -> Result<(), UiError> {
         // The chat list's own button (strings.xml `conversation_list_fragment__fab_content_description`).
         if self
             .first_shown(vec![agent::Wanted::control("New chat")], GLANCE)
@@ -1319,6 +1829,10 @@ impl Driver {
             &self.launcher,
         ])
         .map(drop)
+        .map_err(|source| UiError::Launch {
+            activity: self.launcher.clone(),
+            source,
+        })
     }
 
     /// The first of `wanted` to show, on the settled screen; a failure with the last screen after
@@ -1327,30 +1841,33 @@ impl Driver {
         &mut self,
         wanted: Vec<agent::Wanted>,
         patience: Duration,
-    ) -> Result<agent::Found> {
-        self.agent.look(agent::Call::WaitFor {
+    ) -> Result<agent::Found, UiError> {
+        Ok(self.agent.look(agent::Call::WaitFor {
             wanted,
             timeout_ms: timeout_ms(patience),
-        })
+        })?)
     }
 
-    fn element(&mut self, text: &str, patience: Duration) -> Result<agent::Found> {
+    fn element(&mut self, text: &str, patience: Duration) -> Result<agent::Found, UiError> {
         self.first_shown(vec![agent::Wanted::label(text)], patience)
     }
 
     /// Clicks `node` of the last answer's screen.
-    fn tap_at(&mut self, node: &agent::Node) -> Result<()> {
-        self.agent.click(node, false)
+    fn tap_at(&mut self, node: &agent::Node) -> Result<(), UiError> {
+        Ok(self.agent.click(node, false)?)
     }
 
     /// Taps the control labelled `text`, once it is enabled. A node that went between the look
     /// and the tap (the screen drew again, as Compose does on its own schedule) is looked for
     /// once more.
-    fn tap(&mut self, text: &str, patience: Duration) -> Result<()> {
+    fn tap(&mut self, text: &str, patience: Duration) -> Result<(), UiError> {
         let found = self.first_shown(vec![agent::Wanted::control(text)], patience)?;
         match self.tap_at(&found.node) {
-            Err(Error::Failed(error)) if error.ends_with(" went") => {
-                eprintln!("android: {error}; looking for {text:?} again");
+            Err(UiError::Agent(ref error))
+                if let AgentError::Failed { message, .. } = &**error
+                    && message.ends_with(" went") =>
+            {
+                eprintln!("android: {message}; looking for {text:?} again");
                 let found = self.first_shown(vec![agent::Wanted::control(text)], patience)?;
                 self.tap_at(&found.node)
             }
@@ -1362,16 +1879,16 @@ impl Driver {
     /// `echo` says: through accessibility, not keys, which go astray while the keyboard is still
     /// binding to a field just focused (a search for "ANR" arrives as "R", a phone number not at
     /// all).
-    fn type_text(&mut self, text: &str, echo: agent::Echo) -> Result<()> {
-        self.agent.act(agent::Call::SetText {
+    fn type_text(&mut self, text: &str, echo: agent::Echo) -> Result<(), UiError> {
+        Ok(self.agent.act(agent::Call::SetText {
             text: text.to_owned(),
             echo,
             timeout_ms: timeout_ms(PATIENCE),
-        })
+        })?)
     }
 
     /// Gives `field` focus, as a tap does, and sets its text.
-    fn fill(&mut self, field: &agent::Node, text: &str, echo: agent::Echo) -> Result<()> {
+    fn fill(&mut self, field: &agent::Node, text: &str, echo: agent::Echo) -> Result<(), UiError> {
         self.tap_at(field)?;
         self.type_text(text, echo)
     }
@@ -1379,10 +1896,12 @@ impl Driver {
     /// Registers `number` (+1 only: the default country) through the app's own screens, with the
     /// box's captcha page and any code, the PIN disabled (no SVR in the box), and `name` as the
     /// profile's; then turns Signal's ANR crash off (`disable_anr_crashes`).
-    fn register(&mut self, number: &str, name: &str) -> Result<()> {
-        let national = number.strip_prefix("+1").ok_or_else(|| {
-            Error::Failed(format!("{number}: only +1 numbers, the default country"))
-        })?;
+    fn register(&mut self, number: &str, name: &str) -> Result<(), UiError> {
+        let national = number
+            .strip_prefix("+1")
+            .ok_or_else(|| UiError::NotPlusOne {
+                number: number.to_owned(),
+            })?;
         self.launch()?;
         self.tap("Continue", PATIENCE)?;
         self.element("Phone number", PATIENCE)?;
@@ -1410,7 +1929,7 @@ impl Driver {
     /// and Signal crashes an internal user's app when the main thread stalls for 5 s
     /// (AnrDetector.kt `SignalAnrException`). Opening the camera does on the emulator:
     /// CameraScreen.kt waits for CameraX on the main thread.
-    fn disable_anr_crashes(&mut self) -> Result<()> {
+    fn disable_anr_crashes(&mut self) -> Result<(), UiError> {
         self.settings()?;
         let preferences = self.agent.look(agent::Call::ScrollTo {
             label: "Internal Preferences".to_owned(),
@@ -1426,10 +1945,9 @@ impl Driver {
             .filter(|node| node.class_name == "android.widget.Switch")
             .collect();
         let [switch] = switches.as_slice() else {
-            return Err(Error::Failed(format!(
-                "not one switch for ANR crashes: {}",
-                switches.len()
-            )));
+            return Err(UiError::Switches {
+                count: switches.len(),
+            });
         };
         if switch.checked {
             self.tap_at(switch)?;
@@ -1441,8 +1959,11 @@ impl Driver {
     /// by the app's own scanner (not the `sgnl://linkdevice` deep link, which opens the linked
     /// devices without the link, `DeviceProvisioningActivity.java:36`); with the message history
     /// if `transfer`, which goes through the attachment CDN (CDN3).
-    fn link_device(&mut self, url: &str, transfer: bool) -> Result<()> {
-        show_qr(url)?;
+    fn link_device(&mut self, url: &str, transfer: bool) -> Result<(), UiError> {
+        show_qr(url).map_err(|source| UiError::ShowQr {
+            url: url.to_owned(),
+            source,
+        })?;
         self.settings()?;
         self.tap("Linked devices", PATIENCE)?;
         self.tap("Link a new device", PATIENCE)?;
@@ -1464,7 +1985,7 @@ impl Driver {
     }
 
     /// Sends `text` to Note to Self, from the new-chat list.
-    fn note_to_self(&mut self, text: &str) -> Result<()> {
+    fn note_to_self(&mut self, text: &str) -> Result<(), UiError> {
         self.launch()?;
         self.tap("New chat", PATIENCE)?;
         self.tap("Note to Self", PATIENCE)?;
@@ -1472,12 +1993,15 @@ impl Driver {
     }
 
     /// Sends `text` in the open conversation, from its composer: the screen's last field.
-    fn send(&mut self, text: &str) -> Result<()> {
+    fn send(&mut self, text: &str) -> Result<(), UiError> {
         let filled = self.fill_message_field(text);
         // The field's node went between the look and the tap: look again, once.
         match filled {
-            Err(Error::Failed(error)) if error.ends_with(" went") => {
-                eprintln!("android: {error}; looking for the message field again");
+            Err(UiError::Agent(ref error))
+                if let AgentError::Failed { message, .. } = &**error
+                    && message.ends_with(" went") =>
+            {
+                eprintln!("android: {message}; looking for the message field again");
                 self.fill_message_field(text)?;
             }
             outcome => outcome?,
@@ -1494,17 +2018,17 @@ impl Driver {
     }
 
     /// The composer's field, the last editable one on screen, given `text`.
-    fn fill_message_field(&mut self, text: &str) -> Result<()> {
+    fn fill_message_field(&mut self, text: &str) -> Result<(), UiError> {
         let shown = self.first_shown(vec![agent::Wanted::Editable], PATIENCE)?;
         let field = shown
             .screen
             .into_iter()
             .rfind(|node| node.editable)
-            .ok_or_else(|| Error::Failed("no message field".to_owned()))?;
+            .ok_or(UiError::NoMessageField)?;
         self.fill(&field, text, agent::Echo::Exact(text.to_owned()))
     }
 
-    fn settings(&mut self) -> Result<()> {
+    fn settings(&mut self) -> Result<(), UiError> {
         self.launch()?;
         // Without Play Services the app may ask first.
         let shown = self.first_shown(
@@ -1532,30 +2056,35 @@ enum Answered {
     Mark(u64),
 }
 
-fn serve(driver: &mut Driver, socket: &Path) -> Result<()> {
-    remove_if_present(socket)?;
-    let listener = UnixListener::bind(socket).context(socket.display().to_string())?;
+fn serve(driver: &mut Driver, socket: &Path) -> Result<(), ServeError> {
+    remove_if_present(socket).map_err(ServeError::Clear)?;
+    let listener = UnixListener::bind(socket).map_err(|source| ServeError::Bind {
+        path: socket.to_owned(),
+        source,
+    })?;
     // The owner's only, as b33p's harness socket is (b33p-slint/src/agent.rs): the socket's
     // directory is on the host.
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .context(socket.display().to_string())?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
+        ServeError::Permissions {
+            path: socket.to_owned(),
+            source,
+        }
+    })?;
     println!("{} {}", drivers::LISTENING, socket.display());
     for stream in listener.incoming() {
-        let stream = stream.context("accepting a connection")?;
+        let stream = stream.map_err(ServeError::Accept)?;
         // A connection that fails ends; the driver serves the next.
         if let Err(error) = answer_calls(driver, stream) {
-            eprintln!("android: {error}");
+            eprintln!("android: {}", testbox_tools::Report(&error));
         }
     }
     Ok(())
 }
 
-fn answer_calls(driver: &mut Driver, stream: UnixStream) -> Result<()> {
-    let mut writer = stream
-        .try_clone()
-        .context("a second handle to the connection")?;
+fn answer_calls(driver: &mut Driver, stream: UnixStream) -> Result<(), ConnectionError> {
+    let mut writer = stream.try_clone().map_err(ConnectionError::Clone)?;
     for line in BufReader::new(stream).lines() {
-        let line = line.context("reading a call")?;
+        let line = line.map_err(ConnectionError::Read)?;
         let answer = match serde_json::from_str::<Numbered<Android>>(&line) {
             Ok(Numbered { id, call }) => match driver.answer(call) {
                 Ok(result) => Answer::Done { id, result },
@@ -1571,8 +2100,8 @@ fn answer_calls(driver: &mut Driver, stream: UnixStream) -> Result<()> {
                 error: format!("not a call: {error}: {line}"),
             },
         };
-        let reply = serde_json::to_string(&answer).context("an answer")?;
-        writeln!(writer, "{reply}").context("answering")?;
+        let reply = serde_json::to_string(&answer).map_err(ConnectionError::Serialize)?;
+        writeln!(writer, "{reply}").map_err(ConnectionError::Write)?;
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 use b33p_harness::{Action, InviteLinkAccess};
 
+use super::b33p::B33pError;
 use super::b33p::{
     accept_request, b33p_chat, b33p_details, b33p_shows, b33p_title, chat_previewing, select,
     story_shows, type_and_send,
@@ -7,13 +8,20 @@ use super::b33p::{
 use super::clients::{Android, android_containing, android_shows, desktop_shows, desktop_text};
 use super::presage::{Account, Presage};
 use super::setup::{AndroidBox, started_b33p};
-use super::{Checks, PATIENCE, PATIENCE_MS};
+use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
 use crate::Sockets;
-use crate::error::{Error, Result};
 use crate::harness::Harness;
 use crate::pod::{B33P, Pod};
 use crate::process;
 use testbox_tools::drivers::{self, MemberChange};
+
+/// What the group checks find wrong of their own.
+#[derive(Debug, thiserror::Error)]
+enum GroupsError {
+    /// A thread the check sent something from panicked.
+    #[error("{thread} panicked")]
+    Panicked { thread: &'static str },
+}
 
 /// A group b33p makes of its account (A, with Android) and the peer (B, with Desktop) and a
 /// presage-cli member (C); what b33p changes shows on Desktop and Android, what Desktop changes
@@ -23,7 +31,7 @@ pub(super) fn groups(
     fixture: &mut AndroidBox<'_>,
     containers: &Pod,
     sockets: &Sockets,
-) -> Result<()> {
+) -> Result<(), Failure> {
     let AndroidBox {
         peer,
         android,
@@ -34,7 +42,8 @@ pub(super) fn groups(
     } = fixture;
     let member = Presage::new(containers, Account::Member);
     checks.require("a presage-cli member registers", || {
-        member.register().map(drop)
+        member.register()?;
+        Ok(())
     })?;
     // The member's message brings b33p its profile key, as the fixture's brought the peer's: with
     // them b33p adds them to the group outright, without, it invites them (presage
@@ -44,24 +53,26 @@ pub(super) fn groups(
         "testbox groups: from the member",
     );
     checks.require("the peer and the member write to b33p's account", || {
-        std::thread::scope(|scope| {
+        std::thread::scope(|scope| -> Result<(), Failure> {
             let from_peer = scope.spawn(|| peer.send(android_aci, peer_text));
             let from_member = member.send(android_aci, member_text);
-            from_peer
-                .join()
-                .map_err(|_| Error::Failed("the peer's send panicked".to_owned()))??;
-            from_member
+            from_peer.join().map_err(|_| GroupsError::Panicked {
+                thread: "the peer's send",
+            })??;
+            from_member?;
+            Ok(())
         })
     })?;
     checks.require("the peer's text beside the member's reaches b33p", || {
-        chat_previewing(b33p, peer_text).map(drop)
+        chat_previewing(b33p, peer_text)?;
+        Ok(())
     })?;
     let member_chat = checks.require("text from the member reaches b33p", || {
-        chat_previewing(b33p, member_text)
+        Ok(chat_previewing(b33p, member_text)?)
     })?;
     checks.require(
         "the member's first message is a message request in b33p, accepted",
-        || accept_request(b33p, &member_chat),
+        || Ok(accept_request(b33p, &member_chat)?),
     )?;
 
     // TESTPLAN.md §3.1.
@@ -71,13 +82,13 @@ pub(super) fn groups(
             title: title.to_owned(),
             members: vec![conversation.clone(), member_chat.clone()],
         })?;
-        b33p.wait_for("the group in b33p", PATIENCE, |snapshot| {
+        Ok(b33p.wait_for("the group in b33p", PATIENCE, |snapshot| {
             snapshot
                 .conversations
                 .iter()
                 .find(|chat| chat.group && chat.title == title && !chat.request)
                 .map(|chat| chat.id.clone())
-        })
+        })?)
     })?;
     // A first message in it: Desktop lists a conversation once it has one (its log: the group's
     // change kept, the empty message with it dropped). Sending isn't a group change, so it passes
@@ -96,7 +107,7 @@ pub(super) fn groups(
             android.call(drivers::Android::OpenConversation {
                 text: title.to_owned(),
             })?;
-            android_shows(android, hello)
+            Ok(android_shows(android, hello)?)
         },
     );
 
@@ -113,7 +124,7 @@ pub(super) fn groups(
             b33p_chat(b33p, &group, "named on Desktop", |chat| {
                 chat.title == by_desktop
             })?;
-            android_containing(android, by_desktop)
+            Ok(android_containing(android, by_desktop)?)
         },
     );
     let description = "testbox: a group to test groups with";
@@ -133,7 +144,10 @@ pub(super) fn groups(
                 "the group's description",
                 |details| (details.description.as_deref() == Some(description)).then_some(()),
             )?;
-            android_containing(android, "changed the group description")
+            Ok(android_containing(
+                android,
+                "changed the group description",
+            )?)
         },
     );
     // The picture goes by CDN0, by the form storage-service hands out (`GET
@@ -150,7 +164,7 @@ pub(super) fn groups(
             })?;
             b33p_chat(b33p, &group, "with a picture", |chat| chat.avatar)?;
             // strings.xml `MessageRecord_s_changed_the_group_avatar`.
-            android_containing(android, "changed the group avatar")
+            Ok(android_containing(android, "changed the group avatar")?)
         },
     );
 
@@ -186,7 +200,7 @@ pub(super) fn groups(
     for (name, change, b33p_says, desktop_says, admin) in [made_admin, took_admin] {
         checks.record(name, || {
             member_change(android, b33p, by_desktop, *change, b33p_says, *admin)?;
-            desktop_text(desktop, desktop_says)
+            Ok(desktop_text(desktop, desktop_says)?)
         });
     }
 
@@ -222,14 +236,14 @@ pub(super) fn groups(
                     },
                 )?;
             }
-            member_change_shown(b33p, took_admin.2, took_admin.4)
+            Ok(member_change_shown(b33p, took_admin.2, took_admin.4)?)
         },
     );
 
     let (name, change, b33p_says, desktop_says, admin) = removed;
     checks.record(name, || {
         member_change(android, b33p, by_desktop, *change, b33p_says, *admin)?;
-        desktop_text(desktop, desktop_says)
+        Ok(desktop_text(desktop, desktop_says)?)
     });
 
     // The invite link, and a request to join by it: Desktop's account leaves and asks back in,
@@ -242,7 +256,7 @@ pub(super) fn groups(
                 group: by_desktop.to_owned(),
                 approval: true,
             })?;
-            b33p_details(
+            Ok(b33p_details(
                 b33p,
                 "You turned the invite link on, with admin approval.",
                 "the invite link, and the peer among the members",
@@ -255,26 +269,26 @@ pub(super) fn groups(
                     (details.invite_link_access == InviteLinkAccess::Approval)
                         .then(|| (link, peer.service_id.clone()))
                 },
-            )
+            )?)
         },
     );
     if let Some((link, peer)) = linked {
         checks.record("the peer leaving on Desktop shows on b33p", || {
             desktop.call(drivers::Desktop::LeaveGroup)?;
-            b33p_shows(b33p, "the peer's leaving", |message| {
+            Ok(b33p_shows(b33p, "the peer's leaving", |message| {
                 message.notice && message.text == "Peer left the group."
-            })
+            })?)
         });
         checks.record(
             "the peer's request to join by the link shows on b33p",
             || {
                 desktop.call(drivers::Desktop::JoinGroup { link: link.clone() })?;
-                b33p_details(
+                Ok(b33p_details(
                     b33p,
                     "Peer asked to join the group.",
                     "the peer's request",
                     |details| details.requests.contains(&peer).then_some(()),
-                )
+                )?)
             },
         );
         checks.record(
@@ -296,7 +310,7 @@ pub(super) fn groups(
                             .then_some(())
                     },
                 )?;
-                desktop_text(desktop, "approved your request to join")
+                Ok(desktop_text(desktop, "approved your request to join")?)
             },
         );
     }
@@ -311,11 +325,11 @@ pub(super) fn groups(
                 member: "Android".to_owned(),
                 text: mentioned.to_owned(),
             })?;
-            b33p_shows(b33p, "the mention", |message| {
+            Ok(b33p_shows(b33p, "the mention", |message| {
                 !message.outgoing
                     && message.text.ends_with(mentioned)
                     && message.mentions.contains(android_aci)
-            })
+            })?)
         },
     );
     let story = "testbox groups: a story";
@@ -324,11 +338,11 @@ pub(super) fn groups(
             group: group.clone(),
             text: story.to_owned(),
         })?;
-        desktop.call(drivers::Desktop::StoryShows {
+        Ok(desktop.call(drivers::Desktop::StoryShows {
             from: by_desktop.to_owned(),
             text: story.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
     // The other way: Signal's apps send a story flagged as one (`?story=true`), which the
     // server delivers only to a device that asked for stories (`X-Signal-Receive-Stories`).
@@ -338,7 +352,7 @@ pub(super) fn groups(
             group: by_desktop.to_owned(),
             text: desktop_story.to_owned(),
         })?;
-        story_shows(b33p, &group, desktop_story)
+        Ok(story_shows(b33p, &group, desktop_story)?)
     });
     // Opening it had b33p send a view receipt (b33p-core stories.rs `send_viewed`, with read
     // receipts on, as Android's account has them), which Desktop counts on its own story.
@@ -350,12 +364,12 @@ pub(super) fn groups(
             timeout_ms: PATIENCE_MS,
         }) && !error.to_string().contains("already")
         {
-            return Err(error);
+            return Err(error.into());
         }
-        desktop.call(drivers::Desktop::WaitForStoryViews {
+        Ok(desktop.call(drivers::Desktop::WaitForStoryViews {
             views: 1,
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
     // Replies and reactions to a group story go to the group, with the story as their context
     // (DataMessage `storyContext`): Signal's apps show them in the group's chat, a reply as a
@@ -371,9 +385,9 @@ pub(super) fn groups(
                 reply: story_reply.to_owned(),
             })?;
             select(b33p, &group)?;
-            b33p_shows(b33p, "the story's reply", |message| {
+            Ok(b33p_shows(b33p, "the story's reply", |message| {
                 !message.outgoing && message.text == story_reply
-            })
+            })?)
         },
     );
     checks.record(
@@ -384,9 +398,9 @@ pub(super) fn groups(
                 text: story.to_owned(),
             })?;
             select(b33p, &group)?;
-            b33p_shows(b33p, "the story's reaction", |message| {
+            Ok(b33p_shows(b33p, "the story's reaction", |message| {
                 !message.outgoing && message.text.to_lowercase().contains("story")
-            })
+            })?)
         },
     );
 
@@ -401,11 +415,11 @@ pub(super) fn groups(
                 text: android_story.to_owned(),
             })?;
             story_shows(b33p, &group, android_story)?;
-            desktop.call(drivers::Desktop::StoryShows {
+            Ok(desktop.call(drivers::Desktop::StoryShows {
                 from: by_desktop.to_owned(),
                 text: android_story.to_owned(),
                 timeout_ms: PATIENCE_MS,
-            })
+            })?)
         },
     );
 
@@ -424,7 +438,7 @@ pub(super) fn groups(
             android.call(drivers::Android::OpenConversation {
                 text: renamed.to_owned(),
             })?;
-            android_containing(android, renamed)
+            Ok(android_containing(android, renamed)?)
         },
     );
     // "set the disappearing message time(r) to 1 hour." (messages.json `icu:DisappearingTimer--set`,
@@ -443,7 +457,7 @@ pub(super) fn groups(
             android.call(drivers::Android::OpenConversation {
                 text: renamed.to_owned(),
             })?;
-            android_containing(android, "to 1 hour")
+            Ok(android_containing(android, "to 1 hour")?)
         },
     );
 
@@ -458,18 +472,22 @@ fn member_change(
     change: MemberChange,
     b33p_says: &str,
     admin: Option<bool>,
-) -> Result<()> {
+) -> Result<(), Failure> {
     android.call(drivers::Android::GroupMember {
         group: group.to_owned(),
         member: Account::Member.name().into_owned(),
         change,
     })?;
-    member_change_shown(b33p, b33p_says, admin)
+    Ok(member_change_shown(b33p, b33p_says, admin)?)
 }
 
 /// b33p says `notice`, and its details show the member an admin or not as `admin` says, or
 /// gone.
-fn member_change_shown(b33p: &mut Harness, notice: &str, admin: Option<bool>) -> Result<()> {
+fn member_change_shown(
+    b33p: &mut Harness,
+    notice: &str,
+    admin: Option<bool>,
+) -> Result<(), B33pError> {
     b33p_details(b33p, notice, "the member's place", |details| {
         let member = details
             .members

@@ -3,20 +3,20 @@ use std::time::Duration;
 use b33p_harness::Action;
 
 use super::b33p::{
-    b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index, outgoing_index,
-    select, type_and_send,
+    b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index, message_timestamp,
+    outgoing_index, select, type_and_send,
 };
 use super::clients::{desktop_shows, desktop_shows_whole, desktop_text};
 use super::presage::Account;
 use super::setup::LinkedBox;
-use super::{Checks, PATIENCE_MS};
-use crate::error::Result;
+use super::{Checks, Failure, PATIENCE_MS};
+use crate::harness::{Harness, HarnessError};
 use testbox_tools::drivers;
 
 /// Signal-Desktop linked to the peer's presage-cli primary, so a Signal-authored client is on the
 /// other end of b33p. Linked rather than standalone (Desktop CONTRIBUTING.md:174): the link path
 /// b33p takes, with no captcha or verification screen to drive.
-pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result<()> {
+pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result<(), Failure> {
     let LinkedBox {
         primary_aci,
         b33p,
@@ -29,9 +29,12 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
     // the chat takes the name once it is there.
     checks.record("b33p titles the peer's chat with their name", || {
         let name = Account::Peer.name();
-        b33p_chat(b33p, conversation, &format!("titled {name:?}"), |chat| {
-            chat.title == name
-        })
+        Ok(b33p_chat(
+            b33p,
+            conversation,
+            &format!("titled {name:?}"),
+            |chat| chat.title == name,
+        )?)
     });
 
     // Desktop opens the conversation (the peer's own message reached it as a sync), reads b33p's
@@ -43,13 +46,13 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         desktop.call(drivers::Desktop::OpenConversation {
             aci: primary_aci.clone(),
         })?;
-        desktop_shows(desktop, b33p_text)
+        Ok(desktop_shows(desktop, b33p_text)?)
     })?;
 
     // Signal-Desktop sends a delivery receipt for each message it receives
     // (ts/messages/handleDataMessage.preload.ts `deliveryReceiptQueue`).
     checks.record("Desktop's delivery receipt reaches b33p", || {
-        delivered(b33p, b33p_text)
+        Ok(delivered(b33p, b33p_text)?)
     });
 
     // Read receipts are checked in `storage`.
@@ -62,16 +65,16 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
     checks.record("an edit from b33p reaches Desktop", || {
         let index = outgoing_index(b33p, b33p_text)?;
         edit(b33p, index, edited_text)?;
-        desktop_shows(desktop, edited_text)
+        Ok(desktop_shows(desktop, edited_text)?)
     });
 
     let formatted_text = "testbox desktop: *bold*";
     checks.record("formatting from b33p reaches Desktop", || {
         type_and_send(b33p, formatted_text)?;
-        desktop.call(drivers::Desktop::WaitForBold {
+        Ok(desktop.call(drivers::Desktop::WaitForBold {
             text: "bold".to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     checks.record("a delete for everyone from b33p reaches Desktop", || {
@@ -81,7 +84,7 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             index,
             everyone: true,
         })?;
-        desktop_shows(desktop, "deleted this message")
+        Ok(desktop_shows(desktop, "deleted this message")?)
     });
 
     checks.record("text from Desktop reaches b33p", || {
@@ -89,7 +92,8 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         desktop.call(drivers::Desktop::Send {
             text: text.to_owned(),
         })?;
-        chat_previewing(b33p, text).map(drop)
+        chat_previewing(b33p, text)?;
+        Ok(())
     });
 
     // TESTPLAN.md §1.4 item 3: an edit from the other side shows in b33p.
@@ -99,9 +103,11 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             old_text: "testbox desktop: from Desktop".to_owned(),
             text: text.to_owned(),
         })?;
-        b33p_shows(b33p, &format!("{text:?} marked edited"), |message| {
-            message.text == text && message.edited
-        })
+        Ok(b33p_shows(
+            b33p,
+            &format!("{text:?} marked edited"),
+            |message| message.text == text && message.edited,
+        )?)
     });
 
     // Reactions and replies each way, and TESTPLAN.md §1.4 item 6, a delete for everyone from the
@@ -113,21 +119,21 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             index,
             emoji: "👍".to_owned(),
         })?;
-        desktop.call(drivers::Desktop::WaitForReaction {
+        Ok(desktop.call(drivers::Desktop::WaitForReaction {
             text: from_desktop.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     checks.record("a reaction from Desktop reaches b33p", || {
         desktop.call(drivers::Desktop::ReactToMessage {
             text: edited_text.to_owned(),
         })?;
-        b33p_shows(b33p, "Desktop's reaction", |message| {
+        Ok(b33p_shows(b33p, "Desktop's reaction", |message| {
             message.outgoing
                 && message.text == edited_text
                 && message.reactions.iter().any(|reaction| !reaction.outgoing)
-        })
+        })?)
     });
 
     checks.record("a reply from b33p quotes Desktop's message there", || {
@@ -135,11 +141,11 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         let index = incoming_index(b33p, from_desktop)?;
         b33p.act(Action::ReplyTo { index })?;
         type_and_send(b33p, reply)?;
-        desktop.call(drivers::Desktop::WaitForQuote {
+        Ok(desktop.call(drivers::Desktop::WaitForQuote {
             text: reply.to_owned(),
             quoted: from_desktop.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     let reply_from_desktop = "testbox desktop: a reply from Desktop";
@@ -148,31 +154,26 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             quoted: edited_text.to_owned(),
             text: reply_from_desktop.to_owned(),
         })?;
-        b33p_shows(b33p, "Desktop's reply", |message| {
+        Ok(b33p_shows(b33p, "Desktop's reply", |message| {
             !message.outgoing
                 && message.text == reply_from_desktop
                 && message
                     .quote
                     .as_ref()
                     .is_some_and(|quote| quote.text == edited_text)
-        })
+        })?)
     });
 
     checks.record("a delete for everyone from Desktop reaches b33p", || {
         let index = incoming_index(b33p, reply_from_desktop)?;
-        let timestamp = b33p
-            .snapshot()?
-            .messages
-            .iter()
-            .find(|message| message.index == index)
-            .map(|message| message.timestamp)
-            .ok_or("Desktop's reply went from b33p's view")?;
+        let timestamp =
+            message_timestamp(b33p, "Desktop's reply", |message| message.index == index)?;
         desktop.call(drivers::Desktop::DeleteForEveryone {
             text: reply_from_desktop.to_owned(),
         })?;
-        b33p_shows(b33p, "Desktop's reply deleted", |message| {
+        Ok(b33p_shows(b33p, "Desktop's reply deleted", |message| {
             message.timestamp == timestamp && message.deleted
-        })
+        })?)
     });
 
     // Emoji in a message each way: drawn from a colour bitmap font, which Qt 6.4's QRawFont
@@ -180,7 +181,7 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
     checks.record("emoji from b33p reach Desktop", || {
         let text = "testbox desktop: emoji 🦀🎉";
         type_and_send(b33p, text)?;
-        desktop_shows(desktop, text)
+        Ok(desktop_shows(desktop, text)?)
     });
 
     checks.record("emoji from Desktop reach b33p", || {
@@ -188,9 +189,9 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         desktop.call(drivers::Desktop::Send {
             text: text.to_owned(),
         })?;
-        b33p_shows(b33p, "Desktop's emoji", |message| {
+        Ok(b33p_shows(b33p, "Desktop's emoji", |message| {
             !message.outgoing && message.text == text
-        })
+        })?)
     });
 
     // A reaction taken back each way: the same emoji on the same message removes it
@@ -201,21 +202,21 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             index,
             emoji: "👍".to_owned(),
         })?;
-        desktop.call(drivers::Desktop::WaitForNoReaction {
+        Ok(desktop.call(drivers::Desktop::WaitForNoReaction {
             text: from_desktop.to_owned(),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     checks.record("a reaction Desktop takes back is gone in b33p", || {
         desktop.call(drivers::Desktop::ReactToMessage {
             text: edited_text.to_owned(),
         })?;
-        b33p_shows(b33p, "Desktop's reaction gone", |message| {
+        Ok(b33p_shows(b33p, "Desktop's reaction gone", |message| {
             message.outgoing
                 && message.text == edited_text
                 && message.reactions.iter().all(|reaction| reaction.outgoing)
-        })
+        })?)
     });
 
     // TESTPLAN.md §1.3 item 1, with Desktop typing. Each side shows and sends them only with
@@ -242,9 +243,9 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             b33p_shows(b33p, "Desktop's typed text", |message| {
                 !message.outgoing && message.text == text
             })?;
-            b33p.wait_for("no one typing", super::PATIENCE, |snapshot| {
+            Ok(b33p.wait_for("no one typing", super::PATIENCE, |snapshot| {
                 snapshot.typing.is_empty().then_some(())
-            })
+            })?)
         },
     );
 
@@ -254,9 +255,9 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
     checks.record("a long text from Desktop reaches b33p whole", || {
         let text = long_text("testbox desktop: a long text from Desktop");
         desktop.call(drivers::Desktop::Send { text: text.clone() })?;
-        b33p_shows(b33p, "Desktop's long text, whole", |message| {
+        Ok(b33p_shows(b33p, "Desktop's long text, whole", |message| {
             !message.outgoing && message.text == text
-        })
+        })?)
     });
     // The other way: whether b33p sends the whole text inline or as Signal's apps do (the
     // first 2000 bytes inline, the whole as a `LongText` attachment), Desktop must show it all.
@@ -264,7 +265,7 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
     checks.record("a long text from b33p reaches Desktop whole", || {
         let head = "testbox desktop: a long text from b33p";
         type_and_send(b33p, &long_text(head))?;
-        desktop_shows_whole(desktop, head)
+        Ok(desktop_shows_whole(desktop, head)?)
     });
 
     // TESTPLAN.md §2.10: a link with the box's preview page behind it (testbox/tools `preview`),
@@ -279,11 +280,11 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         let off = link_previews(b33p, false);
         sent?;
         off?;
-        desktop.call(drivers::Desktop::WaitForLinkPreview {
+        Ok(desktop.call(drivers::Desktop::WaitForLinkPreview {
             text: head.to_owned(),
             title: testbox_tools::preview_title(7),
             timeout_ms: PATIENCE_MS,
-        })
+        })?)
     });
 
     // TESTPLAN.md §1.5, with Desktop on the other end. Desktop's notice (messages.json
@@ -313,13 +314,13 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
                 text: text.to_owned(),
                 timeout_ms: EXPIRY_PATIENCE_MS,
             })?;
-            b33p.wait_for(
+            Ok(b33p.wait_for(
                 "b33p's message gone",
                 Duration::from_millis(EXPIRY_PATIENCE_MS),
                 |snapshot| {
                     (!snapshot.messages.iter().any(|message| message.text == text)).then_some(())
                 },
-            )
+            )?)
         },
     );
     checks.record("a timer Desktop sets shows in b33p, and off again", || {
@@ -331,9 +332,9 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             message.notice && message.text.contains("5 minutes")
         })?;
         desktop.call(drivers::Desktop::SetTimer { seconds: 0 })?;
-        b33p_chat(b33p, conversation, "without a timer", |chat| {
+        Ok(b33p_chat(b33p, conversation, "without a timer", |chat| {
             chat.expire_timer == 0
-        })
+        })?)
     });
 
     Ok(())
@@ -343,7 +344,7 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
 const EXPIRY_PATIENCE_MS: u64 = 90_000;
 
 /// Turns b33p's link previews on or off, as its settings switch does.
-fn link_previews(b33p: &mut crate::harness::Harness, on: bool) -> Result<()> {
+fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
         style: None,
@@ -366,7 +367,7 @@ fn link_previews(b33p: &mut crate::harness::Harness, on: bool) -> Result<()> {
 }
 
 /// Turns b33p's typing indicators on or off, as its settings switch does.
-fn typing_indicators(b33p: &mut crate::harness::Harness, on: bool) -> Result<()> {
+fn typing_indicators(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
         style: None,

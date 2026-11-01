@@ -26,13 +26,20 @@ use presage_store_sqlite::SqliteStore;
 use tracing::warn;
 
 use crate::{
-    Config, ConversationId, Error, Event, Events, Inbox, Preferences, attachments,
-    local::LocalStore, scrub::scrub,
+    Config, ConversationId, Event, Events, Inbox, Preferences, attachments, local::LocalStore,
+    scrub,
 };
 
 pub(crate) use conversations::conversation_id;
 use groups::group_identifier;
-use lifecycle::{AfterFailure, Ending, Failed, Paths, attempt, wait_after_failure, wipe};
+use lifecycle::{
+    AfterFailure, Ending, Failed, Paths, WipeError, attempt, wait_after_failure, wipe,
+};
+
+/// Deletes the local data (see [`wipe`]).
+fn wipe_data() -> Result<(), WipeError> {
+    wipe(&Paths::new()?)
+}
 
 pub(crate) type Mgr = Manager<SqliteStore, Registered>;
 
@@ -68,30 +75,28 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
             use_password,
         ) {
             Ok(Ending::Gone) => break,
-            Ok(Ending::Wipe) => match Paths::new().and_then(|paths| wipe(&paths)) {
+            Ok(Ending::Wipe) => match wipe_data() {
                 Ok(()) => {
                     use_password = false;
                     continue;
                 }
-                Err(message) => Failed::other(message),
+                Err(error) => Failed::Wipe(error),
             },
             Err(failed) => failed,
         };
-        warn!(failure = ?failed.failure, reason = %scrub(&failed.detail), "the backend can't go on");
-        let failure = failed.failure;
+        let failure = failed.failure();
+        warn!(?failure, reason = %scrub::chain(&failed), "the backend can't go on");
         if !events.sent(Event::Failed {
             failure,
-            message: failed.message,
+            message: failed.message(),
         }) {
             break;
         }
         match wait_after_failure(commands, &preferences, &device_name, failure) {
             AfterFailure::Retry => {}
-            AfterFailure::StartOver => match Paths::new().and_then(|paths| wipe(&paths)) {
+            AfterFailure::StartOver => match wipe_data() {
                 Ok(()) => use_password = false,
-                Err(message) => {
-                    events.send(Event::Error(Error::storage(message)));
-                }
+                Err(error) => events.send(Event::Error(error.into())),
             },
             AfterFailure::UsePassword => use_password = true,
             AfterFailure::Gone => break,

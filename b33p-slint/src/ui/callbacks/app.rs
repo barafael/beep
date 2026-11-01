@@ -22,7 +22,10 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let window = window.as_weak();
         move |enabled| {
             if let Err(error) = crate::autostart::set(enabled) {
-                tracing::warn!(%error, "failed to change starting with the system");
+                tracing::warn!(
+                    error = %b33p_core::scrub::chain(&error),
+                    "failed to change starting with the system"
+                );
             }
             if let Some(window) = window.upgrade() {
                 window
@@ -163,7 +166,7 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         .on_open_log_folder(|| open_folder(b33p_core::settings::log_dir()));
     window.global::<Account>().on_open_url(|url| {
         if let Err(error) = open::that_detached(url.as_str()) {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a web page");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "could not open a web page");
         }
     });
 }

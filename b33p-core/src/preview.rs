@@ -110,15 +110,35 @@ fn is_public(ip: IpAddr) -> bool {
 /// network either.
 struct PublicOnly;
 
+/// Why a link's host can't be visited.
+#[derive(Debug, thiserror::Error)]
+enum ResolveError {
+    #[error("failed to look up {name}")]
+    Lookup {
+        name: String,
+        source: std::io::Error,
+    },
+    #[error("{name} has no address on the internet")]
+    NotPublic { name: String },
+}
+
 impl reqwest::dns::Resolve for PublicOnly {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async move {
-            let found: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
+            let name = name.as_str();
+            let found: Vec<SocketAddr> = tokio::net::lookup_host((name, 0))
+                .await
+                .map_err(|source| ResolveError::Lookup {
+                    name: name.to_owned(),
+                    source,
+                })?
                 .filter(|address| is_public(address.ip()))
                 .collect();
             if found.is_empty() {
-                return Err(format!("{} has no address on the internet", name.as_str()).into());
+                return Err(ResolveError::NotPublic {
+                    name: name.to_owned(),
+                }
+                .into());
             }
             Ok(Box::new(found.into_iter()) as reqwest::dns::Addrs)
         })

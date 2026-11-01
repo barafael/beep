@@ -243,23 +243,39 @@ impl Settings {
             .map_or_else(Self::default, |text| Self::parse(&text))
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        let path = path()
-            .ok_or_else(|| std::io::Error::other("could not determine a config directory"))?;
+    pub fn save(&self) -> Result<(), SaveError> {
+        let path = path().ok_or(SaveError::NoConfigDir)?;
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(|source| SaveError::CreateDir {
+                dir: dir.to_owned(),
+                source,
+            })?;
         }
         // Whole or not at all: a file cut short (a crash, a full disk) would read as defaults,
         // privacy settings included. Written beside it, then put in its place.
         let written = path.with_extension("conf.new");
-        let mut file = std::fs::File::create(&written)?;
-        std::io::Write::write_all(&mut file, self.to_text().as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(written, &path)?;
+        let write = || {
+            let mut file = std::fs::File::create(&written)?;
+            std::io::Write::write_all(&mut file, self.to_text().as_bytes())?;
+            file.sync_all()
+        };
+        write().map_err(|source| SaveError::Write {
+            path: written.clone(),
+            source,
+        })?;
+        std::fs::rename(&written, &path).map_err(|source| SaveError::Replace {
+            path: path.clone(),
+            source,
+        })?;
         // And the rename itself, or a power cut can bring the old file back.
         #[cfg(unix)]
         if let Some(dir) = path.parent() {
-            std::fs::File::open(dir)?.sync_all()?;
+            std::fs::File::open(dir)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|source| SaveError::SyncDir {
+                    dir: dir.to_owned(),
+                    source,
+                })?;
         }
         Ok(())
     }
@@ -395,6 +411,33 @@ pub fn log_dir() -> Option<PathBuf> {
 /// Whether [`data_dir`] is the standard place.
 pub fn custom_data_dir() -> bool {
     cfg!(debug_assertions) && std::env::var_os("B33P_DATA_DIR").is_some()
+}
+
+/// Why the settings couldn't be saved.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    #[error("could not determine a config directory")]
+    NoConfigDir,
+    #[error("failed to create the config directory {}", dir.display())]
+    CreateDir {
+        dir: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to write the settings to {}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to put the new settings in place of {}", path.display())]
+    Replace {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to make the new settings in {} last", dir.display())]
+    SyncDir {
+        dir: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 fn path() -> Option<PathBuf> {

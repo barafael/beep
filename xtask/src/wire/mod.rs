@@ -27,14 +27,15 @@ mod tls;
 mod ws;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use testbox_tools::connections::{Connection, Record};
 
 use crate::checks::record::Span;
-use crate::error::{Context, Result, WithContext};
+use content::ContentError;
 use h1::{Headers, header};
+use pcap::PcapError;
 use proto::ChatMessage;
 use stream::Stream;
 
@@ -113,11 +114,67 @@ const NOTED: [&str; 11] = [
     "te",
 ];
 
+/// What fails decoding a record's `wire/raw/` into its `wire/`.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DecodeError {
+    #[error("decoding the capture's connections")]
+    Capture(#[source] PcapError),
+    #[error("listing {}", path.display())]
+    List {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("reading {}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A relayed connection's `<n>-<port>.json` that isn't one.
+    #[error("{} is not a relayed connection", path.display())]
+    Connection {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("reading the relayed records in {}", path.display())]
+    Records {
+        path: PathBuf,
+        #[source]
+        source: testbox_tools::connections::RecordError,
+    },
+    /// A line of a part's `spans.jsonl` that isn't a check's span.
+    #[error("{}, line {line}: not a span", path.display())]
+    Span {
+        path: PathBuf,
+        line: usize,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("putting a line of {} in JSON", path.display())]
+    Line {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("writing {}", path.display())]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("comparing the contents b33p took in")]
+    Contents(#[source] ContentError),
+    #[error("writing the capture for Wireshark")]
+    Pcapng(#[source] PcapError),
+}
+
 /// Decodes the box record `record`'s `wire/raw/` into its `wire/`, and says what it found.
-pub(crate) fn decode(record: &Path) -> Result<()> {
+pub(crate) fn decode(record: &Path) -> Result<(), DecodeError> {
     let wire = record.join("wire");
     let raw = wire.join("raw");
-    let connections = match capture::connections(&raw)? {
+    let connections = match capture::connections(&raw).map_err(DecodeError::Capture)? {
         Some(connections) => connections,
         None => relayed(&raw)?,
     };
@@ -140,16 +197,16 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
         clients.entry(&event.client).or_default().push(event);
     }
     for (client, events) in &clients {
-        testbox_tools::write(
+        write(
             &wire.join(format!("transcript-{}.txt", file_name(client))),
             transcript(events, &spans),
         )?;
     }
     let mut compared = compare::report(&events, &summaries, &spans);
-    if let Some(contents) = content::report(record, &summaries)? {
+    if let Some(contents) = content::report(record, &summaries).map_err(DecodeError::Contents)? {
         compared.push_str(&contents);
     }
-    testbox_tools::write(&wire.join("compare.md"), compared)?;
+    write(&wire.join("compare.md"), compared)?;
     let undecoded = summaries
         .iter()
         .filter(|summary| !summary.undecoded.is_empty())
@@ -165,7 +222,7 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
         counts.join(", "),
         wire.display()
     );
-    if let Some(assembled) = pcap::assemble(&raw, &wire)? {
+    if let Some(assembled) = pcap::assemble(&raw, &wire).map_err(DecodeError::Pcapng)? {
         println!(
             "wire: {} packets{} in {}",
             assembled.packets,
@@ -182,16 +239,24 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
 
 /// The connections as the relay `--capture` used to put in the pod wrote them, in a record
 /// from before: `<n>-<port>.json` and `<n>-<port>.tap` each.
-fn relayed(raw: &Path) -> Result<Vec<capture::Decoded>> {
+fn relayed(raw: &Path) -> Result<Vec<capture::Decoded>, DecodeError> {
     let mut metas: Vec<Connection> = Vec::new();
-    for entry in std::fs::read_dir(raw).context(raw.display().to_string())? {
-        let path = entry.context(raw.display().to_string())?.path();
+    for entry in list(raw)? {
+        let path = entry
+            .map_err(|source| DecodeError::List {
+                path: raw.to_owned(),
+                source,
+            })?
+            .path();
         if path
             .extension()
             .is_some_and(|extension| extension == "json")
         {
-            let json = testbox_tools::read(&path)?;
-            metas.push(serde_json::from_str(&json).with_context(|| path.display().to_string())?);
+            let json = read(&path)?;
+            metas.push(
+                serde_json::from_str(&json)
+                    .map_err(|source| DecodeError::Connection { path, source })?,
+            );
         }
     }
     metas.sort_by_key(|meta| meta.n);
@@ -205,45 +270,88 @@ fn relayed(raw: &Path) -> Result<Vec<capture::Decoded>> {
         .collect()
 }
 
-fn read_records(path: &Path) -> Result<Vec<Record>> {
+fn read_records(path: &Path) -> Result<Vec<Record>, DecodeError> {
     // A connection that failed before relaying has no bytes.
     let Ok(file) = std::fs::File::open(path) else {
         return Ok(Vec::new());
     };
     let mut input = std::io::BufReader::new(file);
     let mut records = Vec::new();
-    while let Some(record) = Record::read_from(&mut input).context(path.display().to_string())? {
+    while let Some(record) =
+        Record::read_from(&mut input).map_err(|source| DecodeError::Records {
+            path: path.to_owned(),
+            source,
+        })?
+    {
         records.push(record);
     }
     Ok(records)
 }
 
 /// Every part's checks, in the order they ran.
-fn spans(record: &Path) -> Result<Vec<Span>> {
+fn spans(record: &Path) -> Result<Vec<Span>, DecodeError> {
     let mut spans = Vec::new();
-    for entry in std::fs::read_dir(record).context(record.display().to_string())? {
+    for entry in list(record)? {
         let path = entry
-            .context(record.display().to_string())?
+            .map_err(|source| DecodeError::List {
+                path: record.to_owned(),
+                source,
+            })?
             .path()
             .join("spans.jsonl");
         if !path.exists() {
             continue;
         }
-        for line in testbox_tools::read(&path)?.lines() {
-            spans.push(serde_json::from_str(line).with_context(|| path.display().to_string())?);
+        for (n, line) in read(&path)?.lines().enumerate() {
+            spans.push(
+                serde_json::from_str(line).map_err(|source| DecodeError::Span {
+                    path: path.clone(),
+                    line: n + 1,
+                    source,
+                })?,
+            );
         }
     }
     spans.sort_by_key(|span: &Span| span.started);
     Ok(spans)
 }
 
-fn write_lines<T: Serialize>(path: &Path, items: &[T]) -> Result<()> {
+fn write_lines<T: Serialize>(path: &Path, items: &[T]) -> Result<(), DecodeError> {
     let mut out = String::new();
     for item in items {
-        out.push_str(&serde_json::to_string(item).with_context(|| path.display().to_string())?);
+        out.push_str(
+            &serde_json::to_string(item).map_err(|source| DecodeError::Line {
+                path: path.to_owned(),
+                source,
+            })?,
+        );
         out.push('\n');
     }
-    testbox_tools::write(path, out)
+    write(path, out)
+}
+
+/// The entries of the directory `path`.
+fn list(path: &Path) -> Result<std::fs::ReadDir, DecodeError> {
+    std::fs::read_dir(path).map_err(|source| DecodeError::List {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// The file at `path`, as text.
+fn read(path: &Path) -> Result<String, DecodeError> {
+    std::fs::read_to_string(path).map_err(|source| DecodeError::Read {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// Writes `contents` to the file at `path`, replacing what it had.
+fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+    std::fs::write(path, contents).map_err(|source| DecodeError::Write {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// What the agent and the user can't tell, told by what else is known of a connection: a

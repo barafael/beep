@@ -10,8 +10,6 @@
 #[cfg(unix)]
 mod checks;
 #[cfg(unix)]
-mod error;
-#[cfg(unix)]
 mod harness;
 mod phase;
 mod pins;
@@ -26,10 +24,32 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use error::Result;
 use phase::Phase;
-use pod::{Client, Pod};
+use pod::{Client, Pod, PodError};
+use testbox_tools::Report;
 use tracing_subscriber::EnvFilter;
+
+/// What a command failed with, whichever step's error it was: the command reports it with its
+/// causes and ends.
+type Failure = Box<dyn std::error::Error + Send + Sync>;
+
+/// `run`'s rounds, some of which failed (each said so as it ended).
+#[derive(Debug, thiserror::Error)]
+#[error("{failed} of {rounds} rounds failed")]
+struct RoundsFailed {
+    failed: usize,
+    rounds: u32,
+}
+
+/// What the xtask can't do off Unix.
+#[cfg(not(unix))]
+#[derive(Debug, thiserror::Error)]
+enum Unsupported {
+    #[error("the harness is Unix only (b33p-slint `harness` feature)")]
+    Harness,
+    #[error("the displays' sockets are Unix sockets")]
+    Displays,
+}
 
 /// Checks b33p against Signal's own server and clients: Signal-Server with its stores and CDNs,
 /// Signal-Desktop and Signal-Android, in one Podman pod.
@@ -159,7 +179,7 @@ pub(crate) struct B33pOptions {
 impl B33pOptions {
     /// Lets each of the box's `b33ps` b33ps take at most `--b33p-memory`, if given: every one
     /// the pod played, whether it runs at this moment or not.
-    fn limit_memory(&self, pod: &Pod, b33ps: u8) -> Result<()> {
+    fn limit_memory(&self, pod: &Pod, b33ps: u8) -> Result<(), PodError> {
         let Some(mib) = self.b33p_memory else {
             return Ok(());
         };
@@ -181,11 +201,11 @@ fn main() -> ExitCode {
     let pod = match Pod::new(&repo, cli.instance.as_deref()) {
         Ok(pod) => pod,
         Err(reason) => {
-            eprintln!("testbox: {reason}");
+            eprintln!("testbox: {}", Report(&reason));
             return ExitCode::FAILURE;
         }
     };
-    let outcome = match cli.command {
+    let outcome: Result<(), Failure> = match cli.command {
         Command::Up {
             desktop,
             android,
@@ -197,23 +217,24 @@ fn main() -> ExitCode {
                 .filter_map(|(asked, client)| asked.then_some(client))
                 .collect();
             pod.holding(|| up(&pod, &clients, b33p))
+                .map_err(Failure::from)
         }
         Command::Test { options } => pod.holding(|| test(&pod, &repo, "", &options)),
         Command::Run { rounds, options } => pod.holding(|| run(&pod, &repo, rounds, &options)),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod),
-        Command::Down { wipe } => pod.holding(|| pod.down(wipe)),
-        Command::Wire { record } => wire::decode(&record),
+        Command::Down { wipe } => pod.holding(|| pod.down(wipe)).map_err(Failure::from),
+        Command::Wire { record } => wire::decode(&record).map_err(Failure::from),
         Command::Logs { services } => {
             let services: Vec<&str> = services.iter().map(String::as_str).collect();
-            pod.logs(&services)
+            pod.logs(&services).map_err(Failure::from)
         }
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
-            eprintln!("testbox: {reason}");
+            eprintln!("testbox: {}", Report(&*reason));
             ExitCode::FAILURE
         }
     }
@@ -256,7 +277,7 @@ fn repo_root() -> PathBuf {
         .to_owned()
 }
 
-fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
+fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<(), PodError> {
     let b33ps = b33p.b33ps.unwrap_or(1);
     pod.up(clients, b33ps, b33p.optimized)?;
     b33p.limit_memory(pod, b33ps)
@@ -264,7 +285,7 @@ fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<()> {
 
 /// `test` `rounds` times, each round's records in a directory of its own; then how each went.
 /// Fails if any did.
-fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<()> {
+fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<(), Failure> {
     // A directory of its own, by when it started: an earlier run's records stay.
     let started = process::now()?;
     let run = format!("run/{started}");
@@ -273,7 +294,7 @@ fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<()>
         println!("== round {round}");
         let outcome = test(pod, repo, &format!("{run}/{round}"), options);
         if let Err(reason) = &outcome {
-            println!("== round {round}: {reason}");
+            println!("== round {round}: {}", Report(&**reason));
         }
         outcomes.push((round, outcome.is_ok()));
     }
@@ -289,49 +310,47 @@ fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<()>
     if failed == 0 {
         Ok(())
     } else {
-        Err(error::Error::Failed(format!(
-            "{failed} of {rounds} rounds failed"
-        )))
+        Err(RoundsFailed { failed, rounds }.into())
     }
 }
 
 /// The phases' checks once, each box's record in `target/testbox-record/<records>/<box>/`.
 #[cfg(unix)]
-fn test(pod: &Pod, repo: &Path, records: &str, options: &TestOptions) -> Result<()> {
+fn test(pod: &Pod, repo: &Path, records: &str, options: &TestOptions) -> Result<(), Failure> {
     checks::run(pod, repo, records, options)
 }
 
 #[cfg(unix)]
-fn vnc(pod: &Pod, repo: &Path, interactive: bool) -> Result<()> {
-    vnc::vnc(pod, repo, interactive)
+fn vnc(pod: &Pod, repo: &Path, interactive: bool) -> Result<(), Failure> {
+    Ok(vnc::vnc(pod, repo, interactive)?)
 }
 
 #[cfg(unix)]
-fn qr(pod: &Pod) -> Result<()> {
-    vnc::qr(pod, &Sockets::new(pod).b33p)
+fn qr(pod: &Pod) -> Result<(), Failure> {
+    Ok(vnc::qr(pod, &Sockets::new(pod).b33p)?)
 }
 
 #[cfg(not(unix))]
-fn qr(_pod: &Pod, _repo: &Path) -> Result<()> {
-    Err("the harness is Unix only (b33p-slint `harness` feature)".into())
+fn qr(_pod: &Pod) -> Result<(), Failure> {
+    Err(Unsupported::Harness.into())
 }
 
 #[cfg(unix)]
-fn web(pod: &Pod, repo: &Path, interactive: bool) -> Result<()> {
-    vnc::web(pod, repo, interactive)
+fn web(pod: &Pod, repo: &Path, interactive: bool) -> Result<(), Failure> {
+    Ok(vnc::web(pod, repo, interactive)?)
 }
 
 #[cfg(not(unix))]
-fn web(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
-    Err("the displays' sockets are Unix sockets".into())
+fn web(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<(), Failure> {
+    Err(Unsupported::Displays.into())
 }
 
 #[cfg(not(unix))]
-fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<()> {
-    Err("the displays' sockets are Unix sockets".into())
+fn vnc(_pod: &Pod, _repo: &Path, _interactive: bool) -> Result<(), Failure> {
+    Err(Unsupported::Displays.into())
 }
 
 #[cfg(not(unix))]
-fn test(_pod: &Pod, _repo: &Path, _records: &str, _options: &TestOptions) -> Result<()> {
-    Err("the harness is Unix only (b33p-slint `harness` feature)".into())
+fn test(_pod: &Pod, _repo: &Path, _records: &str, _options: &TestOptions) -> Result<(), Failure> {
+    Err(Unsupported::Harness.into())
 }

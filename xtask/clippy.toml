@@ -4,3 +4,9 @@ disallowed-types = [
     { path = "serde_json::Map", reason = "use the typed protocol (b33p-harness, drivers.rs)" },
     { path = "std::any::Any", reason = "no type erasure: use a concrete type or a generic" },
 ]
+
+
+# Errors keep what they were about and their causes typed: a check's carries the harness error
+# and the chat, message or group it was about, past clippy's default of 128 bytes. Errors are
+# rare and off the hot paths. (A crate's own clippy.toml replaces the workspace's.)
+large-error-threshold = 192

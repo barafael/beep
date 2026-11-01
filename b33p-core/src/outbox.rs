@@ -18,7 +18,6 @@ use presage::{
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::scrub::scrubbed;
 use crate::signal::Mgr;
 
 type PresageError = presage::Error<presage_store_sqlite::SqliteStoreError>;
@@ -30,20 +29,13 @@ pub(crate) type Outbox = mpsc::Sender<Send>;
 pub(crate) const CAPACITY: usize = 64;
 
 /// Why a send didn't happen.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum SendFailure {
     /// The session ended first: [`Sending`] is gone.
+    #[error("the session ended before it was sent")]
     Stopped,
+    #[error(transparent)]
     Presage(Box<PresageError>),
-}
-
-impl std::fmt::Display for SendFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SendFailure::Stopped => f.write_str("the session ended before it was sent"),
-            SendFailure::Presage(error) => error.fmt(f),
-        }
-    }
 }
 
 /// What becomes of a send's outcome.
@@ -157,7 +149,7 @@ fn answer<T>(reply: Reply<T>, result: Result<T, PresageError>) {
         Reply::To(asker) => drop(asker.send(result)),
         Reply::Log(what) => {
             if let Err(error) = result {
-                debug!(error = %scrubbed(&error), "failed to send {what}");
+                debug!(error = %crate::scrub::chain(&error), "failed to send {what}");
             }
         }
     }

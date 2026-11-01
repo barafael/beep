@@ -1,7 +1,6 @@
 //! The chat list: conversations as the UI knows them, their settings, how people are named.
 
-use super::errors::failed;
-use crate::Error;
+use super::errors::kind_of;
 use std::{collections::HashMap, time::Duration};
 
 use presage::{
@@ -12,7 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     ChatMessage, ChatSettings, Conversation, ConversationId, ConversationKind, Event,
-    local::LocalStore, scrub::scrubbed,
+    local::LocalStore,
 };
 
 use super::{
@@ -26,17 +25,43 @@ use super::{
 /// log, then taken as empty.
 pub(super) fn or_logged<T: Default>(result: Result<T, sqlx::Error>, what: &'static str) -> T {
     result.unwrap_or_else(|error| {
-        warn!(what, error = %scrubbed(&error), "failed to read from the database");
+        warn!(what, error = %crate::scrub::chain(&error), "failed to read from the database");
         T::default()
     })
 }
 
+/// What fails in listing chats, or in finding someone by number.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ConversationError {
+    /// Said in words, as the cause is logged (see [`unreadable`]).
+    #[error("Some chats couldn't be read from the stored data. Restart b33p to try again.")]
+    Unreadable { what: &'static str },
+    #[error("“{number}” isn't a phone number.")]
+    NotANumber { number: String },
+    #[error("failed to look the number up")]
+    Discover {
+        number: String,
+        source: presage::Error<presage_store_sqlite::SqliteStoreError>,
+    },
+    #[error("Nobody on Signal has the number {number}.")]
+    NobodyHas { number: String },
+}
+
+impl crate::Classified for ConversationError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            Self::Unreadable { .. } => crate::ErrorKind::Storage,
+            Self::NotANumber { .. } | Self::NobodyHas { .. } => crate::ErrorKind::Refused,
+            Self::Discover { source, .. } => kind_of(source),
+        }
+    }
+}
+
 /// Part of the chat list couldn't be read: said, so it isn't taken for an empty account.
-fn unreadable(ctx: &Ctx, what: &'static str, error: &impl std::fmt::Display) {
-    warn!(what, error = %scrubbed(error), "failed to read the chat list");
-    ctx.events.send(Event::Error(Error::storage(
-        "Some chats couldn't be read from the stored data. Restart b33p to try again.",
-    )));
+fn unreadable(ctx: &Ctx, what: &'static str, error: &presage_store_sqlite::SqliteStoreError) {
+    warn!(what, error = %crate::scrub::chain(error), "failed to read the chat list");
+    ctx.events
+        .send(Event::Error(ConversationError::Unreadable { what }.into()));
 }
 
 pub(crate) fn conversation_id(thread: &Thread) -> ConversationId {
@@ -144,7 +169,7 @@ async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversati
     let mut remembered = match ctx.tables.conversations().await {
         Ok(remembered) => remembered,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read conversation settings");
+            warn!(error = %crate::scrub::chain(&error), "failed to read conversation settings");
             return;
         }
     };
@@ -173,11 +198,11 @@ pub(super) async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) ->
             .mark_read(id, read)
             .await
             .unwrap_or_else(|error| {
-                warn!(error = %scrubbed(&error), "failed to remember a conversation");
+                warn!(error = %crate::scrub::chain(&error), "failed to remember a conversation");
                 ChatSettings::default()
             }),
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read a conversation's settings");
+            warn!(error = %crate::scrub::chain(&error), "failed to read a conversation's settings");
             ChatSettings::default()
         }
     }
@@ -188,7 +213,7 @@ async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
     match manager.store().messages_before(thread, None, 1).await {
         Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read a thread's newest message");
+            warn!(error = %crate::scrub::chain(&error), "failed to read a thread's newest message");
             0
         }
     }
@@ -274,7 +299,9 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
         Ok(folders) => {
             ctx.events.send(Event::Folders(folders));
         }
-        Err(error) => warn!(error = %scrubbed(&error), "failed to read the chat folders"),
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to read the chat folders")
+        }
     }
     contacts
 }
@@ -313,7 +340,7 @@ pub(super) async fn send_unread(manager: &Mgr, ctx: &Ctx) {
     let remembered = match ctx.tables.conversations().await {
         Ok(remembered) => remembered,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to read conversation settings");
+            warn!(error = %crate::scrub::chain(&error), "failed to read conversation settings");
             return;
         }
     };
@@ -568,7 +595,9 @@ pub(super) async fn details(
                             .join(" ");
                         details.about = (!about.is_empty()).then_some(about);
                     }
-                    Err(error) => debug!(error = %scrubbed(&error), "couldn't fetch a profile"),
+                    Err(error) => {
+                        debug!(error = %crate::scrub::chain(&error), "couldn't fetch a profile")
+                    }
                 }
             }
         }
@@ -632,19 +661,26 @@ pub(super) async fn find_number(
     manager: &mut Mgr,
     ctx: &Ctx,
     number: &str,
-) -> Result<ConversationId, Error> {
+) -> Result<ConversationId, ConversationError> {
     let own = manager.registration_data().phone_number.clone();
-    let parsed = parse_number(number, &own)
-        .ok_or_else(|| Error::refused(format!("“{number}” isn't a phone number.")))?;
+    let parsed = parse_number(number, &own).ok_or_else(|| ConversationError::NotANumber {
+        number: number.to_owned(),
+    })?;
     let shown = display_number(&parsed);
     let found = manager
         .discover_contacts_by_phone_number([&parsed])
         .await
-        .map_err(failed("failed to look the number up"))?;
-    let who = found
-        .into_iter()
-        .find_map(|(_, who)| who)
-        .ok_or_else(|| Error::refused(format!("Nobody on Signal has the number {shown}.")))?;
+        .map_err(|source| ConversationError::Discover {
+            number: shown.clone(),
+            source,
+        })?;
+    let who =
+        found
+            .into_iter()
+            .find_map(|(_, who)| who)
+            .ok_or_else(|| ConversationError::NobodyHas {
+                number: shown.clone(),
+            })?;
     let thread = Thread::Contact(who);
     let id = conversation_id(&thread);
     if !ctx.threads.borrow().contains_key(&id) {

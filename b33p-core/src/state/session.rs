@@ -47,7 +47,7 @@ impl ChatState {
         }) = &command
             && error.retryable()
         {
-            error = crate::Error::unreachable(UNSENT);
+            error = Unsent { original: error }.into();
             self.error_send = Some((conversation.clone(), *timestamp));
         }
         self.error_retry = command.filter(|command| error.retryable() && offers_retry(command));
@@ -211,14 +211,29 @@ impl ChatState {
         }
     }
 
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(|error| error.message.as_str())
+    /// What the error banner says.
+    pub fn error(&self) -> Option<String> {
+        self.error.as_ref().map(crate::Error::to_string)
     }
 }
 
 /// What the error banner says when a message couldn't be sent for a reason that may pass.
 pub(super) const UNSENT: &str =
     "A message couldn't be sent: Signal can't be reached. Retry on the message sends it.";
+
+/// A message couldn't be sent for a reason that may pass, said in words rather than as the
+/// library's error, which stays `original` (not shown).
+#[derive(Debug, thiserror::Error)]
+#[error("{UNSENT}")]
+struct Unsent {
+    original: crate::Error,
+}
+
+impl crate::Classified for Unsent {
+    fn kind(&self) -> crate::ErrorKind {
+        crate::ErrorKind::Unreachable
+    }
+}
 
 /// Whether the error banner offers to try `command` again when it failed for a reason that
 /// may pass: what the user asked for and waits on. Not sending a message (its bubble has its

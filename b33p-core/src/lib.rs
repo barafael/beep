@@ -42,7 +42,7 @@ mod vault;
 #[cfg(feature = "signal")]
 mod wire;
 
-pub use error::{Error, ErrorKind};
+pub use error::{Chain, Classified, Error, ErrorKind};
 pub use qr::QrMatrix;
 
 use std::sync::Arc;

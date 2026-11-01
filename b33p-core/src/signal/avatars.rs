@@ -14,7 +14,7 @@ use presage::{
 use presage_store_sqlite::SqliteStoreError;
 use tracing::{debug, warn};
 
-use crate::{Event, Events, Picture, attachments, scrub::scrubbed};
+use crate::{Event, Events, Picture, attachments};
 
 use super::{
     Ctx, Mgr, Threads,
@@ -39,7 +39,7 @@ pub(super) async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]
         Ok(Some(bytes)) => decode_avatar(bytes).await.map(Arc::new),
         Ok(None) => None,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to fetch the group's picture");
+            warn!(error = %crate::scrub::chain(&error), "failed to fetch the group's picture");
             return;
         }
     };
@@ -56,7 +56,7 @@ pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
         Ok(Some(bytes)) => decode_avatar(bytes).await.map(Arc::new),
         Ok(None) => None,
         Err(error) => {
-            warn!(error = %scrubbed(&error), "failed to fetch a contact's picture");
+            warn!(error = %crate::scrub::chain(&error), "failed to fetch a contact's picture");
             return;
         }
     };
@@ -69,10 +69,6 @@ pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
 /// A contact's profile picture. It needs their profile key, which only arrives with their
 /// messages (the contact sync no longer carries it); until then, or without one, the picture
 /// from the contact sync, i.e. what the phone shows, stands in.
-#[expect(
-    clippy::result_large_err,
-    reason = "presage's own error, as the group picture's fetch returns it"
-)]
 async fn contact_picture(
     manager: &mut Mgr,
     aci: Aci,
@@ -209,7 +205,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
             }
             Err(error) => {
                 failed += 1;
-                debug!(conversation = %tag(&id), error = %scrubbed(&error), "failed to fetch avatar");
+                debug!(conversation = %tag(&id), error = %crate::scrub::chain(&error), "failed to fetch avatar");
             }
         }
     }

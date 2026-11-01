@@ -20,6 +20,7 @@ harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json
 test-servers = ["b33p-core/test-servers"]
 
 [dependencies]
+thiserror.workspace = true
 b33p-core.workspace = true
 b33p-notify = { path = "../b33p-notify" }
 # Slint's defaults bring both the winit and the Qt backend; each platform picks one below.

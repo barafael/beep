@@ -30,10 +30,55 @@ use tracing::{info, warn};
 
 use crate::local::LocalStore;
 use crate::{
-    Error, Event, Events, HistoryTransfer,
-    import::{self, Importer, Stats},
+    ErrorKind, Event, Events, HistoryTransfer,
+    import::{self, ImportError, Importer, Stats},
     signal::Mgr,
 };
+
+/// What fails in receiving the message history from the phone.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TransferError {
+    #[error("Signal no longer accepts this device.")]
+    Unauthorized,
+    #[error("The phone did not send the message history within an hour.")]
+    TimedOut,
+    #[error("invalid archive location")]
+    Location { cdn: u32, source: ServiceError },
+    #[error("failed to download the message history")]
+    Download(#[source] reqwest::Error),
+    #[error(
+        "The message history is larger than {} MB, which no phone sends.",
+        MAX_ARCHIVE_BYTES / 1_000_000
+    )]
+    TooBig { size: u64 },
+    #[error("failed to keep the downloaded message history")]
+    Write(#[source] crate::vault::PrivateFileError),
+    #[error("failed to decrypt the message history")]
+    Decrypt(#[source] libsignal_message_backup::frame::ValidationError),
+    #[error("failed to read the message history")]
+    Read(#[source] std::io::Error),
+    #[error("failed to import the message history")]
+    Import(#[source] ImportError),
+    #[error("the message history failed its integrity check")]
+    Integrity(#[source] libsignal_message_backup::frame::VerifyHmacError),
+}
+
+impl crate::Classified for TransferError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            Self::TimedOut => ErrorKind::Unreachable,
+            Self::Download(error) => crate::signal::errors::http_kind(error),
+            Self::Write(_) => ErrorKind::Storage,
+            Self::Import(error) => error.kind(),
+            Self::Unauthorized
+            | Self::Location { .. }
+            | Self::TooBig { .. }
+            | Self::Decrypt(_)
+            | Self::Read(_)
+            | Self::Integrity(_) => ErrorKind::Refused,
+        }
+    }
+}
 
 /// Query parameter value that makes the phone offer "Transfer message history".
 pub(crate) const LINK_CAPABILITY: &str = "backup5";
@@ -66,7 +111,7 @@ pub(crate) async fn receive_history(
     dir: &Path,
     tables: &LocalStore,
     events: &Events,
-) -> Result<Outcome, Error> {
+) -> Result<Outcome, TransferError> {
     let path = dir.join("history-transfer.bin");
     // However this ends, even if the caller drops it midway (skip, quit), the archive goes.
     let _cleanup = RemoveOnDrop(path.clone());
@@ -84,8 +129,11 @@ pub(crate) async fn receive_history(
         loop {
             match download(manager, cdn, &cdn_key, &path).await {
                 Ok(()) => break,
-                Err(error) if error.retryable() && attempt < DOWNLOAD_ATTEMPTS => {
-                    warn!(error = %crate::scrub::scrubbed(&error), attempt, "failed to download the message history; retrying");
+                Err(error)
+                    if crate::Classified::kind(&error) == ErrorKind::Unreachable
+                        && attempt < DOWNLOAD_ATTEMPTS =>
+                {
+                    warn!(error = %crate::scrub::chain(&error), attempt, "failed to download the message history; retrying");
                     tokio::time::sleep(Duration::from_secs(5) * attempt).await;
                     attempt += 1;
                 }
@@ -108,7 +156,7 @@ impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         match std::fs::remove_file(&self.0) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => warn!(
-                error = %crate::scrub::scrubbed(&error),
+                error = %crate::scrub::chain(&error),
                 path = %crate::scrub::scrubbed(&self.0.display()),
                 "failed to remove the message history archive"
             ),
@@ -117,7 +165,7 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, Error> {
+async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, TransferError> {
     let started = Instant::now();
     info!("waiting for the primary device to upload the message history");
     let mut backoff = Duration::from_secs(1);
@@ -133,19 +181,17 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, Error> {
             }
             // The link itself is no good; waiting longer won't help.
             Err(PresageError::ServiceError(ServiceError::Unauthorized)) => {
-                return Err(Error::refused("Signal no longer accepts this device."));
+                return Err(TransferError::Unauthorized);
             }
             // A network hiccup shouldn't throw away the link: the archive may still come.
             Err(error) => {
-                warn!(error = %crate::scrub::scrubbed(&error), "failed to ask for the message history; retrying");
+                warn!(error = %crate::scrub::chain(&error), "failed to ask for the message history; retrying");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
     }
-    Err(Error::unreachable(
-        "The phone did not send the message history within an hour.",
-    ))
+    Err(TransferError::TimedOut)
 }
 
 /// How often the archive is downloaded before giving up.
@@ -153,14 +199,12 @@ const DOWNLOAD_ATTEMPTS: u32 = 3;
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
 /// Fails [`ErrorKind::Unreachable`](crate::ErrorKind::Unreachable) when trying again may work.
-async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result<(), Error> {
-    let too_big = || {
-        format!(
-            "The message history is larger than {} MB, which no phone sends.",
-            MAX_ARCHIVE_BYTES / 1_000_000
-        )
-    };
-
+async fn download(
+    manager: &Mgr,
+    cdn: u32,
+    cdn_key: &str,
+    path: &Path,
+) -> Result<(), TransferError> {
     let servers = manager.registration_data().signal_servers.clone();
     let mut response = crate::client::push_service(servers)
         .request(
@@ -168,41 +212,30 @@ async fn download(manager: &Mgr, cdn: u32, cdn_key: &str, path: &Path) -> Result
             Endpoint::cdn(cdn, format!("/attachments/{cdn_key}")),
             HttpAuthOverride::Unidentified,
         )
-        .map_err(|e| Error::refused(format!("invalid archive location: {e}")))?
+        .map_err(|source| TransferError::Location { cdn, source })?
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(crate::signal::errors::http(
-            "failed to download the message history",
-        ))?;
+        .map_err(TransferError::Download)?;
     // Refused before writing anything when the server says, and while writing otherwise, so a
     // misbehaving server can't fill the disk.
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
+    if let Some(size) = response.content_length()
+        && size > MAX_ARCHIVE_BYTES
     {
-        return Err(Error::refused(too_big()));
+        return Err(TransferError::TooBig { size });
     }
     // Private to the user and complete or absent: built under a temporary name.
-    let mut file = crate::vault::write_private_file(path)
-        .map_err(|e| Error::storage(format!("failed to create {}: {e}", path.display())))?;
+    let mut file = crate::vault::write_private_file(path).map_err(TransferError::Write)?;
     let mut size = 0u64;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| Error::unreachable(format!("failed to download the message history: {e}")))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(TransferError::Download)? {
         size += chunk.len() as u64;
         if size > MAX_ARCHIVE_BYTES {
-            return Err(Error::refused(too_big()));
+            return Err(TransferError::TooBig { size });
         }
-        file.write_all(&chunk)
-            .map_err(|e| Error::storage(format!("failed to write {}: {e}", path.display())))?;
+        file.write_all(&chunk).map_err(TransferError::Write)?;
     }
-    file.sync_all()
-        .map_err(|e| Error::storage(format!("failed to write {}: {e}", path.display())))?;
-    file.persist()
-        .map_err(|e| Error::storage(format!("failed to write {}: {e}", path.display())))?;
+    file.sync_all().map_err(TransferError::Write)?;
+    file.persist().map_err(TransferError::Write)?;
     info!(bytes = size, "history archive downloaded");
     Ok(())
 }
@@ -216,29 +249,27 @@ async fn import_archive<S: ContentsStore>(
     store: &mut S,
     tables: &LocalStore,
     events: &Events,
-) -> Result<Stats, Error>
+) -> Result<Stats, TransferError>
 where
-    S::ContentsStoreError: std::fmt::Display,
+    S::ContentsStoreError: std::error::Error + Send + Sync + 'static,
 {
     let key = message_backup_key(key, aci);
     let frames = FramesReader::new(&key, FileReaderFactory { path })
         .await
-        .map_err(|e| Error::refused(format!("failed to decrypt the message history: {e}")))?;
+        .map_err(TransferError::Decrypt)?;
     let mut reader = VarintDelimitedReader::new(frames);
     let mut importer = Importer::new(*aci, crate::now_millis());
     // The first frame is a `BackupInfo` (version and time), which we don't need.
     let mut info_frame = true;
     let mut reported = 0;
-    while let Some(frame) = reader
-        .read_next()
-        .await
-        .map_err(|e| Error::refused(format!("failed to read the message history: {e}")))?
-    {
+    while let Some(frame) = reader.read_next().await.map_err(TransferError::Read)? {
         if std::mem::take(&mut info_frame) {
             continue;
         }
-        for record in importer.frame(&frame).map_err(Error::refused)? {
-            import::store(store, tables, record).await?;
+        for record in importer.frame(&frame).map_err(TransferError::Import)? {
+            import::store(store, tables, record)
+                .await
+                .map_err(TransferError::Import)?;
         }
         let messages = importer.stats().messages;
         if messages >= reported + 500 {
@@ -249,19 +280,17 @@ where
         }
     }
     for record in importer.finish() {
-        import::store(store, tables, record).await?;
+        import::store(store, tables, record)
+            .await
+            .map_err(TransferError::Import)?;
     }
     // Drain any trailing bytes so the HMAC covers everything, then check it once more.
     let mut rest = reader.into_inner();
     let mut sink = Vec::new();
     rest.read_to_end(&mut sink)
         .await
-        .map_err(|e| Error::refused(format!("failed to read the message history: {e}")))?;
-    rest.verify_hmac().await.map_err(|e| {
-        Error::refused(format!(
-            "the message history failed its integrity check: {e}"
-        ))
-    })?;
+        .map_err(TransferError::Read)?;
+    rest.verify_hmac().await.map_err(TransferError::Integrity)?;
     Ok(importer.stats())
 }
 

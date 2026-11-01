@@ -30,7 +30,7 @@ pub fn set_up(window: &AppWindow, shared: &Rc<Shared>) {
                 return;
             }
             if let Err(error) = settings.save() {
-                tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "failed to save settings");
+                tracing::warn!(error = %b33p_core::scrub::chain(&error), "failed to save settings");
             }
             window
                 .global::<Emojis>()

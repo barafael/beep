@@ -11,7 +11,7 @@
 //! that joined a group again is held to what came after.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use b33p_harness::{
@@ -24,10 +24,9 @@ use super::b33p::{edit, select, story_shows};
 use super::rng::{self, Xorshift};
 use super::setup::{MeshB33p, MeshBox, started};
 use super::stress::{Sample, growing, no_panic, sample};
-use super::{Checks, PATIENCE, env_number};
+use super::{Checks, EnvNumberError, Failure, PATIENCE, env_number};
 use crate::Sockets;
-use crate::error::{Context, Error, Result};
-use crate::harness::Harness;
+use crate::harness::{Harness, HarnessError};
 use crate::pod::{Pod, Service};
 use crate::process;
 use testbox_tools::keys;
@@ -96,7 +95,7 @@ enum Kind {
 }
 
 /// Turns b33p's link previews on or off, as its settings switch does.
-fn link_previews(b33p: &mut Harness, on: bool) -> Result<()> {
+fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
         style: None,
@@ -126,7 +125,7 @@ fn search_term(text: &str) -> Option<&str> {
 }
 
 /// `TESTBOX_TOUR_REPEAT`, or 2.
-fn repeat() -> Result<usize> {
+fn repeat() -> Result<usize, EnvNumberError> {
     Ok(env_number("TESTBOX_TOUR_REPEAT")?.unwrap_or(2))
 }
 
@@ -481,6 +480,129 @@ const PICTURE: &str = "tour.png";
 const FILE: &str = "tour.txt";
 const AUDIO: &str = "tour.wav";
 
+/// What the tour itself finds wrong: with its box, with the model, or with what a b33p shows
+/// against the model.
+#[derive(Debug, thiserror::Error)]
+enum TourError {
+    #[error("copying {} to {}", from.display(), to.display())]
+    CopyPicture {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "the tour needs two b33ps at least (--b33ps), to write to each other; the box has {b33ps}"
+    )]
+    TooFewB33ps { b33ps: usize },
+    /// Kinds of step that never found what they need, past [`FILLERS`] fillers in a row.
+    #[error("{kinds:?} could never go; again with TESTBOX_SEED={seed}")]
+    Stuck { kinds: Vec<&'static str>, seed: u64 },
+    /// Not even a text could go ([`World::filler`]).
+    #[error("no chat to write in")]
+    NoChat,
+
+    /// A step acts on a message the model doesn't have.
+    #[error("no message of {ts} in {chat} in the model")]
+    NotInModel { chat: String, ts: u64 },
+    /// A step for a chat of two drawn on a group.
+    #[error("{chat} isn't a chat of two")]
+    NotAPair { chat: String },
+    /// A step for a group drawn on a chat of two.
+    #[error("{chat} isn't a group")]
+    NotAGroup { chat: String },
+    /// A message searched for whose text has no "tour <n>:" to search by ([`search_term`]).
+    #[error("no term to search for in {text:?}")]
+    NoSearchTerm { text: String },
+    /// A block needs a b33p besides the two of the chat, to write after the blocked message.
+    #[error("no third b33p besides {by} and {other}")]
+    NoThird { by: usize, other: usize },
+    #[error("no chat of {a} and {b} in the model")]
+    NoPair { a: usize, b: usize },
+
+    /// b33p's send went nowhere: what b33p-core's `can_compose` goes by, and the open chat's
+    /// request, blocked, left and accepted.
+    #[error(
+        "b33p {k} sent nothing for {text:?}: synced {synced}, staged {staged:?}, draft {draft:?}, \
+         the open chat {open:?}"
+    )]
+    NothingSent {
+        k: usize,
+        text: String,
+        synced: bool,
+        staged: Vec<String>,
+        draft: String,
+        open: Option<(String, bool, bool, bool, bool)>,
+    },
+    #[error("b33p {k} sent no sticker")]
+    NoSticker { k: usize },
+    /// A message of b33p's own the server didn't take.
+    #[error("b33p {k}'s message of {ts} {delivery:?}")]
+    NotDelivered {
+        k: usize,
+        ts: u64,
+        delivery: Delivery,
+    },
+    /// presage tried to build a preview for a link sent with link previews off.
+    #[error("b33p {k} logged {tries} tries at a preview, with link previews off")]
+    PreviewTried { k: usize, tries: usize },
+    #[error("b33p {by} shows the safety number {by_number}, b33p {other} {other_number}")]
+    SafetyNumbers {
+        by: usize,
+        other: usize,
+        by_number: String,
+        other_number: String,
+    },
+    #[error("no {id} in b33p {k}'s chat list")]
+    NotListed { k: usize, id: String },
+    /// A chat's messages on a b33p never came to be as the model has them: how they differ.
+    #[error(
+        "{chat} on b33p {k} isn't as the model has it:\n{}",
+        difference(expected, shown)
+    )]
+    Messages {
+        chat: String,
+        k: usize,
+        expected: Vec<Seen>,
+        /// What it showed last.
+        shown: Vec<Seen>,
+        #[source]
+        source: HarnessError,
+    },
+    #[error("b33p {k} shows the group {title:?} as a message request")]
+    GroupRequest {
+        k: usize,
+        title: String,
+        #[source]
+        source: HarnessError,
+    },
+    #[error(
+        "b33p {k} shows the group {shown:?} with the picture {avatar}, not {title:?} with {picture}"
+    )]
+    GroupShown {
+        k: usize,
+        title: String,
+        picture: bool,
+        shown: String,
+        avatar: bool,
+        #[source]
+        source: HarnessError,
+    },
+    /// A group's details on a b33p never came to be as the model has them: its members (by ACI,
+    /// whether admin) and description, and what the details showed last.
+    #[error(
+        "b33p {k}'s details of the group: wanted {wanted:?} and {description:?}, shown {shown:?}"
+    )]
+    Details {
+        k: usize,
+        wanted: BTreeMap<String, bool>,
+        description: Option<String>,
+        shown: Option<(BTreeMap<String, bool>, Option<String>)>,
+        #[source]
+        source: HarnessError,
+    },
+}
+
 pub(super) fn tour(
     checks: &mut Checks,
     mesh: &mut MeshBox<'_>,
@@ -488,17 +610,20 @@ pub(super) fn tour(
     sockets: &Sockets,
     files: &Path,
     picture: &Path,
-) -> Result<()> {
-    std::fs::copy(picture, files.join(PICTURE)).context(picture.display().to_string())?;
+) -> Result<(), Failure> {
+    let copy = files.join(PICTURE);
+    std::fs::copy(picture, &copy).map_err(|source| TourError::CopyPicture {
+        from: picture.to_owned(),
+        to: copy,
+        source,
+    })?;
     testbox_tools::write(&files.join(FILE), "testbox tour: a file\n")?;
     testbox_tools::write(&files.join(AUDIO), b33p_core::mock_voice_message())?;
     let seed = rng::seed()?;
     let repeat = repeat()?;
     let b33ps = mesh.b33ps.len();
     if b33ps < 2 {
-        return Err(Error::Failed(
-            "the tour needs two b33ps at least (--b33ps), to write to each other".to_owned(),
-        ));
+        return Err(TourError::TooFewB33ps { b33ps }.into());
     }
     println!(
         "  seed {seed}, each step {repeat} times, {b33ps} b33ps (TESTBOX_SEED, TESTBOX_TOUR_REPEAT)"
@@ -507,11 +632,10 @@ pub(super) fn tour(
     let mut tour = Tour::new(&mut mesh.b33ps, containers, sockets, seed);
     // Read receipts go once a chat shows, with the window focused.
     checks.require("every b33p's window counts as focused", || {
-        tour.b33ps.iter_mut().try_for_each(|each| {
-            each.b33p
-                .act(Action::SetWindowFocused { focused: true })
-                .map(drop)
-        })
+        for each in tour.b33ps.iter_mut() {
+            each.b33p.act(Action::SetWindowFocused { focused: true })?;
+        }
+        Ok(())
     })?;
     tour.sample_all()?;
 
@@ -536,13 +660,11 @@ pub(super) fn tour(
             None => {
                 fillers += 1;
                 if fillers > FILLERS {
-                    let stuck: Vec<&'static str> = left.iter().map(|&kind| kind.into()).collect();
+                    let kinds: Vec<&'static str> = left.iter().map(|&kind| kind.into()).collect();
                     tour.ended(checks, seed);
-                    return checks.require("every kind of step came up", || {
-                        Err(Error::Failed(format!(
-                            "{stuck:?} could never go; again with TESTBOX_SEED={seed}"
-                        )))
-                    });
+                    return Ok(checks.require("every kind of step came up", || {
+                        Err(TourError::Stuck { kinds, seed }.into())
+                    })?);
                 }
                 tour.world
                     .filler()
@@ -567,7 +689,7 @@ pub(super) fn tour(
         if outcome.is_err() {
             tour.ended(checks, seed);
             println!("  the tour ended at step {number}; again with TESTBOX_SEED={seed}");
-            return outcome;
+            return Ok(outcome?);
         }
         if tour.sampled.elapsed() >= SAMPLE_EVERY {
             tour.sample_all()
@@ -587,7 +709,7 @@ pub(super) fn tour(
         });
         checks.record(
             &format!("b33p {k}'s memory and open files didn't keep growing"),
-            || growing(&tour.samples[k]),
+            || Ok(growing(&tour.samples[k])?),
         );
     }
     tour.write(checks, seed);
@@ -680,7 +802,7 @@ impl World {
     /// A step that may let what is left go, drawn from those that can go now: someone leaves
     /// (to join again), is added (to be removed, made an admin, post a story), a group is made,
     /// or, failing all of that, a text.
-    fn filler(&mut self) -> Result<(Kind, Step)> {
+    fn filler(&mut self) -> Result<(Kind, Step), TourError> {
         let mut kinds = [Kind::Leave, Kind::AddMember, Kind::CreateGroup];
         for i in (1..kinds.len()).rev() {
             let j = self.below(i + 1);
@@ -690,7 +812,7 @@ impl World {
             .into_iter()
             .chain([Kind::Text])
             .find_map(|kind| Some((kind, self.plan(kind)?)))
-            .ok_or_else(|| Error::Failed("no chat to write in".to_owned()))
+            .ok_or(TourError::NoChat)
     }
 
     /// The threads `k` is a member of; chats of two only, or groups only.
@@ -1282,13 +1404,13 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// Opens `thread` in `k`'s b33p.
-    fn open(&mut self, k: usize, thread: usize) -> Result<()> {
+    fn open(&mut self, k: usize, thread: usize) -> Result<(), Failure> {
         let id = self.world.threads[thread].id_on(k, self.b33ps);
-        select(self.harness(k), &id)
+        Ok(select(self.harness(k), &id)?)
     }
 
     /// The index `k`'s b33p shows the message `ts` at, in the open chat.
-    fn index(&mut self, k: usize, ts: u64) -> Result<u32> {
+    fn index(&mut self, k: usize, ts: u64) -> Result<u32, HarnessError> {
         self.harness(k)
             .wait_for(&format!("the message of {ts}"), PATIENCE, |snapshot| {
                 snapshot
@@ -1301,7 +1423,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
     /// Sends what is in `k`'s composer to its open chat, and waits until the server took it; its
     /// timestamp.
-    fn send(&mut self, k: usize, text: &str) -> Result<u64> {
+    fn send(&mut self, k: usize, text: &str) -> Result<u64, Failure> {
         let before = now_ms();
         let b33p = self.harness(k);
         b33p.act(Action::Type {
@@ -1314,20 +1436,23 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 .conversations
                 .iter()
                 .find(|chat| Some(&chat.id) == snapshot.selected.as_ref());
-            return Err(Error::Failed(format!(
-                "b33p {k} sent nothing for {text:?}: synced {}, staged {:?}, draft {:?}, the \
-                 open chat {:?}",
-                snapshot.synced,
-                snapshot.staged,
-                snapshot.draft,
-                chat.map(|chat| (
-                    &chat.id,
-                    chat.request,
-                    chat.blocked,
-                    chat.left,
-                    chat.accepted
-                )),
-            )));
+            return Err(TourError::NothingSent {
+                k,
+                text: text.to_owned(),
+                synced: snapshot.synced,
+                staged: snapshot.staged.clone(),
+                draft: snapshot.draft.clone(),
+                open: chat.map(|chat| {
+                    (
+                        chat.id.clone(),
+                        chat.request,
+                        chat.blocked,
+                        chat.left,
+                        chat.accepted,
+                    )
+                }),
+            }
+            .into());
         }
         sent_since(b33p, k, before)
     }
@@ -1353,15 +1478,17 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         &mut messages[last]
     }
 
-    fn message(&mut self, thread: usize, ts: u64) -> Result<&mut Expected> {
-        self.world.threads[thread]
+    fn message(&mut self, thread: usize, ts: u64) -> Result<&mut Expected, TourError> {
+        let thread = &mut self.world.threads[thread];
+        let chat = thread.name();
+        thread
             .messages
             .iter_mut()
             .find(|message| message.ts == ts)
-            .ok_or_else(|| Error::Failed(format!("no message of {ts} in the model")))
+            .ok_or(TourError::NotInModel { chat, ts })
     }
 
-    fn perform(&mut self, step: &Step) -> Result<()> {
+    fn perform(&mut self, step: &Step) -> Result<(), Failure> {
         match step.clone() {
             Step::Text { by, thread, text } => {
                 self.open(by, thread)?;
@@ -1497,7 +1624,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     text: String::new(),
                 })?;
                 shown?;
-                typing(self.harness(other), &id, false)
+                Ok(typing(self.harness(other), &id, false)?)
             }
             Step::ReadReceipt {
                 by,
@@ -1507,7 +1634,8 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 let other = self.other(thread, by)?;
                 self.open(other, thread)?;
                 self.open(by, thread)?;
-                self.harness(by)
+                Ok(self
+                    .harness(by)
                     .wait_for("the message read", PATIENCE, |snapshot| {
                         snapshot
                             .messages
@@ -1515,7 +1643,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                             .find(|m| m.timestamp == message)
                             .filter(|m| m.delivery == Some(Delivery::Read))
                             .map(drop)
-                    })
+                    })?)
             }
             Step::Disappearing { by, thread, text } => self.disappearing(by, thread, &text),
             Step::ChatState { by, thread } => self.chat_state(by, thread),
@@ -1651,7 +1779,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 // `fetch_link_previews`); without egress every try fails, and says so.
                 const TRIED: &str = "failed to build link preview";
                 let service = Service::B33p(self.b33ps[by].n);
-                let tries = |tour: &Self| -> Result<usize> {
+                let tries = |tour: &Self| -> Result<usize, Failure> {
                     Ok(tour.containers.log(service)?.matches(TRIED).count())
                 };
                 let before = tries(self)?;
@@ -1662,19 +1790,20 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 self.converge_timed(thread, by, started)?;
                 match tries(self)?.saturating_sub(before) {
                     0 => Ok(()),
-                    tried => Err(Error::Failed(format!(
-                        "b33p {by} logged {tried} tries at a preview, with link previews off"
-                    ))),
+                    tries => Err(TourError::PreviewTried { k: by, tries }.into()),
                 }
             }
         }
     }
 
     /// The other b33p of a chat of two.
-    fn other(&self, thread: usize, k: usize) -> Result<usize> {
-        match self.world.threads[thread].pair {
+    fn other(&self, thread: usize, k: usize) -> Result<usize, TourError> {
+        let thread = &self.world.threads[thread];
+        match thread.pair {
             Some((a, b)) => Ok(if k == a { b } else { a }),
-            None => Err("not a chat of two".into()),
+            None => Err(TourError::NotAPair {
+                chat: thread.name(),
+            }),
         }
     }
 
@@ -1687,7 +1816,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// `k` is no longer in `thread`: its b33p says it left.
-    fn leaves(&mut self, thread: usize, k: usize) -> Result<()> {
+    fn leaves(&mut self, thread: usize, k: usize) -> Result<(), HarnessError> {
         let group = &mut self.world.threads[thread];
         group.members.remove(&k);
         group.admins.remove(&k);
@@ -1704,7 +1833,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
     /// [`Self::converge`], with how long the message from `by` took to show on each of the others,
     /// from `started`, noted.
-    fn converge_timed(&mut self, thread: usize, by: usize, started: Instant) -> Result<()> {
+    fn converge_timed(
+        &mut self,
+        thread: usize,
+        by: usize,
+        started: Instant,
+    ) -> Result<(), Failure> {
         let members: Vec<usize> = self.world.threads[thread].members.iter().copied().collect();
         for k in members.iter().copied().filter(|&k| k != by) {
             self.converge_one(thread, k)?;
@@ -1714,7 +1848,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// Waits until every member of `thread` shows it as the model has it.
-    fn converge(&mut self, thread: usize) -> Result<()> {
+    fn converge(&mut self, thread: usize) -> Result<(), Failure> {
         let members: Vec<usize> = self.world.threads[thread].members.iter().copied().collect();
         members
             .into_iter()
@@ -1722,7 +1856,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// [`Self::converge`], and a group's title, picture and members as the model has them.
-    fn converge_all(&mut self, thread: usize) -> Result<()> {
+    fn converge_all(&mut self, thread: usize) -> Result<(), Failure> {
         self.converge(thread)?;
         if self.world.threads[thread].group.is_some() {
             self.converge_group(thread)?;
@@ -1731,7 +1865,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         Ok(())
     }
 
-    fn converge_one(&mut self, thread: usize, k: usize) -> Result<()> {
+    fn converge_one(&mut self, thread: usize, k: usize) -> Result<(), Failure> {
         self.open(k, thread)?;
         let expected = self.world.threads[thread].expected(k);
         let since = self.world.threads[thread]
@@ -1750,13 +1884,20 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 (last == expected).then_some(())
             },
         );
-        outcome.map_err(|error| Error::Failed(format!("{error}\n{}", difference(&expected, &last))))
+        outcome.map_err(|source| TourError::Messages {
+            chat: name,
+            k,
+            expected,
+            shown: last,
+            source,
+        })?;
+        Ok(())
     }
 
     /// Waits until every member of the group `thread` lists it with its title and picture, and not
     /// as a message request: whoever brought them in is a b33p they accepted, or themselves
     /// (Signal-Desktop's `isConversationAccepted`).
-    fn converge_group(&mut self, thread: usize) -> Result<()> {
+    fn converge_group(&mut self, thread: usize) -> Result<(), Failure> {
         let members: Vec<usize> = self.world.threads[thread].members.iter().copied().collect();
         for k in members {
             let group = &self.world.threads[thread];
@@ -1775,14 +1916,21 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                     (chat.title == title && chat.avatar == picture && !chat.request).then_some(())
                 },
             );
-            shown.map_err(|error| match last {
-                Some((_, _, true)) => Error::Failed(format!(
-                    "{error}\nb33p {k} shows the group as a message request"
-                )),
-                Some((shown, avatar, false)) => Error::Failed(format!(
-                    "{error}\nb33p {k} shows {shown:?} with the picture {avatar}"
-                )),
-                None => error,
+            shown.map_err(|source| -> Failure {
+                match last {
+                    Some((_, _, true)) => TourError::GroupRequest { k, title, source }.into(),
+                    Some((shown, avatar, false)) => TourError::GroupShown {
+                        k,
+                        title,
+                        picture,
+                        shown,
+                        avatar,
+                        source,
+                    }
+                    .into(),
+                    // Not listed at all, or only as left.
+                    None => source.into(),
+                }
             })?;
         }
         Ok(())
@@ -1790,7 +1938,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
     /// Waits until every member of the group `thread` shows its members, admins and description
     /// as the model has them, in its details.
-    fn converge_details(&mut self, thread: usize) -> Result<()> {
+    fn converge_details(&mut self, thread: usize) -> Result<(), Failure> {
         let group = &self.world.threads[thread];
         let wanted: BTreeMap<String, bool> = group
             .members
@@ -1822,19 +1970,21 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 },
             );
             b33p.act(Action::CloseDetails)?;
-            shown.map_err(|error| {
-                Error::Failed(format!(
-                    "{error}\nwanted {wanted:?} and {description:?}, shown {last:?}"
-                ))
+            shown.map_err(|source| TourError::Details {
+                k,
+                wanted: wanted.clone(),
+                description: description.clone(),
+                shown: last,
+                source,
             })?;
         }
         Ok(())
     }
 
     /// A timer set in a chat of two, a message sent with it gone from both sides, the timer off.
-    fn disappearing(&mut self, by: usize, thread: usize, text: &str) -> Result<()> {
+    fn disappearing(&mut self, by: usize, thread: usize, text: &str) -> Result<(), Failure> {
         let other = self.other(thread, by)?;
-        let timer = |tour: &mut Self, seconds: u32| -> Result<()> {
+        let timer = |tour: &mut Self, seconds: u32| -> Result<(), Failure> {
             let id = tour.world.threads[thread].id_on(by, tour.b33ps);
             tour.harness(by).act(Action::SetTimer {
                 conversation: id,
@@ -1872,7 +2022,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// Pins, mutes and marks unread `thread` on `by`'s b33p, then archives it, and undoes all.
-    fn chat_state(&mut self, by: usize, thread: usize) -> Result<()> {
+    fn chat_state(&mut self, by: usize, thread: usize) -> Result<(), Failure> {
         let id = self.world.threads[thread].id_on(by, self.b33ps);
         let b33p = self.harness(by);
         let chat =
@@ -1934,7 +2084,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
     /// Searches `by`'s chat list for `thread`'s title as it shows it: it is among what is found,
     /// and all of that has it.
-    fn search(&mut self, by: usize, thread: usize) -> Result<()> {
+    fn search(&mut self, by: usize, thread: usize) -> Result<(), Failure> {
         let id = self.world.threads[thread].id_on(by, self.b33ps);
         let b33p = self.harness(by);
         let title = b33p
@@ -1943,7 +2093,10 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             .into_iter()
             .find(|chat| chat.id == id)
             .map(|chat| chat.title)
-            .ok_or_else(|| Error::Failed(format!("no {id} in the chat list")))?;
+            .ok_or_else(|| TourError::NotListed {
+                k: by,
+                id: id.clone(),
+            })?;
         b33p.act(Action::Search {
             text: title.clone(),
         })?;
@@ -1964,14 +2117,14 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// `by` sends a sticker to `thread`; every other member shows it.
-    fn sticker(&mut self, by: usize, thread: usize) -> Result<()> {
+    fn sticker(&mut self, by: usize, thread: usize) -> Result<(), Failure> {
         let (pack, sticker) = self.sticker_pack(by)?;
         self.open(by, thread)?;
         let before = now_ms();
         let started = Instant::now();
         let b33p = self.harness(by);
         if !b33p.act(Action::SendSticker { pack, sticker })? {
-            return Err(Error::Failed(format!("b33p {by} sent no sticker")));
+            return Err(TourError::NoSticker { k: by }.into());
         }
         let ts = sent_since(b33p, by, before)?;
         self.add(thread, by, ts, "").attachments = vec![AttachmentKind::Sticker];
@@ -1982,7 +2135,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     /// on CDN0 and installed on the primary, and b33p's picker shows it, as in the attachments
     /// phase (checks/attachments.rs): the primary takes in what waits for it first, and the pack
     /// is b33p's once it fetched the last sticker, after the tool did.
-    fn sticker_pack(&mut self, k: usize) -> Result<(String, u32)> {
+    fn sticker_pack(&mut self, k: usize) -> Result<(String, u32), Failure> {
         if let Some(installed) = &self.stickers[k] {
             return Ok(installed.clone());
         }
@@ -2021,14 +2174,19 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     /// `by` searches `thread` for `message` by the start of its text ("tour 12:"), which no
     /// other message has; the results hold it, and every result has the term. The first is
     /// shown, which closes the search.
-    fn chat_search(&mut self, by: usize, thread: usize, message: u64) -> Result<()> {
+    fn chat_search(&mut self, by: usize, thread: usize, message: u64) -> Result<(), Failure> {
         let text = self.world.threads[thread]
             .messages
             .iter()
             .find(|m| m.ts == message)
             .map(|m| m.text.clone())
-            .ok_or("the message searched for")?;
-        let term = search_term(&text).ok_or("a term to search for")?.to_owned();
+            .ok_or_else(|| TourError::NotInModel {
+                chat: self.world.threads[thread].name(),
+                ts: message,
+            })?;
+        let term = search_term(&text)
+            .ok_or_else(|| TourError::NoSearchTerm { text: text.clone() })?
+            .to_owned();
         self.open(by, thread)?;
         let b33p = self.harness(by);
         b33p.act(Action::OpenChatSearch)?;
@@ -2044,17 +2202,18 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         });
         if found.is_err() {
             b33p.act(Action::CloseChatSearch)?;
-            return found;
+            return Ok(found?);
         }
         b33p.act(Action::ShowResult { index: 0 })?;
         b33p.wait_for("the search closed", PATIENCE, |snapshot| {
             snapshot.chat_search.is_none().then_some(())
-        })
+        })?;
+        Ok(())
     }
 
     /// `by` and the other of `thread` show the same safety number on the chat's details; `by`
     /// marks it verified, and then not, as it was.
-    fn verify(&mut self, by: usize, thread: usize) -> Result<()> {
+    fn verify(&mut self, by: usize, thread: usize) -> Result<(), Failure> {
         let other = self.other(thread, by)?;
         let mut numbers = Vec::new();
         for k in [by, other] {
@@ -2073,10 +2232,13 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         }
         if numbers[0] != numbers[1] {
             self.harness(by).act(Action::CloseDetails)?;
-            return Err(Error::Failed(format!(
-                "b33p {by} shows the safety number {}, b33p {other} {}",
-                numbers[0], numbers[1]
-            )));
+            return Err(TourError::SafetyNumbers {
+                by,
+                other,
+                by_number: numbers[0].clone(),
+                other_number: numbers[1].clone(),
+            }
+            .into());
         }
         let id = self.world.threads[thread].id_on(by, self.b33ps);
         let b33p = self.harness(by);
@@ -2091,7 +2253,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             });
             if marked.is_err() {
                 b33p.act(Action::CloseDetails)?;
-                return marked;
+                return Ok(marked?);
             }
         }
         b33p.act(Action::CloseDetails)?;
@@ -2101,7 +2263,13 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     /// `by` turns link previews on, sends `text`, which links to the box's page `page`, and turns
     /// them off again (b33p's default, which the other steps go by): every member shows the
     /// page's title and picture as the preview.
-    fn link_preview(&mut self, by: usize, thread: usize, text: &str, page: u32) -> Result<()> {
+    fn link_preview(
+        &mut self,
+        by: usize,
+        thread: usize,
+        text: &str,
+        page: u32,
+    ) -> Result<(), Failure> {
         link_previews(self.harness(by), true)?;
         self.open(by, thread)?;
         let started = Instant::now();
@@ -2115,10 +2283,16 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
     /// `by` blocks the other of `thread`, which writes `blocked_text`; `by` unblocks it, and it
     /// writes `text`: `by` shows only the second.
-    fn block(&mut self, by: usize, thread: usize, blocked_text: &str, text: &str) -> Result<()> {
+    fn block(
+        &mut self,
+        by: usize,
+        thread: usize,
+        blocked_text: &str,
+        text: &str,
+    ) -> Result<(), Failure> {
         let other = self.other(thread, by)?;
         let id = self.world.threads[thread].id_on(by, self.b33ps);
-        let blocked = |tour: &mut Self, blocked: bool| -> Result<()> {
+        let blocked = |tour: &mut Self, blocked: bool| -> Result<(), Failure> {
             let b33p = tour.harness(by);
             b33p.act(Action::Block {
                 conversation: id.clone(),
@@ -2142,7 +2316,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 snapshot.details.as_ref().map(drop)
             });
             b33p.act(Action::CloseDetails)?;
-            loaded
+            Ok(loaded?)
         };
         blocked(self, true)?;
         self.open(other, thread)?;
@@ -2154,13 +2328,16 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         // `by` shows that, it has dealt with the blocked one.
         let third = (0..self.b33ps.len())
             .find(|&k| k != by && k != other)
-            .ok_or("a third b33p")?;
+            .ok_or(TourError::NoThird { by, other })?;
         let beside = self
             .world
             .threads
             .iter()
             .position(|t| t.pair == Some((by.min(third), by.max(third))))
-            .ok_or("the chat of the third b33p")?;
+            .ok_or(TourError::NoPair {
+                a: by.min(third),
+                b: by.max(third),
+            })?;
         // Not drawn: a seed then replays what came after as it did before the step had it.
         self.world.texts += 1;
         let marker = format!(
@@ -2178,7 +2355,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         self.converge_timed(thread, other, started)
     }
 
-    fn create_group(&mut self, by: usize, members: &[usize], title: &str) -> Result<()> {
+    fn create_group(&mut self, by: usize, members: &[usize], title: &str) -> Result<(), Failure> {
         let chats: Vec<String> = members.iter().map(|&k| self.b33ps[k].chat()).collect();
         let b33p = self.harness(by);
         b33p.act(Action::CreateGroup {
@@ -2219,7 +2396,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         thread: usize,
         admin: usize,
         approval: bool,
-    ) -> Result<()> {
+    ) -> Result<(), Failure> {
         let aci = self.world.acis[by].clone();
         let title = self.world.threads[thread].title.clone();
         let access = if approval {
@@ -2315,20 +2492,18 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     }
 
     /// `by` posts a text story to the group `thread`; every other member shows it.
-    fn story(&mut self, by: usize, thread: usize, text: &str) -> Result<()> {
-        let group = self.world.threads[thread]
-            .group
-            .clone()
-            .ok_or("a story to a chat of two")?;
+    fn story(&mut self, by: usize, thread: usize, text: &str) -> Result<(), Failure> {
+        let group =
+            self.world.threads[thread]
+                .group
+                .clone()
+                .ok_or_else(|| TourError::NotAGroup {
+                    chat: self.world.threads[thread].name(),
+                })?;
         self.harness(by).act(Action::PostStoryText {
-            group,
+            group: group.clone(),
             text: text.to_owned(),
         })?;
-        // b33p files a group's stories under the group (b33p-core `stories::on_story`).
-        let author = self.world.threads[thread]
-            .group
-            .clone()
-            .ok_or("a story to a chat of two")?;
         let others: Vec<usize> = self.world.threads[thread]
             .members
             .iter()
@@ -2336,13 +2511,14 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             .filter(|&k| k != by)
             .collect();
         for k in others {
-            story_shows(self.harness(k), &author, text)?;
+            // b33p files a group's stories under the group (b33p-core `stories::on_story`).
+            story_shows(self.harness(k), &group, text)?;
         }
         Ok(())
     }
 
     /// Kills `by`'s b33p, starts it again, and checks every chat it is in.
-    fn restart(&mut self, by: usize) -> Result<()> {
+    fn restart(&mut self, by: usize) -> Result<(), Failure> {
         let n = self.b33ps[by].n;
         let service = Service::B33p(n);
         let killed = Instant::now();
@@ -2360,7 +2536,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             .try_for_each(|thread| self.converge_one(thread, by))
     }
 
-    fn sample_all(&mut self) -> Result<()> {
+    fn sample_all(&mut self) -> Result<(), Failure> {
         let at = self.started.elapsed().as_secs_f64();
         for k in 0..self.b33ps.len() {
             let service = Service::B33p(self.b33ps[k].n);
@@ -2375,13 +2551,12 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     /// What each b33p shows now, as `b33p-<k>.json` in the record: what a failed step left.
     fn keep_snapshots(&mut self, checks: &mut Checks) {
         for k in 0..self.b33ps.len() {
-            let snapshot = self.harness(k).snapshot().and_then(|snapshot| {
-                serde_json::to_string_pretty(&snapshot).context("b33p's snapshot")
-            });
-            checks.kept.write(
-                &format!("b33p-{k}.json"),
-                &snapshot.unwrap_or_else(|error| error.to_string()),
-            );
+            let kept = match self.harness(k).snapshot() {
+                Ok(snapshot) => serde_json::to_string_pretty(&snapshot)
+                    .unwrap_or_else(|error| format!("encoding b33p's snapshot: {error}")),
+                Err(error) => testbox_tools::Report(&error).to_string(),
+            };
+            checks.kept.write(&format!("b33p-{k}.json"), &kept);
         }
     }
 
@@ -2459,7 +2634,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
 
 /// Waits for `k`'s newest message of its own in its open chat, sent at `before` or later, to
 /// leave "sending"; its timestamp. Fails if it failed.
-fn sent_since(b33p: &mut Harness, k: usize, before: u64) -> Result<u64> {
+fn sent_since(b33p: &mut Harness, k: usize, before: u64) -> Result<u64, Failure> {
     let (ts, delivery) = b33p.wait_for(
         &format!("the server taking b33p {k}'s message"),
         PATIENCE,
@@ -2474,15 +2649,15 @@ fn sent_since(b33p: &mut Harness, k: usize, before: u64) -> Result<u64> {
         },
     )?;
     match delivery {
-        Delivery::Failed | Delivery::Refused => Err(Error::Failed(format!(
-            "b33p {k}'s message of {ts} {delivery:?}"
-        ))),
+        Delivery::Failed | Delivery::Refused => {
+            Err(TourError::NotDelivered { k, ts, delivery }.into())
+        }
         _ => Ok(ts),
     }
 }
 
 /// Waits until `b33p` shows someone typing in the chat `id`, or no one.
-fn typing(b33p: &mut Harness, id: &str, someone: bool) -> Result<()> {
+fn typing(b33p: &mut Harness, id: &str, someone: bool) -> Result<(), HarnessError> {
     b33p.wait_for(
         &format!("typing {someone} in the chat"),
         PATIENCE,

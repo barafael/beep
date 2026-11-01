@@ -42,7 +42,7 @@ pub fn claim(mock: bool) -> Claim {
         }),
         Ok(None) => Claim::Second,
         Err(error) => {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't tell whether b33p is already running");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "can't tell whether b33p is already running");
             Claim::Unchecked
         }
     }
@@ -122,7 +122,7 @@ mod platform {
             Err(zbus::Error::NameTaken) => {
                 // It is running either way; if it doesn't answer, a second copy still mustn't.
                 if let Err(error) = activate_running(id) {
-                    tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "b33p is already running but didn't answer");
+                    tracing::warn!(error = %b33p_core::scrub::chain(&error), "b33p is already running but didn't answer");
                 }
                 Ok(None)
             }
@@ -205,7 +205,7 @@ mod platform {
             .spawn(move || serve(HANDLE(pipe as _), activations));
         if let Err(error) = spawned {
             // The pipe stays open, so it still keeps other copies out; they just can't show this one.
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "later starts can't show b33p");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "later starts can't show b33p");
         }
         Ok(Some(()))
     }
@@ -218,7 +218,7 @@ mod platform {
                 // Connected between creating the pipe and waiting on it.
                 Err(error) if error.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
                 Err(error) => {
-                    tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "later starts can't show b33p");
+                    tracing::warn!(error = %b33p_core::scrub::chain(&error), "later starts can't show b33p");
                     return;
                 }
             }
@@ -227,7 +227,7 @@ mod platform {
             }
             // Still connected, the pipe would take no one else.
             if let Err(error) = unsafe { DisconnectNamedPipe(pipe) } {
-                tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "later starts can't show b33p");
+                tracing::warn!(error = %b33p_core::scrub::chain(&error), "later starts can't show b33p");
                 return;
             }
         }
@@ -250,7 +250,7 @@ mod platform {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "b33p is already running but didn't answer");
+                    tracing::warn!(error = %b33p_core::scrub::chain(&error), "b33p is already running but didn't answer");
                     return;
                 }
             }

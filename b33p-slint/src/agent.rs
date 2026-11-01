@@ -64,13 +64,13 @@ pub fn start(shared: &Rc<Shared>) {
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't open the agent socket");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't open the agent socket");
             return;
         }
     };
     // Connect needs write permission on the file; nobody but the owner gets any, or no harness.
     if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't make the agent socket the owner's only");
+        tracing::warn!(error = %b33p_core::scrub::chain(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't make the agent socket the owner's only");
         return;
     }
 
@@ -85,7 +85,7 @@ pub fn start(shared: &Rc<Shared>) {
             remove_socket(&path);
         });
     if let Err(error) = spawned {
-        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't start the agent listener");
+        tracing::warn!(error = %b33p_core::scrub::chain(&error), "can't start the agent listener");
         return;
     }
     tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "{}", b33p_harness::LISTENING);
@@ -95,7 +95,7 @@ pub fn start(shared: &Rc<Shared>) {
 fn remove_socket(path: &std::path::Path) {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => tracing::warn!(
-            error = %b33p_core::scrub::scrubbed(&error),
+            error = %b33p_core::scrub::chain(&error),
             path = %b33p_core::scrub::scrubbed(&path.display()),
             "can't remove the agent socket"
         ),
@@ -134,7 +134,7 @@ fn accept(listener: UnixListener, jobs: async_channel::Sender<Job>) {
             });
         // The connection is dropped then: without its threads, nobody would answer it.
         if let Err(error) = spawned {
-            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't serve an agent connection");
+            tracing::warn!(error = %b33p_core::scrub::chain(&error), "can't serve an agent connection");
         }
     }
 }
@@ -221,9 +221,18 @@ struct RequestId {
     id: u64,
 }
 
+/// Why a request couldn't be answered; the reply says it, causes and all.
+#[derive(Debug, thiserror::Error)]
+enum AgentError {
+    #[error("there is no window")]
+    NoWindow,
+    #[error(transparent)]
+    Window(#[from] crate::ui::HarnessError),
+}
+
 /// Writes the window, as drawn, to `path`.
-fn screenshot(shared: &Shared, path: &str) -> Result<Shot, String> {
-    let window = shared.ui().ok_or("there is no window")?;
+fn screenshot(shared: &Shared, path: &str) -> Result<Shot, AgentError> {
+    let window = shared.ui().ok_or(AgentError::NoWindow)?;
     // What is pending is drawn first, as the person would see it.
     shared.flush();
     let (width, height) = window.screenshot(std::path::Path::new(path))?;
@@ -267,10 +276,13 @@ fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Reque
     }
 }
 
-fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, String>) {
+fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, AgentError>) {
     let reply_line = Reply {
         id,
-        outcome: result.into(),
+        outcome: match result {
+            Ok(found) => Outcome::Ok(found),
+            Err(error) => Outcome::Err(b33p_core::Chain(&error).to_string()),
+        },
     };
     let line = serde_json::to_string(&reply_line).expect("replies always serialize");
     // Nobody to tell if the connection is gone.
@@ -278,13 +290,13 @@ fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, String>) {
 }
 
 /// The app's window, which exists before the agent starts (main.rs).
-fn window(shared: &Shared) -> Result<Rc<crate::ui::Window>, String> {
-    shared.ui().ok_or_else(|| "the window is gone".to_owned())
+fn window(shared: &Shared) -> Result<Rc<crate::ui::Window>, AgentError> {
+    shared.ui().ok_or(AgentError::NoWindow)
 }
 
 /// Carries `action` out the way the window's own handler does, and reports whether it sent a
 /// command to the backend.
-fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
+fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
     Ok(match action {
         Action::Select { conversation } => shared.act(|chat| {
             let command = chat.select(&ConversationId(conversation));
@@ -678,13 +690,13 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, String> {
         }),
         Action::RenameDevice { name } => shared.rename_device(&name),
         Action::Show { what, open } => {
-            let window = shared.ui().ok_or("there is no window")?;
+            let window = window(shared)?;
             window.show_part(&what, open, &shared.chat.borrow())?;
             shared.refresh(Update::default());
             false
         }
         Action::Resize { width, height } => {
-            let window = shared.ui().ok_or("there is no window")?;
+            let window = window(shared)?;
             window.resize(width, height);
             false
         }
@@ -854,13 +866,13 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                         state::AttachmentState::Loading => Download::Loading,
                         state::AttachmentState::Ready(_) => Download::Ready,
                         state::AttachmentState::Failed(error) => {
-                            Download::Failed(error.message.clone())
+                            Download::Failed(error.to_string())
                         }
                     }),
                     saved: chat.saved(&attachment.id).map(|state| match state {
                         state::SaveState::Saving => Saved::Saving,
                         state::SaveState::Saved(path) => Saved::Saved(path.display().to_string()),
-                        state::SaveState::Failed(error) => Saved::Failed(error.message.clone()),
+                        state::SaveState::Failed(error) => Saved::Failed(error.to_string()),
                     }),
                 })
                 .collect(),
@@ -903,7 +915,7 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
         },
         account: chat.account().to_string(),
         synced: chat.synced(),
-        error: chat.error().map(str::to_string),
+        error: chat.error(),
         can_retry_error: chat.can_retry_error(),
         unread_total: chat.unread_total(),
         window: window.map(|window| WindowSnapshot {

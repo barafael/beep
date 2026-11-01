@@ -1,13 +1,11 @@
-//! What the testbox's programs share: failures typed, with what was being done; running commands
+//! What the testbox's programs share: reporting a failure with its causes; running commands
 //! ([`process`]); the drivers' protocol ([`drivers`]), the keys ([`keys`]) and the form of a
 //! decoded connection ([`connections`]), which the xtask uses too.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
-use std::path::Path;
-
-use derive_more::{Display, Error};
+use std::path::{Path, PathBuf};
 
 pub mod agent;
 #[cfg(feature = "android")]
@@ -71,131 +69,102 @@ pub fn preview_title(n: u32) -> String {
 /// What the `storage` tool logs once storage-service serves on its tables.
 pub const STORAGE_READY: &str = "storage: storage-service serves";
 
-#[derive(Debug, Display, Error)]
-pub enum Error {
-    /// I/O while doing `what`.
-    #[display("{what}: {source}")]
-    Io {
-        what: String,
+/// An error with its causes after it, each after a colon: what a tool or the xtask prints when
+/// it reports a failure, as an error's own message names only its step.
+pub struct Report<'error>(pub &'error dyn std::error::Error);
+
+impl std::fmt::Display for Report<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)?;
+        let mut cause = self.0.source();
+        while let Some(error) = cause {
+            write!(formatter, ": {error}")?;
+            cause = error.source();
+        }
+        Ok(())
+    }
+}
+
+/// The tool was given more than its one argument.
+#[derive(Debug, thiserror::Error)]
+#[error("usage: {usage}")]
+pub struct UsageError {
+    pub usage: String,
+}
+
+/// An environment variable the program needs, unset or not Unicode.
+#[derive(Debug, thiserror::Error)]
+#[error("the environment variable {name}")]
+pub struct EnvError {
+    pub name: String,
+    #[source]
+    pub source: std::env::VarError,
+}
+
+/// A file the tools read, write or remove whole ([`read`], [`write`], [`remove_if_present`]).
+#[derive(Debug, thiserror::Error)]
+pub enum FileError {
+    #[error("reading {}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
         source: std::io::Error,
     },
-    /// JSON that didn't parse or serialize: a line of a harness or driver, a file of the keys.
-    #[display("{what}: {source}")]
-    Json {
-        what: String,
-        source: serde_json::Error,
+    #[error("writing {}", path.display())]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
-    /// Another format's failure, or a client's; their error types differ, so their message is
-    /// what is kept.
-    #[display("{what}: {source}")]
-    Format {
-        what: String,
-        #[error(not(source))]
-        source: String,
+    #[error("removing {}", path.display())]
+    Remove {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
-    /// An environment variable the program needs, unset or not Unicode.
-    #[display("{name}: {source}")]
-    Env {
-        name: String,
-        source: std::env::VarError,
+}
+
+/// A socket of the box's that [`box_socket`] refuses to connect to.
+#[derive(Debug, thiserror::Error)]
+pub enum SocketError {
+    #[error("{} has no directory", socket.display())]
+    NoDirectory { socket: PathBuf },
+    /// Its directory's owner or the socket's own kind and owner, unreadable.
+    #[error("looking at {}", path.display())]
+    Metadata {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
-    /// A command that failed, with what it printed.
-    #[display("{command} failed{output}")]
-    Command {
-        command: String,
-        #[error(not(source))]
-        output: String,
+    /// Something else than a socket, or one another user owns: maybe a link planted there.
+    #[error("{} is not a socket of the box's (a {file_type} of uid {uid}, the directory's {owner})", socket.display())]
+    NotTheBoxs {
+        socket: PathBuf,
+        file_type: String,
+        uid: u32,
+        owner: u32,
     },
-    /// A check others depend on failed, and was reported as it failed (the xtask's
-    /// `Checks::require`).
-    #[display("{_0} failed")]
-    Unmet(#[error(not(source))] String),
-    /// The rest: a refused request, a wait that timed out, a state that isn't as expected.
-    #[display("{_0}")]
-    Failed(#[error(not(source))] String),
-}
-
-impl From<&str> for Error {
-    fn from(failure: &str) -> Self {
-        Self::Failed(failure.to_owned())
-    }
-}
-
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-/// Says what was being done when an I/O or JSON error came up.
-pub trait Context<T> {
-    fn context(self, what: impl Into<String>) -> Result<T>;
-}
-
-impl<T> Context<T> for std::io::Result<T> {
-    fn context(self, what: impl Into<String>) -> Result<T> {
-        self.map_err(|source| Error::Io {
-            what: what.into(),
-            source,
-        })
-    }
-}
-
-impl<T> Context<T> for serde_json::Result<T> {
-    fn context(self, what: impl Into<String>) -> Result<T> {
-        self.map_err(|source| Error::Json {
-            what: what.into(),
-            source,
-        })
-    }
-}
-
-/// [`Context`] with the description built only on failure.
-pub trait WithContext<T> {
-    fn with_context(self, what: impl FnOnce() -> String) -> Result<T>;
-}
-
-impl<T, E> WithContext<T> for std::result::Result<T, E>
-where
-    std::result::Result<T, E>: Context<T>,
-{
-    fn with_context(self, what: impl FnOnce() -> String) -> Result<T> {
-        self.or_else(|error| Err(error).context(what()))
-    }
-}
-
-/// Says what was being done when another parser, a serializer or a client failed, with the
-/// error's causes after it (a client's error often names only the step: "error sending
-/// request").
-pub trait Describe<T> {
-    fn describe(self, what: impl Into<String>) -> Result<T>;
-}
-
-impl<T, E: std::error::Error> Describe<T> for std::result::Result<T, E> {
-    fn describe(self, what: impl Into<String>) -> Result<T> {
-        self.map_err(|error| Error::Format {
-            what: what.into(),
-            source: std::iter::successors(error.source(), |cause| cause.source())
-                .fold(error.to_string(), |message, cause| {
-                    format!("{message}: {cause}")
-                }),
-        })
-    }
 }
 
 /// A tool's exit: its failure on stderr, under its name.
-pub fn exit(tool: &str, outcome: Result<()>) -> std::process::ExitCode {
+pub fn exit<E: std::error::Error>(tool: &str, outcome: Result<(), E>) -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{tool}: {error}");
+            eprintln!("{tool}: {}", Report(&error));
             std::process::ExitCode::FAILURE
         }
     }
 }
 
 /// The tool's one argument, if any; more is a usage error.
-pub fn argument(usage: &str) -> Result<Option<String>> {
+pub fn argument(usage: &str) -> Result<Option<String>, UsageError> {
     let mut arguments = std::env::args().skip(1);
     match (arguments.next(), arguments.next()) {
         (argument, None) => Ok(argument),
-        (Some(_), Some(_)) | (None, Some(_)) => Err(Error::Failed(format!("usage: {usage}"))),
+        (Some(_), Some(_)) | (None, Some(_)) => Err(UsageError {
+            usage: usage.to_owned(),
+        }),
     }
 }
 
@@ -208,49 +177,66 @@ pub enum View {
     Interact,
 }
 
-pub fn env_var(name: &str) -> Result<String> {
-    std::env::var(name).map_err(|source| Error::Env {
+/// The environment variable `name`, which must be set.
+pub fn env_var(name: &str) -> Result<String, EnvError> {
+    std::env::var(name).map_err(|source| EnvError {
         name: name.to_owned(),
         source,
     })
 }
 
-pub fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).context(path.display().to_string())
+/// The file at `path`, whole, as text.
+pub fn read(path: &Path) -> Result<String, FileError> {
+    std::fs::read_to_string(path).map_err(|source| FileError::Read {
+        path: path.to_owned(),
+        source,
+    })
 }
 
-pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
-    std::fs::write(path, contents).context(path.display().to_string())
+/// Writes `contents` to the file at `path`, replacing what it had.
+pub fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), FileError> {
+    std::fs::write(path, contents).map_err(|source| FileError::Write {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// Fails unless `socket` is a socket owned by its directory's owner, where the box's clients put
 /// theirs: the directory is theirs to write too, and a link planted there would lead a client of
 /// it to any socket of the host's.
-pub fn box_socket(socket: &Path) -> Result<()> {
+pub fn box_socket(socket: &Path) -> Result<(), SocketError> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    let directory = socket
-        .parent()
-        .ok_or_else(|| Error::Failed(format!("{} has no directory", socket.display())))?;
-    let owner = std::fs::metadata(directory)
-        .context(directory.display().to_string())?
-        .uid();
-    let found = std::fs::symlink_metadata(socket).context(socket.display().to_string())?;
+    let directory = socket.parent().ok_or_else(|| SocketError::NoDirectory {
+        socket: socket.to_owned(),
+    })?;
+    let metadata = |path: &Path, of: fn(&Path) -> std::io::Result<std::fs::Metadata>| {
+        of(path).map_err(|source| SocketError::Metadata {
+            path: path.to_owned(),
+            source,
+        })
+    };
+    let owner = metadata(directory, |path| std::fs::metadata(path))?.uid();
+    let found = metadata(socket, |path| std::fs::symlink_metadata(path))?;
     if found.file_type().is_socket() && found.uid() == owner {
         Ok(())
     } else {
-        Err(Error::Failed(format!(
-            "{} is not a socket of the box's (a {:?} of uid {})",
-            socket.display(),
-            found.file_type(),
-            found.uid()
-        )))
+        Err(SocketError::NotTheBoxs {
+            socket: socket.to_owned(),
+            file_type: format!("{:?}", found.file_type()),
+            uid: found.uid(),
+            owner,
+        })
     }
 }
 
-pub fn remove_if_present(path: &Path) -> Result<()> {
+/// Removes the file at `path`, if there is one.
+pub fn remove_if_present(path: &Path) -> Result<(), FileError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).context(path.display().to_string()),
+        Err(source) => Err(FileError::Remove {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }

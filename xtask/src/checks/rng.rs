@@ -1,12 +1,11 @@
 //! Reproducible randomness for the phases that draw what they do (the soak, the tour): from a
 //! seed printed at the start, which `TESTBOX_SEED` gives again.
 
-use super::env_number;
-use crate::error::Result;
+use super::{EnvNumberError, env_number};
 use crate::process;
 
 /// `TESTBOX_SEED`, or one from the clock: odd, as xorshift stays at zero from zero.
-pub(super) fn seed() -> Result<u64> {
+pub(super) fn seed() -> Result<u64, EnvNumberError> {
     Ok(env_number("TESTBOX_SEED")?.unwrap_or_else(|| process::now().unwrap_or(1)) | 1)
 }
 

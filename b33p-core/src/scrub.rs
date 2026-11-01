@@ -45,10 +45,16 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
-/// `value` as text with user data blanked, for a log field: `warn!(error = %scrubbed(&error), …)`.
+/// `value` as text with user data blanked, for a log field: `warn!(error = %crate::scrub::chain(&error), …)`.
 /// Library errors carry URLs, service IDs, numbers and paths of their own.
 pub fn scrubbed(value: &impl std::fmt::Display) -> String {
     scrub(&value.to_string())
+}
+
+/// `error` and its causes (see [`Chain`](crate::Chain)) with user data blanked, for a log
+/// field: `warn!(error = %scrub::chain(&error), …)`.
+pub fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    scrub(&crate::Chain(error).to_string())
 }
 
 /// The length of a token at the start of `s` that runs to whitespace, without the trailing
@@ -131,7 +137,7 @@ mod tests {
     #[test]
     fn scrubbed_takes_anything_displayable() {
         let error = std::io::Error::other(r"can't open C:\Users\me\file.txt.");
-        assert_eq!(scrubbed(&error), "can't open <path>.");
+        assert_eq!(crate::scrub::chain(&error), "can't open <path>.");
         assert_eq!(scrubbed(&"0d4c8a3e-7b1f-4e2a-9c5d-1a2b3c4d5e6f"), "<id>");
     }
 

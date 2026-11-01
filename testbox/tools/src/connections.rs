@@ -77,6 +77,21 @@ pub struct Hello {
     pub signature_schemes: Vec<String>,
 }
 
+/// A record of a connection's bytes that couldn't be written or read.
+#[derive(Debug, thiserror::Error)]
+pub enum RecordError {
+    /// More bytes than its length's four bytes count.
+    #[error("a record of {length} bytes, more than 4 GiB")]
+    TooLong { length: usize },
+    #[error("writing a record")]
+    Write(#[source] io::Error),
+    #[error("reading a record")]
+    Read(#[source] io::Error),
+    /// A direction byte that names none.
+    #[error("a record with no direction {byte}")]
+    Direction { byte: u8 },
+}
+
 /// One record of a connection's bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
@@ -86,32 +101,30 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn write_to(&self, out: &mut impl Write) -> io::Result<()> {
-        let length = u32::try_from(self.bytes.len())
-            .map_err(|_too_long| io::Error::new(io::ErrorKind::InvalidInput, "a record > 4 GiB"))?;
-        out.write_all(&self.at.to_le_bytes())?;
-        out.write_all(&[self.direction.byte()])?;
-        out.write_all(&length.to_le_bytes())?;
-        out.write_all(&self.bytes)
+    pub fn write_to(&self, out: &mut impl Write) -> Result<(), RecordError> {
+        let length = u32::try_from(self.bytes.len()).map_err(|_too_long| RecordError::TooLong {
+            length: self.bytes.len(),
+        })?;
+        out.write_all(&self.at.to_le_bytes())
+            .and_then(|()| out.write_all(&[self.direction.byte()]))
+            .and_then(|()| out.write_all(&length.to_le_bytes()))
+            .and_then(|()| out.write_all(&self.bytes))
+            .map_err(RecordError::Write)
     }
 
     /// The next record, `None` at the end. A record cut short ends the file too.
-    pub fn read_from(input: &mut impl Read) -> io::Result<Option<Self>> {
+    pub fn read_from(input: &mut impl Read) -> Result<Option<Self>, RecordError> {
         let mut head = [0; 13];
         match input.read_exact(&mut head) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(error) => return Err(error),
+            Err(error) => return Err(RecordError::Read(error)),
         }
         let (at, rest) = head.split_at(8);
         let (direction, length) = rest.split_at(1);
         let at = u64::from_le_bytes(at.try_into().expect("8 bytes"));
-        let direction = Direction::from_byte(direction[0]).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("no direction {}", direction[0]),
-            )
-        })?;
+        let direction = Direction::from_byte(direction[0])
+            .ok_or(RecordError::Direction { byte: direction[0] })?;
         let length = u32::from_le_bytes(length.try_into().expect("4 bytes"));
         let mut bytes = vec![0; length as usize];
         match input.read_exact(&mut bytes) {
@@ -121,7 +134,7 @@ impl Record {
                 bytes,
             })),
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(error) => Err(error),
+            Err(error) => Err(RecordError::Read(error)),
         }
     }
 }

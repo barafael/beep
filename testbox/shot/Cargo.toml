@@ -15,3 +15,4 @@ png = "0.18"
 tokio = { version = "1", features = ["rt", "time"] }
 testbox-vnc = { path = "../vnc" }
 testbox-tools = { path = "../tools" }
+thiserror = "2"

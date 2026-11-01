@@ -797,6 +797,7 @@ dependencies = [
  "presage",
  "presage-store-sqlite",
  "proptest",
+ "prost",
  "protobuf",
  "qrcode",
  "rand 0.9.5",
@@ -807,6 +808,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "toml",
  "tracing",
@@ -868,6 +870,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tempfile",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "windows",
@@ -8786,10 +8789,10 @@ dependencies = [
 name = "testbox-tools"
 version = "0.0.0"
 dependencies = [
- "derive_more",
  "serde",
  "serde_json",
  "strum 0.27.2",
+ "thiserror 2.0.21",
  "typeshare",
 ]
 
@@ -10738,7 +10741,6 @@ dependencies = [
  "b33p-harness",
  "base64 0.22.1",
  "clap",
- "derive_more",
  "flate2",
  "httparse",
  "image",
@@ -10748,6 +10750,7 @@ dependencies = [
  "serde_json",
  "strum 0.27.2",
  "testbox-tools",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
 ]

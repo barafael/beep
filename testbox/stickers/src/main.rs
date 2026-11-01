@@ -23,12 +23,16 @@ use presage::Manager;
 use presage::libsignal_service::configuration::Endpoint;
 use presage::libsignal_service::prelude::ProtobufMessage;
 use presage::libsignal_service::proto::{Pack, pack};
-use presage::libsignal_service::push_service::{AttachmentV2UploadAttributes, HttpAuthOverride};
-use presage::libsignal_service::sticker_cipher::{derive_key, encrypt_in_place};
+use presage::libsignal_service::push_service::{
+    AttachmentV2UploadAttributes, HttpAuthOverride, ServiceError,
+};
+use presage::libsignal_service::sticker_cipher::{
+    AttachmentCipherError, derive_key, encrypt_in_place,
+};
 use presage::model::identity::OnNewIdentity;
-use presage_store_sqlite::SqliteStore;
+use presage_store_sqlite::{SqliteStore, SqliteStoreError};
 use serde::Deserialize;
-use testbox_tools::{Describe, Error, Result, WithContext};
+use testbox_tools::{Report, UsageError};
 
 const TITLE: &str = "testbox stickers";
 const AUTHOR: &str = "b33p testbox";
@@ -38,18 +42,115 @@ const STICKERS: [(&str, [u8; 3]); testbox_tools::STICKERS as usize] =
     [("🟥", [0xd0, 0x30, 0x30]), ("🟦", [0x30, 0x60, 0xd0])];
 /// Signal's stickers are 512 px square; small ones decode the same.
 const EDGE: u32 = 64;
+const USAGE: &str = "testbox-stickers <sqlite db>";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
-    let outcome = match testbox_tools::argument("testbox-stickers <sqlite db>") {
-        // presage spawns its websockets' tasks onto the thread's `LocalSet`.
-        Ok(Some(db)) => tokio::task::LocalSet::new().run_until(seed(&db)).await,
-        Ok(None) => Err(Error::Failed(
-            "usage: testbox-stickers <sqlite db>".to_owned(),
-        )),
-        Err(error) => Err(error),
-    };
-    testbox_tools::exit("testbox-stickers", outcome)
+    let outcome: Result<(), Box<dyn std::error::Error + Send + Sync>> =
+        match testbox_tools::argument(USAGE) {
+            // presage spawns its websockets' tasks onto the thread's `LocalSet`.
+            Ok(Some(db)) => tokio::task::LocalSet::new()
+                .run_until(seed(&db))
+                .await
+                .map_err(Into::into),
+            Ok(None) => Err(UsageError {
+                usage: USAGE.to_owned(),
+            }
+            .into()),
+            Err(error) => Err(error.into()),
+        };
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("testbox-stickers: {}", Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// What keeps the pack from being seeded or installed.
+#[derive(Debug, thiserror::Error)]
+enum SeedError {
+    #[error("opening presage's store {db}")]
+    OpenStore {
+        db: String,
+        #[source]
+        source: SqliteStoreError,
+    },
+    /// presage's errors are boxed here and in `Install`: they are big, and the rest small.
+    #[error("loading the registered account")]
+    LoadAccount {
+        #[source]
+        source: Box<presage::Error<SqliteStoreError>>,
+    },
+    #[error("asking for the sticker forms")]
+    FormsRequest {
+        #[source]
+        source: ServiceError,
+    },
+    #[error("sending the request for the sticker forms")]
+    FormsSend {
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("reading the sticker forms")]
+    FormsBody {
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("the sticker forms refused: {status}: {body}")]
+    FormsRefused {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("reading the sticker forms {body}")]
+    ParseForms {
+        body: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("deriving the pack's key")]
+    PackKey {
+        #[source]
+        source: AttachmentCipherError,
+    },
+    #[error("uploading the manifest")]
+    UploadManifest {
+        #[source]
+        source: ServiceError,
+    },
+    #[error("sticker {id}'s index")]
+    StickerIndex {
+        id: u32,
+        #[source]
+        source: std::num::TryFromIntError,
+    },
+    /// The server handed out a form for a sticker the pack doesn't have.
+    #[error("a form for sticker {id}, of {count} stickers")]
+    UnknownSticker { id: u32, count: usize },
+    #[error("drawing sticker {id}'s picture")]
+    Picture {
+        id: u32,
+        #[source]
+        source: png::EncodingError,
+    },
+    #[error("uploading sticker {id}")]
+    UploadSticker {
+        id: u32,
+        #[source]
+        source: ServiceError,
+    },
+    #[error("reading the pack's id {pack_id:?}")]
+    PackId {
+        pack_id: String,
+        #[source]
+        source: hex::FromHexError,
+    },
+    #[error("installing the pack")]
+    Install {
+        #[source]
+        source: Box<presage::Error<SqliteStoreError>>,
+    },
 }
 
 /// The upload forms the server hands out: one for the manifest, one per sticker, and the id it
@@ -69,13 +170,19 @@ struct StickerForm {
     form: AttachmentV2UploadAttributes,
 }
 
-async fn seed(db: &str) -> Result<()> {
+async fn seed(db: &str) -> Result<(), SeedError> {
     let store = SqliteStore::open(db, OnNewIdentity::Trust)
         .await
-        .describe(format!("presage's store {db}"))?;
-    let mut manager = Manager::load_registered(store)
-        .await
-        .describe("the registered account")?;
+        .map_err(|source| SeedError::OpenStore {
+            db: db.to_owned(),
+            source,
+        })?;
+    let mut manager =
+        Manager::load_registered(store)
+            .await
+            .map_err(|source| SeedError::LoadAccount {
+                source: Box::new(source),
+            })?;
     let push = manager.identified_push_service();
 
     let response = push
@@ -84,22 +191,25 @@ async fn seed(db: &str) -> Result<()> {
             Endpoint::service(format!("/v1/sticker/pack/form/{}", STICKERS.len())),
             HttpAuthOverride::NoOverride,
         )
-        .describe("the sticker forms")?
+        .map_err(|source| SeedError::FormsRequest { source })?
         .send()
         .await
-        .describe("the sticker forms")?;
+        .map_err(|source| SeedError::FormsSend { source })?;
     let status = response.status();
-    let text = response.text().await.describe("the sticker forms")?;
+    let body = response
+        .text()
+        .await
+        .map_err(|source| SeedError::FormsBody { source })?;
     if !status.is_success() {
-        return Err(Error::Failed(format!(
-            "the sticker forms: {status}: {text}"
-        )));
+        return Err(SeedError::FormsRefused { status, body });
     }
-    let forms: StickerForms =
-        serde_json::from_str(&text).with_context(|| format!("the sticker forms: {text}"))?;
+    let forms: StickerForms = match serde_json::from_str(&body) {
+        Ok(forms) => forms,
+        Err(source) => return Err(SeedError::ParseForms { body, source }),
+    };
 
     let pack_key: [u8; 32] = rand::random();
-    let key = derive_key(&pack_key).describe("the pack's key")?;
+    let key = derive_key(&pack_key).map_err(|source| SeedError::PackKey { source })?;
     let encrypted = |mut plaintext: Vec<u8>| {
         encrypt_in_place(rand::random(), key, &mut plaintext);
         plaintext
@@ -128,42 +238,42 @@ async fn seed(db: &str) -> Result<()> {
         Cursor::new(encrypted(manifest.encode_to_vec())),
     )
     .await
-    .describe("uploading the manifest")?;
+    .map_err(|source| SeedError::UploadManifest { source })?;
     for StickerForm { id, form } in forms.stickers {
-        let colour = STICKERS
-            .get(usize::try_from(id).describe("a sticker's id")?)
-            .map(|(_, colour)| *colour)
-            .ok_or_else(|| Error::Failed(format!("a form for sticker {id}, which there isn't")))?;
-        cdn0.upload_to_cdn0(
-            "",
-            form,
-            format!("{id}"),
-            Cursor::new(encrypted(picture(colour)?)),
-        )
-        .await
-        .describe(format!("uploading sticker {id}"))?;
+        let index = usize::try_from(id).map_err(|source| SeedError::StickerIndex { id, source })?;
+        let (_, colour) = STICKERS.get(index).ok_or(SeedError::UnknownSticker {
+            id,
+            count: STICKERS.len(),
+        })?;
+        let picture = picture(*colour).map_err(|source| SeedError::Picture { id, source })?;
+        cdn0.upload_to_cdn0("", form, format!("{id}"), Cursor::new(encrypted(picture)))
+            .await
+            .map_err(|source| SeedError::UploadSticker { id, source })?;
     }
 
-    let pack_id = hex::decode(&forms.pack_id).describe("the pack's id")?;
+    let pack_id = hex::decode(&forms.pack_id).map_err(|source| SeedError::PackId {
+        pack_id: forms.pack_id.clone(),
+        source,
+    })?;
     manager
         .install_sticker_pack(&pack_id, &pack_key)
         .await
-        .describe("installing the pack")?;
+        .map_err(|source| SeedError::Install {
+            source: Box::new(source),
+        })?;
     println!("{}", forms.pack_id);
     Ok(())
 }
 
 /// A square of `colour`, as a PNG.
-fn picture(colour: [u8; 3]) -> Result<Vec<u8>> {
+fn picture(colour: [u8; 3]) -> Result<Vec<u8>, png::EncodingError> {
     let mut bytes = Vec::new();
     let mut encoder = png::Encoder::new(&mut bytes, EDGE, EDGE);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().describe("a sticker's picture")?;
+    let mut writer = encoder.write_header()?;
     let pixels: Vec<u8> = (0..EDGE * EDGE).flat_map(|_| colour).collect();
-    writer
-        .write_image_data(&pixels)
-        .describe("a sticker's picture")?;
-    writer.finish().describe("a sticker's picture")?;
+    writer.write_image_data(&pixels)?;
+    writer.finish()?;
     Ok(bytes)
 }

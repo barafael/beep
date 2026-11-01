@@ -15,7 +15,6 @@ use googleapis_tonic_google_bigtable_admin_v2::google::bigtable::admin::v2::{
 };
 use testbox_tools::keys::{BIGTABLE, KeyFile};
 use testbox_tools::process::{spawn_logged, supervise, wait_for};
-use testbox_tools::{Describe, Error, Result};
 use tokio::process::Command;
 use tonic::transport::Channel;
 
@@ -26,22 +25,53 @@ const STORAGE_SERVICE_MAIN: &str = "org.signal.storageservice.StorageService";
 const STORAGE_SERVICE_CLASSPATH: &str = "/opt/storage-service/classes:/opt/storage-service/lib/*";
 const PATIENCE: Duration = Duration::from_secs(300);
 
+/// What keeps the storage service from starting.
+#[derive(Debug, thiserror::Error)]
+enum StorageError {
+    #[error("usage: storage, not {argument}")]
+    Argument { argument: String },
+    #[error("the emulator's address {address:?}")]
+    Address {
+        address: String,
+        #[source]
+        source: tonic::codegen::http::uri::InvalidUri,
+    },
+    #[error("connecting to the emulator's admin API at {address}")]
+    Connect {
+        address: String,
+        #[source]
+        source: tonic::transport::Error,
+    },
+    #[error("creating the table {table}")]
+    CreateTable {
+        table: &'static str,
+        #[source]
+        source: tonic::Status,
+    },
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
     let outcome = match testbox_tools::argument("storage") {
         Ok(None) => run().await,
-        Ok(Some(other)) => Err(Error::Failed(format!("usage: storage, not {other}"))),
-        Err(error) => Err(error),
+        Ok(Some(argument)) => Err(StorageError::Argument { argument }.into()),
+        Err(error) => Err(error.into()),
     };
-    testbox_tools::exit("storage", outcome)
+    match outcome {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("storage: {}", testbox_tools::Report(&*error));
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut emulator, heard) =
         spawn_logged(Command::new(EMULATOR).args(["-address", BIGTABLE.address]))?;
     tokio::select! {
         ready = wait_for(heard, &[EMULATOR_READY], PATIENCE) => ready?,
-        supervised = supervise(&mut emulator, "the emulator") => return supervised,
+        supervised = supervise(&mut emulator, "the emulator") => return Ok(supervised?),
     }
     create_tables().await?;
 
@@ -57,23 +87,27 @@ async fn run() -> Result<()> {
     )?;
     tokio::select! {
         started = wait_for(heard, &[testbox_tools::JETTY_STARTED], PATIENCE) => started?,
-        supervised = supervise(&mut emulator, "the emulator") => return supervised,
-        supervised = supervise(&mut storage_service, "storage-service") => return supervised,
+        supervised = supervise(&mut emulator, "the emulator") => return Ok(supervised?),
+        supervised = supervise(&mut storage_service, "storage-service") => return Ok(supervised?),
     }
     eprintln!("{}", testbox_tools::STORAGE_READY);
     // Until either stops, or SIGTERM stops both.
     tokio::select! {
-        supervised = supervise(&mut emulator, "the emulator") => supervised,
-        supervised = supervise(&mut storage_service, "storage-service") => supervised,
+        supervised = supervise(&mut emulator, "the emulator") => Ok(supervised?),
+        supervised = supervise(&mut storage_service, "storage-service") => Ok(supervised?),
     }
 }
 
-async fn create_tables() -> Result<()> {
-    let channel = Channel::from_shared(format!("http://{}", BIGTABLE.address))
-        .describe("the emulator's address")?
+async fn create_tables() -> Result<(), StorageError> {
+    let address = format!("http://{}", BIGTABLE.address);
+    let channel = Channel::from_shared(address.clone())
+        .map_err(|source| StorageError::Address {
+            address: address.clone(),
+            source,
+        })?
         .connect()
         .await
-        .describe("the emulator's admin API")?;
+        .map_err(|source| StorageError::Connect { address, source })?;
     let mut admin = BigtableTableAdminClient::new(channel);
     let instance = format!(
         "projects/{}/instances/{}",
@@ -95,7 +129,10 @@ async fn create_tables() -> Result<()> {
         admin
             .create_table(request)
             .await
-            .describe(format!("creating table {}", table.name))?;
+            .map_err(|source| StorageError::CreateTable {
+                table: table.name,
+                source,
+            })?;
     }
     Ok(())
 }

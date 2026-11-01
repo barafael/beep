@@ -29,13 +29,40 @@ pub struct State<'a> {
     pub length: Option<Duration>,
 }
 
+/// Why audio can't be played, or skipped in.
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    #[error("this audio can't be played")]
+    Decode {
+        id: AttachmentId,
+        source: rodio::decoder::DecoderError,
+    },
+    #[error("no sound device")]
+    NoDevice(#[source] rodio::DeviceSinkError),
+    #[error("can't skip in this audio")]
+    Seek {
+        id: AttachmentId,
+        source: rodio::source::SeekError,
+    },
+}
+
+/// The audio itself, or the device: playing it again won't change that.
+impl b33p_core::Classified for AudioError {
+    fn kind(&self) -> b33p_core::ErrorKind {
+        b33p_core::ErrorKind::Refused
+    }
+}
+
 impl Player {
     /// Plays `audio` (a downloaded attachment) from the start.
-    pub fn play(&mut self, id: AttachmentId, audio: Arc<[u8]>) -> Result<(), String> {
+    pub fn play(&mut self, id: AttachmentId, audio: Arc<[u8]>) -> Result<(), AudioError> {
         self.stop();
-        let decoder = decoder(audio).map_err(|e| format!("this audio can't be played: {e}"))?;
-        let mut device = rodio::DeviceSinkBuilder::open_default_sink()
-            .map_err(|e| format!("no sound device: {e}"))?;
+        let decoder = match decoder(audio) {
+            Ok(decoder) => decoder,
+            Err(source) => return Err(AudioError::Decode { id, source }),
+        };
+        let mut device =
+            rodio::DeviceSinkBuilder::open_default_sink().map_err(AudioError::NoDevice)?;
         device.log_on_drop(false);
         let length = decoder.total_duration();
         let player = rodio::Player::connect_new(device.mixer());
@@ -61,7 +88,7 @@ impl Player {
     }
 
     /// Goes to `fraction` (0 to 1) of what plays, if it is `id` and its length is known.
-    pub fn seek(&mut self, id: &AttachmentId, fraction: f32) -> Result<(), String> {
+    pub fn seek(&mut self, id: &AttachmentId, fraction: f32) -> Result<(), AudioError> {
         let Some(playing) = self.current.as_ref().filter(|p| &p.id == id) else {
             return Ok(());
         };
@@ -72,7 +99,10 @@ impl Player {
         playing
             .player
             .try_seek(at)
-            .map_err(|e| format!("can't skip in this audio: {e}"))
+            .map_err(|source| AudioError::Seek {
+                id: id.clone(),
+                source,
+            })
     }
 
     pub fn stop(&mut self) {
