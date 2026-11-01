@@ -780,3 +780,142 @@ loop logs the same events at INFO and WARN.
 Two lessons for the check itself: an allow-list entry nothing matches is a bug the check
 can't see, so a run should report which known kinds it saw and which it didn't; and the list's
 comments must come from the emitting code, not from the first explanation that fit.
+
+## Broadening the box (1 Nov, afternoon): long texts, timers, stories, a large group, a bad link
+
+The ask: cover everything that should work now, with the capture open between b33p, Desktop
+and Android. What came of it, by phase (the new checks' names are in the phase files):
+
+- **desktop** (+6): a long text from b33p whole on Desktop; a link with its preview; a 30 s
+  timer set in b33p, Desktop's notice and the message gone on both; a 5 min timer set on
+  Desktop, b33p's notice and timer, and off again.
+- **network** (new, 16 checks): the clients' link to the servers through `tc netem` on the
+  pod's loopback, for the servers' ports only (a `netem` container with NET_ADMIN; the servers'
+  own traffic to their stores is left alone). Slow and lossy (150 ms ± 40, 1 % loss, 0.5 %
+  duplicated, 5 % reordered): text 1.2 s to Desktop and 0.6 s back, a picture in 5.5 s.
+  Narrow (1 Mbit/s): a 1 MiB file uploaded by Desktop in 10.9 s and downloaded and saved by
+  b33p 10.7 s later, both at the wire's rate. Dead for 90 s with nothing to say so: Desktop's
+  text arrives 3.5 s after the link is back; b33p's own send fails (the keepalive finds the
+  connection dead) and the retry by hand is on Desktop 3.9 s later. Flapping, 20 s dead and
+  20 s back for 160 s while Desktop writes ten texts: all ten in b33p, in order, once, by the
+  time the flapping ends.
+- **android** (+5 passing, see the tally for the rest): Note to Self from b33p on the phone; a
+  long text each way; a reply from the phone quoting Desktop's text, in b33p and on Desktop.
+  The phone's reaction, edit, delete for everyone and timer are driven too (below).
+- **groups** (+4): b33p's view of Desktop's story counted on Desktop ("1 view"); Desktop's
+  reply to b33p's story in b33p's group chat; Desktop's reaction to it; a story the phone
+  posts to the group, in b33p and on Desktop.
+- **large-group** (new, 11 checks): twenty presage-cli members more, registered at once; each
+  writes to b33p's account and is accepted; b33p makes the group of 22; its details list all;
+  b33p's text reaches Desktop, Android and every member, with its sender key (21 pairwise
+  `PUT /v1/messages/{aci}` for the key, then `PUT /v1/messages/multi_recipient` for the
+  text); all twenty answer at once and every answer shows in b33p, on Desktop and on Android.
+  Android names the members "Peer, Crowd 11, Crowd 1, and 19 others". One of the twenty
+  registrations crashed presage-cli once ("double free or corruption" in its `whoami`), so a
+  registration gets a second go.
+
+### What it found in b33p
+
+1. **Long texts were dropped by phones.** b33p sent the whole text inline. Signal-Android
+   refuses a data message whose body is over 2048 bytes as invalid
+   (EnvelopeContentValidator.kt, "Body exceeds 2048 bytes!") and shows "[Internal-only]
+   Received an invalid message!"; the sync of b33p's own long message too. Desktop showed it.
+   Fixed: past 2000 bytes the text goes as Signal's apps send it, the first part inline (its
+   body ranges clipped to it) and the whole as a `text/x-signal-plain` attachment, on sends
+   and on edits (`send.rs` `inline_text`); both phones' and Desktop's copies pass now.
+2. **A typing indicator to Note to Self.** libsignal-service makes a sent transcript of a
+   message to oneself, which a typing message has none of, and logs "could not create sync
+   message from message to self" at ERROR. Signal's apps send no typing there. Fixed in the
+   command handler.
+3. **Replies and reactions to stories** (PLAN.md's open item, now measured): Desktop's reply
+   to b33p's group story arrives as a plain message in the group chat, without the story it
+   answers. Desktop's reaction to the story: see the tally; b33p has no view of its own for
+   either, and no way to react to a story itself.
+4. **A send retried over a dead link reaches the peer twice.** libsignal-service sends the
+   encrypted messages again when the websocket closed under them (our #464), and when the first
+   try had got through, the second is the same ciphertext: the receiver's session has seen
+   its counter ("message with old counter"). presage-cli counts that a decryption failure, so
+   the box counted a lost message once; b33p tells the duplicate from a loss by its store, and
+   presage logs it as "error opening envelope, message will be skipped!", now among the known
+   lines. Signal's apps drop a `DuplicatedMessage` quietly. Nothing was lost in any run; the
+   `stored` lookup of the lost-message check (presage.rs) didn't find the first copy, which is
+   worth a look: it searches presage-cli's store by the sender and timestamp.
+
+### On the wire, side by side
+
+- Long texts: Android's and Desktop's carry the `LongText` attachment beside 2000 bytes
+  inline; b33p's do now too (the content log only keeps what b33p receives, so its own sends
+  are read off the request sizes and the receivers).
+- Stories: Android posts a group story with one gRPC
+  `MessagesAnonymous/SendMultiRecipientStory`; Desktop with a `PUT /v1/messages/{aci}?story=true`
+  per recipient account; b33p with three `PUT /v1/messages/{aci}` without the story flag and
+  one with it, then its sync. Which of b33p's three carry the story (or are the key
+  distribution) is a follow-up: the `story=true` flag is what lets the server keep a story
+  from devices that don't take them.
+- Desktop puts `?story=false` on every message it sends, b33p on none; both are accepted.
+- Android's every receipt and sync goes out as `PUT /v1/messages/{aci}?story=false`.
+- Desktop fetches link previews with the user agent `WhatsApp/2` (so sites answer with their
+  tags); the wire's client attribution took it for an unknown client and its transcript's file
+  name broke the decode. Attributed to Desktop now, and file names made safe.
+- Headers that differ between b33p and Desktop on the same requests: Desktop sends
+  `x-signal-agent: OWD`, `accept-encoding`, `content-type` on GETs; b33p sends
+  `accept-language: en`. Neither matters to the server.
+
+### Driving the two apps, what it took
+
+- **Desktop (Playwright).** Its menus are Radix: while one is open, pointer events are off
+  below it, so Playwright's hit test reports an obstruction and a plain click never lands.
+  A failed call left the menu open and every later click in the run failed with it, which
+  made one whole network phase worthless (half of Desktop's sends went to the menu's focus).
+  The driver now closes dialogs and menus (Escape) whenever a call fails, selects menu items
+  with a dispatched click, and confirms the timer on the header. Desktop folds long messages
+  behind "Read more", and finds a message by a part of its text, not by one with newlines.
+  Desktop reads a message, and starts its timer, only when its window counts as active: the
+  conversation's row clicked once more does that.
+- **Android (the agent).** Only one UiAutomation may be connected, so `uiautomator dump`
+  dies while the agent runs; the screen is read through the driver's own failure report (the
+  labels it saw). The reaction bar's emoji have no labels, so the driver takes a screenshot
+  after the long press, finds the bar as the near-white band (237, 240, 246) above the
+  message's own bubble, which is as light, on the dimmed screen, and taps its first emoji; the
+  bar slides in, so it waits 600 ms first. A message's menu is "Reply | Edit | Forward | Copy
+  | Select | Info | Pin | Star (Labs) | Delete"; editing turns the composer's button into
+  "Send edit"; the timer is under More options → Chat settings → Disappearing messages, a
+  radio list and Save. A story goes Stories → Open Camera → Text → Tap to add text → Done
+  adding text → an unlabelled arrow (tapped by its place) → Send to → New → Group story
+  (an introduction once) → Choose groups → Share → Send. Share and Send sat under the
+  three-button navigation bar, which the agent refuses to tap through; the driver switches
+  the emulator to gesture navigation at start. Android shows a reaction as its emoji in text.
+- **b33p's story viewer** opens on the first story not yet viewed, or the first: the check
+  steps through them now, which is how the phone's own story (filed under the group as
+  "viewed" since it is ours) came to be found.
+
+### The runs, and where it stands
+
+| run | result |
+|---|---|
+| linked box, net instance, 1st | desktop 23/26, attachments 6/12, network 10/16: one Desktop menu left open took every click after it |
+| linked box, 2nd | desktop 24/26, attachments 12/12, network 14/16, core 7/8 (a duplicate counted lost) |
+| linked box, 3rd (desktop, network) | desktop 26/26, network 16/16 |
+| Android box, 3rd | android 12/19, groups 27/30, storage 13/13, large-group 10/11 |
+| Android box, 4th and 5th | the phone's reaction, delete and timer, and the story checks, each a driver step short |
+| Android box, 6th | android 15/18 (edit, reply, long texts, note pass); groups 25/30; a story modal left Desktop on its Stories tab, which failed storage and large-group after it |
+
+What the sixth run taught is in the driver but not yet run: the reaction bar is found above
+or below the message (it was the message's own bubble, and the app's header, that the scan
+took for it), the phone's delete-for-everyone has a confirmation, b33p's story viewer counts
+positions from 1 (so the phone's story, third of three, was never stepped to), Desktop keeps
+a closed replies modal in the DOM (the visible one is the open one), and a failed story call
+now leaves Desktop on its chats. Another session began changing the tools crate's and
+b33p-core's error types in this worktree at 14:15, which stops the box from building until it
+is done; the seventh run waits for that.
+
+### Not done, and why
+
+- **Shared locations.** The emulator runs the `default` system image, without Google Play
+  services, so Signal-Android's place picker (Google Maps) can't open; Desktop can't share a
+  location at all. On the wire a shared location is a text with the place's name and a
+  maps.google.com link, with a link preview: the link-preview checks are the nearest thing.
+- **Reacting to a story from b33p**, photo stories, forwarding to Desktop, a mention from
+  b33p, typing from the phone: no action in b33p's harness or label on the phone to drive
+  them yet.
+
