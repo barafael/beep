@@ -1,7 +1,7 @@
 //! A connection's bytes one way, whole, with when each part of them came; or a stream's that
 //! another protocol carries (HTTP/2's DATA frames).
 
-use testbox_tools::tap::{Direction, Record};
+use testbox_tools::connections::{Direction, Record};
 
 /// The bytes one side sent, in order, and when the tap read each run of them.
 #[derive(Default)]
@@ -47,7 +47,7 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::Stream;
-    use testbox_tools::tap::{Direction, Record};
+    use testbox_tools::connections::{Direction, Record};
 
     #[test]
     fn a_byte_came_with_its_read() {

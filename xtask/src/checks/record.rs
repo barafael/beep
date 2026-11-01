@@ -25,7 +25,7 @@ const DRAWING: Duration = Duration::from_secs(30);
 const B33P_RUN: &str = "/run/b33p";
 
 /// A check as `spans.jsonl` has it ([`Record::span`]): its name, when it started and ended
-/// (nanoseconds since the epoch, as the tap's records), and whether it passed.
+/// (nanoseconds since the epoch, as the capture's packets), and whether it passed.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Span {
     pub(crate) check: String,
@@ -149,7 +149,7 @@ impl Record {
     }
 
     /// With `--capture`, when the check `name` ran and how it went, as a line of `spans.jsonl`:
-    /// what the tap wrote down in that time is the check's (xtask/src/wire).
+    /// what the capture holds of that time is the check's (xtask/src/wire).
     pub(super) fn span(&self, name: &str, started: SystemTime, ended: SystemTime, passed: bool) {
         if !self.capture {
             return;
@@ -270,12 +270,12 @@ impl Record {
         }
     }
 
-    /// What the tap wrote down into the record's `wire/raw/`. A connection still open goes on
-    /// writing to its file there: moved, it is the same file.
+    /// The capture and the key logs into the record's `wire/raw/`. tcpdump and the servers go
+    /// on writing to their files there while the box is up: moved, they are the same files.
     fn keep_capture(&self, pod: &Pod) {
         let raw = self.directory.join("wire/raw");
         let moved = std::fs::create_dir_all(&raw)
-            .and_then(|()| std::fs::read_dir(pod.tap_dir()))
+            .and_then(|()| std::fs::read_dir(pod.capture_dir()))
             .and_then(|entries| {
                 entries.into_iter().try_for_each(|entry| {
                     let entry = entry?;
@@ -283,11 +283,11 @@ impl Record {
                 })
             });
         if let Err(error) = moved {
-            println!("record: the tap's files into {}: {error}", raw.display());
+            println!("record: the capture into {}: {error}", raw.display());
             return;
         }
         if let Err(error) = crate::wire::decode(&self.directory) {
-            println!("record: decoding the tap's files: {error}");
+            println!("record: decoding the capture: {error}");
         }
     }
 

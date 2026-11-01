@@ -103,8 +103,8 @@ enum Command {
         #[arg(long)]
         wipe: bool,
     },
-    /// Decodes what `--capture`'s tap wrote down in a box's record again (its `wire/raw/`),
-    /// into its `wire/`: the events, a transcript per client, and the comparison.
+    /// Decodes `--capture`'s packet capture in a box's record again (its `wire/raw/`), into
+    /// its `wire/`: the events, a transcript per client, the comparison, and the pcapng.
     Wire {
         /// The box's record: `target/testbox-record/<box>`.
         record: PathBuf,
@@ -129,9 +129,10 @@ pub(crate) struct TestOptions {
     /// no phase sees what another left.
     #[arg(long)]
     pub(crate) fresh: bool,
-    /// Relays what the clients say to the servers over TLS through the tap, which writes it
-    /// down into each box's record (`wire/`), for comparing Signal's own clients with b33p. Not
-    /// with the stress phases: the relay is a hop more, and their volume would fill the disk.
+    /// Writes the wire down into each box's record (`wire/`): the pod's loopback as tcpdump
+    /// sees it and the servers' TLS secrets, decoded into what every client said to the
+    /// servers, for comparing Signal's own clients with b33p, and as a pcapng Wireshark
+    /// decrypts. Not with the stress phases: their volume would fill the disk.
     #[arg(long)]
     pub(crate) capture: bool,
     #[command(flatten)]

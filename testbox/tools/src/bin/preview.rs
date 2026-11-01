@@ -7,13 +7,14 @@
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use testbox_tools::keys::{self, KeyFile};
-use testbox_tools::{Context, Error, Result};
+use testbox_tools::keys;
+use testbox_tools::{Context, Result, tls};
 
 const PICTURE: &[u8] = include_bytes!("../../assets/preview.png");
 
@@ -23,15 +24,11 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn serve() -> Result<()> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_installed| Error::Failed("a TLS provider is installed already".to_owned()))?;
-    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        KeyFile::TlsCertificate.path(),
-        KeyFile::TlsKey.path(),
-    )
-    .await
-    .context("the keys' certificate")?;
+    tls::install_provider()?;
+    let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls::server_config(&[
+        "http/1.1",
+    ])?));
+    tls::say_where_secrets_go("preview");
     let app = axum::Router::new()
         .route("/page/{n}", get(page))
         .route("/picture.png", get(picture))

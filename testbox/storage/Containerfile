@@ -26,6 +26,11 @@ RUN --mount=type=cache,target=/root/.m2 \
     && cp -r target/classes /out/classes \
     && unzip -q -o /out/emulator-jar/google-cloud-bigtable-emulator-core-*.jar \
         'gcloud/bigtable-linux-x86_64/*' -d /out/emulator
+# `--capture`'s key log for the JVM, as in testbox/server/Containerfile.
+ADD --checksum=sha256:2f21fefc4ad3e18f0887d7acbaac1fa735ab3ab2df53d7a4dab1e52e644e679f \
+    https://github.com/jsslkeylog/jsslkeylog/releases/download/v1.4.0/jSSLKeyLog-1.4.zip /tmp/jSSLKeyLog-1.4.zip
+RUN unzip -q /tmp/jSSLKeyLog-1.4.zip jSSLKeyLog-java24+.jar -d /out \
+    && echo "aed8356527f88d06644d3248ae88bf39a8438ca8d3d17384c1a0252f219b0043  /out/jSSLKeyLog-java24+.jar" | sha256sum -c -
 
 FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
 WORKDIR /src
@@ -48,5 +53,6 @@ COPY --from=build /out/classes /opt/storage-service/classes
 COPY --from=build /out/lib /opt/storage-service/lib
 # The jar keeps no file modes.
 COPY --chmod=755 --from=build /out/emulator/gcloud/bigtable-linux-x86_64/platform/bigtable-emulator/cbtemulator /opt/bigtable/cbtemulator
+COPY --from=build /out/jSSLKeyLog-java24+.jar /opt/testbox/jSSLKeyLog-java24+.jar
 COPY --from=tools /usr/local/bin/storage /usr/local/bin/storage
 ENTRYPOINT ["storage"]

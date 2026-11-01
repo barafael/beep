@@ -271,10 +271,11 @@ fn confined_and_healthy(checks: &mut Checks, containers: &Pod) -> Result<()> {
     checks.require("the storage service serves", || {
         containers.await_ready(Ready::Storage, None, START)
     })?;
-    // Before any client connects: the redirect sends them to it from the start.
+    // Before any client connects: a connection's first packets are its TLS handshake, which
+    // the decoding needs.
     if containers.capturing() {
-        checks.require("the tap relays the clients' TLS", || {
-            containers.await_ready(Ready::Tap, None, START)
+        checks.require("the capture writes the wire down", || {
+            containers.await_ready(Ready::Capture, None, START)
         })?;
     }
     Ok(())

@@ -1,6 +1,23 @@
 # CDN3: signalapp/tus-server at the pin under `wrangler dev`, which its README names for "a dev
 # server you can interact with over localhost". Node at the Desktop image's version; tus-server's
-# own .nvmrc is older.
+# own .nvmrc is older. The TLS is the `front` tool's (testbox/tools), as wrangler's HTTPS is
+# workerd's and writes no key log for `--capture`: wrangler serves plain HTTP on the loopback,
+# the front takes port 8446 with the keys' certificate. The build context is the repository, for
+# the tools' sources.
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
+WORKDIR /src
+COPY testbox/tools testbox/tools
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built; the sources touched first, as
+# cargo goes by modification times, and another tree's later build would look newer than these.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/testbox/tools/target,sharing=locked \
+    find testbox/tools -path testbox/tools/target -prune -o -type f -exec touch {} + \
+    && cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
+        --features front --bin front \
+    && cp testbox/tools/target/release/front /usr/local/bin/
+
 FROM docker.io/library/node:24.21.0-trixie-slim@sha256:c83040f7e24bacea68e58a0b96a484ba430bf24abb2973eab7ba4701144b7b63
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -10,15 +27,15 @@ RUN git init -q . \
     && git fetch -q --depth 1 https://github.com/signalapp/tus-server "$TUS_SERVER_REV" \
     && git checkout -q FETCH_HEAD
 RUN --mount=type=cache,target=/root/.npm npm ci
+COPY --from=tools /usr/local/bin/front /usr/local/bin/front
 
 # The box has no egress: no metrics, no update check.
 ENV WRANGLER_SEND_METRICS=false CI=true
-# The shared secret from the keys (testbox/tools `provision` writes tus.env); TLS with the keys'
-# certificate for localhost; R2 and durable objects kept in /data. Port 8446 is CDN3's URL
-# (testbox/tools `provision`, `CDN3_URL`).
-ENTRYPOINT ["/opt/tus-server/node_modules/.bin/wrangler", "dev", \
-    "--ip", "127.0.0.1", "--port", "8446", \
+# The shared secret from the keys (testbox/tools `provision` writes tus.env); R2 and durable
+# objects kept in /data. Port 8456 is the front's upstream (testbox/tools keys.rs
+# `CDN3_UPSTREAM_PORT`); 8446, the front's, is CDN3's URL (`provision`, `CDN3_URL`).
+ENTRYPOINT ["front", "--", "/opt/tus-server/node_modules/.bin/wrangler", "dev", \
+    "--ip", "127.0.0.1", "--port", "8456", \
     "--env-file", "/keys/tus.env", \
-    "--local-protocol", "https", \
-    "--https-key-path", "/keys/tls.key", "--https-cert-path", "/keys/tls.crt", \
+    "--local-protocol", "http", \
     "--persist-to", "/data"]

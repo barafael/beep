@@ -11,6 +11,7 @@
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -21,7 +22,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use testbox_tools::keys::{self, Cdn0Credentials, KeyFile};
 use testbox_tools::process::{output_async, spawn_logged, supervise, wait_for};
-use testbox_tools::{Context, Describe, Error, Result};
+use testbox_tools::{Context, Describe, Error, Result, tls};
 use tokio::process::{Child, Command};
 
 const CONFIG: &str = "/etc/garage.toml";
@@ -180,15 +181,11 @@ async fn set_up(credentials: &Cdn0Credentials) -> Result<()> {
 
 async fn serve() -> Result<()> {
     // The one provider built in (Cargo.toml).
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_installed| Error::Failed("a TLS provider is installed already".to_owned()))?;
-    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        KeyFile::TlsCertificate.path(),
-        KeyFile::TlsKey.path(),
-    )
-    .await
-    .context("the keys' certificate")?;
+    tls::install_provider()?;
+    let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls::server_config(&[
+        "http/1.1",
+    ])?));
+    tls::say_where_secrets_go("cdn0");
     let client = reqwest::Client::new();
     let app = axum::Router::new().fallback(move |request: Request| {
         let client = client.clone();

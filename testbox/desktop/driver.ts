@@ -224,6 +224,12 @@ async function appears(locator: Locator, timeoutMs: number): Promise<null> {
   return null;
 }
 
+/** Resolves to null once nothing matches `locator`; rejects after `timeoutMs`. */
+async function gone(locator: Locator, timeoutMs: number): Promise<null> {
+  await locator.first().waitFor({ state: 'detached', timeout: timeoutMs });
+  return null;
+}
+
 /** helpers.node.ts `acceptConversation`, if the conversation is a message request. */
 async function acceptIfRequest(): Promise<void> {
   // A request shows its bar, an accepted conversation an enabled composer: whichever comes.
@@ -295,6 +301,16 @@ const methods = {
   },
   send: async ({ text }: Text) => {
     await typeAndSend(text);
+    return null;
+  },
+  /** Types `text` into the composer and leaves it there, which has Desktop send typing
+   * indicators (CompositionInput.dom.tsx `onDirtyChange`); `send` afterwards sends it. */
+  type_text: async ({ text }: Text) => {
+    const composition = enabledComposition();
+    await composition.waitFor();
+    const composer = composition.locator('.ql-editor');
+    await composer.click();
+    await composer.pressSequentially(text, { delay: 20 });
     return null;
   },
   /** Waits up to `timeout_ms` for a message with `text` in the open conversation. */
@@ -389,6 +405,9 @@ const methods = {
    * `module-message__reactions__reaction`). */
   wait_for_reaction: ({ text, timeout_ms }: Text & Timeout) =>
     appears(message(text).locator('.module-message__reactions__reaction'), timeout_ms),
+  /** Waits until the message with `text` shows no reaction: one taken back is gone. */
+  wait_for_no_reaction: ({ text, timeout_ms }: Text & Timeout) =>
+    gone(message(text).locator('.module-message__reactions__reaction'), timeout_ms),
   /** Sends `text` as a reply to the message with `quoted`, from its "Reply to Message" button. */
   reply_to_message: async ({ quoted, text }: Text & { quoted: string }) => {
     const replied = await hovered(quoted);
@@ -598,6 +617,22 @@ const methods = {
     }
     await toggle.click();
     await signalCiEvent('uploadManifest', timeout_ms);
+    await navTab('Chats');
+    return null;
+  },
+  /** Turns typing indicators on or off (Settings, Privacy), as `set_read_receipts`; as they
+   * are, it does nothing. A linked Desktop starts with what its primary synced, if anything. */
+  set_typing_indicators: async ({ on, timeout_ms }: Timeout & { on: boolean }) => {
+    await navTab('Settings');
+    await page().getByRole('button', { name: 'Privacy' }).click();
+    const toggle = page()
+      .getByRole('listitem', { name: 'Typing indicators', exact: true })
+      .getByRole('switch');
+    if ((await toggle.getAttribute('aria-checked')) !== String(on)) {
+      await drainSignalCi('uploadManifest', timeout_ms);
+      await toggle.click();
+      await signalCiEvent('uploadManifest', timeout_ms);
+    }
     await navTab('Chats');
     return null;
   },

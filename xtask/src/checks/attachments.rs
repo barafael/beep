@@ -4,7 +4,7 @@ use b33p_harness::{
     Action, AttachmentKind, AttachmentSnapshot, Download, Saved, Snapshot, StickersSnapshot,
 };
 
-use super::b33p::{b33p_chat, select, type_and_send};
+use super::b33p::{b33p_chat, b33p_shows, incoming_index, select, type_and_send};
 use super::setup::{LinkedBox, restart_b33p};
 use super::{Checks, PATIENCE, PATIENCE_MS};
 use crate::Sockets;
@@ -78,6 +78,28 @@ pub(super) fn attachments(
             let id = incoming_attachment(b33p, Some(text), AttachmentKind::Image)?;
             b33p.act(Action::FetchAttachment { id: id.clone() })?;
             downloaded(b33p, &id)
+        },
+    );
+
+    // TESTPLAN.md §1.4 item 6 for a message with an attachment: the picture goes with it.
+    checks.record(
+        "a delete for everyone of Desktop's picture removes it in b33p",
+        || {
+            let text = "testbox attachments: a picture from Desktop";
+            let index = incoming_index(b33p, text)?;
+            let timestamp = b33p
+                .snapshot()?
+                .messages
+                .iter()
+                .find(|message| message.index == index)
+                .map(|message| message.timestamp)
+                .ok_or("Desktop's picture went from b33p's view")?;
+            desktop.call(drivers::Desktop::DeleteForEveryone {
+                text: text.to_owned(),
+            })?;
+            b33p_shows(b33p, "Desktop's picture deleted", |message| {
+                message.timestamp == timestamp && message.deleted && message.attachments.is_empty()
+            })
         },
     );
 

@@ -1,0 +1,3 @@
+# `--capture`'s: the capture and the key logs, on the host; in place of pod.yaml's
+# `@CAPTURE_VOLUMES@`.
+      { name: "capture", hostPath: { path: "@TARGET@-capture", type: "Directory" } },

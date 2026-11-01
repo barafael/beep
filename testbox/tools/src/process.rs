@@ -65,6 +65,28 @@ fn checked(command: &Command, output: std::process::Output) -> Result<String> {
 #[cfg(feature = "async")]
 pub use running::{output_async, spawn_logged, supervise, wait_for};
 
+/// The JVM's arguments for `--capture`'s key log: jSSLKeyLog (testbox/server/Containerfile),
+/// writing the TLS sessions' secrets to the file `SSLKEYLOGFILE` names, as the other servers
+/// do themselves; none without the variable. The JDK writes no key log of its own.
+pub fn java_key_log_arguments() -> Vec<String> {
+    match std::env::var("SSLKEYLOGFILE") {
+        Ok(path) if !path.is_empty() => {
+            eprintln!("the JVM's TLS sessions' secrets go to {path}");
+            // The agent instruments the JDK's TLS engine: Jetty's connectors. Signal-Server's
+            // omnibus port is Netty's, on BoringSSL unless its configuration says JDK, which
+            // `provision` sets under `--capture`.
+            vec![format!("-javaagent:{JSSLKEYLOG_JAR}={path}:quiet")]
+        }
+        _ => {
+            eprintln!("SSLKEYLOGFILE unset, the JVM's TLS sessions' secrets go nowhere");
+            Vec::new()
+        }
+    }
+}
+
+/// Where the server and storage images put jSSLKeyLog's agent for Java 24 and later.
+pub const JSSLKEYLOG_JAR: &str = "/opt/testbox/jSSLKeyLog-java24+.jar";
+
 #[cfg(feature = "async")]
 mod running {
     use std::process::Stdio;

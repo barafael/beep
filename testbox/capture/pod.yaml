@@ -1,0 +1,20 @@
+# `--capture`: the packet capture, tcpdump on the pod's loopback, where every connection in the
+# box goes (the servers' addresses are on it; the emulator's 10.0.2.2 is it), as it was on the
+# wire, into the host's target/testbox-capture `capture.pcap`; for pod.yaml's containers, in
+# place of its `@CAPTURE@` line. The servers write their TLS sessions' secrets beside it
+# (`SSLKEYLOGFILE`, pod.yaml's `@CAPTURE_ENV` lines), so the record's `wire/capture.pcapng`
+# opens decrypted in Wireshark and xtask/src/wire decodes the connections from it. `-U` writes
+# each packet as it comes, for a record taken while the box is up; `-p` leaves promiscuous mode
+# alone, which loopback has no use for; `-Z root` keeps tcpdump from dropping to a user that
+# can't write the host's directory.
+      {
+        name: "capture",
+        image: "localhost/@POD@-cdn0",
+        command: ["tcpdump", "-i", "lo", "-p", "-U", "-Z", "root", "--time-stamp-precision=nano",
+                  "-w", "/capture/capture.pcap"],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          capabilities: { drop: ["ALL"], add: ["NET_RAW"] },
+        },
+        volumeMounts: [{ name: "capture", mountPath: "/capture" }],
+      },

@@ -743,6 +743,12 @@ fn write_server_config(password: &str, init_tables: bool) -> Result<()> {
         Value::from(keys::OMNIBUS_PORT),
     )?;
     set(&mut config, &["grpc", "h2c"], Value::Bool(false))?;
+    // Under `--capture`, the omnibus port's TLS on the JDK's engine rather than Netty's
+    // BoringSSL (GrpcConfiguration.java `sslProvider`, OPENSSL by default): the key log agent
+    // sees only the JDK's (testbox_tools::process `java_key_log_arguments`).
+    if std::env::var_os("SSLKEYLOGFILE").is_some_and(|path| !path.is_empty()) {
+        set(&mut config, &["grpc", "sslProvider"], "JDK".into())?;
+    }
     // Attachments: every upload form names CDN3, which the box runs; the
     // default enrollment is 0 (DynamicExperimentEnrollmentConfiguration.java), and CDN2 is GCS.
     // test.yml caps uploads at 1024 bytes; 100 MiB is room for any test file.
@@ -995,6 +1001,7 @@ async fn run_server(http: &reqwest::Client) -> Result<()> {
     // (ServiceContainerFoundationDbDatabaseLifecycleManager, `docker:docker@foundationdb0:4500`).
     let (mut server, heard) = spawn_logged(
         Command::new("java")
+            .args(testbox_tools::process::java_key_log_arguments())
             .arg(format!(
                 "-Dsecrets.bundle.filename={}",
                 KeyFile::Secrets.path().display()

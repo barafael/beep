@@ -30,11 +30,14 @@ const CLIENTS: &str = "# @CLIENTS@";
 /// (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml).
 const B33PS: &str = "# @B33PS@";
 const B33P_VOLUMES: &str = "# @B33P_VOLUMES@";
-/// The lines of pod.yaml's init containers, containers and volumes the tap's go in, with
-/// `--capture` (testbox/tap); without, nothing.
-const TAP_INIT: &str = "# @TAP_INIT@";
-const TAP: &str = "# @TAP@";
-const TAP_VOLUMES: &str = "# @TAP_VOLUMES@";
+/// The lines of pod.yaml's container and volume lists the packet capture's go in, with
+/// `--capture` (testbox/capture); without, nothing.
+const CAPTURE: &str = "# @CAPTURE@";
+const CAPTURE_VOLUMES: &str = "# @CAPTURE_VOLUMES@";
+/// The line of each server's `env` its key log goes in with `--capture` (`# @CAPTURE_ENV
+/// <container>@`), and the line of its `volumeMounts` the capture's directory goes in.
+const CAPTURE_ENV: &str = "# @CAPTURE_ENV ";
+const CAPTURE_MOUNT: &str = "# @CAPTURE_MOUNT@";
 /// The most b33ps a box has (`--b33ps`).
 pub const MAX_B33PS: u8 = 16;
 /// The longest instance name: the names podman gives the pod's parts stay short.
@@ -51,8 +54,8 @@ pub enum Service {
     B33p(u8),
     Desktop,
     Android,
-    /// With `--capture`, the relay of the clients' TLS (testbox/tap).
-    Tap,
+    /// With `--capture`, the packet capture (testbox/capture).
+    Capture,
 }
 
 /// The b33p every box has.
@@ -70,7 +73,7 @@ impl Service {
             Self::B33p(n) => format!("b33p-{n}"),
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
-            Self::Tap => "tap".to_owned(),
+            Self::Capture => "capture".to_owned(),
         }
     }
 
@@ -101,7 +104,8 @@ pub enum Ready {
     B33p(u8),
     Desktop,
     Android,
-    Tap,
+    /// tcpdump's own line, once it captures.
+    Capture,
 }
 
 impl Ready {
@@ -112,7 +116,7 @@ impl Ready {
             Self::B33p(n) => Service::B33p(n),
             Self::Desktop => Service::Desktop,
             Self::Android => Service::Android,
-            Self::Tap => Service::Tap,
+            Self::Capture => Service::Capture,
         }
     }
 
@@ -124,7 +128,7 @@ impl Ready {
             Self::Storage => testbox_tools::STORAGE_READY,
             Self::B33p(_) => b33p_harness::LISTENING,
             Self::Desktop | Self::Android => testbox_tools::drivers::LISTENING,
-            Self::Tap => testbox_tools::TAP_READY,
+            Self::Capture => testbox_tools::CAPTURE_READY,
         }
     }
 }
@@ -203,7 +207,6 @@ const IMAGES: [Image; 10] = [
     Image {
         name: "tus",
         containerfile: "testbox/tus/Containerfile",
-        context: "testbox/tus",
         ..Image::REPOSITORY
     },
     Image {
@@ -312,7 +315,7 @@ pub struct Pod {
     rendered: PathBuf,
     /// What tells of a lost message, from outside the containers' logs ([`Self::note_lost`]).
     lost: Mutex<Vec<String>>,
-    /// Whether the boxes it plays relay the clients' TLS through the tap ([`Self::capture`]).
+    /// Whether the boxes it plays write the wire down ([`Self::capture`]).
     capture: AtomicBool,
 }
 
@@ -361,8 +364,8 @@ impl Pod {
         self.target("run")
     }
 
-    /// With `capture`, the boxes played from now on relay what the clients say to the servers
-    /// over TLS through the tap, which writes it down in [`Self::tap_dir`] (testbox/tap).
+    /// With `capture`, the boxes played from now on write the wire down: the pod's loopback as
+    /// tcpdump sees it and the servers' TLS secrets, in [`Self::capture_dir`] (testbox/capture).
     pub fn capture(&self, capture: bool) {
         self.capture.store(capture, Ordering::Relaxed);
     }
@@ -371,10 +374,10 @@ impl Pod {
         self.capture.load(Ordering::Relaxed)
     }
 
-    /// What the tap wrote down (testbox/tap/volumes.yaml), the box's since it played from
-    /// nothing ([`Self::fresh`]).
-    pub fn tap_dir(&self) -> PathBuf {
-        self.target("tap")
+    /// The capture and the key logs (testbox/capture/volumes.yaml), the box's since it played
+    /// from nothing ([`Self::fresh`]).
+    pub fn capture_dir(&self) -> PathBuf {
+        self.target("capture")
     }
 
     /// The test files the xtask writes and the clients read (testbox/pod.yaml volume `files`).
@@ -569,10 +572,11 @@ impl Pod {
                 .context(directory.display().to_string())?;
         }
         if self.capturing() {
-            let tap = self.tap_dir();
-            std::fs::create_dir_all(&tap).context(tap.display().to_string())?;
-            std::fs::set_permissions(&tap, std::fs::Permissions::from_mode(0o700))
-                .context(tap.display().to_string())?;
+            // The secrets of every session in the box: the owner's only.
+            let capture = self.capture_dir();
+            std::fs::create_dir_all(&capture).context(capture.display().to_string())?;
+            std::fs::set_permissions(&capture, std::fs::Permissions::from_mode(0o700))
+                .context(capture.display().to_string())?;
         }
         testbox_tools::write(&self.rendered, self.render(clients, b33ps)?)?;
         // Each container's log in a file conmon writes as it comes (k8s-file), not journald's,
@@ -597,9 +601,23 @@ impl Pod {
     pub fn fresh(&self, clients: &[Client], b33ps: u8) -> Result<()> {
         self.down(true)?;
         // The box before's capture went into its record ([`crate::checks`]' `keep_logs`).
-        let tap = self.tap_dir();
-        if tap.exists() {
-            std::fs::remove_dir_all(&tap).context(tap.display().to_string())?;
+        let capture = self.capture_dir();
+        if capture.exists() {
+            std::fs::remove_dir_all(&capture).context(capture.display().to_string())?;
+        }
+        // Its b33ps' content logs too, if a run ended before its record moved them: left, the
+        // next record would take their lines for this box's.
+        if let Ok(entries) = std::fs::read_dir(self.run_dir()) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(CONTENT_LOG_PREFIX)
+                {
+                    std::fs::remove_file(entry.path())
+                        .context(entry.path().display().to_string())?;
+                }
+            }
         }
         self.lost
             .lock()
@@ -610,8 +628,9 @@ impl Pod {
 
     /// pod.yaml with this box's names (`@POD@`) and directories (`@TARGET@`) filled in, the
     /// clients' containers in its [`CLIENTS`] line, each b33p's container and volumes in its
-    /// [`B33PS`] and [`B33P_VOLUMES`] lines, and with `--capture` the tap's in its [`TAP_INIT`],
-    /// [`TAP`] and [`TAP_VOLUMES`] lines.
+    /// [`B33PS`] and [`B33P_VOLUMES`] lines, and with `--capture` the packet capture's in its
+    /// [`CAPTURE`] and [`CAPTURE_VOLUMES`] lines and each server's key log in its
+    /// [`CAPTURE_ENV`] and [`CAPTURE_MOUNT`] lines.
     fn render(&self, clients: &[Client], b33ps: u8) -> Result<String> {
         let read = |path: &str| testbox_tools::read(&self.repo.join(path));
         let containers = clients
@@ -630,28 +649,55 @@ impl Pod {
         };
         let b33p_containers = each_b33p("testbox/b33p/pod.yaml")?;
         let b33p_volumes = each_b33p("testbox/b33p/volumes.yaml")?;
-        let tap = |path: &str| {
-            if self.capturing() {
+        let capturing = self.capturing();
+        let capture = |path: &str| {
+            if capturing {
                 read(path)
             } else {
                 Ok(String::new())
             }
         };
-        let (tap_init, tap_container, tap_volumes) = (
-            tap("testbox/tap/init.yaml")?,
-            tap("testbox/tap/pod.yaml")?,
-            tap("testbox/tap/volumes.yaml")?,
+        let (capture_container, capture_volumes) = (
+            capture("testbox/capture/pod.yaml")?,
+            capture("testbox/capture/volumes.yaml")?,
         );
+        // `# @CAPTURE_ENV <container>@`, the marker alone on its line: the container whose key
+        // log it is.
+        let capture_env = |marker: &str| -> Option<String> {
+            let server = marker.strip_prefix(CAPTURE_ENV)?.strip_suffix('@')?;
+            server
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                .then(|| server.to_owned())
+        };
         let pod: String = read("testbox/pod.yaml")?
             .lines()
-            .map(|line| match line.trim() {
-                CLIENTS => containers.clone(),
-                B33PS => b33p_containers.clone(),
-                B33P_VOLUMES => b33p_volumes.clone(),
-                TAP_INIT => tap_init.clone(),
-                TAP => tap_container.clone(),
-                TAP_VOLUMES => tap_volumes.clone(),
-                _ => format!("{line}\n"),
+            .map(|line| {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                match line.trim() {
+                    CLIENTS => containers.clone(),
+                    B33PS => b33p_containers.clone(),
+                    B33P_VOLUMES => b33p_volumes.clone(),
+                    CAPTURE => capture_container.clone(),
+                    CAPTURE_VOLUMES => capture_volumes.clone(),
+                    CAPTURE_MOUNT if capturing => format!(
+                        "{indent}{{ name: \"capture\", mountPath: \"{}\" }},\n",
+                        testbox_tools::keys::CAPTURE_DIR
+                    ),
+                    CAPTURE_MOUNT => String::new(),
+                    marker if capture_env(marker).is_some() => {
+                        if capturing {
+                            format!(
+                                "{indent}{{ name: \"SSLKEYLOGFILE\", value: \"{}/keys-{}.log\" }},\n",
+                                testbox_tools::keys::CAPTURE_DIR,
+                                capture_env(marker).unwrap_or_default()
+                            )
+                        } else {
+                            String::new()
+                        }
+                    }
+                    _ => format!("{line}\n"),
+                }
             })
             .collect();
         Ok(pod
@@ -734,7 +780,11 @@ impl Pod {
                 down.arg("--force");
             }
             down.arg(&self.rendered);
-            quietly(down)?;
+            // A file an older xtask rendered wrong, or a pod gone already: the removal by name
+            // below does the rest.
+            if let Err(error) = quietly(down) {
+                println!("podman kube down: {error}; the pod goes by its name");
+            }
         }
         let pod = process::output(
             podman(&[
@@ -1220,17 +1270,23 @@ mod tests {
         }
     }
 
-    /// The tap is in the pod only with `--capture`: its redirect, its relay and its directory.
+    /// The capture is in the pod only with `--capture`: tcpdump, its directory, and each
+    /// server's key log and mount of the directory.
     #[test]
-    fn the_tap_is_there_only_when_capturing() {
+    fn the_capture_is_there_only_when_capturing() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("the workspace");
         let pod = Pod::new(repo, None).expect("the default box");
         let tapped = [
-            r#"name: "tap-redirect","#,
-            r#"name: "tap","#,
-            "target/testbox-tap\"",
+            r#"name: "capture","#,
+            r#"value: "/capture/keys-server.log""#,
+            r#"value: "/capture/keys-storage.log""#,
+            r#"value: "/capture/keys-cdn0.log""#,
+            r#"value: "/capture/keys-preview.log""#,
+            r#"value: "/capture/keys-tus.log""#,
+            r#"mountPath: "/capture""#,
+            "target/testbox-capture\"",
         ];
         let plain = pod.render(&[], 1).expect("a pod");
         for part in tapped {
@@ -1244,6 +1300,19 @@ mod tests {
         for part in tapped {
             assert!(captured.contains(part), "{part} in\n{captured}");
         }
+        // One key log a server, each in its container's `env`, none where pod.yaml's own
+        // comments mention the marker.
+        let key_logs = captured
+            .lines()
+            .filter(|line| line.contains("name: \"SSLKEYLOGFILE\""))
+            .collect::<Vec<_>>();
+        assert_eq!(key_logs.len(), 5, "{key_logs:#?}");
+        assert!(
+            key_logs
+                .iter()
+                .all(|line| line.starts_with("          { name:")),
+            "{key_logs:#?}"
+        );
     }
 
     /// Each b33p gets a container, a home, a display and a harness socket of its own; the first

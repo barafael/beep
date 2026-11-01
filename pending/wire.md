@@ -1,9 +1,11 @@
 # Wire: what Signal's own clients say to the server, next to what b33p says
 
-`cargo testbox test --capture` relays every TLS connection in the box through the `tap`
-(testbox/tools `tap`), and xtask/src/wire decodes it. The output goes in the box record's `wire/`:
-`events.jsonl`, a transcript for each client, and `compare.md`. The work is on branch `wire-tap`
-(worktree `~/code/beep-wire`).
+`cargo testbox test --capture` writes the wire down (tcpdump on the pod's loopback, and every
+server's TLS key log; testbox/capture) and xtask/src/wire decodes it. The output goes in the box
+record's `wire/`: `events.jsonl`, a transcript for each client, `compare.md`, and
+`capture.pcapng` for Wireshark. Until 2026-11-01 the capture was a TLS relay (`tap`) in the pod
+instead, which wrote the plaintext itself; records from then still decode. The work began on
+branch `wire-tap` (worktree `~/code/beep-wire`).
 
 This file is kept as the runs go. Newest entries go at the end of each section.
 
@@ -35,6 +37,56 @@ This file is kept as the runs go. Newest entries go at the end of each section.
   desktop 17, attachments 10, core 6, Android box 16, android 9, groups 25, storage 12, mesh
   box 10, tour 80. 351 connections and 3187 events, all decoded. Observations below
   ("Observations on main, 2026-10-30").
+
+- 2026-11-01, main ad1b30c with the pcap change: `test --capture desktop`, 29/29 passed. 45
+  connections and 312 events, all decoded; `wire/capture.pcapng` with 16631 packets and the
+  tap's 450 key-log lines. tshark decrypts 86 of 97 TLS streams; the 11 others are handshakes
+  without application data.
+
+- 2026-11-01 03:17, main ad1b30c with the servers' key logs and the new checks: `run --rounds 2
+  --capture` of every phase. Linked box, desktop (21, four new), attachments (11, one new), core
+  (7, one new), mesh box and tour all passed in both rounds; the Android box's setup failed in
+  both at "Android writes a note to itself" (`node 45 went`, the driver's stale node, fixed
+  after). Decoded: 129/127 connections and 785/748 events in the linked boxes, 38 and 179/177
+  in the Android boxes' setups, nothing undecoded.
+
+## The capture as a pcap, 2026-11-01
+
+First step, the same day: tcpdump beside the relay, and the relay's own key log, put together as
+`wire/capture.pcapng`. Two things that writer had to correct, both gone with the relay: the
+redirect's NAT left a client's packets with the relay's port and the replies with the server's;
+and loopback TCP checksums are offloaded partial sums, which an incremental update spoils.
+
+Second step: the relay retired. Every server writes its own key log (`SSLKEYLOGFILE`, one file a
+server): Signal-Server (Java 26) and storage-service (Java 25) through jSSLKeyLog 1.4's agent
+for Java 24+, the JDK having no key log of its own; the CDN0 and preview fronts through rustls's
+`KeyLogFile`; CDN3 through a new `front` tool of the box's own in front of `wrangler dev`, whose
+HTTPS is workerd's and logs nothing. xtask/src/wire decodes the pcap itself: `tcp.rs` puts the
+connections back together, `tls.rs` opens TLS 1.3 with the key logs (ring's HKDF and AEADs; key
+updates; the hello's suites and schemes named as rustls names them, so fingerprints stay
+comparable with the relay's records), `capture.rs` hands them to the HTTP decoding unchanged.
+Validated on the relay-era record of 2026-11-01 00:31, which had both the relay's files and a
+pcap with the relay's keys: the capture decoded to the same 45 connections and the same 312
+events, with identical headers, noted values, body kinds, shapes and sizes, and request timings
+within 0.02 ms of the relay's. Differences: two connections the relay reported as `handshake
+eof` the capture reports as `the handshake didn't finish`; one signature scheme's name
+(`RSA_PKCS1_SHA1`) was missing from the table, now added. The pcapng is for looking at what the
+decoding doesn't show (TCP, the handshakes, the exact bytes); the clients now talk to the real
+servers' TLS stacks, so their negotiation is the real one.
+
+First run on the servers' own key logs (2026-11-01 02:27, `test --capture desktop attachments
+core`): every server wrote secrets (Signal-Server 63 sessions, storage-service 8, CDN0 4, CDN3's
+front 12), and 133 connections decoded to 557 events. Found: Signal-Server's omnibus port
+(8445, gRPC and Desktop's chat websocket over HTTP/2) is Netty's, and Netty takes BoringSSL
+(netty-tcnative) when it is on the classpath ("Loaded OPENSSL TLS contexts", `SniMapper`); the
+agent instruments the JDK's engine, so those nine sessions had no secrets and Desktop's chat
+traffic stayed dark. Netty's `-Dio.netty.handler.ssl.noOpenSsl=true` is no way out: `SniMapper`
+insists on OpenSSL when asked for it and the server doesn't start. The server's configuration
+has the switch (`GrpcConfiguration.sslProvider`, `OPENSSL` by default): under `--capture`
+`provision` sets `grpc.sslProvider: JDK`, the one place the capture changes what a server does. Also seen: Desktop keeps idle connections open to each
+origin that never send a byte (`failed: nothing sent`, half of them to the CDNs), and a client
+hello the server never answers times out after 10 s on the client's side (`the handshake didn't
+finish`), around the server's restart in `core`.
 
 ## Observations on main, 2026-10-30
 

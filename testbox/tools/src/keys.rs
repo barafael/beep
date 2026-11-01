@@ -86,28 +86,26 @@ pub const STORAGE_PORT: u16 = 8448;
 /// storage-service's admin port: Dropwizard's default, 8081, is Signal-Server's in the pod.
 pub const STORAGE_ADMIN_PORT: u16 = 8449;
 
-/// The ports the clients reach the servers on over TLS, which `--capture` relays through the `tap`
-/// tool to see what they say: Signal-Server's three, the CDNs' and the storage service's.
-pub const TAPPED_PORTS: [u16; 6] = [
+/// The ports the clients reach the servers on over TLS, whose connections `--capture`'s
+/// decoding takes apart (xtask/src/wire): Signal-Server's three, the CDNs', the storage
+/// service's, and the preview page's.
+pub const CAPTURED_PORTS: [u16; 7] = [
     LIBSIGNAL_NET_PORT,
     LIBSIGNAL_SERVICE_PORT,
     OMNIBUS_PORT,
     CDN3_PORT,
     CDN0_PORT,
     STORAGE_PORT,
+    PREVIEW_PORT,
 ];
 
-/// Where `tap` listens for what was bound for `port`, one of [`TAPPED_PORTS`].
-pub const fn tap_port(port: u16) -> u16 {
-    port + 1000
-}
+/// Where `--capture` has the servers write their TLS sessions' secrets (`SSLKEYLOGFILE`, one
+/// file a server) and tcpdump the pod's loopback (testbox/capture/pod.yaml).
+pub const CAPTURE_DIR: &str = "/capture";
 
-/// The address `tap` reaches the servers from, on the pod's loopback: the redirect to it passes
-/// what comes from here by.
-pub const TAP_SOURCE: [u8; 4] = [127, 0, 0, 2];
-
-/// Where `tap` writes what it relays (testbox/tap/pod.yaml).
-pub const TAP_DIR: &str = "/tap";
+/// The port the CDN3 front ([`CDN3_PORT`], testbox/tools `front`) passes the plaintext on to:
+/// tus-server's `wrangler dev`, plain HTTP on the loopback.
+pub const CDN3_UPSTREAM_PORT: u16 = 8456;
 
 /// An S3 bucket, by its name and region.
 #[derive(Clone, Copy)]

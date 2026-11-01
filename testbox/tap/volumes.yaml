@@ -1,2 +1,0 @@
-# `--capture`'s: what the tap writes down, on the host; in place of pod.yaml's `@TAP_VOLUMES@`.
-      { name: "tap", hostPath: { path: "@TARGET@-tap", type: "Directory" } },

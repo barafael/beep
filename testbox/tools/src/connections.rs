@@ -1,10 +1,12 @@
-//! What the `tap` tool writes for each connection it relays, and reads back: the plaintext each
-//! way, in the order it came, and what the connection was.
+//! One of the box's TLS connections as decoded from `--capture`'s packet capture and the servers'
+//! key logs (xtask/src/wire): the plaintext each way, in the order it came, and what the
+//! connection was. The form the relay `--capture` used to put in the pod wrote, kept: a record
+//! from before decodes the same way.
 //!
-//! A connection's bytes are in `<n>-<port>.tap`, records one after the other: when (nanoseconds
+//! A connection's bytes go in `<n>-<port>.tap`, records one after the other: when (nanoseconds
 //! since the epoch, u64 little-endian), which way ([`Direction`], one byte), how many bytes (u32
-//! little-endian), the bytes. [`Direction::Closed`] records have none: that side closed. Its
-//! [`Connection`] is in `<n>-<port>.json`.
+//! little-endian), the bytes. The closing [`Direction`]s' records have none: that side closed.
+//! Its [`Connection`] goes in `<n>-<port>.json`.
 
 use std::io::{self, Read, Write};
 
@@ -43,14 +45,14 @@ impl Direction {
     }
 }
 
-/// A connection the tap relayed: where it came from and went, and its TLS as each side had it.
+/// A connection: where it came from and went, and its TLS as each side had it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     /// Numbers the connections in the order they came.
     pub n: u64,
-    /// The port the client meant ([`crate::keys::TAPPED_PORTS`]).
+    /// The server's port ([`crate::keys::CAPTURED_PORTS`]).
     pub port: u16,
-    /// The client's address and port, as the tap saw it.
+    /// The client's address and port.
     pub peer: String,
     /// When it came, in nanoseconds since the epoch.
     pub opened: u64,
@@ -58,10 +60,11 @@ pub struct Connection {
     pub hello: Hello,
     /// The protocol the server chose (ALPN), which the client got too.
     pub alpn: Option<String>,
-    /// The TLS version and cipher suite the server and the tap agreed on.
+    /// The TLS version and cipher suite the server chose.
     pub upstream_version: Option<String>,
     pub upstream_suite: Option<String>,
-    /// Why the tap gave up on it before relaying, if it did.
+    /// Why there is no plaintext of it, if there is none: a handshake that didn't finish, a
+    /// session without a key.
     pub failed: Option<String>,
 }
 
@@ -92,8 +95,7 @@ impl Record {
         out.write_all(&self.bytes)
     }
 
-    /// The next record, `None` at the end. A record cut short, as when the box stopped while
-    /// the tap wrote, ends the file too.
+    /// The next record, `None` at the end. A record cut short ends the file too.
     pub fn read_from(input: &mut impl Read) -> io::Result<Option<Self>> {
         let mut head = [0; 13];
         match input.read_exact(&mut head) {

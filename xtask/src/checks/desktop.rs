@@ -191,5 +191,109 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         })
     });
 
+    // A reaction taken back each way: the same emoji on the same message removes it
+    // (TESTPLAN.md §1.4), and the other side shows none.
+    checks.record("a reaction b33p takes back is gone on Desktop", || {
+        let index = incoming_index(b33p, from_desktop)?;
+        b33p.act(Action::React {
+            index,
+            emoji: "👍".to_owned(),
+        })?;
+        desktop.call(drivers::Desktop::WaitForNoReaction {
+            text: from_desktop.to_owned(),
+            timeout_ms: PATIENCE_MS,
+        })
+    });
+
+    checks.record("a reaction Desktop takes back is gone in b33p", || {
+        desktop.call(drivers::Desktop::ReactToMessage {
+            text: edited_text.to_owned(),
+        })?;
+        b33p_shows(b33p, "Desktop's reaction gone", |message| {
+            message.outgoing
+                && message.text == edited_text
+                && message.reactions.iter().all(|reaction| reaction.outgoing)
+        })
+    });
+
+    // TESTPLAN.md §1.3 item 1, with Desktop typing. Each side shows and sends them only with
+    // its own setting on: b33p's, and Desktop's, which a linked Desktop has as its primary
+    // synced it, and presage-cli syncs nothing. The text follows, and the indicator goes.
+    checks.record(
+        "Desktop's typing shows in b33p, and the text follows",
+        || {
+            typing_indicators(b33p, true)?;
+            desktop.call(drivers::Desktop::SetTypingIndicators {
+                on: true,
+                timeout_ms: PATIENCE_MS,
+            })?;
+            let text = "testbox desktop: typed on Desktop";
+            desktop.call(drivers::Desktop::TypeText {
+                text: text.to_owned(),
+            })?;
+            b33p.wait_for("Desktop typing", super::PATIENCE, |snapshot| {
+                (!snapshot.typing.is_empty()).then_some(())
+            })?;
+            desktop.call(drivers::Desktop::Send {
+                text: text.to_owned(),
+            })?;
+            b33p_shows(b33p, "Desktop's typed text", |message| {
+                !message.outgoing && message.text == text
+            })?;
+            b33p.wait_for("no one typing", super::PATIENCE, |snapshot| {
+                snapshot.typing.is_empty().then_some(())
+            })
+        },
+    );
+
+    // A long message: past Signal's inline body (2000 bytes) the text travels as a `LongText`
+    // attachment, which the receiver has to fetch and splice in (Desktop
+    // ts/util/longAttachment.ts; b33p-core). The whole text, or nothing.
+    checks.record("a long text from Desktop reaches b33p whole", || {
+        let text = long_text("testbox desktop: a long text from Desktop");
+        desktop.call(drivers::Desktop::Send { text: text.clone() })?;
+        b33p_shows(b33p, "Desktop's long text, whole", |message| {
+            !message.outgoing && message.text == text
+        })
+    });
+
     Ok(())
+}
+
+/// Turns b33p's typing indicators on or off, as its settings switch does.
+fn typing_indicators(b33p: &mut crate::harness::Harness, on: bool) -> Result<()> {
+    b33p.act(Action::SetSettings {
+        theme: None,
+        style: None,
+        text_size: None,
+        animations: None,
+        show_avatars: None,
+        notifications: None,
+        notification_content: None,
+        show_activity: None,
+        show_calendar: None,
+        close_to_tray: None,
+        read_receipts: None,
+        typing_indicators: Some(on),
+        link_previews: None,
+        sync_to_phone: None,
+    })?;
+    b33p.wait_for("b33p's typing indicators", super::PATIENCE, |snapshot| {
+        (snapshot.settings.typing_indicators == on).then_some(())
+    })
+}
+
+/// `head`, then numbered lines up to well past 2000 bytes, ending in a line that says so: a
+/// text cut at the inline limit would lack it.
+pub(super) fn long_text(head: &str) -> String {
+    let mut text = head.to_owned();
+    let mut n = 1;
+    while text.len() < 2600 {
+        text.push_str(&format!(
+            "\nline {n} of a long message, to be carried whole"
+        ));
+        n += 1;
+    }
+    text.push_str("\nthe last line, past the inline limit");
+    text
 }

@@ -120,8 +120,9 @@ Android box links b33p to Android and Desktop to the peer. On both, the peer's f
 to b33p's account is accepted before the phases start.
 
 Each check prints `check <what>: passed (<seconds>)` or `failed (<seconds>): <why>`, and each
-part (a box's setup, a phase) ends checking that no client lost a message or crashed; `test`
-fails if any check did. Each image's build output is in `target/testbox-build/<image>.log`. The setups are
+part (a box's setup, a phase) ends checking that no client lost a message or crashed, and that
+b33p logged no ERROR line but the known kinds (xtask/src/checks/errors.rs lists them, each with
+its reason); `test` fails if any check did. Each image's build output is in `target/testbox-build/<image>.log`. The setups are
 in `xtask/src/checks/setup.rs`, the phases' checks one file per phase beside it.
 
 `cargo testbox run` runs `test` in rounds and sums up at the end: `cargo testbox run --rounds 2`
@@ -182,16 +183,28 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
   the state the check left (its display catches up only later, often a check late; popups,
   windows of their own, aren't in it); `testbox/shot` takes Desktop's and Android's over the
   displays' sockets.
-- `test --capture` (and `run --capture`) also writes down what every client says to the servers
-  over TLS, for comparing Signal's own clients with b33p. An init container (`tap redirect`,
-  with NET_ADMIN) has nftables send the pod's connections to the TLS ports (8443–8448) to the
-  `tap` relay instead; the tap shows the keys' certificate, opens its own connection to the
-  server the client meant, offering what the client offered (so h2 stays h2, and extended
-  CONNECT and gRPC pass as they are), and copies the plaintext both ways into
-  `target/testbox-tap`. At the box's end the record gets it in `wire/raw/`, decoded beside it
-  (xtask/src/wire): `events.jsonl`, a transcript per client under each check's name, and
-  `compare.md`, the clients side by side. `cargo testbox wire <record>` decodes it again. Not
-  for the stress phases.
+- `test --capture` (and `run --capture`) also writes the wire down, for comparing Signal's own
+  clients with b33p. A `capture` container runs tcpdump on the pod's loopback, where every
+  connection in the box goes, into `target/testbox-capture/capture.pcap`; each server writes its
+  TLS sessions' secrets beside it (`SSLKEYLOGFILE`, `keys-<server>.log`: Signal-Server and
+  storage-service through the jSSLKeyLog agent, as the JDK writes none itself, and
+  Signal-Server's omnibus port on the JDK's TLS engine (`grpc.sslProvider: JDK`) instead of
+  Netty's BoringSSL, which the agent can't see; the CDN fronts and the preview page through rustls; CDN3's TLS is a front of
+  the box's own in front of `wrangler dev`, whose HTTPS writes none). Nothing stands between the
+  clients and the servers.
+  At the box's end the record gets both in `wire/raw/`, and xtask/src/wire decodes them: the TCP
+  connections to the servers' ports, their TLS 1.3 opened with the key logs, then HTTP/1.1,
+  HTTP/2, WebSocket and Signal's envelopes into `events.jsonl`, a transcript per client under
+  each check's name, `connections.jsonl` (each connection's client, address, ALPN and TLS
+  fingerprint), and `compare.md`, the clients side by side. `cargo testbox wire <record>` decodes
+  a record again. Not for the stress phases.
+- With it, `wire/capture.pcapng`: the capture and the key logs in one file, the secrets in its
+  Decryption Secrets Block. Open it in Wireshark and the box's traffic is decrypted, nothing to
+  configure (`tshark -r capture.pcapng -Y http2.headers` likewise); `connections.jsonl`'s `peer`
+  names the TCP stream a connection is. The raw `capture.pcap` and `keys-*.log` stay in `wire/raw/`
+  for `editcap --inject-secrets` or anything else that reads a key log. A connection the capture
+  can't open (a handshake that never finished, a session without secrets) is in
+  `connections.jsonl` with `failed` saying why.
 - `cargo testbox logs b33p server` prints those containers' logs; the names are those in
   `pod.yaml` (`b33p`, `server`, `storage`, `presage`, `desktop`, `android`, …). The last box
   stays up after `test`, so a failure on it can be looked at as it was.

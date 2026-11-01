@@ -47,6 +47,7 @@ async fn run() -> Result<()> {
 
     let (mut storage_service, heard) = spawn_logged(
         Command::new("java")
+            .args(testbox_tools::process::java_key_log_arguments())
             .args(["-cp", STORAGE_SERVICE_CLASSPATH, STORAGE_SERVICE_MAIN])
             .arg("server")
             .arg(KeyFile::StorageService.path())

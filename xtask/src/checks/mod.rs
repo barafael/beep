@@ -15,6 +15,7 @@ mod clients;
 mod core;
 mod crashed;
 mod desktop;
+mod errors;
 mod groups;
 mod lost;
 mod presage;
@@ -138,7 +139,7 @@ pub(crate) fn run(
                 // Any picture will do; this one is in the repository already.
                 &repo.join("docs/screenshots/01-chats.png"),
             ),
-            LinkedPhase::Core => core::core(checks, fixture, containers),
+            LinkedPhase::Core => core::core(checks, fixture, containers, &sockets),
         },
     );
     on_fixture(
@@ -362,6 +363,10 @@ impl Tally<'_> {
         checks.record("no client crashed", || {
             self.reported
                 .none_new("crashed", Ok(crashed::found(self.containers)))
+        });
+        checks.record("b33p logged no unexpected error", || {
+            self.reported
+                .none_new("unexpected errors", Ok(errors::found(self.containers)))
         });
         println!(
             "{name}: {} passed, {} failed, in {:.0} s",

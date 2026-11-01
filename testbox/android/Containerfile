@@ -81,10 +81,12 @@ FROM sdk AS emulator
 # newest, so the revisions are checked. Here, where the image takes platform-tools from: in the
 # SDK stage, a changed check would rebuild every later stage.
 RUN sdkmanager --sdk_root="$ANDROID_HOME" "emulator" "system-images;android-35;default;x86_64"
-RUN grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properties" \
-    && grep -qx "Pkg.Revision=37.2.12" "$ANDROID_HOME/emulator/source.properties" \
-    && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties" \
-    && echo no | avdmanager create avd -n box -k "system-images;android-35;default;x86_64" -d pixel_5
+RUN { grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properties" \
+    && grep -qx "Pkg.Revision=37.2.13" "$ANDROID_HOME/emulator/source.properties" \
+    && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties"; } \
+    || { echo "a revision moved; found:"; grep -H "^Pkg.Revision=" "$ANDROID_HOME/platform-tools/source.properties" \
+        "$ANDROID_HOME/emulator/source.properties" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties"; exit 1; }
+RUN echo no | avdmanager create avd -n box -k "system-images;android-35;default;x86_64" -d pixel_5
 
 # Signal-Android at the pin, patched: the app's sources, and the Gradle wrapper the agent builds with.
 FROM sdk AS signal

@@ -12,20 +12,22 @@ publish = false
 [features]
 # The library's async half (`process::spawn_logged`, `process::supervise`).
 async = ["dep:tokio"]
+# The servers' TLS with `--capture`'s key log (`tls`).
+tls = ["dep:rustls"]
 cdn0 = [
     "async",
+    "tls",
     "dep:axum",
     "dep:axum-server",
     "dep:futures-util",
     "dep:reqwest",
     "reqwest/stream",
-    "dep:rustls",
     "dep:toml",
 ]
 foundationdb = ["async"]
-preview = ["async", "dep:axum", "dep:axum-server", "dep:rustls"]
-# `--capture`'s TLS relay.
-tap = ["async", "tokio/net", "tokio/rt-multi-thread", "dep:rustls", "dep:tokio-rustls"]
+preview = ["async", "tls", "dep:axum", "dep:axum-server"]
+# CDN3's TLS front, in front of `wrangler dev`.
+front = ["async", "tls", "tokio/net", "tokio/rt-multi-thread", "dep:tokio-rustls"]
 android = ["dep:hex", "dep:sha2"]
 # `with-display`: the compositor's protocols, the umask for its sockets, the stop signals.
 display = ["dep:wayland-client", "dep:rustix", "dep:signal-hook"]
@@ -55,8 +57,8 @@ name = "preview"
 required-features = ["preview"]
 
 [[bin]]
-name = "tap"
-required-features = ["tap"]
+name = "front"
+required-features = ["front"]
 
 [[bin]]
 name = "foundationdb"

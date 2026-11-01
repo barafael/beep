@@ -10743,6 +10743,7 @@ dependencies = [
  "httparse",
  "image",
  "loona-hpack",
+ "ring",
  "serde",
  "serde_json",
  "strum 0.27.2",

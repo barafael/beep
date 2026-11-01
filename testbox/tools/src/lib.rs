@@ -1,6 +1,6 @@
 //! What the testbox's programs share: failures typed, with what was being done; running commands
-//! ([`process`]); the drivers' protocol ([`drivers`]), the keys ([`keys`]) and what `tap` writes
-//! ([`tap`]), which the xtask uses too.
+//! ([`process`]); the drivers' protocol ([`drivers`]), the keys ([`keys`]) and the form of a
+//! decoded connection ([`connections`]), which the xtask uses too.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
@@ -12,10 +12,12 @@ use derive_more::{Display, Error};
 pub mod agent;
 #[cfg(feature = "android")]
 pub mod avd;
+pub mod connections;
 pub mod drivers;
 pub mod keys;
 pub mod process;
-pub mod tap;
+#[cfg(feature = "tls")]
+pub mod tls;
 #[cfg(feature = "android")]
 pub mod verification;
 
@@ -45,8 +47,12 @@ pub fn cdn0_request_line(method: &str, path: &str, status: u16) -> String {
 /// What the `preview` tool logs once it serves.
 pub const PREVIEW_READY: &str = "preview: serving";
 
-/// What `tap` says once it listens on every port it relays.
-pub const TAP_READY: &str = "tap: relaying";
+/// What `front` says once it listens, the CDN3 front.
+pub const FRONT_READY: &str = "front: serving";
+
+/// What tcpdump says once it captures (testbox/capture/pod.yaml): its own wording, at the
+/// version Debian trixie ships in the cdn0 image.
+pub const CAPTURE_READY: &str = "listening on lo";
 
 /// What `with-display` says when its application failed on its own: what waits for the
 /// application to be ready stops waiting, rather than for its restarts.

@@ -1041,10 +1041,19 @@ impl Driver {
         self.agent.click(node, false)
     }
 
-    /// Taps the control labelled `text`, once it is enabled.
+    /// Taps the control labelled `text`, once it is enabled. A node that went between the look
+    /// and the tap (the screen drew again, as Compose does on its own schedule) is looked for
+    /// once more.
     fn tap(&mut self, text: &str, patience: Duration) -> Result<()> {
         let found = self.first_shown(vec![agent::Wanted::control(text)], patience)?;
-        self.tap_at(&found.node)
+        match self.tap_at(&found.node) {
+            Err(Error::Failed(error)) if error.ends_with(" went") => {
+                eprintln!("android: {error}; looking for {text:?} again");
+                let found = self.first_shown(vec![agent::Wanted::control(text)], patience)?;
+                self.tap_at(&found.node)
+            }
+            outcome => outcome,
+        }
     }
 
     /// Sets the text of the field with input focus, once one has it, and waits until it reads as
@@ -1162,14 +1171,27 @@ impl Driver {
 
     /// Sends `text` in the open conversation, from its composer: the screen's last field.
     fn send(&mut self, text: &str) -> Result<()> {
+        let filled = self.fill_message_field(text);
+        // The field's node went between the look and the tap: look again, once.
+        match filled {
+            Err(Error::Failed(error)) if error.ends_with(" went") => {
+                eprintln!("android: {error}; looking for the message field again");
+                self.fill_message_field(text)?;
+            }
+            outcome => outcome?,
+        }
+        self.tap("Send message", PATIENCE)
+    }
+
+    /// The composer's field, the last editable one on screen, given `text`.
+    fn fill_message_field(&mut self, text: &str) -> Result<()> {
         let shown = self.first_shown(vec![agent::Wanted::Editable], PATIENCE)?;
         let field = shown
             .screen
             .into_iter()
             .rfind(|node| node.editable)
             .ok_or_else(|| Error::Failed("no message field".to_owned()))?;
-        self.fill(&field, text, agent::Echo::Exact(text.to_owned()))?;
-        self.tap("Send message", PATIENCE)
+        self.fill(&field, text, agent::Echo::Exact(text.to_owned()))
     }
 
     fn settings(&mut self) -> Result<()> {

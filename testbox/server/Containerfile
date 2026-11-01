@@ -35,6 +35,14 @@ RUN --mount=type=cache,target=/root/.m2 \
     && cp -r service/target/test-classes /out/test-classes \
     && cp service/target/jib-extra/usr/lib/libfdb_c.so /out/libfdb_c.x86_64.so
 
+# `--capture`'s key log for the JVM, which writes none itself: jSSLKeyLog 1.4 (GPL-2.0-or-later;
+# a tool the box runs, nothing of b33p's), its agent for Java 24 and later, the one built on
+# java.lang.classfile. testbox/tools `provision` passes it to java when SSLKEYLOGFILE is set.
+ADD --checksum=sha256:2f21fefc4ad3e18f0887d7acbaac1fa735ab3ab2df53d7a4dab1e52e644e679f \
+    https://github.com/jsslkeylog/jsslkeylog/releases/download/v1.4.0/jSSLKeyLog-1.4.zip /tmp/jSSLKeyLog-1.4.zip
+RUN unzip -q /tmp/jSSLKeyLog-1.4.zip jSSLKeyLog-java24+.jar -d /out \
+    && echo "aed8356527f88d06644d3248ae88bf39a8438ca8d3d17384c1a0252f219b0043  /out/jSSLKeyLog-java24+.jar" | sha256sum -c -
+
 # The entrypoint, from the repository (the build context): protoc for libsignal's protobufs.
 FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler \
@@ -64,6 +72,7 @@ COPY --from=build /out/test-classes /opt/signal/test-classes
 # client"), and the name fdb-java loads (`UnsatisfiedLinkError: libfdb_c.so` without it).
 COPY --from=build /out/libfdb_c.x86_64.so /usr/lib/libfdb_c.x86_64.so
 RUN ln -s libfdb_c.x86_64.so /usr/lib/libfdb_c.so
+COPY --from=build /out/jSSLKeyLog-java24+.jar /opt/testbox/jSSLKeyLog-java24+.jar
 COPY --from=tools /usr/local/bin/provision /usr/local/bin/provision
 # For the Desktop image, whose build context is testbox/desktop: built here, on the same Debian.
 COPY --from=tools /usr/local/bin/with-display /usr/local/bin/with-display

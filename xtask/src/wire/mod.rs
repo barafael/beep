@@ -1,27 +1,36 @@
-//! What `--capture`'s tap wrote down (testbox/tools `tap`), decoded: each request a client or
-//! the server made, on which connection, with what it carried, as `events.jsonl` in the box's
-//! record's `wire/`, a transcript per client beside it, and each connection's summary
-//! (`connections.jsonl`). The point is the comparison of Signal's own clients with b33p
-//! ([`compare`]): which requests each makes, how, and how often.
+//! What `--capture` wrote down (testbox/capture: the pod's loopback as tcpdump saw it, and the
+//! servers' TLS secrets), decoded: each request a client or the server made, on which
+//! connection, with what it carried, as `events.jsonl` in the box's record's `wire/`, a
+//! transcript per client beside it, and each connection's summary (`connections.jsonl`). The
+//! point is the comparison of Signal's own clients with b33p ([`compare`]): which requests each
+//! makes, how, and how often.
 //!
-//! The layers: TLS's plaintext, HTTP/1.1 ([`h1`]) or HTTP/2 ([`h2`]); WebSocket ([`ws`]), after
-//! an upgrade or in an extended CONNECT; Signal's `WebSocketMessage` and protobuf without its
-//! schema ([`proto`]); gRPC's messages. What lies inside an envelope is end-to-end encrypted.
+//! The layers: TCP ([`tcp`]); TLS 1.3, opened with the key logs ([`tls`], [`capture`]);
+//! HTTP/1.1 ([`h1`]) or HTTP/2 ([`h2`]); WebSocket ([`ws`]), after an upgrade or in an extended
+//! CONNECT; Signal's `WebSocketMessage` and protobuf without its schema ([`proto`]); gRPC's
+//! messages. What lies inside an envelope is end-to-end encrypted.
+//!
+//! Beside the decoding, the wire as it was: the packet capture and the key logs as one pcapng
+//! for Wireshark ([`pcap`], `capture.pcapng`).
 
+mod capture;
 mod compare;
 pub(crate) mod content;
 mod h1;
 mod h2;
+mod pcap;
 mod proto;
 mod stream;
+mod tcp;
 mod template;
+mod tls;
 mod ws;
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
-use testbox_tools::tap::{Connection, Record};
+use testbox_tools::connections::{Connection, Record};
 
 use crate::checks::record::Span;
 use crate::error::{Context, Result, WithContext};
@@ -68,6 +77,8 @@ pub(crate) struct Event {
 pub(crate) struct Summary {
     pub(crate) n: u64,
     pub(crate) port: u16,
+    /// The client's address and port: the TCP stream to find in the pcapng.
+    pub(crate) peer: String,
     pub(crate) client: String,
     /// What it said of who made it: its agent, its user.
     pub(crate) agent: Option<String>,
@@ -106,25 +117,15 @@ const NOTED: [&str; 11] = [
 pub(crate) fn decode(record: &Path) -> Result<()> {
     let wire = record.join("wire");
     let raw = wire.join("raw");
-    let mut metas: Vec<Connection> = Vec::new();
-    for entry in std::fs::read_dir(&raw).context(raw.display().to_string())? {
-        let path = entry.context(raw.display().to_string())?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            let json = testbox_tools::read(&path)?;
-            metas.push(serde_json::from_str(&json).with_context(|| path.display().to_string())?);
-        }
-    }
-    metas.sort_by_key(|meta| meta.n);
+    let connections = match capture::connections(&raw)? {
+        Some(connections) => connections,
+        None => relayed(&raw)?,
+    };
     let mut events = Vec::new();
     let mut summaries = Vec::new();
     let mut identities = Vec::new();
-    for meta in &metas {
-        let (bytes_name, _) = testbox_tools::tap::file_names(meta.n, meta.port);
-        let records = read_records(&raw.join(bytes_name))?;
-        let (found, summary, identity) = connection(meta, &records);
+    for (meta, records) in &connections {
+        let (found, summary, identity) = connection(meta, records);
         events.extend(found);
         summaries.push(summary);
         identities.push(identity);
@@ -164,7 +165,44 @@ pub(crate) fn decode(record: &Path) -> Result<()> {
         counts.join(", "),
         wire.display()
     );
+    if let Some(assembled) = pcap::assemble(&raw, &wire)? {
+        println!(
+            "wire: {} packets{} in {}",
+            assembled.packets,
+            if assembled.secrets {
+                " with the TLS secrets"
+            } else {
+                ", no TLS secrets (the servers' SSLKEYLOGFILE unset?)"
+            },
+            wire.join(pcap::PCAPNG).display()
+        );
+    }
     Ok(())
+}
+
+/// The connections as the relay `--capture` used to put in the pod wrote them, in a record
+/// from before: `<n>-<port>.json` and `<n>-<port>.tap` each.
+fn relayed(raw: &Path) -> Result<Vec<capture::Decoded>> {
+    let mut metas: Vec<Connection> = Vec::new();
+    for entry in std::fs::read_dir(raw).context(raw.display().to_string())? {
+        let path = entry.context(raw.display().to_string())?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let json = testbox_tools::read(&path)?;
+            metas.push(serde_json::from_str(&json).with_context(|| path.display().to_string())?);
+        }
+    }
+    metas.sort_by_key(|meta| meta.n);
+    metas
+        .into_iter()
+        .map(|meta| {
+            let (bytes_name, _) = testbox_tools::connections::file_names(meta.n, meta.port);
+            let records = read_records(&raw.join(bytes_name))?;
+            Ok((meta, records))
+        })
+        .collect()
 }
 
 fn read_records(path: &Path) -> Result<Vec<Record>> {
@@ -312,6 +350,7 @@ fn connection(meta: &Connection, records: &[Record]) -> (Vec<Event>, Summary, Id
     let summary = Summary {
         n: meta.n,
         port: meta.port,
+        peer: meta.peer.clone(),
         client,
         agent: identities.agent.clone(),
         user: identities.user.clone(),

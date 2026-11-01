@@ -4,8 +4,10 @@
 # @TARGET@, where its directories go (hostPath must be absolute); it puts the clients it is
 # asked for in place of the @CLIENTS@ line (testbox/desktop/pod.yaml, testbox/android/pod.yaml),
 # each b33p's container and volumes in place of the @B33PS@ and @B33P_VOLUMES@ lines
-# (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml), and attaches the pod to an `--internal`
-# network of its own: no egress.
+# (testbox/b33p/pod.yaml, testbox/b33p/volumes.yaml), with `--capture` the packet capture in place
+# of the @CAPTURE@ and @CAPTURE_VOLUMES@ lines and each server's key log in place of its own
+# `@CAPTURE_ENV <container>@` and @CAPTURE_MOUNT@ lines (testbox/capture), and attaches the pod to
+# an `--internal` network of its own: no egress.
 #
 # One pod: every container shares localhost, as libsignal-net's local override needs;
 # the stores' names resolve to it (`hostAliases`), and each listens on a port of its own.
@@ -54,7 +56,6 @@
           capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
         },
       },
-      # @TAP_INIT@
     ],
     containers: [
       # The stores Signal-Server's test factories would start through Testcontainers, at the
@@ -134,27 +135,41 @@
       {
         name: "server",
         image: "localhost/@POD@-server",
+        env: [
+          # @CAPTURE_ENV server@
+        ],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
-        volumeMounts: [{ name: "keys", mountPath: "/keys" }],
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys" },
+          # @CAPTURE_MOUNT@
+        ],
       },
       # CDN3: tus-server under `wrangler dev`.
       {
         name: "tus",
         image: "localhost/@POD@-tus",
+        env: [
+          # @CAPTURE_ENV tus@
+        ],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
         volumeMounts: [
           { name: "keys", mountPath: "/keys", readOnly: true },
           { name: "tus-data", mountPath: "/data" },
+          # @CAPTURE_MOUNT@
         ],
       },
       # CDN0: Garage, for its POST-object uploads (Garage PR #222), behind a TLS front.
       {
         name: "cdn0",
         image: "localhost/@POD@-cdn0",
+        env: [
+          # @CAPTURE_ENV cdn0@
+        ],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
         volumeMounts: [
           { name: "keys", mountPath: "/keys", readOnly: true },
           { name: "cdn0-data", mountPath: "/data" },
+          # @CAPTURE_MOUNT@
         ],
       },
       # The page link previews are made of (testbox/tools `preview`).
@@ -162,15 +177,27 @@
         name: "preview",
         image: "localhost/@POD@-cdn0",
         command: ["preview"],
+        env: [
+          # @CAPTURE_ENV preview@
+        ],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
-        volumeMounts: [{ name: "keys", mountPath: "/keys", readOnly: true }],
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          # @CAPTURE_MOUNT@
+        ],
       },
       # The storage service on the Bigtable emulator.
       {
         name: "storage",
         image: "localhost/@POD@-storage",
+        env: [
+          # @CAPTURE_ENV storage@
+        ],
         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
-        volumeMounts: [{ name: "keys", mountPath: "/keys", readOnly: true }],
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          # @CAPTURE_MOUNT@
+        ],
       },
       # The primary devices: `cargo testbox` runs presage-cli in here.
       {
@@ -186,7 +213,7 @@
       },
       # @B33PS@
       # @CLIENTS@
-      # @TAP@
+      # @CAPTURE@
     ],
     volumes: [
       { name: "keys", persistentVolumeClaim: { claimName: "@POD@-keys" } },
@@ -202,7 +229,7 @@
       # Each client's display socket, in a directory only that client mounts.
       { name: "view-desktop", hostPath: { path: "@TARGET@-view/desktop", type: "Directory" } },
       { name: "view-android", hostPath: { path: "@TARGET@-view/android", type: "Directory" } },
-      # @TAP_VOLUMES@
+      # @CAPTURE_VOLUMES@
     ],
   },
 }

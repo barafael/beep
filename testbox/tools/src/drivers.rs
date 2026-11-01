@@ -55,6 +55,10 @@ pub enum Desktop {
     Send {
         text: String,
     },
+    /// Types `text` into the composer and leaves it there: what the other side sees as typing.
+    TypeText {
+        text: String,
+    },
     /// `paths` as the container sees them, sent with `text` as the caption.
     SendFiles {
         paths: Vec<String>,
@@ -70,6 +74,11 @@ pub enum Desktop {
     },
     /// Waits for a reaction on a message with `text` in the open conversation.
     WaitForReaction {
+        text: String,
+        timeout_ms: u64,
+    },
+    /// Waits until the message with `text` shows no reaction.
+    WaitForNoReaction {
         text: String,
         timeout_ms: u64,
     },
@@ -175,6 +184,12 @@ pub enum Desktop {
     /// Turns read receipts on or off, and resolves once Desktop has written that to the storage
     /// service.
     SetReadReceipts {
+        on: bool,
+        timeout_ms: u64,
+    },
+    /// Turns typing indicators on or off, if they aren't so already, and resolves once Desktop
+    /// has written that to the storage service.
+    SetTypingIndicators {
         on: bool,
         timeout_ms: u64,
     },
