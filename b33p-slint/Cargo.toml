@@ -30,6 +30,8 @@ slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "s
 i-slint-core.workspace = true
 tracing = "0.1"
 async-channel = "2"
+# Answers from the desktop actor (`desktop.rs`).
+futures-channel = "0.3"
 # The harness's JSON protocol (`agent.rs`, its types in b33p-harness).
 b33p-harness = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
