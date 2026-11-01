@@ -3,8 +3,8 @@ use std::time::Duration;
 use b33p_harness::Action;
 
 use super::b33p::{
-    b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index, message_timestamp,
-    outgoing_index, select, type_and_send,
+    B33pError, b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index,
+    message_timestamp, outgoing_index, select, type_and_send,
 };
 use super::clients::{desktop_shows, desktop_shows_whole, desktop_text};
 use super::presage::Account;
@@ -245,6 +245,31 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
             })?;
             Ok(b33p.wait_for("no one typing", super::PATIENCE, |snapshot| {
                 snapshot.typing.is_empty().then_some(())
+            })?)
+        },
+    );
+
+    // TESTPLAN.md §1.3 item 3, with Desktop for the phone: b33p's typing shows there as the
+    // typing bubble, which goes with the text. Both settings are on from the check before.
+    checks.record(
+        "b33p's typing shows on Desktop, and goes with the text",
+        || {
+            let text = "testbox desktop: typed in b33p";
+            b33p.act(Action::Type {
+                text: text.to_owned(),
+            })?;
+            desktop.call(drivers::Desktop::WaitForTyping {
+                timeout_ms: PATIENCE_MS,
+            })?;
+            if !b33p.act(Action::Send)? {
+                return Err(B33pError::NothingSent {
+                    text: text.to_owned(),
+                }
+                .into());
+            }
+            desktop_shows(desktop, text)?;
+            Ok(desktop.call(drivers::Desktop::WaitForNoTyping {
+                timeout_ms: PATIENCE_MS,
             })?)
         },
     );

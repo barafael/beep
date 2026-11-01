@@ -173,6 +173,10 @@ function message(text: string): Locator {
 /** A downloaded picture (helpers.node.ts `getLoadedImagesInside`, Image.dom.tsx `data-loaded`). */
 const LOADED_IMAGE = 'img.module-image__image[data-loaded="true"]';
 
+/** The open conversation's typing bubble (TypingBubble.dom.tsx). */
+const TYPING_BUBBLE = (): Locator =>
+  timeline().locator('.module-message__container-outer--typing-bubble');
+
 function enabledComposition(): Locator {
   return page().locator(
     '.ConversationView__composition-area [data-testid=CompositionInput][data-enabled=true]',
@@ -426,6 +430,10 @@ const methods = {
   },
   /** Waits until no message with `text` is left in the open conversation: one that disappeared. */
   wait_for_message_gone: ({ text, timeout_ms }: Text & Timeout) => gone(message(text), timeout_ms),
+  /** Waits for the typing bubble in the open conversation (TypingBubble.dom.tsx
+   * `module-message__container-outer--typing-bubble`), and until it is gone. */
+  wait_for_typing: ({ timeout_ms }: Timeout) => appears(TYPING_BUBBLE(), timeout_ms),
+  wait_for_no_typing: ({ timeout_ms }: Timeout) => gone(TYPING_BUBBLE(), timeout_ms),
   /** Waits for the message with `text` to show a link preview titled `title`
    * (LinkPreview in Message.dom.tsx, `module-message__link-preview__title`). */
   wait_for_link_preview: ({ text, title, timeout_ms }: Text & Timeout & { title: string }) =>
@@ -567,6 +575,13 @@ const methods = {
    * `getLoadedImagesInside`). */
   wait_for_image: ({ text, timeout_ms }: Text & Timeout) =>
     appears(message(text).locator(LOADED_IMAGE), timeout_ms),
+  /** Waits until `count` messages with `text` each show a downloaded picture: a forwarded copy
+   * beside its original. */
+  wait_for_images: ({ text, count, timeout_ms }: Text & Timeout & { count: number }) =>
+    appears(
+      message(text).filter({ has: page().locator(LOADED_IMAGE) }).nth(count - 1),
+      timeout_ms,
+    ),
   /** Waits for a file attachment named `file_name` (Message.dom.tsx `simple-attachment`). */
   wait_for_file: ({ file_name, timeout_ms }: Timeout & { file_name: string }) =>
     appears(

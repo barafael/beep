@@ -161,6 +161,21 @@ pub enum Desktop {
         text: String,
         timeout_ms: u64,
     },
+    /// Waits until `count` messages with `text` show a downloaded picture each: a forwarded
+    /// copy beside its original.
+    WaitForImages {
+        text: String,
+        count: u32,
+        timeout_ms: u64,
+    },
+    /// Waits for the typing bubble in the open conversation (TypingBubble.dom.tsx), and until
+    /// it is gone.
+    WaitForTyping {
+        timeout_ms: u64,
+    },
+    WaitForNoTyping {
+        timeout_ms: u64,
+    },
     WaitForFile {
         file_name: String,
         timeout_ms: u64,

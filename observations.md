@@ -995,3 +995,19 @@ core phase otherwise passed, and the message reached b33p once. The rerun's core
 checked by hand on the box's peer store: `list-messages -u <peer's own ACI>` lists none of
 Desktop's sends, `list-messages -u <primary's ACI>` lists them all as "From Peer … @
 <timestamp>".
+
+### The out-of-reach list, read again
+
+Of the six items under "Not done", two were only unwritten, one was misjudged:
+
+- **Forwarding to Desktop**: the harness has had forward and forward-to since the tour. The
+  attachments phase now forwards b33p's picture message back to the peer; Desktop shows two
+  messages with the caption, each with its picture (TESTPLAN.md §2.1 item 1). Passed in 0.9 s.
+- **Typing, the other way**: the desktop phase now has b33p typing and Desktop's typing bubble
+  showing and going with the text (§1.3 item 3, with Desktop for the phone). Passed in 1.4 s.
+- **Typing from the phone** is not a missing driver call: in the Android box the phone is
+  b33p's own primary, and Signal never shows an account its own typing on another of its
+  devices. It would take a second phone, or Desktop linked to a phone that writes to b33p.
+- **A mention from b33p** needs a harness action that picks a member into the draft, which is
+  b33p's composer, not the box. Shared locations, story reactions from b33p and photo stories
+  stand as written above.

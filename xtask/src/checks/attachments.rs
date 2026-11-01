@@ -5,7 +5,7 @@ use b33p_harness::{
 };
 
 use super::b33p::{
-    b33p_chat, b33p_shows, incoming_index, message_timestamp, select, type_and_send,
+    b33p_chat, b33p_shows, incoming_index, message_timestamp, outgoing_index, select, type_and_send,
 };
 use super::setup::{LinkedBox, restart_b33p};
 use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
@@ -118,6 +118,34 @@ pub(super) fn attachments(
             timeout_ms: PATIENCE_MS,
         })?)
     });
+
+    // TESTPLAN.md §2.1 item 1, with Desktop for the phone: the copy keeps the picture and the
+    // caption, so Desktop has two messages with the caption, each with a picture.
+    checks.record(
+        "the picture message forwarded from b33p reaches Desktop with its picture",
+        || {
+            select(b33p, conversation)?;
+            let index = outgoing_index(b33p, picture_text)?;
+            let original =
+                message_timestamp(b33p, "b33p's picture", |message| message.index == index)?;
+            b33p.act(Action::Forward { index })?;
+            b33p.act(Action::ForwardTo {
+                conversation: conversation.clone(),
+            })?;
+            select(b33p, conversation)?;
+            b33p_shows(b33p, "the forwarded picture", |message| {
+                message.outgoing
+                    && message.timestamp > original
+                    && message.text == picture_text
+                    && !message.attachments.is_empty()
+            })?;
+            Ok(desktop.call(drivers::Desktop::WaitForImages {
+                text: picture_text.to_owned(),
+                count: 2,
+                timeout_ms: PATIENCE_MS,
+            })?)
+        },
+    );
 
     checks.record("a file from b33p reaches Desktop", || {
         b33p.act(Action::StageFiles {

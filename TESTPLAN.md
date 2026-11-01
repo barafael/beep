@@ -97,7 +97,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    - The chat list shows "<name> is typing…" instead of the preview, and so does the chat
      header. It goes away when they stop or after about 15 seconds.
 2. The same in a group: "<name> is typing…" appears in the right group.
-3. Type in b33p: on their phone, you show as typing. Clear the composer: it stops.
+3. Type in b33p: on their phone, you show as typing. Clear the composer: it stops. *(box:
+   desktop, with Desktop for the phone)*
 4. Turn **Settings → Privacy → Typing indicators** off: they no longer see you typing.
 
 ### 1.4 Edits and deletions
@@ -192,7 +193,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 2.1 Forwarding
 
 1. Right-click a message with a photo → **Forward…**, search for a chat, pick it.
-   - The copy arrives there with the photo, here and on the recipient's phone.
+   - The copy arrives there with the photo, here and on the recipient's phone. *(box:
+     attachments, to Desktop)*
 2. Forward a long message after opening it (its full text shows): the full text arrives.
 3. Ctrl+click one message, Shift+click another a few below, then the arrow in the bar over
    the composer: the dialog says "N messages"; after picking a chat, all of them arrive
