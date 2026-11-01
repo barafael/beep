@@ -536,13 +536,31 @@ const methods = {
     }
   },
   /** Sends `paths` with `text` as its caption, as helpers.node.ts `composerAttachFiles` and
-   * `sendMessageWithAttachments` do. */
+   * `sendMessageWithAttachments` do. A staged file is pending while Desktop reads and scales it
+   * (AttachmentList.dom.tsx: an Image without `data-loaded`, a spinner); a send meanwhile is
+   * dropped without a word (composer.preload.ts `withPreSendChecks`, `includePending: false`),
+   * and the file stays staged for the next send. So: nothing staged beforehand, every file
+   * staged and processed, then the send, and the message in the timeline before returning. */
   send_files: async ({ paths, text }: Text & { paths: string[] }) => {
+    const rail = page().locator('.module-attachments__rail');
+    const close = page().locator('.module-attachments__close-button');
+    if (await close.isVisible()) {
+      await close.click();
+      await rail.waitFor({ state: 'detached' });
+    }
+    const sent = await message(text).count();
     await page().getByRole('button', { name: 'Add attachment or poll' }).click();
     await page().getByRole('menuitem', { name: 'File' }).click();
     await page().getByTestId('attachfile-input').setInputFiles(paths);
-    await page().locator('.module-attachments__rail').waitFor();
+    // A picture or video once processed, or any other file (StagedGenericAttachment.dom.tsx).
+    const staged = rail.locator('.module-image[data-loaded], .module-staged-generic-attachment');
+    await staged.nth(paths.length - 1).waitFor({ timeout: PATIENCE_MS });
+    await rail.locator('.module-image:not([data-loaded])').first().waitFor({
+      state: 'detached',
+      timeout: PATIENCE_MS,
+    });
     await typeAndSend(text);
+    await message(text).nth(sent).waitFor({ timeout: PATIENCE_MS });
     return null;
   },
   /** Waits for the message with `text` to show a downloaded picture (helpers.node.ts

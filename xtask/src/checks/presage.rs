@@ -8,7 +8,7 @@ use testbox_tools::keys::KeyFile;
 const LOST: &str = "failed to decrypt a message";
 
 /// A presage-cli account of the box's.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Account {
     /// The account b33p links to.
     Primary,
@@ -158,7 +158,9 @@ impl<'pod> Presage<'pod> {
     }
 
     /// Whether the message that `line` (presage-cli's "failed to decrypt a message from
-    /// <ACI:…>.2 of 1793028555172: …") says it failed to decrypt is in its store.
+    /// <ACI:…>.2 of 1793028555172: …") says it failed to decrypt is in its store: in the
+    /// sender's thread, or, for a sent transcript from the account's own other device (Desktop
+    /// linked to the peer), in the thread of whichever other account of the box it went to.
     fn stored(&self, line: &str) -> bool {
         let Some((aci, timestamp)) = line
             .split_once("<ACI:")
@@ -167,8 +169,34 @@ impl<'pod> Presage<'pod> {
         else {
             return false;
         };
-        self.cli("list-messages", &["-u", aci, "--from", timestamp], "")
-            .is_ok_and(|listed| listed.contains(&format!(" @ {timestamp}: ")))
+        let listed = |thread: &str| {
+            self.cli("list-messages", &["-u", thread, "--from", timestamp], "")
+                .is_ok_and(|listed| listed.contains(&format!(" @ {timestamp}: ")))
+        };
+        if listed(aci) {
+            return true;
+        }
+        if !self.aci().is_ok_and(|me| me == aci) {
+            return false;
+        }
+        [Account::Primary, Account::Peer, Account::Member]
+            .into_iter()
+            .filter(|&other| other != self.account)
+            .filter_map(|other| Self::new(self.containers, other).aci().ok())
+            .any(|thread| listed(&thread))
+    }
+
+    /// The account's ACI, from presage-cli's `whoami` (`WhoAmIResponse { aci: <uuid>, ... }`).
+    fn aci(&self) -> Result<String, PresageError> {
+        let whoami = self.cli("whoami", &[], "")?;
+        whoami
+            .split_once("aci: ")
+            .and_then(|(_, rest)| rest.get(..36))
+            .map(str::to_owned)
+            .ok_or_else(|| PresageError::NoAci {
+                account: self.account,
+                whoami: whoami.clone(),
+            })
     }
 
     /// Registers afresh, with the account's name as the profile's given name, and returns its ACI.
@@ -199,16 +227,7 @@ impl<'pod> Presage<'pod> {
             &["--given-name", &self.account.name()],
             "",
         )?;
-        let whoami = self.cli("whoami", &[], "")?;
-        // presage-cli prints `WhoAmIResponse { aci: <uuid>, ... }`.
-        whoami
-            .split_once("aci: ")
-            .and_then(|(_, rest)| rest.get(..36))
-            .map(str::to_owned)
-            .ok_or_else(|| PresageError::NoAci {
-                account: self.account,
-                whoami: whoami.clone(),
-            })
+        self.aci()
     }
 
     pub(super) fn add_device(&self, url: &str) -> Result<(), PresageError> {
