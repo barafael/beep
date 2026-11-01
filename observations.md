@@ -1011,3 +1011,28 @@ Of the six items under "Not done", two were only unwritten, one was misjudged:
 - **A mention from b33p** needs a harness action that picks a member into the draft, which is
   b33p's composer, not the box. Shared locations, story reactions from b33p and photo stories
   stand as written above.
+
+## Main with the actor rework (1 Nov, night): #108 and #109 merged
+
+The other session merged the actor branches (receiving as a `Receiver` actor feeding the
+session loop in `signal/session.rs`, story expiry as the loop's timer, file dialogs and paste
+through a desktop actor), `main` at c5000e5. Every default phase and the tour on it, images
+rebuilt, capture on:
+
+| box / phase | checks |
+|---|---|
+| linked box setup, desktop, attachments, network, core | 13, 27, 13, 16, 8 |
+| Android box setup, android, groups, storage, large-group | 17, 18, 30, 13, 11 |
+| mesh box setup, tour (seed 1793562251) | 11, 79 |
+
+All green, and "b33p logged no unexpected error" at every phase's end: b33p's ERROR lines
+are the known library ones (the websocket task ending, presage's receiving loop, the pre-key
+alarm), none from b33p's own crates. Receiving, which every phase leans on, works as before
+through the new actor; the tour's stories arrive, show and are viewed as before. What the box
+does not see is a story coming off the list at its day's end: nothing in the box waits a day
+or moves the clock, so the loop's new timer for that is unexercised.
+
+One oddity in the Android box's wire: a connection the decoder calls `unknown`, HTTP/2 on
+the chat port from 127.0.0.1, 96 bytes out and 36 in, five empty frames, no request: a preface
+and settings and nothing else, closed within 18 ms. Not seen in the earlier runs today; worth
+a look if it recurs, as a client that opens the omnibus port and says nothing.
