@@ -792,6 +792,8 @@ async fn handle_command(
             // Kept as the earlier version.
             let previous = original.body.clone().unwrap_or_default();
             let (text, ranges) = format::encode(&body, &styles, &mentions);
+            // The text's own attachment, if it is long, in place of the one before.
+            let (text, ranges, long_text) = super::send::inline_text(manager, text, ranges).await?;
             let timestamp = now_millis();
             let mut data = DataMessage {
                 body: (!text.is_empty()).then_some(text),
@@ -799,6 +801,10 @@ async fn handle_command(
                 timestamp: Some(timestamp),
                 ..original
             };
+            data.attachments.retain(|attachment| {
+                attachment.content_type.as_deref() != Some(attachments::LONG_TEXT)
+            });
+            data.attachments.extend(long_text);
             // The preview follows the text: gone with its link, made anew for a new one.
             let links = format::links(&body);
             data.preview
@@ -899,6 +905,12 @@ async fn handle_command(
                 return Ok(());
             }
             let thread = thread(&conversation)?;
+            // Not in Note to Self: Signal's apps show no typing there, and a typing message
+            // to oneself has nothing to send (libsignal-service makes a transcript of a
+            // message to oneself, which a typing message has none of, and logs an error).
+            if matches!(&thread, Thread::Contact(id) if *id == own_id(manager)) {
+                return Ok(());
+            }
             send_typing(&ctx.outbox, thread, typing).await;
         }
         Command::MarkRead {

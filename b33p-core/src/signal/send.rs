@@ -248,6 +248,67 @@ pub(super) async fn send_edit(
     deliver(manager, ctx, thread, edit, timestamp).await
 }
 
+/// How much of a text Signal's apps send inline, in bytes: past it, the whole text goes as a
+/// `LongText` attachment beside the inline part, and a receiver splices it in. Signal-Android
+/// refuses a message whose body is over 2048 bytes as invalid (EnvelopeContentValidator.kt),
+/// as a sync of our own send too.
+const INLINE_BODY_BYTES: usize = 2000;
+
+/// `text` as it goes inline, its ranges clipped to that, and, when the text is longer, the
+/// whole of it uploaded as the `LongText` attachment to send beside it.
+pub(super) async fn inline_text(
+    manager: &Mgr,
+    text: String,
+    ranges: Vec<WireRange>,
+) -> Result<
+    (
+        String,
+        Vec<WireRange>,
+        Option<presage::proto::AttachmentPointer>,
+    ),
+    Error,
+> {
+    let (inline, ranges, whole) = split_long(text, ranges);
+    let pointer = match whole {
+        Some(whole) => Some(
+            attachments::upload_bytes(
+                manager,
+                "long-message.txt",
+                attachments::LONG_TEXT,
+                whole.into_bytes(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    Ok((inline, ranges, pointer))
+}
+
+/// `text` cut to [`INLINE_BODY_BYTES`] at a character, with its ranges (in UTF-16 units)
+/// clipped to the cut, and the whole text if it was cut.
+fn split_long(text: String, ranges: Vec<WireRange>) -> (String, Vec<WireRange>, Option<String>) {
+    if text.len() <= INLINE_BODY_BYTES {
+        return (text, ranges, None);
+    }
+    let mut cut = INLINE_BODY_BYTES;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let inline = text[..cut].to_owned();
+    let units = inline.encode_utf16().count() as u32;
+    let ranges = ranges
+        .into_iter()
+        .filter_map(|mut range| {
+            if range.start >= units {
+                return None;
+            }
+            range.length = range.length.min(units - range.start);
+            Some(range)
+        })
+        .collect();
+    (inline, ranges, Some(text))
+}
+
 /// Signal's body ranges for text we send.
 pub(super) fn body_ranges(ranges: Vec<WireRange>) -> Vec<BodyRange> {
     use body_range::{AssociatedValue, Style as WireStyle};
@@ -310,6 +371,9 @@ pub(super) async fn send_new(
         .cloned()
         .ok_or_else(|| Error::refused("unknown conversation"))?;
     let (text, ranges) = format::encode(&body, &styles, &mentions);
+    let (text, ranges, long_text) = inline_text(manager, text, ranges).await?;
+    let mut pointers = pointers;
+    pointers.extend(long_text);
     // A quote names the version it shows, as Signal's apps do: an edited message's by its
     // latest edit's time (Signal-Desktop `makeQuote`), else they show the text first sent.
     let quoted_version = match &quote {
@@ -731,6 +795,46 @@ pub(super) async fn send_read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A text past the inline limit is cut at a character, its ranges clipped to the cut, and
+    /// the whole kept for the attachment; a shorter one goes as it is.
+    #[test]
+    fn a_long_text_is_cut_for_the_wire_and_kept_whole() {
+        let short = "short".to_owned();
+        let (inline, _, whole) = split_long(short.clone(), Vec::new());
+        assert_eq!((inline, whole), (short, None));
+
+        // Three bytes per character: the cut falls back to a character boundary.
+        let text: String = std::iter::repeat_n('€', 1000).collect();
+        let ranges = vec![
+            WireRange {
+                start: 0,
+                length: 10,
+                value: RangeValue::Style(crate::Style::Bold),
+            },
+            WireRange {
+                start: 600,
+                length: 100,
+                value: RangeValue::Style(crate::Style::Italic),
+            },
+            WireRange {
+                start: 900,
+                length: 10,
+                value: RangeValue::Style(crate::Style::Bold),
+            },
+        ];
+        let (inline, ranges, whole) = split_long(text.clone(), ranges);
+        assert_eq!(inline.len(), 1998);
+        assert_eq!(inline.chars().count(), 666);
+        assert_eq!(whole.as_deref(), Some(text.as_str()));
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|range| (range.start, range.length))
+                .collect::<Vec<_>>(),
+            vec![(0, 10), (600, 66)]
+        );
+    }
 
     /// A send the store refused for a contact's identity is recognised in each way it comes
     /// back, and names that contact; other failures are just failures.

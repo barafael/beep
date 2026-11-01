@@ -52,6 +52,10 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- Long messages reach phones: past 2000 characters the text goes out as Signal's apps send
+  it, the first part inline and the whole as a text attachment. A phone dropped a message
+  with more inline as invalid, and its sync of your own long message too.
+- No typing indicator is sent to Note to Self, where there is no one to see it.
 - A message added to a run no longer leaves the one before it showing a time and ticks.
 - Link-preview pictures show as soon as they have downloaded.
 - The sender pictures in a group's messages appear when they arrive.
