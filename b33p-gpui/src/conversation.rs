@@ -21,12 +21,23 @@ use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
 pub struct ConversationView {
     shared: Rc<Shared>,
     pub composer: Entity<ComposerView>,
+    /// What covers the messages while it is open: search, media, details, the calendar.
+    panels: crate::panels::Panels,
+    /// The bar beside the messages that shows when the chat was active.
+    strip: Entity<crate::activity::ActivityStrip>,
 }
 
 impl ConversationView {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| ComposerView::new(shared.clone(), window, cx));
-        Self { shared, composer }
+        let panels = crate::panels::Panels::new(&shared, window, cx);
+        let strip = cx.new(|cx| crate::activity::ActivityStrip::new(shared.clone(), cx));
+        Self {
+            shared,
+            composer,
+            panels,
+            strip,
+        }
     }
 }
 
@@ -73,11 +84,22 @@ impl Render for ConversationView {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    .child(messages)
+                    .child(if crate::activity::ActivityStrip::shown(&self.strip, &shared, cx) {
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_row()
+                            .child(div().flex_1().min_w_0().h_full().child(messages))
+                            .child(self.strip.clone())
+                            .into_any_element()
+                    } else {
+                        messages.into_any_element()
+                    })
                     // A panel over the messages, while one is open.
-                    .children(crate::panels::covering(&shared, &t, cx)),
+                    .children(self.panels.covering(&shared, cx)),
             )
             .children(request.map(|title| self.request_bar(title, &t)))
+            .children(crate::banners::bars(&shared, &t))
             .child(self.composer.clone())
     }
 }
