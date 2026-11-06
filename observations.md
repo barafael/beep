@@ -1093,3 +1093,65 @@ libsignal-service with upstream merged in. Written as the runs go.
   Android image's build. `edit_message` now waits for the composer to hold the old text and for the
   new text to show. Same family as `send_files` on 1 Nov: a driver call that returns before Desktop
   has done it, and a failure two minutes later somewhere else.
+
+### What the wire says that the checks don't
+
+- **Every `FetchLatest` sync costs a linked device three requests, inside its receive loop.** In
+  `large-group`, b33p made 81 `GET /v1/storage/auth` in 68 s, each with a manifest and a one-record
+  read, up to four rounds in a quarter of a second: far faster than `follow_storage`'s 2 s settle, so
+  not that. It is presage (upstream #469, `sync_groups_from_storage_service`,
+  presage/src/manager/registered.rs:1024): on each `FetchLatest::StorageManifest` it reads the
+  manifest with no version to compare and awaits it before the next envelope. Android writes the
+  storage service for each new contact and tells its devices each time, so a burst of 40 is 120
+  requests in series. On the box's loopback that is 3 ms each and nobody notices; at 100 ms it would
+  be 12 s with nothing received. To propose upstream: keep the manifest's version
+  (`manifest_if_changed`, as b33p's own `storage::sync` does), and coalesce what is queued.
+- **A storage credential is fetched per operation.** `/v1/storage/auth` is 133 bytes and comes before
+  every storage call, in libsignal-service's `storage_service()`. Android does it too (92), Desktop
+  much less (8): a token that lasts a day could be kept.
+- **`/v2/groups/logs` is cheap**: 56 reads in the tour, 6 ms median. The details' log read costs
+  little, so the race below is the only thing against it.
+
+### A notice told twice, and read out of order (found in a screenshot)
+
+The tour's model leaves notices out, so this passed every check. An admin's group details read the
+group's log (`fetch_as_admin`, `Manager::update_group`); if that read comes just as a change's
+message does, both tell it. "Mesh 1 left the group." showed twice, seed 1794003665, step 46 on b33p
+2, for one envelope and one `a group change came`. On the wire: `logs/12` read 0.4 s after the
+message. Replaying the seed once reproduced it, on the same group and b33p.
+
+Changes read from the log also came after the message that made b33p read it, stamped with the time
+they were read: "accepted Mesh 0's request" above "Mesh 0 asked to join".
+
+Fixed on `group-notice-once`: the second to come isn't told, whichever it is, going by the signed
+changes stored lately for that revision (only signed, or a member could keep a real change from being
+told), and what the log brings is stamped before any later change told. The tour now fails on a
+membership notice told twice: without the fix it fails on the seed above, with it the seed passes and
+so do four new ones (1794006427, 1794006595, 1794006755, 1794007047).
+
+Broadening this asks for: the model leaving notices out is the gap. A model of notices would have
+caught the order too.
+
+### Slint 1.20, by the pixel
+
+`docs/screenshots/shoot.py` on the mock, Slint 1.19 (`main`) against 1.20, light and dark, 19 screens
+each (chats, details, media, calendar, search, selection, replying, group, request, settings, new
+group, join, forward, unlink, stories): every difference is confined to the mock's clock digits, the
+builds being a minute apart (three screens read by eye, the rest by where the difference lies). Open
+menus and tooltips aren't among them; the window tests cover those functionally only.
+
+### The soak: "2 lost", and neither was
+
+b33p held from 46 to 58 MiB and 47 open files over 30 minutes, and the soak's own check, that the
+peer ends with what b33p shows, passed. "No client lost a message" failed on two lines:
+`presage-cli (Peer): failed to decrypt … of 1794005612019: message with old counter 11 / 10`, and the
+same at 1794006841027. Neither time is in the peer's store. The first comes 1.1 s after a message the
+store shows as `Null message`: a delete. The second comes 10 s after `b33p 00295`, stored as
+"edited": an edit, by the soak's rhythm (not captured, so inferred from what the store holds). Both
+took effect. A delete is applied to its target and an edit stored at its original's time, so neither
+is at its own time, and the check, which asks the store, called a redelivery a loss. Two in about a
+hundred such messages over 30 minutes: presage-cli exits between storing and acknowledging.
+
+The check now remembers what presage-cli printed having received, per account. A message never seen
+remains a loss. This is the third time this check has needed correcting for a redelivery, and each
+was found by running longer: it is worth a mode that reads the counters, not the store.
