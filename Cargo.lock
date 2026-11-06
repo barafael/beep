@@ -1056,8 +1056,24 @@ dependencies = [
 name = "b33p-gpui"
 version = "0.2.0"
 dependencies = [
+ "async-channel",
  "b33p-core",
+ "b33p-harness",
+ "b33p-notify",
+ "b33p-platform",
+ "blurhash",
+ "emojis",
+ "futures-channel",
  "gpui-kit",
+ "image",
+ "open",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "smallvec",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

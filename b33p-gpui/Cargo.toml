@@ -11,8 +11,44 @@ homepage.workspace = true
 name = "b33p-gpui"
 path = "src/main.rs"
 
+[features]
+default = ["signal"]
+signal = ["b33p-core/signal"]
+# The agent harness (`agent.rs`, `B33P_AGENT_SOCKET`): a socket a script can use to read what
+# the window shows and to act as if it were the input, for tests and demonstrations. Unix
+# only; never part of a release build.
+harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json"]
+test-servers = ["b33p-core/test-servers"]
+
 [dependencies]
+thiserror.workspace = true
 b33p-core.workspace = true
+b33p-notify = { path = "../b33p-notify" }
+# The desktop's side of b33p, shared with the Slint window.
+b33p-platform = { path = "../b33p-platform" }
 # GPUI, its component library and icons, as one dependency: GPUI itself is published as a
 # family of `gpui-pre-*` snapshots of Zed that move together, and this names the matching set.
 gpui-kit = "0.9"
+tracing = "0.1"
+async-channel = "2"
+futures-channel = "0.3"
+# The harness's JSON protocol (`agent.rs`, its types in b33p-harness).
+b33p-harness = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+# Opens links in the browser.
+open = "5"
+# Blurred stand-ins for pictures and videos not downloaded yet.
+blurhash = "0.2"
+# Every emoji, by group and name, for the emoji picker.
+emojis = "0.9"
+# The pixels GPUI draws pictures from (the version GPUI uses).
+image = { version = "0.25", default-features = false }
+smallvec = "1"
+# The kit embeds its icons with it, which reads them from the registry's directory in a debug
+# build: embedded in those too, the binary runs where that directory is not (the testbox).
+rust-embed = { version = "8", features = ["debug-embed"] }
+
+[target.'cfg(unix)'.dependencies]
+# Quitting cleanly when the system ends b33p (`shutdown.rs`).
+signal-hook = "0.4"
