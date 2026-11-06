@@ -1164,3 +1164,84 @@ cap goes with the repeat now. The run that found it, optimized and limited to 25
 175 steps, every one passed, in 93 s. Restart median 0.53 s (debug 2.0 to 2.6 s), delivered median
 0.056 s (debug 0.12 to 0.13 s), peak 79 MiB, 58 open files. These are the first real numbers for an
 optimized b33p under a tour, and 256 MiB is comfortably more than it wants.
+
+### `actors-owner`, its first time in the box
+
+Ported to this main (it conflicted in six files; `main`'s `story_kept`, `take_preferences` and
+`command_failed` sit beside it, and it follows #116's rule on discarded results). All default phases
+and the tour: 256 of 256, as the branch below it. The fair comparison, the same seed 1794003665 with
+the same flags, against the branch without it:
+
+| | without | with |
+|---|---|---|
+| delivered, median / p95 / max (s) | 0.120 / 0.277 / 0.332 | 0.122 / 0.310 / 0.603 |
+| restart, median (s) | 2.62 | 2.09 |
+| peak memory (MiB) | 66.2 | 66.7 |
+| open files, most | 52 | 54 |
+| slowest harness answer (ms) | 1.8 | 1.6 |
+
+One run each, so the max means little; nothing here says the copy each ordered command takes costs
+anything. What it still doesn't exercise: a very large contact list, where `copy_for_command` clones
+every thread for each message sent.
+
+### Read from the screenshots (usability; none of them fails a check)
+
+- `mesh/tour/20`: on a non-admin, "accepted Mesh 0's request" above "Mesh 0 asked to join": fixed
+  with the notices above.
+- "Mesh 2 removed You." with a capital, and "You: You changed…" in the chat list's previews.
+- The scroll-to-latest button covers the last message's read pill, and touches "Save" (`tour/04`).
+- ❤ as a reaction draws black, and a ZWJ family emoji as a blurry dark blob in a light square.
+- "New messages" stays above "Today" for the whole session; "Saved to b33p" sits against "Save";
+  captions on attachments wrap early; CJK in bold titles stays regular weight.
+- A new contact's chat shows its UUID for a moment (`linked/setup/09`), as known.
+- Good news: CJK no longer draws as tofu, and no frame shows a layout problem from 1.20.
+
+### What to broaden, from this sweep
+
+Test cases:
+
+1. **A model of notices in the tour.** It is why a screenshot, not a check, found the double notice.
+   `told_twice` catches one symptom; the model could say exactly which notices each b33p should show,
+   in which order.
+2. **Two admins' details open across a burst of changes**, on purpose: the race the tour hit by luck
+   of the seed. Other paths may tell a change twice too (`Accepted`, a join by link).
+3. **A slow server.** The box's loopback hides per-request costs, such as `FetchLatest`'s three. Run
+   `large-group` with the `network` phase's netem at 100 ms: receiving should keep up.
+4. **A b33p with thousands of contacts**, for what `copy_for_command` and `FetchLatest` cost then.
+5. **Popups on 1.20**: `shoot.py` has no open menu, tooltip, emoji or sticker picker. Each is one
+   harness call away, and would have settled the one thing this sweep left open about Slint.
+6. **Long texts on the wire**: `stress-content` now checks only the inline part on presage-cli. A
+   check that the `LongText` attachment is there and whole belongs beside it.
+
+The box itself:
+
+1. **Run the stress phases on a schedule.** They were five days stale: two of the three failures here
+   were checks that had fallen behind b33p. The nightly runs the tour only.
+2. **A nightly with `--optimized --b33p-memory 256 TESTBOX_TOUR_REPEAT=5`**: 93 s, cheaper than the
+   debug tour. A new seed each night.
+3. **When a build fails, say which stage.** The message's tail was a buildah panic with the cause
+   above it among interleaved stages. Dropping Go's stack from the tail shows the real last lines.
+4. **Driver calls confirm what they did.** `send_files` (1 Nov) and `edit_message` (now) returned
+   before Desktop had acted. `send`, `react_to_message` and `delete_for_everyone` still do.
+5. **Host load beside each check** remains the one thing that would have saved time: `link_seconds`
+   and the timings of the day are hard to read without it.
+6. **Prune.** Stale instances' images and volumes pile up: images for `wire`, `full3`, `integ`,
+   `menu`, `actors`, `actorstm`, `dsk`, and 123 volumes before this sweep.
+
+### Where the sweep ended
+
+| run | revision | result |
+|---|---|---|
+| default phases and the tour, capture and screenshots | `forks-1106` | 256 of 256 |
+| stress-volume, -interrupt | `forks-1106` | 13 of 13, 15 of 15 |
+| stress-content, -concurrency, 2 rounds, after the fixes above | `forks-1106` | 16 of 16, 17 of 17, both rounds |
+| stress-soak, 30 minutes, after the fixes above | `forks-1106` | 12 of 12; 35 to 57 MiB, 48 open files |
+| tour, seed 1794003665 | check without the fix / with it | fails on the notice / 79 of 79 |
+| tour, 4 new seeds | `group-notice-once` | all passed |
+| tour, optimized, 256 MiB, each step 5 times | `group-notice-once` | 181 of 181; restart 0.74 s, peak 66.5 MiB |
+| default phases and the tour | `actors-owner`, before the notice fix | 256 of 256 |
+| tour, seed 1794003665 | `actors-owner` on the notice fix | 79 of 79 |
+
+A harness snapshot goes from 4.5 ms to 40 ms over the soak as the open chat fills: harness only, but
+its cost is that of walking the shown messages, which the window does too. Worth a look with a chat of
+10,000 messages.

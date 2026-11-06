@@ -76,6 +76,8 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `reconcile-upstream` 280aa2f, `--optimized` | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `forks-454` ac682da (#82: forks past presage#454, Slint #14449 as reviewed, no automatic link previews, join requests told, open-link joins) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 
+| `forks-1106` (Slint 1.20, upstream merged into presage and libsignal-service) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+
 The run of ac682da also ran stress-interrupt, 1/1, beside an instance's `core` and the tour (#84).
 
 The optimized pass of 280aa2f also ran the stress phases, each 1/1: stress-volume, stress-interrupt,
