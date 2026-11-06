@@ -261,6 +261,22 @@ impl Seen {
     }
 }
 
+/// A notice of someone leaving, joining, being added or removed right after the same notice, if
+/// the chat shows one: without the opposite between, it can't have happened twice. The model
+/// leaves notices out, so this is all that sees one told twice.
+fn told_twice(notices: &[&str]) -> Option<String> {
+    let membership = |text: &str| {
+        text.ends_with(" left the group.")
+            || text.ends_with(" joined the group.")
+            || text.contains(" removed ")
+            || text.contains(" added ")
+    };
+    notices
+        .windows(2)
+        .find(|pair| pair[0] == pair[1] && membership(pair[0]))
+        .map(|pair| pair[0].to_owned())
+}
+
 /// What `k`'s b33p shows in its open chat, from `since` on, as the model has it; a sender that
 /// isn't of the mesh is `usize::MAX`.
 fn seen(snapshot: &Snapshot, k: usize, acis: &[String], since: u64) -> Vec<Seen> {
@@ -569,6 +585,12 @@ enum TourError {
         shown: Vec<Seen>,
         #[source]
         source: HarnessError,
+    },
+    #[error("{chat} on b33p {k} tells this twice: {notice}")]
+    ToldTwice {
+        chat: String,
+        k: usize,
+        notice: String,
     },
     #[error("b33p {k} shows the group {title:?} as a message request")]
     GroupRequest {
@@ -1891,17 +1913,33 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             PATIENCE,
             |snapshot| {
                 last = seen(snapshot, k, &acis, since);
-                (last == expected).then_some(())
+                (last == expected).then(|| {
+                    let notices: Vec<&str> = snapshot
+                        .messages
+                        .iter()
+                        .filter(|message| message.notice)
+                        .map(|message| message.text.as_str())
+                        .collect();
+                    told_twice(&notices)
+                })
             },
         );
-        outcome.map_err(|source| TourError::Messages {
-            chat: name,
+        let twice = outcome.map_err(|source| TourError::Messages {
+            chat: name.clone(),
             k,
             expected,
             shown: last,
             source,
         })?;
-        Ok(())
+        match twice {
+            Some(notice) => Err(TourError::ToldTwice {
+                chat: name,
+                k,
+                notice,
+            }
+            .into()),
+            None => Ok(()),
+        }
     }
 
     /// Waits until every member of the group `thread` lists it with its title and picture, and not
@@ -2794,6 +2832,17 @@ mod tests {
         for _ in 0..5 {
             assert!(world.plan(Kind::CreateGroup).is_some());
         }
+    }
+
+    #[test]
+    fn a_membership_notice_told_twice_is_seen() {
+        let shown = |texts: &[&str]| told_twice(texts);
+        let left = "Mesh 1 left the group.";
+        assert_eq!(shown(&[left, left]).as_deref(), Some(left));
+        assert_eq!(shown(&[left, "Mesh 1 joined the group.", left]), None);
+        // A picture can change twice in a row.
+        let picture = "You changed the group's picture.";
+        assert_eq!(shown(&[picture, picture]), None);
     }
 
     /// One message's reactions are compared as the viewer sees them: its own, or someone's.
