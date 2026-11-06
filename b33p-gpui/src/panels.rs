@@ -2,21 +2,71 @@
 //! overview, the details, the activity calendar. Each is drawn while the state says it is
 //! open.
 //!
-//! To add one: write its function in its own module, which returns `Some(element)` while it is
-//! open, and put it in the list in [`covering`].
+//! To add one: write it in its own module as a view (`Render`), keep it in [`Panels`], and put
+//! the test for it being open in [`Panels::covering`].
 
 use std::rc::Rc;
 
-use gpui_kit::{AnyElement, App};
+use gpui_kit::prelude::*;
+use gpui_kit::{AnyElement, App, Context, Entity, Window};
 
+use crate::activity::CalendarPanel;
+use crate::details::DetailsPanel;
+use crate::media::MediaPanel;
+use crate::search::SearchPanel;
 use crate::shared::Shared;
-use crate::theme::Tokens;
 
-/// The panel over the messages, if one is open.
-pub fn covering(shared: &Rc<Shared>, t: &Tokens, cx: &mut App) -> Option<AnyElement> {
-    let panels: Vec<Option<AnyElement>> = vec![
-        // e.g. crate::search::panel(shared, t, cx),
-    ];
-    let _ = (shared, t, cx);
-    panels.into_iter().flatten().next()
+/// The panels, made once: each keeps what it needs between the times it is open (a field).
+pub struct Panels {
+    search: Entity<SearchPanel>,
+    media: Entity<MediaPanel>,
+    details: Entity<DetailsPanel>,
+    calendar: Entity<CalendarPanel>,
+}
+
+impl Panels {
+    pub fn new<T: 'static>(shared: &Rc<Shared>, window: &mut Window, cx: &mut Context<T>) -> Self {
+        Self {
+            search: cx.new(|cx| SearchPanel::new(shared.clone(), window, cx)),
+            media: cx.new(|_| MediaPanel::new(shared.clone())),
+            details: cx.new(|cx| DetailsPanel::new(shared.clone(), window, cx)),
+            calendar: cx.new(|_| CalendarPanel::new(shared.clone())),
+        }
+    }
+
+    /// The panel over the messages, if one is open. In front last: the media over the details
+    /// (the details open it), those over the search, and all over the calendar.
+    pub fn covering(&self, shared: &Rc<Shared>, cx: &mut App) -> Option<AnyElement> {
+        let (media, details, search) = {
+            let chat = shared.chat.borrow();
+            (
+                chat.media().is_some(),
+                chat.details().is_some(),
+                chat.chat_search().is_some(),
+            )
+        };
+        let calendar = shared.ui.borrow().calendar_open;
+        // What is not open starts anew when it is: the search's field is emptied and focused,
+        // the media open on the pictures, the details' fields follow the state.
+        if !search {
+            self.search.update(cx, |panel, _| panel.closed());
+        }
+        if !media {
+            self.media.update(cx, |panel, _| panel.closed());
+        }
+        if !details {
+            self.details.update(cx, |panel, _| panel.closed());
+        }
+        if media {
+            Some(self.media.clone().into_any_element())
+        } else if details {
+            Some(self.details.clone().into_any_element())
+        } else if search {
+            Some(self.search.clone().into_any_element())
+        } else if calendar {
+            Some(self.calendar.clone().into_any_element())
+        } else {
+            None
+        }
+    }
 }
