@@ -25,17 +25,20 @@ compile_error!("the `harness` feature is for test builds: build without `--relea
 mod actions;
 mod app;
 mod assets;
+mod attachments;
 mod bubble;
 mod chat_list;
 mod composer;
 mod conversation;
 mod images;
+mod message_menu;
 mod overlays;
 mod panels;
 mod settings;
 mod shared;
 mod shutdown;
 mod start;
+mod text;
 mod theme;
 mod widgets;
 

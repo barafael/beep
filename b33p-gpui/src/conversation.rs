@@ -9,9 +9,12 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
 use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, FontWeight, IntoElement, Render, Window, div, px};
+use gpui_kit::{Context, Entity, FocusHandle, FontWeight, IntoElement, Render, Window, div, px};
 
+use crate::actions::{CloseFront, CopyMessages};
 use crate::bubble;
+use crate::message_menu;
+use crate::text::TextSelection;
 use crate::chat_list::MUTE_CHOICES;
 use crate::composer::ComposerView;
 use crate::shared::{Confirm, Shared};
@@ -21,12 +24,19 @@ use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
 pub struct ConversationView {
     shared: Rc<Shared>,
     pub composer: Entity<ComposerView>,
+    /// Has the keys while text of a message is selected, so that Ctrl+C copies it.
+    messages_focus: FocusHandle,
 }
 
 impl ConversationView {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| ComposerView::new(shared.clone(), window, cx));
-        Self { shared, composer }
+        let messages_focus = cx.focus_handle();
+        Self {
+            shared,
+            composer,
+            messages_focus,
+        }
     }
 }
 
@@ -48,11 +58,7 @@ impl Render for ConversationView {
         }
 
         let header = self.header(&t, narrow);
-        let messages = MessageScroller::new("messages", shared.scroller.clone(), {
-            let shared = shared.clone();
-            move |index, _window, cx| bubble::row(index, &shared, cx)
-        })
-        .with_row_style(gpui_kit::StyleRefinement::default());
+        let messages = self.messages(&t, cx);
 
         let request = {
             let chat = shared.chat.borrow();
@@ -78,11 +84,85 @@ impl Render for ConversationView {
                     .children(crate::panels::covering(&shared, &t, cx)),
             )
             .children(request.map(|title| self.request_bar(title, &t)))
-            .child(self.composer.clone())
+            .child(
+                // The bar of what to do with picked messages covers the composer.
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(self.composer.clone())
+                    .children(message_menu::selection_bar(&shared, &t)),
+            )
     }
 }
 
 impl ConversationView {
+    /// The messages, a list that draws only the rows on screen.
+    fn messages(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let shared = self.shared.clone();
+        // Messages that came while scrolled away from the end are counted for the button that
+        // goes there; scrolled to it again, they are seen.
+        if !shared.scroller.read(cx).is_scrolled_up() {
+            shared.unseen.set(0);
+        }
+        let unseen = shared.unseen.get();
+        cx.default_global::<TextSelection>().focus = Some(self.messages_focus.clone());
+        let list = MessageScroller::new("messages", shared.scroller.clone(), {
+            let shared = shared.clone();
+            move |index, _window, cx| bubble::row(index, &shared, cx)
+        })
+        // The rows carry their own spacing: tight within a run, a little more between runs.
+        .with_row_style(gpui_kit::StyleRefinement::default().pb(px(0.)))
+        .with_jump_button_label(if unseen > 0 {
+            format!("Newest messages, {unseen} new")
+        } else {
+            "Newest messages".to_owned()
+        })
+        .with_jump_button_renderer(move |button| {
+            if unseen > 0 {
+                button.label(unseen.to_string())
+            } else {
+                button
+            }
+        });
+        let _ = t;
+        div()
+            .id("messages-area")
+            .size_full()
+            .key_context("Messages")
+            .track_focus(&self.messages_focus)
+            // Keys that are the messages' own while they have the focus: Ctrl+C copies the text
+            // selected, or else the picked messages; Esc drops the selection of text, and
+            // otherwise is for whatever is open.
+            .on_action(cx.listener(|this, _: &CopyMessages, _, cx| {
+                if TextSelection::copy(cx) {
+                    return;
+                }
+                let text = this.shared.chat.borrow().selected_text();
+                if text.is_empty() {
+                    cx.propagate();
+                } else {
+                    message_menu::copy(text, cx);
+                    this.shared.redraw(cx, |chat| chat.clear_selection());
+                }
+            }))
+            .on_action(cx.listener(|_, _: &CloseFront, _, cx| {
+                if TextSelection::clear(cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            // A click on the messages that isn't on text drops the selection of text, and
+            // leaves the composer its focus.
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                if TextSelection::clear(cx) {
+                    window.refresh();
+                }
+            })
+            .child(list)
+    }
+
     fn header(&self, t: &Tokens, narrow: bool) -> gpui_kit::AnyElement {
         let shared = self.shared.clone();
         let chat = shared.chat.borrow();
