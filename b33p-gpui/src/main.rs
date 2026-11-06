@@ -29,13 +29,13 @@ mod chat_list;
 mod composer;
 mod confirm;
 mod conversation;
+mod details;
 mod dialog;
+mod emoji;
 mod forward;
 mod group_draft;
-mod emoji;
 mod images;
 mod join;
-mod details;
 mod media;
 mod message_menu;
 mod overlays;
@@ -46,8 +46,8 @@ mod settings;
 mod shared;
 mod shutdown;
 mod start;
-mod stories;
 mod stickers;
+mod stories;
 mod text;
 mod theme;
 mod tray;
@@ -135,7 +135,9 @@ fn main() {
     let (notifier, notifier_actions) = Notifier::new(&APP);
     let events = backend.events();
     let commands = backend.commands();
-    let activations = instance.as_ref().map(|instance| instance.activations.clone());
+    let activations = instance
+        .as_ref()
+        .map(|instance| instance.activations.clone());
 
     gpui_kit::application()
         .with_assets(assets::Assets)
@@ -156,8 +158,8 @@ fn main() {
             );
             window::apply_motion(&shared, cx);
             // `--hidden` starts in the tray, unless there is nothing to keep it in.
-            let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN)
-                && settings.close_to_tray;
+            let hidden =
+                std::env::args().any(|arg| arg == autostart::HIDDEN) && settings.close_to_tray;
             window::start(&shared, activations, hidden, cx);
             shared.refresh(shared::everything(), cx);
             #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -203,7 +205,9 @@ fn spawn_pumps(
                 });
                 if !events.is_empty() {
                     // The window is drawn between batches.
-                    cx.background_executor().timer(Duration::from_millis(1)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1))
+                        .await;
                 }
             }
             // The channel only closes early if the backend thread died without reporting why

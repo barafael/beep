@@ -3,12 +3,11 @@
 use std::rc::Rc;
 
 use b33p_core::state::{Screen, Update};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, Window, div,
-    px,
+    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, Window, div, px,
 };
 
 use crate::actions::{
@@ -61,22 +60,6 @@ impl AppView {
         }
     }
 
-    pub fn shared(&self) -> &Rc<Shared> {
-        &self.shared
-    }
-
-    pub fn list(&self) -> &Entity<ChatListView> {
-        &self.list
-    }
-
-    pub fn conversation(&self) -> &Entity<ConversationView> {
-        &self.conversation
-    }
-
-    pub fn focus_start(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.start.update(cx, |start, cx| start.focus_password(window, cx));
-    }
-
     /// Esc closes what is open, the innermost first. Returns whether there was something.
     fn close_front(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let shared = self.shared.clone();
@@ -125,7 +108,8 @@ impl AppView {
         } else if chat.searching() {
             update = chat.search("");
             drop(chat);
-            self.list.update(cx, |list, cx| list.clear_search(window, cx));
+            self.list
+                .update(cx, |list, cx| list.clear_search(window, cx));
             shared.refresh(update, cx);
             return true;
         } else if shared.narrow() && chat.selected().is_some() {
@@ -188,7 +172,8 @@ impl Render for AppView {
             .text_size(theme::body(shared.settings.borrow().text_size.scale()))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.shared.ui.borrow_mut().settings_open = false;
-                this.list.update(cx, |list, cx| list.focus_search(window, cx));
+                this.list
+                    .update(cx, |list, cx| list.focus_search(window, cx));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SearchInChat, _, cx| {
@@ -196,11 +181,10 @@ impl Render for AppView {
                     this.shared.edit(cx, |chat| chat.open_chat_search());
                 }
             }))
-            .on_action(cx.listener(|this, _: &NextChat, window, cx| {
+            .on_action(cx.listener(|this, _: &NextChat, _, cx| {
                 if !this.list.update(cx, |list, cx| list.move_cursor(1, cx)) {
                     this.open(cx, |chat| chat.select_relative(1));
                 }
-                let _ = window;
             }))
             .on_action(cx.listener(|this, _: &PreviousChat, _, cx| {
                 if !this.list.update(cx, |list, cx| list.move_cursor(-1, cx)) {
@@ -258,9 +242,12 @@ impl AppView {
                             }),
                     )
                 })
-                .child(icon_button("dismiss-error", "x", "Dismiss", move |_, _, cx| {
-                    shared.edit(cx, |chat| chat.dismiss_error())
-                }))
+                .child(icon_button(
+                    "dismiss-error",
+                    "x",
+                    "Dismiss",
+                    move |_, _, cx| shared.edit(cx, |chat| chat.dismiss_error()),
+                ))
                 .into_any_element(),
         )
     }
@@ -309,7 +296,7 @@ impl AppView {
         } else if narrow {
             div().into_any_element()
         } else {
-            empty_state(t, &shared)
+            empty_state(t)
         };
         div()
             .size_full()
@@ -322,7 +309,8 @@ impl AppView {
                         return;
                     }
                     let x: f32 = event.position.x.into();
-                    this.shared.ui.borrow_mut().sidebar_width = (width + x - from).clamp(220., 480.);
+                    this.shared.ui.borrow_mut().sidebar_width =
+                        (width + x - from).clamp(220., 480.);
                     cx.notify();
                 }
             }))
@@ -338,8 +326,7 @@ impl AppView {
 }
 
 /// What shows where a chat would, before one is picked.
-fn empty_state(t: &Tokens, shared: &Rc<Shared>) -> gpui_kit::AnyElement {
-    let _ = shared;
+fn empty_state(t: &Tokens) -> gpui_kit::AnyElement {
     let keys = if cfg!(target_os = "macos") {
         "⌘K searches, ⌥↑ and ⌥↓ go through the chats."
     } else {

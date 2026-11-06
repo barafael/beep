@@ -43,6 +43,7 @@ impl UiState {
     /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
     /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
     /// "leave_group". The name back if there is none like it.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn show_part(&mut self, what: &str, open: bool) -> Result<(), String> {
         match what {
             "settings" => self.settings_open = open,
@@ -259,15 +260,20 @@ impl Shared {
         match chat.typing_expires() {
             Some(at) => {
                 let wait = at.saturating_sub(b33p_core::now_millis()) + 50;
-                self.after(&self.typing_timer, Duration::from_millis(wait), cx, |shared, cx| {
-                    shared.refresh(
-                        Update {
-                            conversations: true,
-                            ..Update::default()
-                        },
-                        cx,
-                    );
-                });
+                self.after(
+                    &self.typing_timer,
+                    Duration::from_millis(wait),
+                    cx,
+                    |shared, cx| {
+                        shared.refresh(
+                            Update {
+                                conversations: true,
+                                ..Update::default()
+                            },
+                            cx,
+                        );
+                    },
+                );
             }
             None => {
                 self.typing_timer.take();
@@ -297,15 +303,20 @@ impl Shared {
         // the open chat has any.
         if chat.shows_expiring() {
             if self.expiry_timer.borrow().is_none() {
-                self.every(&self.expiry_timer, Duration::from_secs(60), cx, |shared, cx| {
-                    shared.refresh(
-                        Update {
-                            rows: true,
-                            ..Update::default()
-                        },
-                        cx,
-                    );
-                });
+                self.every(
+                    &self.expiry_timer,
+                    Duration::from_secs(60),
+                    cx,
+                    |shared, cx| {
+                        shared.refresh(
+                            Update {
+                                rows: true,
+                                ..Update::default()
+                            },
+                            cx,
+                        );
+                    },
+                );
             }
         } else {
             self.expiry_timer.take();
@@ -479,10 +490,7 @@ impl Shared {
         if let Err(error) = self.player.borrow_mut().play(id, audio) {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't play audio");
             // The audio itself, which playing again won't change.
-            let update = self
-                .chat
-                .borrow_mut()
-                .apply(Event::Error(error.into()));
+            let update = self.chat.borrow_mut().apply(Event::Error(error.into()));
             self.refresh(update, cx);
             return;
         }
@@ -713,6 +721,7 @@ impl Shared {
 
 impl Shared {
     /// Runs `f` with the window, if there is one: for what the window alone can do (a size).
+    #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn with_window<R>(
         &self,
         cx: &mut App,
@@ -723,6 +732,7 @@ impl Shared {
     }
 
     /// Puts `text` in the composer, as typed.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn set_composer_text(&self, text: &str, cx: &mut App) {
         let Some(composer) = self.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
             return;
@@ -733,24 +743,8 @@ impl Shared {
         });
     }
 
-    /// Puts the caret in the composer: after a chat opens, a reply or an edit starts. Done once
-    /// the current event is handled, so that it may be asked for from inside a click.
-    pub fn focus_composer(&self, cx: &mut App) {
-        let me = self.me.clone();
-        cx.defer(move |cx| {
-            let Some(shared) = me.upgrade() else {
-                return;
-            };
-            let Some(composer) = shared.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
-                return;
-            };
-            shared.with_window(cx, |window, cx| {
-                composer.update(cx, |composer, cx| composer.focus(window, cx));
-            });
-        });
-    }
-
     /// What the composer's send button does; whether a command went out.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn send_composer(&self, cx: &mut App) -> bool {
         let Some(composer) = self.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
             return false;

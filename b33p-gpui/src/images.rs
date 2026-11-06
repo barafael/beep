@@ -29,7 +29,7 @@ pub struct Images {
 /// A picture's pixels (RGBA) as the BGRA GPUI draws.
 pub fn draw(picture: &Picture) -> Option<Drawn> {
     let mut pixels = picture.rgba.to_vec();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let image = RgbaImage::from_raw(picture.width, picture.height, pixels)?;

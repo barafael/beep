@@ -3,7 +3,6 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, Update};
-use b33p_core::Trust;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
@@ -15,11 +14,11 @@ use gpui_kit::{
 
 use crate::actions::{CloseFront, CopyMessages};
 use crate::bubble;
-use crate::message_menu;
-use crate::text::TextSelection;
 use crate::chat_list::MUTE_CHOICES;
 use crate::composer::ComposerView;
+use crate::message_menu;
 use crate::shared::Shared;
+use crate::text::TextSelection;
 use crate::theme::{self, Tokens};
 use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
 
@@ -55,7 +54,7 @@ impl Render for ConversationView {
         let t = theme::tokens(cx);
         let shared = self.shared.clone();
         let narrow = shared.narrow();
-        
+
         // Older messages come in as the top is neared.
         {
             let top = shared.scroller.read(cx).logical_scroll_top().item_ix;
@@ -216,7 +215,6 @@ impl ConversationView {
         let calendar_open = shared.ui.borrow().calendar_open;
         let title = c.title.clone();
         let initials = state::initials(&c.title);
-        let _ = Trust::Verified;
         drop(chat);
 
         let menu_shared = shared.clone();
@@ -233,7 +231,11 @@ impl ConversationView {
                     .flex_row()
                     .items_center()
                     .gap(px(theme::SPACE_M))
-                    .pl(px(if narrow { theme::SPACE_XS } else { theme::SPACE_L }))
+                    .pl(px(if narrow {
+                        theme::SPACE_XS
+                    } else {
+                        theme::SPACE_L
+                    }))
                     .pr(px(theme::SPACE_M))
                     .when(narrow, |row| {
                         row.child(icon_button("back", "arrow-left", "Back", {
@@ -287,11 +289,15 @@ impl ConversationView {
                                                     return row.child(typing.clone());
                                                 }
                                                 let row = row.when(!subtitle.is_empty(), |row| {
-                                                    row.child(div().truncate().child(subtitle.clone()))
+                                                    row.child(
+                                                        div().truncate().child(subtitle.clone()),
+                                                    )
                                                 });
                                                 match &timer {
                                                     Some(label) => row
-                                                        .when(!subtitle.is_empty(), |row| row.child("·"))
+                                                        .when(!subtitle.is_empty(), |row| {
+                                                            row.child("·")
+                                                        })
                                                         .child(icon("timer").size(px(12.)))
                                                         .child(label.clone()),
                                                     None => row,
@@ -354,7 +360,7 @@ fn chat_menu(
     blocked: bool,
     archived: bool,
 ) -> gpui_kit::component::menu::PopupMenu {
-    let item = |label: &'static str, run: Rc<dyn Fn(&Rc<Shared>, &b33p_core::ConversationId, &mut gpui_kit::App)>| {
+    let item = |label: &'static str, run: crate::chat_list::MenuAction| {
         let shared = shared.clone();
         let id = id.clone();
         PopupMenuItem::new(label).on_click(move |_, _, cx| run(&shared, &id, cx))
@@ -364,7 +370,11 @@ fn chat_menu(
         Rc::new(|s, id, cx| s.chat_action(cx, id, |chat, id| chat.toggle_pin(id))),
     ));
     menu = menu.item(item(
-        if unread { "Mark as read" } else { "Mark as unread" },
+        if unread {
+            "Mark as read"
+        } else {
+            "Mark as unread"
+        },
         Rc::new(move |s, id, cx| s.chat_action(cx, id, |chat, id| chat.mark_unread(id, !unread))),
     ));
     if muted {

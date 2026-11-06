@@ -2,13 +2,13 @@
 
 use b33p_core::ConversationId;
 use b33p_core::state;
+use gpui_kit::FontWeight;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, ClickEvent, Div, ElementId, Hsla, ObjectFit, Rgba, SharedString, Window, div, hsla, img, px, rgb,
+    App, ClickEvent, Div, ElementId, Hsla, ObjectFit, Rgba, SharedString, Window, div, img, px, rgb,
 };
-use gpui_kit::FontWeight;
 
 use crate::images::Drawn;
 use crate::theme::Tokens;
@@ -79,10 +79,6 @@ pub fn avatar(
 /// A thin line between parts.
 pub fn divider(tokens: &Tokens) -> Div {
     div().flex_none().h(px(1.)).w_full().bg(tokens.divider)
-}
-
-pub fn fade(color: Hsla, by: f32) -> Hsla {
-    hsla(color.h, color.s, color.l, color.a * by)
 }
 
 /// A dialog over the window: a scrim, and a card of `width` in the middle holding `content`.

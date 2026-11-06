@@ -3,12 +3,12 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState, ConversationView, PreviewKind, Update};
-use b33p_core::{AttachmentKind, ConversationId, Trust, now_millis};
+use b33p_core::{AttachmentKind, ConversationId, now_millis};
+use gpui_kit::component::Selectable as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::{Disableable as _, Selectable as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -19,6 +19,9 @@ use gpui_kit::{
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
 use crate::widgets::{avatar, avatar_color, icon, icon_button};
+
+/// What a chat's menu entry does: to the conversation it is for.
+pub type MenuAction = Rc<dyn Fn(&Rc<Shared>, &ConversationId, &mut gpui_kit::App)>;
 
 /// A row's height.
 const ROW: f32 = 64.0;
@@ -70,7 +73,9 @@ impl ChatListView {
                 let text = input.read(cx).value().to_string();
                 let target = {
                     let chat = self.shared.chat.borrow();
-                    chat.conversations().nth(self.cursor).map(|c| c.conversation.id.clone())
+                    chat.conversations()
+                        .nth(self.cursor)
+                        .map(|c| c.conversation.id.clone())
                 };
                 match target {
                     Some(id) if !text.is_empty() => self.shared.select(cx, &id),
@@ -102,7 +107,8 @@ impl ChatListView {
     }
 
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search.update(cx, |search, cx| search.focus(window, cx));
+        self.search
+            .update(cx, |search, cx| search.focus(window, cx));
     }
 
     /// Empties the search field (the state's search is cleared by the caller).
@@ -129,7 +135,7 @@ fn preview_icon(kind: Option<PreviewKind>) -> Option<&'static str> {
 }
 
 impl Render for ChatListView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx);
         let shared = self.shared.clone();
         let (narrow, sidebar_width) = {
@@ -137,7 +143,6 @@ impl Render for ChatListView {
             (ui.narrow, ui.sidebar_width)
         };
         let chat = shared.chat.borrow();
-        let searching = chat.searching();
         let showing_archived = chat.showing_archived();
         let (archived, archived_unread) = chat.archived();
         let count = chat.conversations().count();
@@ -160,23 +165,36 @@ impl Render for ChatListView {
             .px(px(theme::SPACE_M))
             .gap(px(theme::SPACE_XS))
             .when(showing_archived, |header| {
-                header.child(icon_button("back-to-chats", "arrow-left", "Back to chats", {
-                    let shared = shared.clone();
-                    move |_, _, cx| shared.redraw(cx, |chat| chat.show_archived(false))
-                }))
+                header.child(icon_button(
+                    "back-to-chats",
+                    "arrow-left",
+                    "Back to chats",
+                    {
+                        let shared = shared.clone();
+                        move |_, _, cx| shared.redraw(cx, |chat| chat.show_archived(false))
+                    },
+                ))
             })
             .child(
                 div()
                     .flex_1()
                     .text_size(px(theme::BODY * theme::HEADING))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(if showing_archived { "Archived" } else { "Chats" }),
+                    .child(if showing_archived {
+                        "Archived"
+                    } else {
+                        "Chats"
+                    }),
             )
             .child(
                 icon_button(
                     "stories",
                     "circle-dashed",
-                    if unviewed > 0 { "Stories, new" } else { "Stories" },
+                    if unviewed > 0 {
+                        "Stories, new"
+                    } else {
+                        "Stories"
+                    },
                     {
                         let shared = shared.clone();
                         move |_, _, cx| {
@@ -218,7 +236,9 @@ impl Render for ChatListView {
                 .text_size(px(theme::BODY * theme::BODY_SMALL))
                 .text_color(t.text_secondary)
                 .child(if offline {
-                    icon("wifi-off").size(px(theme::ICON_SMALL)).into_any_element()
+                    icon("wifi-off")
+                        .size(px(theme::ICON_SMALL))
+                        .into_any_element()
                 } else {
                     Spinner::new().small().into_any_element()
                 })
@@ -244,39 +264,38 @@ impl Render for ChatListView {
         let folders = (!chat.folders().is_empty() && !showing_archived && search_text.is_empty())
             .then(|| {
                 let current = chat.folder();
-                let tab = |id: usize, label: String, unread: u32, selected: bool, at: Option<usize>| {
-                    let shared = shared.clone();
-                    let mut tab = div()
-                        .id(("folder", id))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.))
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded_full()
-                        .cursor_pointer()
-                        .text_size(px(theme::BODY * theme::BODY_SMALL))
-                        .when(selected, |tab| {
-                            tab.bg(t.accent).text_color(t.on_accent)
-                        })
-                        .when(!selected, |tab| {
-                            tab.text_color(t.text_secondary).hover(|s| s.bg(t.hover))
-                        })
-                        .on_click(move |_, _, cx| {
-                            shared.redraw(cx, |chat| chat.show_folder(at));
-                        })
-                        .child(label);
-                    if unread > 0 {
-                        tab = tab.child(
-                            div()
-                                .text_size(px(theme::BODY * theme::CAPTION))
-                                .font_weight(FontWeight::BOLD)
-                                .child(unread.to_string()),
-                        );
-                    }
-                    tab
-                };
+                let tab =
+                    |id: usize, label: String, unread: u32, selected: bool, at: Option<usize>| {
+                        let shared = shared.clone();
+                        let mut tab = div()
+                            .id(("folder", id))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(10.))
+                            .py(px(4.))
+                            .rounded_full()
+                            .cursor_pointer()
+                            .text_size(px(theme::BODY * theme::BODY_SMALL))
+                            .when(selected, |tab| tab.bg(t.accent).text_color(t.on_accent))
+                            .when(!selected, |tab| {
+                                tab.text_color(t.text_secondary).hover(|s| s.bg(t.hover))
+                            })
+                            .on_click(move |_, _, cx| {
+                                shared.redraw(cx, |chat| chat.show_folder(at));
+                            })
+                            .child(label);
+                        if unread > 0 {
+                            tab = tab.child(
+                                div()
+                                    .text_size(px(theme::BODY * theme::CAPTION))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(unread.to_string()),
+                            );
+                        }
+                        tab
+                    };
                 let mut row = div()
                     .flex()
                     .flex_row()
@@ -297,45 +316,56 @@ impl Render for ChatListView {
                 row
             });
 
-        let archive_entry = (archived > 0 && !showing_archived && search_text.is_empty()).then(|| {
-            let shared = shared.clone();
-            div().px(px(theme::SPACE_S)).child(
-                div()
-                    .id("archived-chats")
-                    .h(px(40.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(theme::SPACE_M))
-                    .px(px(10.))
-                    .rounded(px(theme::RADIUS_M))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.hover))
-                    .on_click(move |_, _, cx| shared.redraw(cx, |chat| chat.show_archived(true)))
-                    .child(
-                        div()
-                            .w(px(40.))
-                            .flex()
-                            .justify_center()
-                            .child(icon("archive").size(px(theme::ICON))),
-                    )
-                    .child(div().flex_1().text_color(t.text_secondary).child("Archived chats"))
-                    .child(
-                        div()
-                            .text_size(px(theme::BODY * theme::SMALL))
-                            .text_color(t.text_tertiary)
-                            .child(if archived_unread > 0 {
-                                format!("{archived} · {archived_unread} unread")
-                            } else {
-                                archived.to_string()
-                            }),
-                    ),
-            )
-        });
+        let archive_entry =
+            (archived > 0 && !showing_archived && search_text.is_empty()).then(|| {
+                let shared = shared.clone();
+                div().px(px(theme::SPACE_S)).child(
+                    div()
+                        .id("archived-chats")
+                        .h(px(40.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(theme::SPACE_M))
+                        .px(px(10.))
+                        .rounded(px(theme::RADIUS_M))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.hover))
+                        .on_click(move |_, _, cx| {
+                            shared.redraw(cx, |chat| chat.show_archived(true))
+                        })
+                        .child(
+                            div()
+                                .w(px(40.))
+                                .flex()
+                                .justify_center()
+                                .child(icon("archive").size(px(theme::ICON))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(t.text_secondary)
+                                .child("Archived chats"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(theme::BODY * theme::SMALL))
+                                .text_color(t.text_tertiary)
+                                .child(if archived_unread > 0 {
+                                    format!("{archived} · {archived_unread} unread")
+                                } else {
+                                    archived.to_string()
+                                }),
+                        ),
+                )
+            });
 
         let empty = if count == 0 && !is_number {
             if !search_text.is_empty() {
-                Some(("search", "No chats found. Type a phone number to message someone new."))
+                Some((
+                    "search",
+                    "No chats found. Type a phone number to message someone new.",
+                ))
             } else if showing_archived {
                 Some(("archive", "No archived chats."))
             } else {
@@ -394,7 +424,6 @@ impl Render for ChatListView {
         .flex_1()
         .px(px(theme::SPACE_S));
 
-        let _ = (searching, window);
         div()
             .flex()
             .flex_col()
@@ -441,10 +470,12 @@ fn row(
         .unwrap_or_default();
     let picture = shared.images.avatar(&format!("chat:{}", id.0), view.avatar);
     let can_up = c.settings.pinned.is_some_and(|at| at > 0);
-    let can_down = c.settings.pinned.is_some_and(|at| (at as usize) + 1 < pinned_count);
+    let can_down = c
+        .settings
+        .pinned
+        .is_some_and(|at| (at as usize) + 1 < pinned_count);
     let archived = c.settings.archived;
     let has_unread = unread > 0 || marked_unread;
-    let _ = Trust::Changed;
     let label = format!(
         "{}{}{}{}{}, {}",
         c.title,
@@ -460,7 +491,6 @@ fn row(
         if muted { ", muted" } else { "" },
         if typing.is_empty() { &preview } else { &typing },
     );
-    let _ = now_millis();
 
     let click_shared = shared.clone();
     let click_id = id.clone();
@@ -487,7 +517,7 @@ fn row(
             let shared = menu_shared.clone();
             let id = menu_id.clone();
             let mut menu = menu;
-            let item = |label: &'static str, run: Rc<dyn Fn(&Rc<Shared>, &ConversationId, &mut gpui_kit::App)>| {
+            let item = |label: &'static str, run: MenuAction| {
                 let shared = shared.clone();
                 let id = id.clone();
                 PopupMenuItem::new(label).on_click(move |_, _, cx| run(&shared, &id, cx))
@@ -509,7 +539,11 @@ fn row(
                 ));
             }
             menu = menu.item(item(
-                if has_unread { "Mark as read" } else { "Mark as unread" },
+                if has_unread {
+                    "Mark as read"
+                } else {
+                    "Mark as unread"
+                },
                 Rc::new(move |s, id, cx| {
                     s.chat_action(cx, id, |chat, id| chat.mark_unread(id, !has_unread))
                 }),
@@ -539,7 +573,9 @@ fn row(
             menu = menu.separator();
             menu = menu.item(item(
                 if blocked { "Unblock" } else { "Block" },
-                Rc::new(move |s, id, cx| s.chat_action(cx, id, |chat, id| chat.block(id, !blocked))),
+                Rc::new(move |s, id, cx| {
+                    s.chat_action(cx, id, |chat, id| chat.block(id, !blocked))
+                }),
             ));
             menu.item(item(
                 if archived { "Unarchive" } else { "Archive" },
@@ -605,7 +641,11 @@ fn row(
                                 .child(
                                     div()
                                         .text_size(px(theme::BODY * theme::CAPTION))
-                                        .text_color(if unread > 0 { t.accent } else { t.text_tertiary })
+                                        .text_color(if unread > 0 {
+                                            t.accent
+                                        } else {
+                                            t.text_tertiary
+                                        })
                                         .child(time),
                                 ),
                         )
@@ -626,7 +666,9 @@ fn row(
                                     )
                                 })
                                 .children(kind_icon.map(|name| {
-                                    icon(name).size(px(theme::ICON_SMALL)).text_color(t.text_tertiary)
+                                    icon(name)
+                                        .size(px(theme::ICON_SMALL))
+                                        .text_color(t.text_tertiary)
                                 }))
                                 .child(
                                     div()

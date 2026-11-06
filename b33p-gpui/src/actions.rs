@@ -22,7 +22,11 @@ pub struct Pinned(pub usize);
 
 pub fn bind(cx: &mut App) {
     // Command on macOS, Control elsewhere; Option and Alt are the same key.
-    let primary = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    let primary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
     // Kept for as long as the process runs: GPUI wants the keystrokes as `'static` text.
     let keys = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
     let mut bindings = vec![
@@ -36,7 +40,11 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new(keys(format!("{primary}-c")), CopyMessages, Some("Messages")),
     ];
     for n in 1..=9 {
-        bindings.push(KeyBinding::new(keys(format!("alt-{n}")), Pinned(n - 1), None));
+        bindings.push(KeyBinding::new(
+            keys(format!("alt-{n}")),
+            Pinned(n - 1),
+            None,
+        ));
     }
     cx.bind_keys(bindings);
 }
