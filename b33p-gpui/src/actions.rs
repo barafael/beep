@@ -32,6 +32,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("alt-up", PreviousChat, None),
         KeyBinding::new("alt-shift-down", NextUnreadChat, None),
         KeyBinding::new("escape", CloseFront, Some("App")),
+        // Where the messages have the focus: copies the text selected in one.
+        KeyBinding::new(keys(format!("{primary}-c")), CopyMessages, Some("Messages")),
     ];
     for n in 1..=9 {
         bindings.push(KeyBinding::new(keys(format!("alt-{n}")), Pinned(n - 1), None));

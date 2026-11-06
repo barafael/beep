@@ -108,6 +108,9 @@ pub struct Shared {
     playback_timer: RefCell<Option<Task<()>>>,
     /// How far what plays got: its id, whether it is paused, 0..1, and the time shown.
     pub playback: RefCell<Playback>,
+    /// Messages that came while the open chat was scrolled away from its end, for the button
+    /// that goes there.
+    pub unseen: Cell<usize>,
     /// The scroll request of [`ChatState::jump`] last carried out.
     jump_serial: Cell<u64>,
     /// The composer, which holds the text being written: the harness types into it.
@@ -163,6 +166,7 @@ impl Shared {
             pending_play: RefCell::default(),
             playback_timer: RefCell::default(),
             playback: RefCell::default(),
+            unseen: Cell::new(0),
             jump_serial: Cell::new(0),
             composer: RefCell::default(),
             me: me.clone(),
@@ -330,6 +334,9 @@ impl Shared {
                     }
                 }
                 MessagesUpdate::Appended(n) => {
+                    if scroller.is_scrolled_up() {
+                        self.unseen.set(self.unseen.get() + n);
+                    }
                     if scroller.item_count() + n == count {
                         scroller.append(n, cx);
                     } else {
@@ -343,7 +350,10 @@ impl Shared {
                         scroller.reset(count, cx);
                     }
                 }
-                MessagesUpdate::Reset => scroller.reset(count, cx),
+                MessagesUpdate::Reset => {
+                    self.unseen.set(0);
+                    scroller.reset(count, cx);
+                }
             }
             if update.rows || update.messages != MessagesUpdate::Unchanged {
                 // Rows changed in place may change in height (a picture arrived).
