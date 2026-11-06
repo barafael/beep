@@ -1000,8 +1000,7 @@ fn icon_buttons_have_tooltips() {
     let (window, _) = window_with_messages(1);
     let shown = |window: &AppWindow| {
         i_slint_core::window::WindowInner::from_pub(window.window())
-            .active_popups
-            .borrow()
+            .active_popups()
             .len()
     };
     let button = find(&window, "Search this chat").expect("the chat header's button");
