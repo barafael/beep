@@ -16,6 +16,7 @@ use crate::actions::{
 };
 use crate::chat_list::ChatListView;
 use crate::conversation::ConversationView;
+use crate::overlays::Overlays;
 use crate::shared::Shared;
 use crate::start::StartView;
 use crate::theme::{self, Tokens};
@@ -26,6 +27,7 @@ pub struct AppView {
     start: Entity<StartView>,
     list: Entity<ChatListView>,
     conversation: Entity<ConversationView>,
+    overlays: Entity<Overlays>,
     focus: FocusHandle,
     /// Dragging the divider: where the pointer was, and the sidebar's width then.
     dragging: Option<(f32, f32)>,
@@ -36,6 +38,7 @@ impl AppView {
         let start = cx.new(|cx| StartView::new(shared.clone(), window, cx));
         let list = cx.new(|cx| ChatListView::new(shared.clone(), window, cx));
         let conversation = cx.new(|cx| ConversationView::new(shared.clone(), window, cx));
+        let overlays = cx.new(|_| Overlays::new(shared.clone()));
         let focus = cx.focus_handle();
         // The window's own state, for what the state needs to know about it.
         cx.observe_window_activation(window, |this, window, cx| {
@@ -49,6 +52,7 @@ impl AppView {
             start,
             list,
             conversation,
+            overlays,
             focus,
             dragging: None,
         }
@@ -163,6 +167,7 @@ impl Render for AppView {
         };
         div()
             .id("app")
+            .relative()
             .key_context("App")
             .track_focus(&self.focus)
             .size_full()
@@ -205,6 +210,7 @@ impl Render for AppView {
             }))
             .children(banner)
             .child(div().flex_1().min_h_0().child(content))
+            .child(self.overlays.clone())
     }
 }
 

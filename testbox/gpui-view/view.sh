@@ -15,7 +15,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 out=$root/target/gpui-view
 tools=$root/target/testbox-workspaces/debug
-name=b33p-gpui-view
+# A worktree of its own has its own container, named after it.
+name=b33p-gpui-view-$(basename "$root")
 case ${1:-} in
 start)
     shift

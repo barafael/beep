@@ -68,7 +68,15 @@ impl Render for ConversationView {
             .flex_col()
             .bg(t.surface)
             .child(header)
-            .child(div().flex_1().min_h_0().child(messages))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(messages)
+                    // A panel over the messages, while one is open.
+                    .children(crate::panels::covering(&shared, &t, cx)),
+            )
             .children(request.map(|title| self.request_bar(title, &t)))
             .child(self.composer.clone())
     }

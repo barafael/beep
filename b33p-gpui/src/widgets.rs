@@ -84,3 +84,42 @@ pub fn divider(tokens: &Tokens) -> Div {
 pub fn fade(color: Hsla, by: f32) -> Hsla {
     hsla(color.h, color.s, color.l, color.a * by)
 }
+
+/// A dialog over the window: a scrim, and a card of `width` in the middle holding `content`.
+/// A click on the scrim, or Esc (`CloseFront`), is `dismiss`'s to answer.
+pub fn modal(
+    t: &Tokens,
+    width: f32,
+    content: impl IntoElement,
+    dismiss: impl Fn(&mut Window, &mut App) + 'static,
+) -> gpui_kit::AnyElement {
+    div()
+        .id("modal")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(t.scrim)
+        // Nothing under the scrim answers the pointer.
+        .occlude()
+        .on_click(move |_, window, cx| dismiss(window, cx))
+        .child(
+            div()
+                .id("modal-card")
+                .w(px(width))
+                .max_w(gpui_kit::relative(0.95))
+                .max_h(gpui_kit::relative(0.9))
+                .flex()
+                .flex_col()
+                .bg(t.surface)
+                .text_color(t.text)
+                .rounded(px(crate::theme::RADIUS_L))
+                .shadow_lg()
+                .overflow_hidden()
+                // A click on the card is not one on the scrim.
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(content),
+        )
+        .into_any_element()
+}

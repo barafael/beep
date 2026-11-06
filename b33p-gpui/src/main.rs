@@ -30,6 +30,8 @@ mod chat_list;
 mod composer;
 mod conversation;
 mod images;
+mod overlays;
+mod panels;
 mod settings;
 mod shared;
 mod shutdown;
