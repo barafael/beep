@@ -10,12 +10,9 @@ use b33p_core::settings::Settings;
 use b33p_core::state::{ChatState, Update};
 use b33p_core::{Backend, Config, ConversationId};
 use b33p_notify::{Action, AppInfo, Notifier};
-use b33p_platform::{clipboard, desktop, instance, logging, motion};
+use b33p_platform::{autostart, clipboard, desktop, instance, logging, motion};
 use gpui_kit::component::message_scroller::MessageScrollerState;
-use gpui_kit::{
-    App, AppContext as _, AsyncApp, Bounds, TitlebarOptions, WindowBounds, WindowDecorations,
-    WindowOptions, px, size,
-};
+use gpui_kit::{App, AppContext as _, AsyncApp};
 
 #[cfg(all(feature = "harness", target_family = "unix"))]
 mod agent;
@@ -37,7 +34,9 @@ mod shared;
 mod shutdown;
 mod start;
 mod theme;
+mod tray;
 mod widgets;
+mod window;
 
 use shared::Shared;
 
@@ -139,22 +138,15 @@ fn main() {
                 desktop_requests,
                 scroller,
             );
-            if let Err(error) = open_window(&shared, cx) {
-                tracing::error!(error = %b33p_core::scrub::scrubbed(&error), "can't open the window");
-                cx.quit();
-                return;
-            }
-            // Closing the window ends b33p, until there is a tray to keep it in.
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
+            window::apply_motion(&shared, cx);
+            // `--hidden` starts in the tray, unless there is nothing to keep it in.
+            let hidden = std::env::args().any(|arg| arg == autostart::HIDDEN)
+                && settings.close_to_tray;
+            window::start(&shared, activations, hidden, cx);
             shared.refresh(shared::everything(), cx);
             #[cfg(all(feature = "harness", target_family = "unix"))]
             agent::start(&shared, cx);
-            spawn_pumps(&shared, events, notifier_actions, activations, quit_asked, cx);
+            spawn_pumps(&shared, events, notifier_actions, quit_asked, cx);
         });
     // Waits for the backend to close the database, which must happen before the process exits.
     drop(backend);
@@ -165,40 +157,6 @@ fn main() {
     drop(instance);
 }
 
-/// Opens the window, with the views that draw the shared state.
-fn open_window(shared: &Rc<Shared>, cx: &mut App) -> anyhow_free::Result<()> {
-    let title = if b33p_core::Backend::mock_requested() {
-        "b33p · MOCK"
-    } else {
-        "b33p"
-    };
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(1000.), px(680.)),
-            cx,
-        ))),
-        titlebar: Some(TitlebarOptions {
-            title: Some(title.into()),
-            ..TitlebarOptions::default()
-        }),
-        window_min_size: Some(size(px(360.), px(480.))),
-        app_id: Some(APP.id.into()),
-        window_decorations: Some(WindowDecorations::Server),
-        ..WindowOptions::default()
-    };
-    gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| app::AppView::new(shared.clone(), window, cx))
-    })?;
-    cx.activate(true);
-    Ok(())
-}
-
-/// Result without a dependency on anyhow, which GPUI's errors come in.
-mod anyhow_free {
-    pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-}
-
 /// Everything that arrives from outside while the window is up: the backend's events, what the
 /// user did with a notification, b33p started again, the desktop's reduced-motion preference,
 /// and the system's request to quit.
@@ -206,7 +164,6 @@ fn spawn_pumps(
     shared: &Rc<Shared>,
     events: async_channel::Receiver<b33p_core::Event>,
     notifier_actions: async_channel::Receiver<Action>,
-    activations: Option<async_channel::Receiver<Option<String>>>,
     quit_asked: async_channel::Receiver<()>,
     cx: &mut App,
 ) {
@@ -246,11 +203,14 @@ fn spawn_pumps(
         async move |cx: &mut AsyncApp| {
             while let Ok(action) = notifier_actions.recv().await {
                 cx.update(|cx| match action {
-                    Action::Open { key, .. } => {
+                    Action::Open {
+                        key,
+                        activation_token,
+                    } => {
                         if let Some(key) = key {
                             shared.open_chat(key, cx);
                         }
-                        cx.activate(true);
+                        window::activate(&shared, activation_token, cx);
                     }
                     Action::Reply { key, text } => {
                         shared.act(cx, |chat| {
@@ -268,17 +228,6 @@ fn spawn_pumps(
     })
     .detach();
 
-    // Starting b33p again shows this one.
-    if let Some(activations) = activations {
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            while let Ok(token) = activations.recv().await {
-                tracing::info!(token = token.is_some(), "started again; showing the window");
-                cx.update(|cx| cx.activate(true));
-            }
-        })
-        .detach();
-    }
-
     // The desktop's reduced-motion preference, as it is and as it changes.
     let system_motion = motion::watch();
     cx.spawn({
@@ -289,7 +238,7 @@ fn spawn_pumps(
             while let Ok(reduced) = system_motion.reduced.recv().await {
                 tracing::debug!(reduced, "the desktop's reduced-motion preference");
                 shared.system_reduces_motion.set(reduced);
-                cx.update(|cx| cx.refresh_windows());
+                cx.update(|cx| window::apply_motion(&shared, cx));
             }
         }
     })

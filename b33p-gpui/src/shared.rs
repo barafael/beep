@@ -110,6 +110,10 @@ pub struct Shared {
     jump_serial: Cell<u64>,
     /// The composer, which holds the text being written: the harness types into it.
     pub composer: RefCell<Option<gpui_kit::WeakEntity<crate::composer::ComposerView>>>,
+    /// The icon in the system tray, if the platform has one (`window.rs`, `tray.rs`).
+    pub tray: RefCell<Option<crate::tray::Tray>>,
+    /// Started for the tray (`--hidden`): the window stays closed unless the user is needed.
+    pub start_hidden: Cell<bool>,
     /// For tasks that outlive a call.
     pub me: Weak<Shared>,
     /// Answers the agent harness's socket (`--features harness`).
@@ -163,6 +167,8 @@ impl Shared {
             playback: RefCell::default(),
             jump_serial: Cell::new(0),
             composer: RefCell::default(),
+            tray: RefCell::default(),
+            start_hidden: Cell::new(false),
             me: me.clone(),
             #[cfg(all(feature = "harness", target_family = "unix"))]
             agent: crate::agent::Handle::default(),
@@ -239,6 +245,7 @@ impl Shared {
         self.follow_messages(&chat, update, cx);
         #[cfg(all(feature = "harness", target_family = "unix"))]
         self.agent.publish(&chat, &self.settings.borrow(), self);
+        crate::window::after_flush(self, &chat, cx);
         deliver_notices(&self.notifier, &mut chat);
         for command in chat.take_commands() {
             self.commands.send(command);
@@ -534,6 +541,7 @@ impl Shared {
         let theme = settings.theme;
         self.settings.replace(settings.clone());
         crate::theme::apply(theme, None, cx);
+        crate::window::settings_changed(self, &settings, cx);
         self.commands
             .send(Command::Preferences(settings.preferences));
         let rebuild =
