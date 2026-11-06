@@ -1155,3 +1155,12 @@ hundred such messages over 30 minutes: presage-cli exits between storing and ack
 The check now remembers what presage-cli printed having received, per account. A message never seen
 remains a loss. This is the third time this check has needed correcting for a redelivery, and each
 was found by running longer: it is worth a mode that reads the counters, not the store.
+
+### The longer tour
+
+`TESTBOX_TOUR_REPEAT=5` could never pass: the tour capped groups at two, so "every kind of step came
+up" failed whatever b33p did. Nobody had run it, though 1 Nov's notes suggest it for the nightly. The
+cap goes with the repeat now. The run that found it, optimized and limited to 256 MiB, seed 1794007793:
+175 steps, every one passed, in 93 s. Restart median 0.53 s (debug 2.0 to 2.6 s), delivered median
+0.056 s (debug 0.12 to 0.13 s), peak 79 MiB, 58 open files. These are the first real numbers for an
+optimized b33p under a tour, and 256 MiB is comfortably more than it wants.
