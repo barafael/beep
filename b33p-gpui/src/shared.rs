@@ -37,6 +37,29 @@ pub struct UiState {
     pub window_visible: bool,
 }
 
+impl UiState {
+    /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
+    /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
+    /// "leave_group". The name back if there is none like it.
+    pub fn show_part(&mut self, what: &str, open: bool) -> Result<(), String> {
+        match what {
+            "settings" => self.settings_open = open,
+            "stories" => self.stories_open = open,
+            "calendar" => self.calendar_open = open,
+            "unlink" | "start_over" | "leave_group" => {
+                self.confirm = match (what, open) {
+                    (_, false) => Confirm::None,
+                    ("unlink", true) => Confirm::Unlink,
+                    ("leave_group", true) => Confirm::LeaveGroup,
+                    _ => Confirm::StartOver,
+                }
+            }
+            _ => return Err(what.to_owned()),
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Confirm {
     #[default]
@@ -85,6 +108,8 @@ pub struct Shared {
     pub playback: RefCell<Playback>,
     /// The scroll request of [`ChatState::jump`] last carried out.
     jump_serial: Cell<u64>,
+    /// The composer, which holds the text being written: the harness types into it.
+    pub composer: RefCell<Option<gpui_kit::WeakEntity<crate::composer::ComposerView>>>,
     /// For tasks that outlive a call.
     pub me: Weak<Shared>,
     /// Answers the agent harness's socket (`--features harness`).
@@ -137,6 +162,7 @@ impl Shared {
             playback_timer: RefCell::default(),
             playback: RefCell::default(),
             jump_serial: Cell::new(0),
+            composer: RefCell::default(),
             me: me.clone(),
             #[cfg(all(feature = "harness", target_family = "unix"))]
             agent: crate::agent::Handle::default(),
@@ -662,5 +688,39 @@ impl Shared {
     /// Whether the window is narrow and a chat is open: one pane at a time.
     pub fn narrow(&self) -> bool {
         self.ui.borrow().narrow
+    }
+}
+
+impl Shared {
+    /// Runs `f` with the window, if there is one: for what the window alone can do (a size).
+    pub fn with_window<R>(
+        &self,
+        cx: &mut App,
+        f: impl FnOnce(&mut gpui_kit::Window, &mut App) -> R,
+    ) -> Option<R> {
+        let handle = cx.windows().into_iter().next()?;
+        handle.update(cx, |_, window, cx| f(window, cx)).ok()
+    }
+
+    /// Puts `text` in the composer, as typed.
+    pub fn set_composer_text(&self, text: &str, cx: &mut App) {
+        let Some(composer) = self.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
+            return;
+        };
+        let text = text.to_owned();
+        self.with_window(cx, |window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text(&text, window, cx));
+        });
+    }
+
+    /// What the composer's send button does; whether a command went out.
+    pub fn send_composer(&self, cx: &mut App) -> bool {
+        let Some(composer) = self.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
+            return false;
+        };
+        self.with_window(cx, |window, cx| {
+            composer.update(cx, |composer, cx| composer.send(window, cx))
+        })
+        .unwrap_or(false)
     }
 }

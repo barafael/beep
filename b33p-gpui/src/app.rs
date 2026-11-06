@@ -170,6 +170,7 @@ impl Render for AppView {
             .flex_col()
             .bg(t.surface)
             .text_color(t.text)
+            .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
             .text_size(theme::body(shared.settings.borrow().text_size.scale()))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.shared.ui.borrow_mut().settings_open = false;

@@ -31,6 +31,7 @@ impl ComposerView {
                 .submit_on_enter(true)
         });
         let subscription = cx.subscribe_in(&input, window, Self::input_event);
+        *shared.composer.borrow_mut() = Some(cx.weak_entity());
         Self {
             shared,
             input,
@@ -60,6 +61,13 @@ impl ComposerView {
             }
             _ => {}
         }
+    }
+
+    /// Puts `text` in the field.
+    pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = text.to_owned();
+        self.input
+            .update(cx, |input, cx| input.set_value(text, window, cx));
     }
 
     /// Sends what is written: during an edit that is the edit, which the state keeps out of

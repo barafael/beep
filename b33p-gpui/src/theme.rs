@@ -124,11 +124,48 @@ pub fn tokens(cx: &App) -> Tokens {
     }
 }
 
-/// Makes the component library's theme the one the settings choose.
+/// The first of these an installed font has, as the body text: what a desktop is likely to set
+/// as its own, then what is likely to be there.
+const FAMILIES: [&str; 8] = [
+    "Adwaita Sans",
+    "Inter",
+    "Cantarell",
+    "Segoe UI",
+    "SF Pro Text",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+];
+
+/// Makes the component library's theme the one the settings choose, with b33p's accent and a
+/// font that is there.
 pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
     match setting {
         ThemeSetting::System => Theme::sync_system_appearance(window, cx),
         ThemeSetting::Light => Theme::change(ThemeMode::Light, window, cx),
         ThemeSetting::Dark => Theme::change(ThemeMode::Dark, window, cx),
     }
+    let installed = cx.text_system().all_font_names();
+    let family = FAMILIES
+        .iter()
+        .find(|family| installed.iter().any(|name| name == *family))
+        .map(|family| (*family).into());
+    Theme::update(cx, |theme| {
+        // Signal's blue, lighter where the ground is dark.
+        let accent = if theme.is_dark() {
+            hsla(0.617, 0.9, 0.66, 1.)
+        } else {
+            hsla(0.617, 0.86, 0.59, 1.)
+        };
+        let colors = &mut theme.colors;
+        colors.primary = accent;
+        colors.primary_hover = hsla(accent.h, accent.s, accent.l * 0.92, 1.);
+        colors.primary_active = hsla(accent.h, accent.s, accent.l * 0.84, 1.);
+        colors.link = accent;
+        colors.ring = accent;
+        colors.selection = accent.opacity(0.3);
+        if let Some(family) = family {
+            theme.font_family = family;
+        }
+    });
 }
