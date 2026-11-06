@@ -123,9 +123,7 @@ fn main() {
     let (notifier, notifier_actions) = Notifier::new(&APP);
     let events = backend.events();
     let commands = backend.commands();
-    let activations = instance
-        .as_ref()
-        .map(|instance| instance.activations.clone());
+    let activations = instance.as_ref().map(|instance| instance.activations.clone());
 
     gpui_kit::application()
         .with_assets(assets::Assets)
@@ -235,9 +233,7 @@ fn spawn_pumps(
                 });
                 if !events.is_empty() {
                     // The window is drawn between batches.
-                    cx.background_executor()
-                        .timer(Duration::from_millis(1))
-                        .await;
+                    cx.background_executor().timer(Duration::from_millis(1)).await;
                 }
             }
             // The channel only closes early if the backend thread died without reporting why

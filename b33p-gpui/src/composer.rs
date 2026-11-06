@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use b33p_core::ConversationId;
 use b33p_core::state::Update;
-use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::Disableable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{Context, Entity, IntoElement, Render, Subscription, Window, div, px};
 

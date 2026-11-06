@@ -84,12 +84,7 @@ pub fn tokens(cx: &App) -> Tokens {
     // The accent made darker, for what white text sits on.
     let darker = |color: Hsla, by: f32| hsla(color.h, color.s, color.l * (1. - by), color.a);
     let brighter = |color: Hsla, by: f32| {
-        hsla(
-            color.h,
-            color.s,
-            (color.l + (1. - color.l) * by).min(1.),
-            color.a,
-        )
+        hsla(color.h, color.s, (color.l + (1. - color.l) * by).min(1.), color.a)
     };
     let raised = if dark {
         brighter(theme.background, 0.08)

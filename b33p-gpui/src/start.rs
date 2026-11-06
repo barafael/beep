@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use b33p_core::state::{ChatState, Screen, Update};
 use b33p_core::{Failure, HistoryTransfer, QrMatrix, SyncStage};
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Div, Entity, FontWeight, IntoElement, Render, SharedString, Subscription,
@@ -54,49 +54,30 @@ pub struct StartView {
 
 impl StartView {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let password = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("Password")
-        });
-        let confirmation = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("Repeat password")
-        });
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
+        let confirmation =
+            cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Repeat password"));
         let name = shared.settings.borrow().device_name();
         let device_name = cx.new(|cx| InputState::new(window, cx).default_value(name));
         let subscriptions = vec![
-            cx.subscribe_in(
-                &password,
-                window,
-                |this, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event
-                        && !this.is_new_password()
-                    {
-                        this.submit(window, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &confirmation,
-                window,
-                |this, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        this.submit(window, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &device_name,
-                window,
-                |this, input, event: &InputEvent, _, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        let name = input.read(cx).value().to_string();
-                        this.shared.rename_device(&name, cx);
-                    }
-                },
-            ),
+            cx.subscribe_in(&password, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event
+                    && !this.is_new_password()
+                {
+                    this.submit(window, cx);
+                }
+            }),
+            cx.subscribe_in(&confirmation, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.submit(window, cx);
+                }
+            }),
+            cx.subscribe_in(&device_name, window, |this, input, event: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let name = input.read(cx).value().to_string();
+                    this.shared.rename_device(&name, cx);
+                }
+            }),
         ];
         Self {
             shared,
@@ -130,14 +111,12 @@ impl StartView {
         for input in [&self.password, &self.confirmation] {
             input.update(cx, |input, cx| input.set_value("", window, cx));
         }
-        self.password
-            .update(cx, |input, cx| input.focus(window, cx));
+        self.password.update(cx, |input, cx| input.focus(window, cx));
     }
 
     /// Ready to type into.
     pub fn focus_password(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.password
-            .update(cx, |input, cx| input.focus(window, cx));
+        self.password.update(cx, |input, cx| input.focus(window, cx));
     }
 }
 
@@ -196,7 +175,9 @@ impl Render for StartView {
                 self.syncing(&chat, stage, &t, cx).into_any_element()
             }
             Screen::Password { new, error } => self.password_screen(new, error, &t, cx),
-            Screen::Failed { failure, message } => self.failed(&chat, failure, message, &t, cx),
+            Screen::Failed { failure, message } => {
+                self.failed(&chat, failure, message, &t, cx)
+            }
             Screen::Link(qr) => self.link(&qr, &t, cx),
             Screen::Chats => div().into_any_element(),
         }
@@ -219,9 +200,7 @@ impl StartView {
         if can_start && !waited {
             let wake = Duration::from_millis(1500).saturating_sub(since.elapsed());
             cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(wake + Duration::from_millis(20))
-                    .await;
+                cx.background_executor().timer(wake + Duration::from_millis(20)).await;
                 this.update(cx, |_, cx| cx.notify()).ok();
             })
             .detach();
@@ -324,11 +303,7 @@ impl StartView {
         }
         page_with(
             t,
-            Some(if new {
-                "Choose a password"
-            } else {
-                "Unlock b33p"
-            }),
+            Some(if new { "Choose a password" } else { "Unlock b33p" }),
             true,
             children,
         )
@@ -440,8 +415,7 @@ impl StartView {
                     .size_full()
                     .with_fallback(|| div().into_any_element())
             }));
-        let children: Vec<AnyElement> =
-            vec![
+        let children: Vec<AnyElement> = vec![
             div()
                 .flex()
                 .justify_center()
