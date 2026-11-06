@@ -13,9 +13,9 @@ use b33p_core::format::{find_url, link_target};
 use b33p_core::{Mention, Style, StyleRange};
 use gpui_kit::component::Theme;
 use gpui_kit::{
-    App, Bounds, BorderStyle, ClipboardItem, Corners, CursorStyle, DispatchPhase, Edges, Element,
-    ElementId, FocusHandle, FontStyle, FontWeight, GlobalElementId, Global, Hitbox, HitboxBehavior,
-    HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton,
+    App, BorderStyle, Bounds, ClipboardItem, Corners, CursorStyle, DispatchPhase, Edges, Element,
+    ElementId, FocusHandle, FontStyle, FontWeight, Global, GlobalElementId, HighlightStyle, Hitbox,
+    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString,
     StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, px, transparent_black,
 };
@@ -110,7 +110,10 @@ pub fn build(body: &str, styles: &[StyleRange], mentions: &[Mention], revealed: 
     let piece_at = |at: usize| cuts.binary_search(&at).unwrap_or_default();
     let mut covering = vec![[0i32; STYLES.len()]; cuts.len()];
     for range in styles.iter().filter(valid) {
-        let style = STYLES.iter().position(|s| *s == range.style).unwrap_or_default();
+        let style = STYLES
+            .iter()
+            .position(|s| *s == range.style)
+            .unwrap_or_default();
         covering[piece_at(range.start)][style] += 1;
         covering[piece_at(range.end)][style] -= 1;
     }
@@ -212,8 +215,17 @@ fn push(out: &mut Rich, text: &str, look: Piece) {
 /// there if it is none): what a double click selects.
 pub fn word_at(text: &str, at: usize) -> Range<usize> {
     let at = at.min(text.len());
-    let at = (0..=at).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+    let at = (0..=at)
+        .rev()
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(0);
     let word = |c: char| c.is_alphanumeric() || c == '_';
+    let Some(here) = text[at..].chars().next() else {
+        return at..at;
+    };
+    if !word(here) {
+        return at..at + here.len_utf8();
+    }
     let mut start = at;
     for (i, c) in text[..at].char_indices().rev() {
         if !word(c) {
@@ -228,15 +240,7 @@ pub fn word_at(text: &str, at: usize) -> Range<usize> {
         }
         end = at + i + c.len_utf8();
     }
-    if start == end {
-        // Not on a word: the character itself.
-        match text[at..].chars().next() {
-            Some(c) => at..at + c.len_utf8(),
-            None => at..at,
-        }
-    } else {
-        start..end
-    }
+    start..end
 }
 
 /// The text selected in a message, if any: one message's at a time, as a window has one
@@ -507,8 +511,13 @@ impl Element for RichText {
         // The pointer goes down on the text: on a link it may become a click, anywhere else a
         // selection starts (a double click takes the word, a triple click all of it).
         window.on_mouse_event({
-            let (pieces, text, key, hitbox, layout) =
-                (pieces.clone(), text.clone(), key.clone(), hitbox.clone(), layout.clone());
+            let (pieces, text, key, hitbox, layout) = (
+                pieces.clone(),
+                text.clone(),
+                key.clone(),
+                hitbox.clone(),
+                layout.clone(),
+            );
             move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || event.button != MouseButton::Left
@@ -551,7 +560,9 @@ impl Element for RichText {
         window.on_mouse_event({
             let (text, key, layout) = (text.clone(), key.clone(), layout.clone());
             move |event: &MouseMoveEvent, phase, window, cx| {
-                if phase != DispatchPhase::Capture || event.pressed_button != Some(MouseButton::Left) {
+                if phase != DispatchPhase::Capture
+                    || event.pressed_button != Some(MouseButton::Left)
+                {
                     return;
                 }
                 let Some(state) = cx.try_global::<TextSelection>() else {
@@ -766,9 +777,11 @@ mod tests {
         let rich = build(body, &[range(8, 15, Style::Bold)], &[], false);
         let targets: Vec<_> = rich.pieces.iter().map(|p| p.target.clone()).collect();
         assert_eq!(rich.pieces.len(), 3);
-        assert!(targets
-            .iter()
-            .all(|t| *t == Some(Target::Url(body.to_owned()))));
+        assert!(
+            targets
+                .iter()
+                .all(|t| *t == Some(Target::Url(body.to_owned())))
+        );
         assert!(rich.pieces[1].bold);
     }
 
@@ -801,7 +814,10 @@ mod tests {
         assert_eq!(rich.pieces.len(), 1);
         assert_eq!(shown(&rich, 0), "@Alice");
         assert!(rich.pieces[0].bold);
-        assert_eq!(rich.pieces[0].target, Some(Target::Mention("alice-id".into())));
+        assert_eq!(
+            rich.pieces[0].target,
+            Some(Target::Mention("alice-id".into()))
+        );
     }
 
     #[test]
@@ -849,10 +865,11 @@ mod tests {
     fn a_double_click_takes_the_word() {
         let text = "hello wörld, again";
         assert_eq!(&text[word_at(text, 1)], "hello");
-        assert_eq!(&text[word_at(text, 5)], "hello");
+        assert_eq!(&text[word_at(text, 4)], "hello");
         assert_eq!(&text[word_at(text, 8)], "wörld");
         // On punctuation or a space: that character.
         assert_eq!(&text[word_at(text, 12)], ",");
+        assert_eq!(&text[word_at(text, 5)], " ");
         assert_eq!(word_at("", 0), 0..0);
         // In the middle of a character: its word.
         assert_eq!(&text[word_at(text, 8 + 1)], "wörld");
@@ -862,7 +879,12 @@ mod tests {
     fn a_selection_over_lines_covers_whole_lines_between() {
         use gpui_kit::{point, size};
         let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(100.)));
-        let rows = selection_rows(point(px(40.), px(20.)), point(px(30.), px(80.)), bounds, px(20.));
+        let rows = selection_rows(
+            point(px(40.), px(20.)),
+            point(px(30.), px(80.)),
+            bounds,
+            px(20.),
+        );
         assert_eq!(
             rows,
             vec![

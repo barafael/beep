@@ -9,15 +9,17 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
 use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, FocusHandle, FontWeight, IntoElement, Render, Window, div, px};
+use gpui_kit::{
+    Context, Entity, FocusHandle, Focusable as _, FontWeight, IntoElement, Render, Window, div, px,
+};
 
 use crate::actions::{CloseFront, CopyMessages};
 use crate::bubble;
-use crate::message_menu;
-use crate::text::TextSelection;
 use crate::chat_list::MUTE_CHOICES;
 use crate::composer::ComposerView;
+use crate::message_menu;
 use crate::shared::{Confirm, Shared};
+use crate::text::TextSelection;
 use crate::theme::{self, Tokens};
 use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
 
@@ -41,11 +43,11 @@ impl ConversationView {
 }
 
 impl Render for ConversationView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx);
         let shared = self.shared.clone();
         let narrow = shared.narrow();
-        
+
         // Older messages come in as the top is neared.
         {
             let top = shared.scroller.read(cx).logical_scroll_top().item_ix;
@@ -58,7 +60,7 @@ impl Render for ConversationView {
         }
 
         let header = self.header(&t, narrow);
-        let messages = self.messages(&t, cx);
+        let messages = self.messages(window, cx);
 
         let request = {
             let chat = shared.chat.borrow();
@@ -97,7 +99,7 @@ impl Render for ConversationView {
 
 impl ConversationView {
     /// The messages, a list that draws only the rows on screen.
-    fn messages(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    fn messages(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let shared = self.shared.clone();
         // Messages that came while scrolled away from the end are counted for the button that
         // goes there; scrolled to it again, they are seen.
@@ -106,12 +108,24 @@ impl ConversationView {
         }
         let unseen = shared.unseen.get();
         cx.default_global::<TextSelection>().focus = Some(self.messages_focus.clone());
+        // Writing in the composer drops the selection of text, so that Ctrl+C there copies the
+        // composer's own.
+        let writing = self
+            .composer
+            .read(cx)
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if writing {
+            TextSelection::clear(cx);
+        }
         let list = MessageScroller::new("messages", shared.scroller.clone(), {
             let shared = shared.clone();
             move |index, _window, cx| bubble::row(index, &shared, cx)
         })
         // The rows carry their own spacing: tight within a run, a little more between runs.
-        .with_row_style(gpui_kit::StyleRefinement::default().pb(px(0.)))
+        .with_row_style(gpui_kit::StyleRefinement::default().pb(px(0.)).px(px(0.)))
         .with_jump_button_label(if unseen > 0 {
             format!("Newest messages, {unseen} new")
         } else {
@@ -124,7 +138,6 @@ impl ConversationView {
                 button
             }
         });
-        let _ = t;
         div()
             .id("messages-area")
             .size_full()
@@ -201,7 +214,11 @@ impl ConversationView {
                     .flex_row()
                     .items_center()
                     .gap(px(theme::SPACE_M))
-                    .pl(px(if narrow { theme::SPACE_XS } else { theme::SPACE_L }))
+                    .pl(px(if narrow {
+                        theme::SPACE_XS
+                    } else {
+                        theme::SPACE_L
+                    }))
                     .pr(px(theme::SPACE_M))
                     .when(narrow, |row| {
                         row.child(icon_button("back", "arrow-left", "Back", {
@@ -255,11 +272,15 @@ impl ConversationView {
                                                     return row.child(typing.clone());
                                                 }
                                                 let row = row.when(!subtitle.is_empty(), |row| {
-                                                    row.child(div().truncate().child(subtitle.clone()))
+                                                    row.child(
+                                                        div().truncate().child(subtitle.clone()),
+                                                    )
                                                 });
                                                 match &timer {
                                                     Some(label) => row
-                                                        .when(!subtitle.is_empty(), |row| row.child("·"))
+                                                        .when(!subtitle.is_empty(), |row| {
+                                                            row.child("·")
+                                                        })
                                                         .child(icon("timer").size(px(12.)))
                                                         .child(label.clone()),
                                                     None => row,
@@ -313,25 +334,23 @@ impl ConversationView {
         let shared = self.shared.clone();
         let answer = move |response: RequestResponse| {
             let shared = shared.clone();
-            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
-                match response {
-                    RequestResponse::Accept => {
-                        shared.act(cx, |chat| {
-                            let id = chat.selected().map(|c| c.id.clone());
-                            (
-                                id.and_then(|id| chat.respond(&id, RequestResponse::Accept)),
-                                Update::reset(),
-                            )
-                        });
-                    }
-                    RequestResponse::Block => {
-                        shared.ui.borrow_mut().confirm = Confirm::BlockRequest;
-                        cx.refresh_windows();
-                    }
-                    RequestResponse::Delete => {
-                        shared.ui.borrow_mut().confirm = Confirm::DeleteRequest;
-                        cx.refresh_windows();
-                    }
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| match response {
+                RequestResponse::Accept => {
+                    shared.act(cx, |chat| {
+                        let id = chat.selected().map(|c| c.id.clone());
+                        (
+                            id.and_then(|id| chat.respond(&id, RequestResponse::Accept)),
+                            Update::reset(),
+                        )
+                    });
+                }
+                RequestResponse::Block => {
+                    shared.ui.borrow_mut().confirm = Confirm::BlockRequest;
+                    cx.refresh_windows();
+                }
+                RequestResponse::Delete => {
+                    shared.ui.borrow_mut().confirm = Confirm::DeleteRequest;
+                    cx.refresh_windows();
                 }
             }
         };
@@ -382,17 +401,23 @@ fn chat_menu(
     blocked: bool,
     archived: bool,
 ) -> gpui_kit::component::menu::PopupMenu {
-    let item = |label: &'static str, run: Rc<dyn Fn(&Rc<Shared>, &b33p_core::ConversationId, &mut gpui_kit::App)>| {
-        let shared = shared.clone();
-        let id = id.clone();
-        PopupMenuItem::new(label).on_click(move |_, _, cx| run(&shared, &id, cx))
-    };
+    let item =
+        |label: &'static str,
+         run: Rc<dyn Fn(&Rc<Shared>, &b33p_core::ConversationId, &mut gpui_kit::App)>| {
+            let shared = shared.clone();
+            let id = id.clone();
+            PopupMenuItem::new(label).on_click(move |_, _, cx| run(&shared, &id, cx))
+        };
     let mut menu = menu.item(item(
         if pinned { "Unpin" } else { "Pin" },
         Rc::new(|s, id, cx| s.chat_action(cx, id, |chat, id| chat.toggle_pin(id))),
     ));
     menu = menu.item(item(
-        if unread { "Mark as read" } else { "Mark as unread" },
+        if unread {
+            "Mark as read"
+        } else {
+            "Mark as unread"
+        },
         Rc::new(move |s, id, cx| s.chat_action(cx, id, |chat, id| chat.mark_unread(id, !unread))),
     ));
     if muted {

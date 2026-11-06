@@ -5,12 +5,12 @@
 use std::rc::Rc;
 
 use b33p_core::state::Update;
+use gpui_kit::Focusable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::prelude::*;
-use gpui_kit::Focusable as _;
 use gpui_kit::{
     Anchor, AnyElement, App, ClipboardItem, Context, FontWeight, SharedString, Window, div, px,
 };
@@ -19,6 +19,9 @@ use crate::shared::{Confirm, Shared};
 use crate::text::TextSelection;
 use crate::theme::{self, Tokens};
 use crate::widgets::icon;
+
+/// What a menu entry does with the message it is for.
+type Run = Rc<dyn Fn(&Rc<Shared>, &Info, &mut Window, &mut App)>;
 
 /// What the menu of a message offers, as the message was when it was drawn.
 #[derive(Clone)]
@@ -41,33 +44,35 @@ pub struct Info {
 
 /// Puts the cursor in the composer, as after a reply or an edit starts. (The composer's own
 /// area may offer this too; this reaches it through what `Shared` keeps.)
-pub fn focus_composer(shared: &Shared, cx: &mut App) {
+pub fn focus_composer(shared: &Shared, window: &mut Window, cx: &mut App) {
     let Some(composer) = shared.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
         return;
     };
-    shared.with_window(cx, |window, cx| {
-        let handle = composer.read(cx).input.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
-    });
+    let handle = composer.read(cx).input.read(cx).focus_handle(cx);
+    window.focus(&handle, cx);
 }
 
-pub fn reply(shared: &Shared, index: usize, cx: &mut App) {
+pub fn reply(shared: &Shared, index: usize, window: &mut Window, cx: &mut App) {
     shared.redraw(cx, |chat| chat.reply_to(index));
-    focus_composer(shared, cx);
+    focus_composer(shared, window, cx);
 }
 
 pub fn react(shared: &Shared, index: usize, emoji: &str, cx: &mut App) {
     shared.command(cx, |chat| chat.react(index, emoji));
 }
 
-/// Puts the message in the composer, to be edited there.
-pub fn edit(shared: &Shared, index: usize, cx: &mut App) {
+/// Puts the message in the composer, to be edited there. (With the window the event came in:
+/// the window is being updated, and can't be reached through its handle meanwhile.)
+pub fn edit(shared: &Shared, index: usize, window: &mut Window, cx: &mut App) {
     let text = shared.chat.borrow_mut().edit(index);
-    if let Some(text) = text {
-        shared.set_composer_text(&text, cx);
-        shared.refresh(Update::default(), cx);
-        focus_composer(shared, cx);
+    let Some(text) = text else {
+        return;
+    };
+    if let Some(composer) = shared.composer.borrow().as_ref().and_then(|c| c.upgrade()) {
+        composer.update(cx, |composer, cx| composer.set_text(&text, window, cx));
     }
+    shared.refresh(Update::default(), cx);
+    focus_composer(shared, window, cx);
 }
 
 /// Deletes the message here; for everyone can't be undone, so that is asked first.
@@ -119,25 +124,48 @@ pub fn copy(text: String, cx: &mut App) {
 }
 
 /// The menu: what right-clicking a message offers, and the button's "More".
-pub fn menu(mut menu: PopupMenu, shared: &Rc<Shared>, info: &Info, cx: &App) -> PopupMenu {
-    let item = |label: &'static str, run: Rc<dyn Fn(&Rc<Shared>, &Info, &mut App)>| {
+pub fn menu(
+    mut menu: PopupMenu,
+    shared: &Rc<Shared>,
+    info: &Info,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let item = |label: &'static str, run: Run| {
         let (shared, info) = (shared.clone(), info.clone());
-        PopupMenuItem::new(label).on_click(move |_, _, cx| run(&shared, &info, cx))
+        PopupMenuItem::new(label).on_click(move |_, window, cx| run(&shared, &info, window, cx))
     };
     let reacts = !info.deleted && !info.notice;
     if !info.notice {
         menu = menu.item(item(
             if info.selected { "Unselect" } else { "Select" },
-            Rc::new(|s, i, cx| toggle_select(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| toggle_select(s, i.index, cx)),
         ));
     }
     if reacts {
-        menu = menu.item(item("Reply", Rc::new(|s, i, cx| reply(s, i.index, cx))));
+        menu = menu.item(item(
+            "Reply",
+            Rc::new(|s, i, window, cx| reply(s, i.index, window, cx)),
+        ));
+    }
+    if reacts {
+        // The quick reactions; the buttons beside the message have every emoji.
+        let (shared, index) = (shared.clone(), info.index);
+        menu = menu.submenu("React…", window, cx, move |mut sub, _, _| {
+            for emoji in QUICK {
+                let shared = shared.clone();
+                sub = sub.item(
+                    PopupMenuItem::new(emoji)
+                        .on_click(move |_, _, cx| react(&shared, index, emoji, cx)),
+                );
+            }
+            sub
+        });
     }
     if TextSelection::is_in(&info.key, cx) {
         menu = menu.item(item(
             "Copy selection",
-            Rc::new(|_, _, cx| {
+            Rc::new(|_, _, _, cx| {
                 TextSelection::copy(cx);
             }),
         ));
@@ -145,13 +173,13 @@ pub fn menu(mut menu: PopupMenu, shared: &Rc<Shared>, info: &Info, cx: &App) -> 
     if !info.text.is_empty() {
         menu = menu.item(item(
             "Copy text",
-            Rc::new(|_, i, cx| copy(i.text.clone(), cx)),
+            Rc::new(|_, i, _, cx| copy(i.text.clone(), cx)),
         ));
     }
     if info.save.is_some() {
         menu = menu.item(item(
             "Save attachment",
-            Rc::new(|s, i, cx| {
+            Rc::new(|s, i, _, cx| {
                 if let Some(id) = &i.save {
                     crate::attachments::save(s, id, cx);
                 }
@@ -161,26 +189,32 @@ pub fn menu(mut menu: PopupMenu, shared: &Rc<Shared>, info: &Info, cx: &App) -> 
     if info.can_forward {
         menu = menu.item(item(
             "Forward…",
-            Rc::new(|s, i, cx| forward(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| forward(s, i.index, cx)),
         ));
     }
     if info.can_edit {
-        menu = menu.item(item("Edit", Rc::new(|s, i, cx| edit(s, i.index, cx))));
+        menu = menu.item(item(
+            "Edit",
+            Rc::new(|s, i, window, cx| edit(s, i.index, window, cx)),
+        ));
     }
     if info.can_send_again {
-        menu = menu.item(item("Send again", Rc::new(|s, i, cx| retry(s, i.index, cx))));
+        menu = menu.item(item(
+            "Send again",
+            Rc::new(|s, i, _, cx| retry(s, i.index, cx)),
+        ));
     }
     if !info.notice {
         menu = menu.separator();
         menu = menu.item(item(
             "Delete for me",
-            Rc::new(|s, i, cx| delete(s, i.index, false, cx)),
+            Rc::new(|s, i, _, cx| delete(s, i.index, false, cx)),
         ));
     }
     if info.can_edit {
         menu = menu.item(item(
             "Delete for everyone",
-            Rc::new(|s, i, cx| delete(s, i.index, true, cx)),
+            Rc::new(|s, i, _, cx| delete(s, i.index, true, cx)),
         ));
     }
     menu
@@ -206,7 +240,7 @@ pub fn toolbar(
             .small()
             .icon(icon("ellipsis"))
             .tooltip("More")
-            .dropdown_menu(move |menu, _, cx| self::menu(menu, &shared, &info, cx))
+            .dropdown_menu(move |menu, window, cx| self::menu(menu, &shared, &info, window, cx))
     };
     let reply = reacts.then(|| {
         let shared = shared.clone();
@@ -215,7 +249,7 @@ pub fn toolbar(
             .small()
             .icon(icon("reply"))
             .tooltip("Reply")
-            .on_click(move |_, _, cx| reply(&shared, id, cx))
+            .on_click(move |_, window, cx| reply(&shared, id, window, cx))
     });
     let react = reacts.then(|| reaction_button(shared, id));
     let buttons = div()
@@ -272,7 +306,10 @@ fn picker(
     );
     let pick = |emoji: String, shared: Rc<Shared>| {
         cx.listener(
-            move |state: &mut gpui_kit::component::popover::PopoverState, _: &gpui_kit::ClickEvent, window, cx| {
+            move |state: &mut gpui_kit::component::popover::PopoverState,
+                  _: &gpui_kit::ClickEvent,
+                  window,
+                  cx| {
                 react(&shared, index, &emoji, cx);
                 state.dismiss(window, cx);
             },
@@ -317,10 +354,12 @@ fn picker(
                     .hover(move |s| s.bg(t.pressed))
                     .aria_label("More emoji")
                     .child(icon("plus").size(px(theme::ICON)))
-                    .on_click(move |_, _, cx| more.update(cx, |all, cx| {
-                        *all = true;
-                        cx.notify();
-                    })),
+                    .on_click(move |_, _, cx| {
+                        more.update(cx, |all, cx| {
+                            *all = true;
+                            cx.notify();
+                        })
+                    }),
             )
             .into_any_element();
     }
@@ -342,10 +381,12 @@ fn picker(
                         .size(px(28.))
                         .text_size(px(theme::BODY))
                         .when(at == shown, |c| c.bg(t.selected))
-                        .on_click(move |_, _, cx| group.update(cx, |group, cx| {
-                            *group = at;
-                            cx.notify();
-                        }))
+                        .on_click(move |_, _, cx| {
+                            group.update(cx, |group, cx| {
+                                *group = at;
+                                cx.notify();
+                            })
+                        })
                 })),
         )
         .child(
@@ -357,11 +398,21 @@ fn picker(
                 .flex()
                 .flex_row()
                 .flex_wrap()
-                .children(groups.get(shown).into_iter().flat_map(|g| g.emojis()).filter(|e| e.skin_tone().is_none() || e.skin_tone() == Some(emojis::SkinTone::Default)).map(|emoji| {
-                    let text = emoji.as_str();
-                    cell(text, SharedString::from(format!("emoji-{index}-{text}")))
-                        .on_click(pick(text.to_owned(), shared.clone()))
-                })),
+                .children(
+                    groups
+                        .get(shown)
+                        .into_iter()
+                        .flat_map(|g| g.emojis())
+                        .filter(|e| {
+                            e.skin_tone().is_none()
+                                || e.skin_tone() == Some(emojis::SkinTone::Default)
+                        })
+                        .map(|emoji| {
+                            let text = emoji.as_str();
+                            cell(text, SharedString::from(format!("emoji-{index}-{text}")))
+                                .on_click(pick(text.to_owned(), shared.clone()))
+                        }),
+                ),
         )
         .into_any_element()
 }
@@ -387,9 +438,11 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
         let shared = shared.clone();
         button("selection-delete", "trash", "Delete selected").dropdown_menu(move |menu, _, _| {
             let for_me = shared.clone();
-            let menu = menu.item(PopupMenuItem::new("Delete for me").on_click(move |_, _, cx| {
-                for_me.act(cx, |chat| chat.delete_selection(false));
-            }));
+            let menu = menu.item(
+                PopupMenuItem::new("Delete for me").on_click(move |_, _, cx| {
+                    for_me.act(cx, |chat| chat.delete_selection(false));
+                }),
+            );
             if can_delete_everyone {
                 let everyone = shared.clone();
                 menu.item(
@@ -443,13 +496,15 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
             }))
             .when(can_forward, |bar| {
                 let shared = shared.clone();
-                bar.child(button("selection-forward", "forward", "Forward selected").on_click(
-                    move |_, _, cx| {
-                        shared.edit(cx, |chat| {
-                            chat.start_forward_selection();
-                        })
-                    },
-                ))
+                bar.child(
+                    button("selection-forward", "forward", "Forward selected").on_click(
+                        move |_, _, cx| {
+                            shared.edit(cx, |chat| {
+                                chat.start_forward_selection();
+                            })
+                        },
+                    ),
+                )
             })
             .child(delete)
             .child(button("selection-clear", "x", "Clear selection").on_click({

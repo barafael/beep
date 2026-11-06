@@ -250,15 +250,20 @@ impl Shared {
         match chat.typing_expires() {
             Some(at) => {
                 let wait = at.saturating_sub(b33p_core::now_millis()) + 50;
-                self.after(&self.typing_timer, Duration::from_millis(wait), cx, |shared, cx| {
-                    shared.refresh(
-                        Update {
-                            conversations: true,
-                            ..Update::default()
-                        },
-                        cx,
-                    );
-                });
+                self.after(
+                    &self.typing_timer,
+                    Duration::from_millis(wait),
+                    cx,
+                    |shared, cx| {
+                        shared.refresh(
+                            Update {
+                                conversations: true,
+                                ..Update::default()
+                            },
+                            cx,
+                        );
+                    },
+                );
             }
             None => {
                 self.typing_timer.take();
@@ -288,15 +293,20 @@ impl Shared {
         // the open chat has any.
         if chat.shows_expiring() {
             if self.expiry_timer.borrow().is_none() {
-                self.every(&self.expiry_timer, Duration::from_secs(60), cx, |shared, cx| {
-                    shared.refresh(
-                        Update {
-                            rows: true,
-                            ..Update::default()
-                        },
-                        cx,
-                    );
-                });
+                self.every(
+                    &self.expiry_timer,
+                    Duration::from_secs(60),
+                    cx,
+                    |shared, cx| {
+                        shared.refresh(
+                            Update {
+                                rows: true,
+                                ..Update::default()
+                            },
+                            cx,
+                        );
+                    },
+                );
             }
         } else {
             self.expiry_timer.take();
@@ -470,10 +480,7 @@ impl Shared {
         if let Err(error) = self.player.borrow_mut().play(id, audio) {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't play audio");
             // The audio itself, which playing again won't change.
-            let update = self
-                .chat
-                .borrow_mut()
-                .apply(Event::Error(error.into()));
+            let update = self.chat.borrow_mut().apply(Event::Error(error.into()));
             self.refresh(update, cx);
             return;
         }

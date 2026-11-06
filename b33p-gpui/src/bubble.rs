@@ -5,8 +5,11 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState, MessageView, Update};
-use b33p_core::{AttachmentId, ConversationId, Delivery, LinkPreview, Reaction, Unsent, now_millis};
+use b33p_core::{
+    AttachmentId, ConversationId, Delivery, LinkPreview, Reaction, Unsent, now_millis,
+};
 use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, FontWeight, MouseButton, SharedString, div, px};
 
@@ -52,7 +55,11 @@ fn build(
         notice: m.notice,
         deleted: m.deleted,
         selected: view.selected,
-        text: if m.deleted { String::new() } else { view.body.to_owned() },
+        text: if m.deleted {
+            String::new()
+        } else {
+            view.body.to_owned()
+        },
         can_forward: ChatState::can_forward(m),
         can_edit: chat.can_edit(m),
         save: m
@@ -62,33 +69,16 @@ fn build(
             .map(|a| a.id.clone()),
         can_send_again: m.unsent == Some(Unsent::Failed),
     };
-    let mut column = div()
-        .id(SharedString::from(format!("row-{index}")))
-        .group(group(index))
-        .w_full()
-        .flex()
-        .flex_col()
-        // While messages are picked, or Ctrl is held, a click anywhere on the row picks this
-        // message or unpicks it; with Shift, everything from the one last picked. Taken
-        // before what is under the pointer sees it.
-        .capture_any_mouse_down({
-            let shared = shared.clone();
-            move |event, _, cx| {
-                if event.button != MouseButton::Left
-                    || !(selecting || text::picks(event.modifiers, cx))
-                {
-                    return;
-                }
-                if event.modifiers.shift {
-                    message_menu::select_through(&shared, index, cx);
-                } else {
-                    message_menu::toggle_select(&shared, index, cx);
-                }
-                cx.stop_propagation();
-            }
-        });
+    // Inside the row, which the scroller gives no sides, so that a picked message's tint
+    // reaches the edges of the list.
+    let mut column = div().w_full().px(px(theme::SPACE_M)).flex().flex_col();
     if view.first_unread {
-        let line = || div().flex_1().h(px(1.)).bg(t.accent.opacity(theme::TERTIARY));
+        let line = || {
+            div()
+                .flex_1()
+                .h(px(1.))
+                .bg(t.accent.opacity(theme::TERTIARY))
+        };
         column = column.child(
             div()
                 .flex()
@@ -126,13 +116,40 @@ fn build(
     column = if m.notice {
         column.child(notice(view, t))
     } else {
-        column.child(message(index, view, chat, &info, selecting, shared, t, to_fetch))
+        column.child(message(
+            index, view, chat, &info, selecting, shared, t, to_fetch,
+        ))
     };
     let menu_shared = shared.clone();
-    column
+    div()
+        .id(SharedString::from(format!("row-{index}")))
+        .group(group(index))
+        .w_full()
+        // While messages are picked, or Ctrl is held, a click anywhere on the row picks this
+        // message or unpicks it; with Shift, everything from the one last picked. Taken
+        // before what is under the pointer sees it.
+        .capture_any_mouse_down({
+            let shared = shared.clone();
+            move |event, _, cx| {
+                if event.button != MouseButton::Left
+                    || !(selecting || text::picks(event.modifiers, cx))
+                {
+                    return;
+                }
+                if event.modifiers.shift {
+                    message_menu::select_through(&shared, index, cx);
+                } else {
+                    message_menu::toggle_select(&shared, index, cx);
+                }
+                cx.stop_propagation();
+            }
+        })
         // Picked: the row is tinted.
         .when(view.selected, |row| row.bg(t.selected))
-        .context_menu(move |menu, _, cx| message_menu::menu(menu, &menu_shared, &info, cx))
+        .child(column)
+        .context_menu(move |menu, window, cx| {
+            message_menu::menu(menu, &menu_shared, &info, window, cx)
+        })
         .into_any_element()
 }
 
@@ -160,7 +177,11 @@ fn notice(view: &MessageView, t: &Tokens) -> AnyElement {
         .px(px(theme::SPACE_XL))
         .py(px(6.))
         .when(view.message.timer_change.is_some(), |row| {
-            row.child(icon("timer").size(px(theme::ICON_SMALL)).text_color(t.text_tertiary))
+            row.child(
+                icon("timer")
+                    .size(px(theme::ICON_SMALL))
+                    .text_color(t.text_tertiary),
+            )
         })
         .child(
             div()
@@ -196,6 +217,42 @@ pub fn open_url(shared: &Shared, link: &str, cx: &mut App) {
     {
         tracing::warn!(error = %b33p_core::scrub::chain(&error), "couldn't open a link");
     }
+}
+
+/// What a screen reader says for a message: its text, then who, when and how far it got.
+fn described(view: &MessageView) -> String {
+    let m = view.message;
+    let text = if m.deleted {
+        "This message was deleted."
+    } else {
+        view.body
+    };
+    let who = if m.outgoing { "You" } else { &m.sender };
+    let mut out = format!("{text}. {who}, {}", state::format_clock(m.timestamp));
+    if m.edited_at.is_some() {
+        out.push_str(", edited");
+    }
+    if m.outgoing {
+        out.push_str(match (m.unsent, m.delivery) {
+            (Some(Unsent::Sending), _) => ", sending",
+            (Some(_), _) => ", not sent",
+            (None, Delivery::Sent) => ", sent",
+            (None, Delivery::Delivered) => ", delivered",
+            (None, Delivery::Read) => ", read",
+        });
+    }
+    match m.reactions.len() {
+        0 => {}
+        1 => out.push_str(", 1 reaction"),
+        n => out.push_str(&format!(", {n} reactions")),
+    }
+    if let Some(at) = m.expires_at {
+        out.push_str(&format!(
+            ", disappears in {}",
+            state::format_remaining(at, now_millis())
+        ));
+    }
+    out
 }
 
 /// The ticks, texts and buttons below a message's text.
@@ -246,8 +303,16 @@ fn message(
         background
     };
 
+    let time = state::format_clock(m.timestamp);
+    let described = described(view);
     let mut bubble = div()
         .id(SharedString::from(format!("bubble-{index}")))
+        .aria_label(SharedString::from(described))
+        // The time of a message within a run, which shows it only on the run's last.
+        .when(!view.last_of_run && !time.is_empty(), |b| {
+            let time = SharedString::from(time.clone());
+            b.tooltip(move |window, cx| Tooltip::new(time.clone()).build(window, cx))
+        })
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -316,7 +381,9 @@ fn message(
         clickable: !selecting,
     };
     if let Some(preview) = &m.preview {
-        bubble = bubble.child(link_preview(index, preview, chat, &env, faint, selecting, to_fetch));
+        bubble = bubble.child(link_preview(
+            index, preview, chat, &env, faint, selecting, to_fetch,
+        ));
     }
     for attachment in &m.attachments {
         let item = attachments::item(
@@ -362,7 +429,7 @@ fn message(
         expires: m
             .expires_at
             .map(|at| state::format_remaining(at, now_millis())),
-        time: state::format_clock(m.timestamp),
+        time,
         delivery: m.delivery,
         unsent: m.unsent,
         index,
@@ -436,9 +503,20 @@ fn message(
             let picture = shared
                 .images
                 .avatar(&format!("person:{}", m.sender_id), view.sender_avatar);
-            row.child(div().flex_none().size(px(28.)).children(view.last_of_run.then(|| {
-                avatar(28., &state::initials(&m.sender), avatar_color(&sender), picture, t)
-            })))
+            row.child(
+                div()
+                    .flex_none()
+                    .size(px(28.))
+                    .children(view.last_of_run.then(|| {
+                        avatar(
+                            28.,
+                            &state::initials(&m.sender),
+                            avatar_color(&sender),
+                            picture,
+                            t,
+                        )
+                    })),
+            )
         });
     if outgoing {
         row.children(toolbar).child(content)
@@ -471,7 +549,11 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
                 .gap(px(2.))
                 .text_color(faint)
                 .child(icon("timer").size(px(11.)))
-                .child(div().text_size(caption).child(SharedString::from(left.clone())))
+                .child(
+                    div()
+                        .text_size(caption)
+                        .child(SharedString::from(left.clone())),
+                )
         }))
         .when(f.edited, |row| {
             row.child(
@@ -518,7 +600,11 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
                             "check-check"
                         })
                         .size(px(11.))
-                        .text_color(if read { t.bubble_outgoing } else { faint }),
+                        .text_color(if read {
+                            t.bubble_outgoing
+                        } else {
+                            faint
+                        }),
                     ),
             )
         })
@@ -655,7 +741,10 @@ fn link_preview(
 pub fn chips(reactions: &[Reaction]) -> Vec<(String, u32, bool)> {
     let mut chips: Vec<(String, u32, bool)> = Vec::new();
     for reaction in reactions {
-        match chips.iter_mut().find(|(emoji, ..)| *emoji == reaction.emoji) {
+        match chips
+            .iter_mut()
+            .find(|(emoji, ..)| *emoji == reaction.emoji)
+        {
             Some(chip) => {
                 chip.1 += 1;
                 chip.2 |= reaction.outgoing;
@@ -704,8 +793,9 @@ fn reaction_chips(
                     .text_color(t.text)
                     .aria_label(label)
                     .when(!selecting, |chip| {
-                        chip.cursor_pointer()
-                            .on_click(move |_, _, cx| message_menu::react(&shared, index, &react, cx))
+                        chip.cursor_pointer().on_click(move |_, _, cx| {
+                            message_menu::react(&shared, index, &react, cx)
+                        })
                     })
                     .child(SharedString::from(if count > 1 {
                         format!("{emoji} {count}")

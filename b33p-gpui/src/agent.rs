@@ -243,13 +243,7 @@ fn screenshot(_shared: &Shared, _path: &str) -> Result<Shot, AgentError> {
     Err(AgentError::Screenshot)
 }
 
-fn answer(
-    shared: &Rc<Shared>,
-    connection: u64,
-    reply: &Outbound,
-    request: Request,
-    cx: &mut App,
-) {
+fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Request, cx: &mut App) {
     let id = request.id;
     match request.call {
         Call::Ping => send(
@@ -308,15 +302,15 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             (command, Update::reset())
         }),
         Action::Back => shared.act(cx, |chat| (None, chat.deselect())),
-        Action::SelectRelative { by } => {
-            shared.act(cx, |chat| (chat.select_relative(by as isize).flatten(), Update::reset()))
-        }
-        Action::SelectNextUnread => {
-            shared.act(cx, |chat| (chat.select_next_unread().flatten(), Update::reset()))
-        }
-        Action::SelectPinned { n } => {
-            shared.act(cx, |chat| (chat.select_pinned(n as usize).flatten(), Update::reset()))
-        }
+        Action::SelectRelative { by } => shared.act(cx, |chat| {
+            (chat.select_relative(by as isize).flatten(), Update::reset())
+        }),
+        Action::SelectNextUnread => shared.act(cx, |chat| {
+            (chat.select_next_unread().flatten(), Update::reset())
+        }),
+        Action::SelectPinned { n } => shared.act(cx, |chat| {
+            (chat.select_pinned(n as usize).flatten(), Update::reset())
+        }),
         Action::Type { text } => {
             // The state takes the text, and the composer shows it: a typist's keystrokes
             // would be in the field already.
@@ -343,9 +337,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             chat.cancel_reply();
             (None, Update::default())
         }),
-        Action::React { index, emoji } => {
-            shared.act(cx, |chat| (chat.react(index as usize, &emoji), Update::default()))
-        }
+        Action::React { index, emoji } => shared.act(cx, |chat| {
+            (chat.react(index as usize, &emoji), Update::default())
+        }),
         Action::Delete { index, everyone } => {
             shared.act(cx, |chat| chat.delete(index as usize, everyone))
         }
@@ -360,10 +354,16 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             chat.start_forward_selection();
             (None, Update::default())
         }),
-        Action::DeleteSelection { everyone } => shared.act(cx, |chat| chat.delete_selection(everyone)),
-        Action::TogglePin { conversation } => {
-            conversation_action(shared, cx, conversation, Update::reset(), ChatState::toggle_pin)
+        Action::DeleteSelection { everyone } => {
+            shared.act(cx, |chat| chat.delete_selection(everyone))
         }
+        Action::TogglePin { conversation } => conversation_action(
+            shared,
+            cx,
+            conversation,
+            Update::reset(),
+            ChatState::toggle_pin,
+        ),
         Action::MovePin { conversation, by } => {
             conversation_action(shared, cx, conversation, Update::reset(), |chat, id| {
                 chat.move_pin_by(id, by)
@@ -461,7 +461,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
         Action::RemoveMember { member } => selected(shared, cx, |id, chat| {
             chat.edit_group(id, GroupEdit::RemoveMember(member))
         }),
-        Action::LeaveGroup => selected(shared, cx, |id, chat| chat.edit_group(id, GroupEdit::Leave)),
+        Action::LeaveGroup => {
+            selected(shared, cx, |id, chat| chat.edit_group(id, GroupEdit::Leave))
+        }
         Action::CreateGroup { title, members } => shared.act(cx, |chat| {
             let members = members.into_iter().map(ConversationId).collect::<Vec<_>>();
             (chat.create_group(&title, &members), Update::default())
@@ -472,7 +474,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             } else {
                 AfterFinding::Choose
             };
-            shared.act(cx, |chat| (chat.find_number(&number, then), Update::default()))
+            shared.act(cx, |chat| {
+                (chat.find_number(&number, then), Update::default())
+            })
         }
         Action::OpenDetails => shared.act(cx, |chat| (chat.open_details(), Update::default())),
         Action::CloseDetails => shared.act(cx, |chat| {
@@ -485,9 +489,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
         Action::OpenMedia => shared.act(cx, |chat| (chat.open_media(), Update::default())),
         // As ui.rs `on_open_stickers` and `on_send_sticker`.
         Action::OpenStickers => shared.act(cx, |chat| (chat.load_stickers(), Update::default())),
-        Action::SendSticker { pack, sticker } => {
-            shared.act(cx, |chat| (chat.send_sticker(&pack, sticker), Update::default()))
-        }
+        Action::SendSticker { pack, sticker } => shared.act(cx, |chat| {
+            (chat.send_sticker(&pack, sticker), Update::default())
+        }),
         Action::CloseMedia => shared.act(cx, |chat| {
             chat.close_media();
             (None, Update::default())
@@ -520,9 +524,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             chat.open_add_members();
             (None, Update::default())
         }),
-        Action::OpenJoinGroup { link } => {
-            shared.act(cx, |chat| (chat.open_join(link.as_deref()), Update::default()))
-        }
+        Action::OpenJoinGroup { link } => shared.act(cx, |chat| {
+            (chat.open_join(link.as_deref()), Update::default())
+        }),
         Action::PreviewGroupLink { link } => {
             shared.act(cx, |chat| (chat.preview_link(&link), Update::default()))
         }
@@ -552,9 +556,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             chat.close_group_draft();
             (None, Update::default())
         }),
-        Action::FinishGroupDraft { title } => {
-            shared.act(cx, |chat| (chat.finish_group_draft(&title), Update::default()))
-        }
+        Action::FinishGroupDraft { title } => shared.act(cx, |chat| {
+            (chat.finish_group_draft(&title), Update::default())
+        }),
         Action::ToggleCandidate { conversation } => shared.act(cx, |chat| {
             chat.toggle_group_member(&ConversationId(conversation));
             (None, Update::default())
@@ -570,7 +574,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
         Action::SearchChat { text } => {
             shared.act(cx, |chat| (chat.search_chat(&text), Update::default()))
         }
-        Action::ShowResult { index } => shared.act(cx, |chat| (None, chat.show_result(index as usize))),
+        Action::ShowResult { index } => {
+            shared.act(cx, |chat| (None, chat.show_result(index as usize)))
+        }
         Action::Search { text } => shared.act(cx, |chat| (None, chat.search(&text))),
         Action::Forward { index } => shared.act(cx, |chat| {
             chat.start_forward(index as usize);
@@ -587,9 +593,9 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             (None, Update::default())
         }),
         Action::LoadOlder => shared.act(cx, |chat| (chat.load_older(), Update::default())),
-        Action::ShowFolder { index } => {
-            shared.act(cx, |chat| (None, chat.show_folder(usize::try_from(index).ok())))
-        }
+        Action::ShowFolder { index } => shared.act(cx, |chat| {
+            (None, chat.show_folder(usize::try_from(index).ok()))
+        }),
         Action::ShowArchived { show } => shared.act(cx, |chat| (None, chat.show_archived(show))),
         Action::DismissError => shared.act(cx, |chat| {
             chat.dismiss_error();

@@ -3,12 +3,11 @@
 use std::rc::Rc;
 
 use b33p_core::state::{Screen, Update};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, Window, div,
-    px,
+    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, Window, div, px,
 };
 
 use crate::actions::{
@@ -71,7 +70,8 @@ impl AppView {
     }
 
     pub fn focus_start(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.start.update(cx, |start, cx| start.focus_password(window, cx));
+        self.start
+            .update(cx, |start, cx| start.focus_password(window, cx));
     }
 
     /// Esc closes what is open, the innermost first. Returns whether there was something.
@@ -116,7 +116,8 @@ impl AppView {
         } else if chat.searching() {
             update = chat.search("");
             drop(chat);
-            self.list.update(cx, |list, cx| list.clear_search(window, cx));
+            self.list
+                .update(cx, |list, cx| list.clear_search(window, cx));
             shared.refresh(update, cx);
             return true;
         } else if shared.narrow() && chat.selected().is_some() {
@@ -179,7 +180,8 @@ impl Render for AppView {
             .text_size(theme::body(shared.settings.borrow().text_size.scale()))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 this.shared.ui.borrow_mut().settings_open = false;
-                this.list.update(cx, |list, cx| list.focus_search(window, cx));
+                this.list
+                    .update(cx, |list, cx| list.focus_search(window, cx));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SearchInChat, _, cx| {
@@ -249,9 +251,12 @@ impl AppView {
                             }),
                     )
                 })
-                .child(icon_button("dismiss-error", "x", "Dismiss", move |_, _, cx| {
-                    shared.edit(cx, |chat| chat.dismiss_error())
-                }))
+                .child(icon_button(
+                    "dismiss-error",
+                    "x",
+                    "Dismiss",
+                    move |_, _, cx| shared.edit(cx, |chat| chat.dismiss_error()),
+                ))
                 .into_any_element(),
         )
     }
@@ -309,7 +314,8 @@ impl AppView {
                         return;
                     }
                     let x: f32 = event.position.x.into();
-                    this.shared.ui.borrow_mut().sidebar_width = (width + x - from).clamp(220., 480.);
+                    this.shared.ui.borrow_mut().sidebar_width =
+                        (width + x - from).clamp(220., 480.);
                     cx.notify();
                 }
             }))

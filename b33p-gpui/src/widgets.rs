@@ -2,13 +2,14 @@
 
 use b33p_core::ConversationId;
 use b33p_core::state;
+use gpui_kit::FontWeight;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, ClickEvent, Div, ElementId, Hsla, ObjectFit, Rgba, SharedString, Window, div, hsla, img, px, rgb,
+    App, ClickEvent, Div, ElementId, Hsla, ObjectFit, Rgba, SharedString, Window, div, hsla, img,
+    px, rgb,
 };
-use gpui_kit::FontWeight;
 
 use crate::images::Drawn;
 use crate::theme::Tokens;

@@ -125,7 +125,9 @@ pub fn item(
         picture.map(|p| (p.width, p.height)),
     );
     // The blurred stand-in has the shape the picture will have.
-    let shape = picture.map_or((attachment.width, attachment.height), |p| (p.width, p.height));
+    let shape = picture.map_or((attachment.width, attachment.height), |p| {
+        (p.width, p.height)
+    });
     let shape = if shape.0 > 0 && shape.1 > 0 {
         shape
     } else {
@@ -199,7 +201,11 @@ fn action(
 
 /// Draws the attachment. Those that are to be downloaded as soon as they show are added to
 /// `to_fetch`, for the caller to ask for once it no longer holds the state.
-pub fn view(item: AttachmentItem, env: &Env, to_fetch: &mut Vec<AttachmentId>) -> Option<AnyElement> {
+pub fn view(
+    item: AttachmentItem,
+    env: &Env,
+    to_fetch: &mut Vec<AttachmentId>,
+) -> Option<AnyElement> {
     if item.fetch {
         to_fetch.push(item.id.clone());
     }
@@ -607,12 +613,12 @@ mod tests {
             ),
             "Saved to Downloads"
         );
-        assert_eq!(status(None, Some(&SaveState::Saved("a.pdf".into()))), "Saved to disk");
-        assert_eq!(status(None, None), "");
         assert_eq!(
-            status(Some(&AttachmentState::Loading), None),
-            ""
+            status(None, Some(&SaveState::Saved("a.pdf".into()))),
+            "Saved to disk"
         );
+        assert_eq!(status(None, None), "");
+        assert_eq!(status(Some(&AttachmentState::Loading), None), "");
     }
 
     #[test]
