@@ -112,7 +112,10 @@ pub fn modal(
                 .max_h(gpui_kit::relative(0.9))
                 .flex()
                 .flex_col()
-                .bg(t.surface)
+                // Raised where the ground is dark, or the card is lost against the scrim.
+                .bg(if t.dark { t.surface_raised } else { t.surface })
+                .border_1()
+                .border_color(t.divider)
                 .text_color(t.text)
                 .rounded(px(crate::theme::RADIUS_L))
                 .shadow_lg()
