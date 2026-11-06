@@ -6,6 +6,7 @@
 //! running", and showing b33p again is opening a window.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use b33p_core::settings::Settings;
@@ -21,6 +22,10 @@ use crate::tray::{self, Tray};
 
 /// Result without a dependency on anyhow, which GPUI's errors come in.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+/// A window is being closed to be opened anew (see [`activate`]): its closing is not the last
+/// window's. GPUI tells of a closed window at once, before the next one is opened.
+static REOPENING: AtomicBool = AtomicBool::new(false);
 
 /// How long a start into the tray (`--hidden`) waits for the desktop to show tray icons, as it
 /// may not yet at login, before opening the window after all.
@@ -106,12 +111,13 @@ pub fn start(
         .detach();
     }
 
-    // Closing the window leaves b33p in the tray, or ends it.
+    // Closing the window leaves b33p in the tray, or ends it: GPUI's own ending of the app with
+    // its last window is replaced by the choice below.
+    cx.set_quit_mode(gpui_kit::QuitMode::Explicit);
     cx.on_window_closed({
         let shared = shared.clone();
         move |cx, _| {
-            // A window that closed to be opened anew (`activate`) leaves another.
-            if !cx.windows().is_empty() {
+            if REOPENING.load(Ordering::Relaxed) || !cx.windows().is_empty() {
                 return;
             }
             if in_tray(&shared) {
@@ -195,10 +201,12 @@ pub fn activate(shared: &Rc<Shared>, token: Option<String>, cx: &mut App) {
         // Without a token a compositor (KWin, like others) keeps an open window where it is,
         // but it does focus one that appears: so the window appears anew, where the compositor
         // places it. Everything shown is in `Shared`, so nothing is lost.
+        REOPENING.store(true, Ordering::Relaxed);
         if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't close the window");
         }
         open_or_quit(shared, cx);
+        REOPENING.store(false, Ordering::Relaxed);
         return;
     }
     if let Err(error) = window.update(cx, |_, window, _| window.activate_window()) {
@@ -225,6 +233,11 @@ pub fn after_flush(shared: &Shared, chat: &ChatState, cx: &mut App) {
         Screen::Syncing(_) | Screen::Chats => false,
     };
     if needs_user || chat.error().is_some() {
+        tracing::info!(
+            needs_user,
+            error = chat.error().is_some(),
+            "the start into the tray needs the user"
+        );
         // After this flush: opening the window reads the state it holds.
         let me = shared.me.clone();
         cx.defer(move |cx| {

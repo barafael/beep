@@ -6,15 +6,15 @@ use std::rc::Rc;
 
 use b33p_core::settings::{Animations, NotificationContent, Settings, TextSize, Theme};
 use b33p_platform::autostart;
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, FontWeight, IntoElement, Render, Role, SharedString,
-    Subscription, Window, div, px,
+    AnyElement, App, Context, Entity, Focusable as _, FontWeight, IntoElement, Render, Role,
+    SharedString, Subscription, Window, div, px,
 };
 
 use crate::app::AppView;
@@ -91,10 +91,22 @@ fn change(shared: &Rc<Shared>, cx: &mut App, edit: impl FnOnce(&mut Settings)) {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::tokens(cx);
         let shared = self.shared.clone();
         let settings = shared.settings.borrow().clone();
+        // The field shows the name in use, unless it is being typed into: left unfinished (no
+        // Enter), it goes back to it, and a rename from elsewhere shows.
+        let name = settings.device_name();
+        let editing = self
+            .device_name
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        if !editing && self.device_name.read(cx).value().as_ref() != name {
+            self.device_name
+                .update(cx, |input, cx| input.set_value(name, window, cx));
+        }
         let account = shared.chat.borrow().account().to_owned();
         let notifications_supported = shared.notifier.available();
         let tray_available = crate::tray::host_present();
@@ -146,7 +158,9 @@ impl Render for SettingsView {
                 "animations",
                 "Animations",
                 &["System", "On", "Off"],
-                Animations::ALL.iter().position(|a| *a == settings.animations),
+                Animations::ALL
+                    .iter()
+                    .position(|a| *a == settings.animations),
                 false,
                 {
                     let shared = shared.clone();
@@ -431,13 +445,18 @@ impl Render for SettingsView {
                     .gap(px(theme::SPACE_S))
                     .pl(px(theme::SPACE_S))
                     .pr(px(theme::SPACE_M))
-                    .child(icon_button("close-settings", "arrow-left", "Close settings", {
-                        let shared = shared.clone();
-                        move |_, _, cx| {
-                            shared.ui.borrow_mut().settings_open = false;
-                            cx.refresh_windows();
-                        }
-                    }))
+                    .child(icon_button(
+                        "close-settings",
+                        "arrow-left",
+                        "Close settings",
+                        {
+                            let shared = shared.clone();
+                            move |_, _, cx| {
+                                shared.ui.borrow_mut().settings_open = false;
+                                cx.refresh_windows();
+                            }
+                        },
+                    ))
                     .child(
                         div()
                             .id("settings-title")
@@ -522,7 +541,14 @@ fn row(t: &Tokens, label: &str, hint: Option<&str>, control: AnyElement) -> AnyE
                         .child(SharedString::from(hint.to_owned()))
                 })),
         )
-        .child(div().flex_none().flex().flex_row().justify_end().child(control))
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .child(control),
+        )
         .into_any_element()
 }
 
@@ -599,10 +625,7 @@ fn shortcut_list(macos: bool) -> Vec<(String, String)> {
             both("↑ ↓ Enter"),
             "In the search for chats: go through those found, open one",
         ),
-        row(
-            both("↑"),
-            "Edit your last message (in an empty composer)",
-        ),
+        row(both("↑"), "Edit your last message (in an empty composer)"),
         row(pick("⇧↩", "Shift+Enter"), "New line"),
         row(pick("⌘V", "Ctrl+V"), "Paste text, a picture or files"),
         row(
@@ -633,19 +656,25 @@ fn shortcuts(t: &Tokens, macos: bool) -> AnyElement {
                 .gap(px(theme::SPACE_L))
                 .child(
                     // The keys as a key cap, in a column of their own.
-                    div().flex_none().w(px(140.)).flex().flex_row().items_start().child(
-                        div()
-                            .flex_none()
-                            .px(px(theme::SPACE_S))
-                            .py(px(2.))
-                            .rounded(px(theme::RADIUS_S))
-                            .bg(t.surface_raised)
-                            .border_1()
-                            .border_color(t.divider)
-                            .text_size(px(theme::BODY * theme::BODY_SMALL))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(keys)),
-                    ),
+                    div()
+                        .flex_none()
+                        .w(px(140.))
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(px(theme::SPACE_S))
+                                .py(px(2.))
+                                .rounded(px(theme::RADIUS_S))
+                                .bg(t.surface_raised)
+                                .border_1()
+                                .border_color(t.divider)
+                                .text_size(px(theme::BODY * theme::BODY_SMALL))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(SharedString::from(keys)),
+                        ),
                 )
                 .child(
                     div()

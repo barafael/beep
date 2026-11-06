@@ -61,7 +61,8 @@ pub fn icon_rgba(size: u32, unread: bool) -> Vec<u8> {
     const SAMPLES: u32 = 4;
     const BLUE: [f32; 3] = [0x3a as f32, 0x76 as f32, 0xf0 as f32];
     const WHITE: [f32; 3] = [255., 255., 255.];
-    let in_circle = |x: f32, y: f32, cx: f32, cy: f32, r: f32| (x - cx).powi(2) + (y - cy).powi(2) <= r * r;
+    let in_circle =
+        |x: f32, y: f32, cx: f32, cy: f32, r: f32| (x - cx).powi(2) + (y - cy).powi(2) <= r * r;
     let in_tail = |x: f32, y: f32| {
         // The triangle (14, 54), (18, 40), (28, 48).
         let side = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
@@ -117,8 +118,11 @@ fn add_dot(pixels: &mut [u8], size: u32) {
     let blend = |under: u8, over: u8, alpha: f32| {
         (f32::from(under) * (1.0 - alpha) + f32::from(over) * alpha).round() as u8
     };
-    for (i, pixel) in pixels.chunks_exact_mut(4).enumerate() {
-        let (x, y) = ((i as u32 % size) as f32 + 0.5, (i as u32 / size) as f32 + 0.5);
+    for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = (
+            (i as u32 % size) as f32 + 0.5,
+            (i as u32 / size) as f32 + 0.5,
+        );
         let distance = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
         let cover = |r: f32| (r - distance + 0.5).clamp(0.0, 1.0);
         let (outer, inner) = (cover(radius + rim), cover(radius));
@@ -183,8 +187,10 @@ mod platform {
                     let rgba = icon_rgba(size, self.unread > 0);
                     // The protocol wants ARGB, most significant byte first.
                     let data = rgba
-                        .chunks_exact(4)
-                        .flat_map(|p| [p[3], p[0], p[1], p[2]])
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .flat_map(|[r, g, b, a]| [*a, *r, *g, *b])
                         .collect();
                     ksni::Icon {
                         width: size as i32,
@@ -300,7 +306,9 @@ mod platform {
 
     use async_channel::Sender;
     use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
-    use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+    use tray_icon::{
+        Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    };
 
     use super::{Event, icon_rgba, tooltip};
 
@@ -321,7 +329,8 @@ mod platform {
             let menu = Menu::new();
             let open = MenuItem::new("Open b33p", true, None);
             let quit = MenuItem::new("Quit", true, None);
-            if let Err(error) = menu.append_items(&[&open, &PredefinedMenuItem::separator(), &quit]) {
+            if let Err(error) = menu.append_items(&[&open, &PredefinedMenuItem::separator(), &quit])
+            {
                 tracing::warn!(%error, "can't make the tray's menu");
                 return None;
             }
@@ -427,7 +436,10 @@ mod tests {
         let dot = (size as f32 * 0.2) as u32;
         assert_eq!(at(&unread, size, size - dot, dot), [0xe5, 0x38, 0x3b, 255]);
         // Far from the dot, nothing changed: the bottom left is transparent either way.
-        assert_eq!(at(&unread, size, 0, size - 1), at(&plain, size, 0, size - 1));
+        assert_eq!(
+            at(&unread, size, 0, size - 1),
+            at(&plain, size, 0, size - 1)
+        );
         assert_eq!(at(&unread, size, 0, size - 1)[3], 0);
     }
 

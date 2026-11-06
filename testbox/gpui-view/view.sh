@@ -23,6 +23,12 @@ start)
     podman rm -f $name >/dev/null 2>&1 || true
     rm -rf "$out/view" "$out/run"
     mkdir -p "$out/view" "$out/run" "$out/shots" "$out/data"
+    # VIEW_WRAP: a shell command to run instead of plain `b33p` (e.g. under a session bus, with
+    # a StatusNotifierWatcher beside it, to look at the tray); VIEW_MOUNT: a `-v` volume for it.
+    run_cmd=(b33p)
+    [ -n "${VIEW_WRAP:-}" ] && run_cmd=(sh -c "$VIEW_WRAP")
+    mount_args=()
+    [ -n "${VIEW_MOUNT:-}" ] && mount_args=(-v "$VIEW_MOUNT")
     env_args=()
     for pair in "$@"; do env_args+=(-e "$pair"); done
     podman run -d --rm --name $name --userns=keep-id --security-opt label=disable \
@@ -30,8 +36,8 @@ start)
         -v "$tools/with-display:/usr/local/bin/with-display:ro" \
         -v "$out/view:/run/view" -v "$out/run:/run/b33p" -v "$out/data:/tmp/home" \
         -e HOME=/tmp/home -e B33P_MOCK=1 -e B33P_AGENT_SOCKET=/run/b33p/agent.sock \
-        -e RUST_LOG="${RUST_LOG:-info}" "${env_args[@]}" \
-        localhost/b33p-gpui-view with-display /run/view 1280x900 -- b33p >/dev/null
+        -e RUST_LOG="${RUST_LOG:-info}" "${mount_args[@]}" "${env_args[@]}" \
+        localhost/b33p-gpui-view with-display /run/view 1280x900 -- "${run_cmd[@]}" >/dev/null
     for _ in $(seq 60); do [ -S "$out/view/watch" ] && break; sleep 0.5; done
     ;;
 shot)
