@@ -1,0 +1,18 @@
+[package]
+name = "b33p-gpui"
+description = "Signal client built with GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "b33p-gpui"
+path = "src/main.rs"
+
+[dependencies]
+b33p-core.workspace = true
+# GPUI, its component library and icons, as one dependency: GPUI itself is published as a
+# family of `gpui-pre-*` snapshots of Zed that move together, and this names the matching set.
+gpui-kit = "0.9"
