@@ -643,7 +643,14 @@ const methods = {
     const edited = await hovered(old_text);
     await edited.getByRole('button', { name: 'More actions' }).click();
     await page().getByRole('menuitem', { name: 'Edit' }).click();
-    await typeAndSend(text);
+    // The composer is there at once, and takes the message's text a moment later: what was typed
+    // before that goes, and Enter on the old text sends nothing, without a word.
+    const composition = enabledComposition();
+    const composer = composition.locator('.ql-editor');
+    await composer.filter({ hasText: old_text }).waitFor();
+    await composer.fill(text);
+    await composer.press('Enter');
+    await message(text).first().waitFor();
     return null;
   },
   /** Reacts to the message with `text` with the first of the picker's emoji (ReactionPicker.dom.tsx,

@@ -1036,3 +1036,60 @@ One oddity in the Android box's wire: a connection the decoder calls `unknown`, 
 the chat port from 127.0.0.1, 96 bytes out and 36 in, five empty frames, no request: a preface
 and settings and nothing else, closed within 18 ms. Not seen in the earlier runs today; worth
 a look if it recurs, as a client that opens the omnibus port and says nothing.
+
+## The sweep on the forks of 6 Nov (`forks-1106`)
+
+Slint at master (1.20, 261 commits newer, no difference from upstream any more), presage and
+libsignal-service with upstream merged in. Written as the runs go.
+
+### What the build itself turned up
+
+- **The Android image's panic was the check above it.** The build ended in a Go nil dereference in
+  buildah (`intermediateImageExists`, `s.builder.TopLayer`). Under `--jobs 0`, when one stage fails
+  buildah deletes the other stages' builders while their goroutines still run, so the panic says
+  nothing about what failed. What failed was printed just above it, among the interleaved stages:
+  `a revision moved`, emulator 37.2.12 against the pinned 37.2.13. Google serves 37.2.13 as
+  stable all along. `RUN sdkmanager emulator` doesn't say which revision it got, so a layer from
+  before the move matched the step as well as one from after, and the store held both. The
+  emulator now comes from the archive of its revision, checksum checked (7ea21a9). The "layer not
+  known" and nil dereference noted on 1 Nov under "a host-wide build lock" may have been this kind
+  of secondary crash too: read what is above a buildah panic before blaming concurrency.
+- **Slint made `WindowInner::active_popups` private**; the accessor replaces it in one window test.
+- **cargo-deny fails on `main` with today's advisory database** (pulldown-cmark's RUSTSEC-2026-0433,
+  async-executor yanked). CI only sees it on the next push. Both are one `cargo update` away.
+
+### Measurements that mislead
+
+- **The tour's step times include `--screenshots`.** `started`/`took` in `tour.rs` wrap
+  `checks.require`, which also shoots each display. Text went from 0.09 s to 1.26 s, typing from
+  0.10 s to 2.65 s between a run without and a run with screenshots; the sum of the 68 steps from
+  88 s to 148 s. No such change in b33p: `delivered_seconds`, taken inside the step, *improved*
+  (median 0.134 s to 0.120 s, p95 0.726 s to 0.277 s). Anyone comparing two `tour.json`s must know
+  whether both had screenshots.
+- **`link_seconds` isn't that, and isn't a regression.** 2.35 s on 29 Oct, 5.5 s here. It doesn't
+  wrap the screenshots. Over the 170 tours on disk it is bimodal on the same code, about 2.2 s or
+  about 5.5 s, the slow ones mostly with slow restarts and deliveries: the host's load, which nothing
+  records beside it (see "per-check host load", 1 Nov).
+- **The wire's empty connections aren't clients.** About a quarter of the "unknown" rows (38 of 151
+  on the linked box, 35 of 174 on the mesh) are TCP connections with no bytes at all, on the
+  `[::1]` side, closed at once: `offered` is empty, and `5558edc5` is the fingerprint of no hello.
+  They bury the real entries of "Not wholly decoded". A fingerprint for nothing shouldn't exist.
+- **`desktop` on a box without Desktop.** The mesh's compare.md counts two Desktop connections:
+  agent `WhatsApp/2` on the preview port. b33p asks for a page with that agent too
+  (b33p-core/src/preview.rs:53), so `xtask/src/wire/mod.rs:534` names the wrong client.
+
+### What the stress phases said, the first time since 1 Nov
+
+- **stress-content: 6 of 13 awkward texts "not as sent".** The check, not b33p: since 0f20710 a text
+  over 2000 bytes goes as Signal's apps send it, 2000 bytes inline and the whole as an attachment,
+  and the check still looked for the whole in what presage-cli prints. Exactly the six over 2000
+  bytes failed. Nothing runs the stress phases on a schedule, so the check sat broken for five days.
+- **stress-concurrency: "an edit, a reaction and a delete that wait for b33p".** `locator.hover`
+  timed out on "…, edited 3" after 120 s. Desktop's log shows two `sendEditedMessage` calls and no
+  third: the driver's third edit never left Desktop, and `edit_message` returned as if it had. Its
+  `typeAndSend` waits for the composer, which is there at once; the message's text arrives in it a
+  moment later. Presumably what was typed went, and Enter on the unchanged text sent nothing (the
+  order is inferred; the missing call is in the log). The host was at a load of 25 to 77 from the
+  Android image's build. `edit_message` now waits for the composer to hold the old text and for the
+  new text to show. Same family as `send_files` on 1 Nov: a driver call that returns before Desktop
+  has done it, and a failure two minutes later somewhere else.

@@ -35,11 +35,16 @@ fn connections(out: &mut String, summaries: &[Summary], clients: &BTreeSet<&str>
         "| client | connections | ports | ALPN | TLS hellos | longest (s) | not decoded |\n",
     );
     out.push_str("|---|---|---|---|---|---|---|\n");
+    // Connections that carried no byte have no client and no hello to tell: only how many.
+    let empty = |summary: &Summary| summary.sent == 0 && summary.received == 0;
     for client in clients {
         let own: Vec<&Summary> = summaries
             .iter()
-            .filter(|summary| summary.client == *client)
+            .filter(|summary| summary.client == *client && !empty(summary))
             .collect();
+        if own.is_empty() {
+            continue;
+        }
         let ports: BTreeSet<u16> = own.iter().map(|summary| summary.port).collect();
         let alpn: BTreeSet<String> = own
             .iter()
@@ -67,8 +72,15 @@ fn connections(out: &mut String, summaries: &[Summary], clients: &BTreeSet<&str>
             longest as f64 / 1e9,
         ));
     }
+    let empties = summaries.iter().filter(|summary| empty(summary)).count();
+    if empties > 0 {
+        out.push_str(&format!(
+            "\n{empties} more connections carried no byte either way.\n"
+        ));
+    }
     let problems: Vec<String> = summaries
         .iter()
+        .filter(|summary| !empty(summary))
         .filter(|summary| !summary.undecoded.is_empty() || summary.failed.is_some())
         .map(|summary| {
             format!(

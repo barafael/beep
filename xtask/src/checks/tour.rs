@@ -672,9 +672,14 @@ pub(super) fn tour(
             }
         };
         let name = format!("step {number}: {}", tour.world.describe(&step));
-        let started = Instant::now();
-        let outcome = checks.require(&name, || tour.perform(&step));
-        let took = started.elapsed();
+        // The step alone: `require` then takes the displays with `--screenshots`, about a second.
+        let mut took = Duration::ZERO;
+        let outcome = checks.require(&name, || {
+            let started = Instant::now();
+            let outcome = tour.perform(&step);
+            took = started.elapsed();
+            outcome
+        });
         tour.steps.push(StepRecord {
             number,
             kind: kind.into(),
