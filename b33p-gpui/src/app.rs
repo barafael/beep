@@ -28,6 +28,8 @@ pub struct AppView {
     list: Entity<ChatListView>,
     conversation: Entity<ConversationView>,
     overlays: Entity<Overlays>,
+    /// The settings page, while settings are open.
+    settings: Option<Entity<crate::settings::SettingsView>>,
     focus: FocusHandle,
     /// Dragging the divider: where the pointer was, and the sidebar's width then.
     dragging: Option<(f32, f32)>,
@@ -53,6 +55,7 @@ impl AppView {
             list,
             conversation,
             overlays,
+            settings: None,
             focus,
             dragging: None,
         }
@@ -266,7 +269,7 @@ impl AppView {
         &mut self,
         narrow: bool,
         t: &Tokens,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let shared = self.shared.clone();
@@ -295,8 +298,12 @@ impl AppView {
                     this.dragging = Some((x, width));
                 }),
             );
+        if !settings_open {
+            // Made anew when settings open again.
+            self.settings = None;
+        }
         let main: gpui_kit::AnyElement = if settings_open {
-            crate::settings::page(&self.shared, t, cx)
+            crate::settings::page(&mut self.settings, &self.shared, window, cx)
         } else if selected {
             self.conversation.clone().into_any_element()
         } else if narrow {

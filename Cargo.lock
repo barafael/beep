@@ -1066,6 +1066,7 @@ dependencies = [
  "futures-channel",
  "gpui-kit",
  "image",
+ "ksni",
  "open",
  "rust-embed",
  "serde",
@@ -1074,6 +1075,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.21",
  "tracing",
+ "tray-icon",
 ]
 
 [[package]]
@@ -1149,7 +1151,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "windows 0.62.2",
- "zbus",
 ]
 
 [[package]]
@@ -11995,6 +11996,25 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "tray-icon"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5cc5858ecf9574ddd8f0032a2ff7ffd6f7724d2b81e48b9374984b3fd6ddc9"
+dependencies = [
+ "crossbeam-channel",
+ "muda",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png 0.18.1",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -63,10 +63,6 @@ slint = { workspace = true, features = ["backend-qt"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg"] }
 
-# Asks whether the desktop shows tray icons (`tray::host_present`).
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
-
 # Quitting cleanly when the system ends b33p (`shutdown.rs`).
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4"

@@ -32,6 +32,10 @@ testbox/gpui-view/view.sh shot alice          # -> target/gpui-view/shots/alice-
 testbox/gpui-view/view.sh logs; testbox/gpui-view/view.sh stop
 ```
 
+The tray needs a session bus and a StatusNotifierWatcher, which the display's container lacks:
+`VIEW_WRAP` replaces the command it runs (e.g. `exec dbus-run-session -- sh -c "watcher & exec b33p
+--hidden"`) and `VIEW_MOUNT` adds a volume for it, for a watcher binary of one's own.
+
 The mock's chats are `c:alice`, `c:bob`, `g:rust`, `c:stranger`; the actions are the variants of
 `Action` in `b33p-harness`. Setting up the image and tools is in the script's header.
 
@@ -55,6 +59,17 @@ The mock's chats are `c:alice`, `c:bob`, `g:rust`, `c:stranger`; the actions are
 - `agent.rs` is the harness (`--features harness`): the same protocol and the same `Action`
   handling as `b33p-slint/src/agent.rs`, which it was ported from. Both match `Action`
   exhaustively, so an action added to `b33p-harness` doesn't build until both have it.
+- `settings.rs` is the settings page: it reads `Shared::settings` each time it is drawn and
+  changes it only through `Shared::apply_settings` (save, theme, backend), so the phone's changes
+  (`take_preferences`) show on their own. The Qt-only widget style is left out.
+- `window.rs` is the window's life, which `Shared` outlives: opening it, closing it into the
+  tray or ending b33p (`QuitMode::Explicit`, the choice is `window::in_tray`), opening it again
+  from the tray, a second start or a notification (`activate`), and `--hidden`. GPUI windows
+  can't be hidden, so "in the tray" means no window and the process running. The same file
+  keeps the tray's unread count and `Animations` (`App::set_reduce_motion`) in step with the
+  state. `tray.rs` is the icon (GPUI has none): StatusNotifierItem through `ksni` on Linux,
+  `tray-icon` on Windows and macOS, and the icon's pixels drawn in Rust. Whether the desktop
+  shows tray icons is `b33p_platform::tray_host`, which the Slint window uses too.
 - Keyboard shortcuts are GPUI actions (`actions.rs`) handled in `app.rs`; Esc (`CloseFront`)
   closes the innermost open thing, in the order `AppView::close_front` has.
 
