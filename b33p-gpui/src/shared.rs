@@ -35,6 +35,8 @@ pub struct UiState {
     /// What the harness says about the window being focused (`SetWindowFocused`).
     pub window_active: bool,
     pub window_visible: bool,
+    /// The emoji or sticker picker over the composer, if one is open.
+    pub composer_popup: crate::composer::Popup,
 }
 
 impl UiState {
@@ -710,6 +712,23 @@ impl Shared {
         let text = text.to_owned();
         self.with_window(cx, |window, cx| {
             composer.update(cx, |composer, cx| composer.set_text(&text, window, cx));
+        });
+    }
+
+    /// Puts the caret in the composer: after a chat opens, a reply or an edit starts. Done once
+    /// the current event is handled, so that it may be asked for from inside a click.
+    pub fn focus_composer(&self, cx: &mut App) {
+        let me = self.me.clone();
+        cx.defer(move |cx| {
+            let Some(shared) = me.upgrade() else {
+                return;
+            };
+            let Some(composer) = shared.composer.borrow().as_ref().and_then(|c| c.upgrade()) else {
+                return;
+            };
+            shared.with_window(cx, |window, cx| {
+                composer.update(cx, |composer, cx| composer.focus(window, cx));
+            });
         });
     }
 

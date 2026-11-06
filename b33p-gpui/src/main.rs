@@ -33,6 +33,7 @@ mod conversation;
 mod dialog;
 mod forward;
 mod group_draft;
+mod emoji;
 mod images;
 mod join;
 mod overlays;
@@ -42,6 +43,7 @@ mod shared;
 mod shutdown;
 mod start;
 mod stories;
+mod stickers;
 mod theme;
 mod widgets;
 

@@ -168,6 +168,9 @@ pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
         colors.link = accent;
         colors.ring = accent;
         colors.selection = accent.opacity(0.3);
+        // The buttons read the resolved tokens, which follow the colours above only once they
+        // are derived again: else a primary button keeps the stock theme's black.
+        theme.tokens = (&theme.colors).into();
         if let Some(family) = family {
             theme.font_family = family;
         }
