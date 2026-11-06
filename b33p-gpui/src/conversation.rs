@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, Update};
-use b33p_core::{RequestResponse, Trust};
+use b33p_core::Trust;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
@@ -14,7 +14,7 @@ use gpui_kit::{Context, Entity, FontWeight, IntoElement, Render, Window, div, px
 use crate::bubble;
 use crate::chat_list::MUTE_CHOICES;
 use crate::composer::ComposerView;
-use crate::shared::{Confirm, Shared};
+use crate::shared::Shared;
 use crate::theme::{self, Tokens};
 use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
 
@@ -54,13 +54,10 @@ impl Render for ConversationView {
         })
         .with_row_style(gpui_kit::StyleRefinement::default());
 
-        let request = {
-            let chat = shared.chat.borrow();
-            chat.selected()
-                .filter(|c| chat.is_request(c))
-                .map(|c| c.title.clone())
-        };
-        div()
+        let root = div()
+            .id("conversation")
+            .group("conversation")
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -77,8 +74,10 @@ impl Render for ConversationView {
                     // A panel over the messages, while one is open.
                     .children(crate::panels::covering(&shared, &t, cx)),
             )
-            .children(request.map(|title| self.request_bar(title, &t)))
-            .child(self.composer.clone())
+            // The composer, or the bars that stand in for it (a request, a blocked chat, ...).
+            .child(self.composer.clone());
+        // Files dragged onto the chat are attached.
+        crate::composer::accepting_files(root, &shared, &t)
     }
 }
 
@@ -226,66 +225,6 @@ impl ConversationView {
                     ),
             )
             .child(divider(t))
-            .into_any_element()
-    }
-
-    fn request_bar(&self, title: String, t: &Tokens) -> gpui_kit::AnyElement {
-        let shared = self.shared.clone();
-        let answer = move |response: RequestResponse| {
-            let shared = shared.clone();
-            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
-                match response {
-                    RequestResponse::Accept => {
-                        shared.act(cx, |chat| {
-                            let id = chat.selected().map(|c| c.id.clone());
-                            (
-                                id.and_then(|id| chat.respond(&id, RequestResponse::Accept)),
-                                Update::reset(),
-                            )
-                        });
-                    }
-                    RequestResponse::Block => {
-                        shared.ui.borrow_mut().confirm = Confirm::BlockRequest;
-                        cx.refresh_windows();
-                    }
-                    RequestResponse::Delete => {
-                        shared.ui.borrow_mut().confirm = Confirm::DeleteRequest;
-                        cx.refresh_windows();
-                    }
-                }
-            }
-        };
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(px(theme::SPACE_S))
-            .p(px(theme::SPACE_M))
-            .border_t_1()
-            .border_color(t.divider)
-            .child(
-                div()
-                    .text_center()
-                    .text_color(t.text_secondary)
-                    .child(format!(
-                        "{title} wants to message you. They won't know you've seen this until you accept."
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_center()
-                    .gap(px(theme::SPACE_S))
-                    .child(Button::new("request-block").label("Block").on_click(answer(RequestResponse::Block)))
-                    .child(Button::new("request-delete").label("Delete").on_click(answer(RequestResponse::Delete)))
-                    .child(
-                        Button::new("request-accept")
-                            .primary()
-                            .label("Accept")
-                            .on_click(answer(RequestResponse::Accept)),
-                    ),
-            )
             .into_any_element()
     }
 }

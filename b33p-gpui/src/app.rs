@@ -83,6 +83,12 @@ impl AppView {
             cx.notify();
             return true;
         }
+        // The emoji or sticker picker is in front of the composer.
+        if shared.ui.borrow().composer_popup != crate::composer::Popup::None {
+            shared.ui.borrow_mut().composer_popup = crate::composer::Popup::None;
+            cx.notify();
+            return true;
+        }
         let mut chat = shared.chat.borrow_mut();
         let mut update = Update::default();
         if chat.join().is_some() {

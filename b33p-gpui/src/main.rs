@@ -29,6 +29,7 @@ mod bubble;
 mod chat_list;
 mod composer;
 mod conversation;
+mod emoji;
 mod images;
 mod overlays;
 mod panels;
@@ -36,6 +37,7 @@ mod settings;
 mod shared;
 mod shutdown;
 mod start;
+mod stickers;
 mod theme;
 mod widgets;
 

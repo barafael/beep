@@ -161,9 +161,16 @@ pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
         colors.primary = accent;
         colors.primary_hover = hsla(accent.h, accent.s, accent.l * 0.92, 1.);
         colors.primary_active = hsla(accent.h, accent.s, accent.l * 0.84, 1.);
+        colors.button_primary = accent;
+        colors.button_primary_hover = colors.primary_hover;
+        colors.button_primary_active = colors.primary_active;
+        colors.button_primary_foreground = hsla(0., 0., 1., 1.);
         colors.link = accent;
         colors.ring = accent;
         colors.selection = accent.opacity(0.3);
+        // The buttons read the resolved tokens, which follow the colours above only once they
+        // are derived again: else a primary button keeps the stock theme's black.
+        theme.tokens = (&theme.colors).into();
         if let Some(family) = family {
             theme.font_family = family;
         }
