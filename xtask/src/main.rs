@@ -166,6 +166,10 @@ pub(crate) struct B33pOptions {
     /// instead of as a debug build.
     #[arg(long)]
     pub(crate) optimized: bool,
+    /// Which window b33p is: b33p-slint (the default) or b33p-gpui, the same client drawn with
+    /// GPUI. A GPUI b33p's screenshots are its display's, not its harness's.
+    #[arg(long, value_enum, default_value_t = pod::Ui::Slint, env = "TESTBOX_UI")]
+    pub(crate) ui: pod::Ui,
     /// The most memory b33p's container may take, in MiB; the kernel kills b33p past it, as
     /// on a small machine or under a desktop's own limits.
     #[arg(long, value_name = "MIB")]
@@ -278,6 +282,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<(), PodError> {
+    pod.set_ui(b33p.ui);
     let b33ps = b33p.b33ps.unwrap_or(1);
     pod.up(clients, b33ps, b33p.optimized)?;
     b33p.limit_memory(pod, b33ps)

@@ -5,7 +5,7 @@ use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -376,6 +376,32 @@ impl Image {
 /// The server's image, which the clients' copy the box's keys and tools from.
 const SERVER: &str = "server";
 
+/// Which window b33p is in the box: the same client, drawn with either toolkit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Ui {
+    /// b33p-slint.
+    #[default]
+    Slint,
+    /// b33p-gpui.
+    Gpui,
+}
+
+impl Ui {
+    /// The crate's suffix: `b33p-<this>`, the Containerfile's `UI` argument.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Slint => "slint",
+            Self::Gpui => "gpui",
+        }
+    }
+
+    /// Whether its harness can write its window to a file (`Call::Screenshot`). GPUI draws on
+    /// the GPU and doesn't hand the frame back: its screenshots are its display's.
+    pub fn draws_to_file(self) -> bool {
+        matches!(self, Self::Slint)
+    }
+}
+
 /// How a build shares the CPU.
 #[derive(Clone, Copy)]
 enum Priority {
@@ -518,6 +544,8 @@ pub struct Pod {
     lost: Mutex<Vec<String>>,
     /// Whether the boxes it plays write the wire down ([`Self::capture`]).
     capture: AtomicBool,
+    /// Which window b33p is ([`Self::set_ui`]), a [`Ui`] as a number.
+    ui: AtomicU8,
 }
 
 impl Pod {
@@ -550,6 +578,7 @@ impl Pod {
             target,
             lost: Mutex::default(),
             capture: AtomicBool::new(false),
+            ui: AtomicU8::new(Ui::Slint as u8),
         })
     }
 
@@ -572,6 +601,18 @@ impl Pod {
 
     pub fn capturing(&self) -> bool {
         self.capture.load(Ordering::Relaxed)
+    }
+
+    /// Which window the b33p of the boxes built and played from now on is.
+    pub fn set_ui(&self, ui: Ui) {
+        self.ui.store(ui as u8, Ordering::Relaxed);
+    }
+
+    pub fn ui(&self) -> Ui {
+        match self.ui.load(Ordering::Relaxed) {
+            1 => Ui::Gpui,
+            _ => Ui::Slint,
+        }
     }
 
     /// The capture and the key logs (testbox/capture/volumes.yaml), the box's since it played
@@ -700,6 +741,9 @@ impl Pod {
         if image.profiled {
             let profile = if optimized { "testbox" } else { "dev" };
             build.arg("--build-arg").arg(format!("PROFILE={profile}"));
+            build
+                .arg("--build-arg")
+                .arg(format!("UI={}", self.ui().name()));
         }
         build
             .arg("-f")
