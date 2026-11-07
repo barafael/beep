@@ -185,7 +185,15 @@ mod platform {
                 }),
             };
         }
-        let executable = super::executable()?;
+        point_at(&super::executable()?)
+    }
+
+    /// Starts `executable` with the system from now on: the installed copy, once there is
+    /// one (`install.rs`), not wherever the zip was unpacked.
+    pub fn point_at(executable: &std::path::Path) -> Result<(), AutostartError> {
+        let run = CURRENT_USER
+            .create(RUN)
+            .map_err(|source| AutostartError::OpenKey { key: RUN, source })?;
         let command = format!("\"{}\" {}", executable.display(), super::HIDDEN);
         run.set_string(VALUE, command)
             .map_err(|source| AutostartError::SetValue {
@@ -210,4 +218,6 @@ mod platform {
     }
 }
 
+#[cfg(windows)]
+pub use platform::point_at;
 pub use platform::{SUPPORTED, enabled, set};
