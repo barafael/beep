@@ -39,6 +39,8 @@ The release workflow takes a version's notes from here (the section headed with 
   first, in the same dialog as unlinking.
 - Failures say whether trying again may help: the error offers **Try again** when it may;
   messages Signal refused and attachments gone from the server aren't offered again.
+- A click on a quote shows the message it quotes, loading older messages if need be; a quoted
+  message that isn't on this device says so instead.
 
 ### Looks
 
