@@ -595,6 +595,11 @@ def percentile(sorted_values, p):
 
 
 
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
 def read_file(path):
     try:
         return open(path).read().strip()
@@ -626,7 +631,7 @@ def machine_state():
 
 
 def load1():
-    return float(open("/proc/loadavg").read().split()[0])
+    return float(read_file("/proc/loadavg").split()[0])
 
 
 def wait_for_load(max_load, limit=600, poll=10, read=load1, sleep=time.sleep, clock=time.time, say=print):
@@ -671,7 +676,7 @@ def finished(out, label):
     """Whether a complete json of this run is in `out` (a run that was cut off left none: the
     json is written when the run is over, and atomically)."""
     try:
-        record = json.load(open(os.path.join(out, f"{label}.json")))
+        record = read_json(os.path.join(out, f"{label}.json"))
     except (OSError, ValueError):
         return False
     return bool(record.get("result"))
@@ -723,7 +728,7 @@ def run_all(args):
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "environment.json")
     try:
-        meta = json.load(open(path))
+        meta = read_json(path)
     except (OSError, ValueError):
         meta = {}
     now = environment(ways)
@@ -799,7 +804,7 @@ def load_records(directory):
         if not name.endswith(".json") or name == "environment.json":
             continue
         try:
-            rec = json.load(open(os.path.join(directory, name)))
+            rec = read_json(os.path.join(directory, name))
         except ValueError:
             continue
         if isinstance(rec, dict) and "mode" in rec and "result" in rec:
@@ -819,7 +824,9 @@ def aggregate(directory):
     "runs": [{way, mode, round, env}], "scenarios": [{"mode", "scenario", "metrics": {metric:
     {way: stats}}}]}. Numbers that are not numbers (None) are left out; records are read in the
     order of their round so that `values` is by round."""
-    records = sorted(load_records(directory), key=lambda r: (r["mode"], r["way"], r["round"]))
+    modes = list(ESTIMATE_S)
+    records = sorted(load_records(directory), key=lambda r: (
+        modes.index(r["mode"]) if r["mode"] in modes else len(modes), r["mode"], r["way"], r["round"]))
     table = collections.OrderedDict()
     rounds = collections.defaultdict(lambda: collections.defaultdict(int))
     runs = []
@@ -833,7 +840,7 @@ def aggregate(directory):
                         .setdefault(metric, collections.defaultdict(list))[rec["way"]].append(value)
     ways = sorted({r["way"] for r in records}, key=way_order)
     env_path = os.path.join(directory, "environment.json")
-    env = json.load(open(env_path)) if os.path.exists(env_path) else {}
+    env = read_json(env_path) if os.path.exists(env_path) else {}
     return {
         "ways": ways,
         "kinds": {w: way_kind(w) for w in ways},
