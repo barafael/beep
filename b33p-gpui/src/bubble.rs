@@ -125,6 +125,20 @@ fn build(
         .id(SharedString::from(format!("row-{index}")))
         .group(group(index))
         .w_full()
+        // The buttons are drawn for this row only while the pointer is on it (or they were
+        // pressed); see `message_menu::toolbar`.
+        .on_hover({
+            let shared = shared.clone();
+            move |hovered, window, _| {
+                let now = hovered.then_some(index);
+                if now != shared.hovered_row.get()
+                    && (*hovered || shared.hovered_row.get() == Some(index))
+                {
+                    shared.hovered_row.set(now);
+                    window.refresh();
+                }
+            }
+        })
         // While messages are picked, or Ctrl is held, a click anywhere on the row picks this
         // message or unpicks it; with Shift, everything from the one last picked. Taken
         // before what is under the pointer sees it.

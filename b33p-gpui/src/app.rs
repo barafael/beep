@@ -7,7 +7,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, Window, div, px,
+    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, StyleRefinement,
+    Window, div, px,
 };
 
 use crate::actions::{
@@ -32,6 +33,9 @@ pub struct AppView {
     focus: FocusHandle,
     /// Dragging the divider: where the pointer was, and the sidebar's width then.
     dragging: Option<(f32, f32)>,
+    /// Whether the settings were open when the chat list was last drawn: the list is drawn
+    /// cached, and shows it on its button.
+    list_showed_settings: bool,
 }
 
 impl AppView {
@@ -57,6 +61,7 @@ impl AppView {
             settings: None,
             focus,
             dragging: None,
+            list_showed_settings: false,
         }
     }
 
@@ -289,6 +294,22 @@ impl AppView {
             // Made anew when settings open again.
             self.settings = None;
         }
+        // Drawn cached: the list is the costliest part of a frame after the messages (the search
+        // field, the buttons and the rows are laid out and painted again), and most frames, those
+        // of scrolling and typing, change nothing in it. What it reads from the state arrives
+        // with a refresh of the window; what it reads from the window alone is noted here.
+        if self.list_showed_settings != settings_open {
+            self.list_showed_settings = settings_open;
+            self.list.update(cx, |_, cx| cx.notify());
+        }
+        let list = self.list.clone().cached(if narrow {
+            StyleRefinement::default().flex_1().w_full().h_full()
+        } else {
+            StyleRefinement::default()
+                .flex_none()
+                .w(px(sidebar))
+                .h_full()
+        });
         let main: gpui_kit::AnyElement = if settings_open {
             crate::settings::page(&mut self.settings, &self.shared, window, cx)
         } else if selected {
@@ -318,7 +339,7 @@ impl AppView {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, _, _| this.dragging = None),
             )
-            .when(show_list, |row| row.child(self.list.clone()))
+            .when(show_list, |row| row.child(list))
             .when(show_list && !narrow, |row| row.child(divider))
             .when(!(narrow && show_list), |row| row.child(main))
             .when(false, |row| row.w(px(sidebar)))
