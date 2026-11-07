@@ -1326,6 +1326,7 @@ impl Driver {
             Android::TypeText { text } => self.type_text(&text, agent::Echo::Exact(text.clone())),
             Android::ReactToMessage { text } => self.react_to_message(&text),
             Android::SetTimer { seconds } => self.set_timer(seconds),
+            Android::SetNickname { given } => self.set_nickname(&given),
             Android::PostStory { group, text } => self.post_story(&group, &text),
             Android::Send { text } => self.send(&text),
             Android::WaitFor { wanted, timeout_ms } => self
@@ -1445,6 +1446,18 @@ impl Driver {
         self.tap("Disappearing messages", PATIENCE)?;
         self.element("Custom time", PATIENCE)?;
         self.tap(label, PATIENCE)?;
+        self.tap("Save", PATIENCE)?;
+        self.back_to_conversation()
+    }
+
+    /// Chat settings' "Nickname" (IndividualSettingsScreen.kt, strings.xml
+    /// `NicknameActivity__nickname`), its "First name" filled, "Save".
+    fn set_nickname(&mut self, given: &str) -> Result<(), UiError> {
+        self.tap("More options", PATIENCE)?;
+        self.tap("Chat settings", PATIENCE)?;
+        self.tap("Nickname", PATIENCE)?;
+        let field = self.element("First name", PATIENCE)?;
+        self.fill(&field.node, given, agent::Echo::Exact(given.to_owned()))?;
         self.tap("Save", PATIENCE)?;
         self.back_to_conversation()
     }

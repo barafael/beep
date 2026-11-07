@@ -158,9 +158,14 @@ fn serve(
         .arg(program)
         .args(program_arguments)
         .env("XDG_RUNTIME_DIR", RUNTIME)
-        // No screen and no GPU in the container.
+        // No screen in the container, and no GPU unless it is given one: `WITH_DISPLAY_RENDERER=gles2`
+        // (with a render node passed in) draws the display on it, which clients that present
+        // through the GPU's buffers, as GPUI does, need to run on it too.
         .env("WLR_BACKENDS", "headless")
-        .env("WLR_RENDERER", "pixman")
+        .env(
+            "WLR_RENDERER",
+            std::env::var("WITH_DISPLAY_RENDERER").unwrap_or_else(|_| "pixman".to_owned()),
+        )
         .env("WLR_LIBINPUT_NO_DEVICES", "1")
         .process_group(0)
         .spawn()

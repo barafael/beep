@@ -1,0 +1,53 @@
+[package]
+name = "b33p-platform"
+description = "What b33p asks of the desktop, whichever toolkit draws its window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+b33p-core.workspace = true
+tracing = "0.1"
+async-channel = "2"
+# Answers from the desktop actor (`desktop.rs`).
+futures-channel = "0.3"
+# Whether the desktop asks for reduced motion (`motion.rs`).
+mundy = { version = "0.2.3", default-features = false, features = ["reduced-motion", "callback", "async-io"] }
+# The file picker for attachments (the desktop's own, through its portal on Linux).
+rfd = "0.17"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pictures and files pasted into the composer (`clipboard.rs`).
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+png = "0.18"
+# Plays audio and voice messages (`audio.rs`): Signal sends AAC (in MP4 or ADTS), others Ogg,
+# MP3, FLAC, WAV.
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp4", "mp3", "vorbis", "flac", "wav", "symphonia-pcm"] }
+
+# Asks whether the desktop shows tray icons, and keeps b33p to one copy (`instance.rs`).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Where the autostart entry goes (`autostart.rs`).
+directories = "6"
+
+# The single-instance pipe (`instance.rs`).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# The autostart entry (`autostart.rs`).
+windows-registry = "0.6"
+
+[dev-dependencies]
+proptest = "1"
+# Scratch directories for the log file tests.
+tempfile = "3"
