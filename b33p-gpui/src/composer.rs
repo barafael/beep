@@ -791,6 +791,7 @@ impl ComposerView {
                 .icon(icon(name))
                 .tooltip(label)
                 .accessibility_label(label)
+                .debug_selector(|| label.into())
         };
         let popover =
             |id: &'static str, button: Button, card: Option<(AnyElement, f32, Stateful<Div>)>| {
@@ -867,6 +868,7 @@ impl ComposerView {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .debug_selector(|| "Message".into())
                     .px(px(theme::SPACE_M))
                     .py(px(theme::SPACE_S))
                     .rounded(px(theme::RADIUS_M))

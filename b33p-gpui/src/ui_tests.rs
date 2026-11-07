@@ -694,3 +694,91 @@ async fn settings_fit_a_narrow_window(tc: &mut TestAppContext) {
         assert!(right <= width, "at {width}: the button ends at {right}");
     }
 }
+
+/// Shortcuts work wherever the focus is, also in the composer, which takes the keys that are
+/// not shortcuts as text.
+#[gpui::test]
+async fn shortcuts_work_from_the_composer(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(3, None));
+    ui.click("Message");
+    ui.press("ctrl-k");
+    // Ctrl+K went to the chat list's search, which has the caret now.
+    ui.type_keys("zzz");
+    assert_eq!(ui.composer_text(), "", "what was typed went to the search");
+    ui.click("Message");
+    ui.type_keys("x");
+    assert_eq!(
+        ui.composer_text(),
+        "x",
+        "not a shortcut: it reaches the composer"
+    );
+}
+
+/// The sticker button opens the picker and asks for the packs.
+#[gpui::test]
+async fn the_sticker_button_asks_for_the_packs(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(3, None));
+    ui.click("Stickers");
+    assert_eq!(
+        ui.booted.shared.ui.borrow().composer_popup,
+        crate::composer::Popup::Stickers,
+        "the picker is open"
+    );
+    assert!(
+        ui.sent()
+            .iter()
+            .any(|command| matches!(command, Command::LoadStickers)),
+        "the packs are asked for"
+    );
+}
+
+/// A button that is only an icon says what it does when the pointer rests on it.
+#[gpui::test]
+async fn icon_buttons_have_tooltips(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(1, None));
+    let before = ui.painted();
+    ui.hover("Search this chat");
+    // Resting there, moving a little, as a hand does.
+    ui.wait(std::time::Duration::from_millis(100));
+    ui.wait(std::time::Duration::from_secs(1));
+    assert!(ui.painted() > before, "a tooltip shows");
+}
+
+/// An emoji goes where the caret is, in place of what is selected, and the caret after it.
+#[gpui::test]
+async fn an_emoji_goes_where_the_caret_is(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(1, None));
+    let mut put = |ui: &mut Ui, text: &str, range: std::ops::Range<usize>| {
+        ui.type_in_composer(text);
+        ui.insert_in_composer("👋", range);
+        ui.composer_text()
+    };
+    assert_eq!(put(&mut ui, "Hi you", 2..2), "Hi👋 you");
+    assert_eq!(put(&mut ui, "Hi you", 3..6), "Hi 👋");
+    assert_eq!(put(&mut ui, "", 0..0), "👋");
+    assert_eq!(put(&mut ui, "ab", 2..2), "ab👋");
+}
+
+/// A message's text is selected by dragging across it and copied with Ctrl+C; selecting in
+/// another message drops the first one's selection, so Ctrl+C copies only the newer one.
+#[gpui::test]
+async fn ctrl_c_copies_the_text_selected_in_one_message(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(3, None));
+    let mut drag_across = |ui: &mut Ui, label: &str| {
+        let bubble = ui.bounds(label).expect("shown");
+        let y = bubble.center().y;
+        // Inside the bubble's padding, from the first letter to past the last.
+        ui.drag(
+            gpui::point(bubble.origin.x + gpui::px(14.), y),
+            gpui::point(bubble.origin.x + bubble.size.width - gpui::px(2.), y),
+        );
+    };
+    drag_across(&mut ui, "Message 1");
+    ui.press("ctrl-c");
+    assert_eq!(ui.clipboard().as_deref(), Some("Message 1"));
+
+    drag_across(&mut ui, "Message 1");
+    drag_across(&mut ui, "Message 2");
+    ui.press("ctrl-c");
+    assert_eq!(ui.clipboard().as_deref(), Some("Message 2"));
+}

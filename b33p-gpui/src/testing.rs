@@ -269,6 +269,45 @@ impl Ui {
         self.settle();
     }
 
+    /// Moves the pointer to the middle of the element named `selector`.
+    pub fn hover(&mut self, selector: &str) {
+        let bounds = self
+            .bounds(selector)
+            .unwrap_or_else(|| panic!("{selector:?} is not shown"));
+        self.cx
+            .simulate_mouse_move(bounds.center(), None, gpui::Modifiers::none());
+        self.settle();
+    }
+
+    /// Lets `time` pass on the app's clock, which stands still unless it is moved.
+    pub fn wait(&mut self, time: std::time::Duration) {
+        self.cx.executor().advance_clock(time);
+        self.settle();
+    }
+
+    /// How many boxes the last frame painted: more of them when something (a tooltip) is shown.
+    pub fn painted(&mut self) -> usize {
+        self.cx.update(|window, _| window.painted_quads().len())
+    }
+
+    /// Presses the left button at `from`, moves to `to` and lets go, as a drag does.
+    pub fn drag(&mut self, from: gpui::Point<gpui::Pixels>, to: gpui::Point<gpui::Pixels>) {
+        self.cx
+            .simulate_mouse_move(from, None, gpui::Modifiers::none());
+        self.cx
+            .simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::none());
+        self.cx
+            .simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::none());
+        self.cx
+            .simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::none());
+        self.settle();
+    }
+
+    /// The text on the clipboard.
+    pub fn clipboard(&mut self) -> Option<String> {
+        self.cx.read_from_clipboard().and_then(|item| item.text())
+    }
+
     /// The commands the window sent to the backend since the last call.
     pub fn sent(&self) -> Vec<b33p_core::Command> {
         self.booted
@@ -312,6 +351,25 @@ impl Ui {
                 .and_then(|composer| composer.upgrade())
                 .expect("a chat is open");
             composer.update(cx, |composer, cx| composer.set_text(&text, window, cx));
+        });
+        self.settle();
+    }
+
+    /// Selects `range` of the composer's text and has an emoji from the picker put in.
+    pub fn insert_in_composer(&mut self, text: &str, range: std::ops::Range<usize>) {
+        let text = text.to_owned();
+        let shared = self.booted.shared.clone();
+        self.cx.update(|window, cx| {
+            let composer = shared
+                .composer
+                .borrow()
+                .as_ref()
+                .and_then(|composer| composer.upgrade())
+                .expect("a chat is open");
+            composer.update(cx, |composer, cx| {
+                composer.select(range, cx);
+                composer.insert(&text, window, cx);
+            });
         });
         self.settle();
     }
