@@ -202,6 +202,8 @@ class Run:
         if self.frames:
             # Only the client's requests: the compositor's would be in the same log.
             program = ["sh", "-c", "WAYLAND_DEBUG=client exec b33p"]
+        # BENCH_ENV: more environment for the client, "NAME=value NAME=value" (e.g. RUST_LOG=info).
+        extra = [a for pair in os.environ.get("BENCH_ENV", "").split() for a in ("-e", pair)]
         t0 = time.time()
         subprocess.run(
             ["podman", "run", "-d", "--rm", "--name", self.name, "--userns=keep-id",
@@ -212,7 +214,7 @@ class Run:
              "-e", "HOME=/tmp/home", "-e", "B33P_MOCK=1", "-e", f"B33P_MOCK_SCALE={self.scale}",
              "-e", "B33P_AGENT_SOCKET=/run/b33p/agent.sock", "-e", "RUST_LOG=warn",
              "-e", "WITH_DISPLAY_RENDERER=gles2", "-e", f"WLR_RENDER_DRM_DEVICE={RENDER_NODE}",
-             IMAGE, "with-display", "/run/view", GEOMETRY, "--", *program],
+             *extra, IMAGE, "with-display", "/run/view", GEOMETRY, "--", *program],
             check=True, capture_output=True, text=True)
         while not os.path.exists(os.path.join(self.view, "interact")):
             time.sleep(0.05)

@@ -6,6 +6,10 @@
 #   testbox/gpui-view/view.sh shot <name>            writes target/gpui-view/shots/<name>.png
 #   testbox/gpui-view/view.sh logs | stop
 #
+# VIEW_BIN: another binary to run (default target/debug/b33p-gpui; e.g. a b33p-slint build);
+# VIEW_IMAGE: another image (default b33p-gpui-view; b33p-bench-view has Qt and the Vulkan driver);
+# VIEW_GPU=1: draw on the host's GPU through its render node, as bench.py does.
+#
 # Needs: `cargo build -p b33p-gpui` (add `--features harness` to drive it through
 # target/gpui-view/run/agent.sock), the image from the Containerfile beside this script
 # (`podman build -t b33p-gpui-view -f testbox/gpui-view/Containerfile testbox/gpui-view`), and
@@ -29,15 +33,19 @@ start)
     [ -n "${VIEW_WRAP:-}" ] && run_cmd=(sh -c "$VIEW_WRAP")
     mount_args=()
     [ -n "${VIEW_MOUNT:-}" ] && mount_args=(-v "$VIEW_MOUNT")
+    gpu_args=()
+    [ -n "${VIEW_GPU:-}" ] && gpu_args=(--device "${VIEW_RENDER_NODE:-/dev/dri/renderD128}"
+        -e WITH_DISPLAY_RENDERER=gles2
+        -e "WLR_RENDER_DRM_DEVICE=${VIEW_RENDER_NODE:-/dev/dri/renderD128}")
     env_args=()
     for pair in "$@"; do env_args+=(-e "$pair"); done
     podman run -d --rm --name $name --userns=keep-id --security-opt label=disable \
-        -v "$root/target/debug/b33p-gpui:/usr/local/bin/b33p:ro" \
+        "${gpu_args[@]}" -v "${VIEW_BIN:-$root/target/debug/b33p-gpui}:/usr/local/bin/b33p:ro" \
         -v "$tools/with-display:/usr/local/bin/with-display:ro" \
         -v "$out/view:/run/view" -v "$out/run:/run/b33p" -v "$out/data:/tmp/home" \
         -e HOME=/tmp/home -e B33P_MOCK=1 -e B33P_AGENT_SOCKET=/run/b33p/agent.sock \
         -e RUST_LOG="${RUST_LOG:-info}" "${mount_args[@]}" "${env_args[@]}" \
-        localhost/b33p-gpui-view with-display /run/view 1280x900 -- "${run_cmd[@]}" >/dev/null
+        "${VIEW_IMAGE:-localhost/b33p-gpui-view}" with-display /run/view 1280x900 -- "${run_cmd[@]}" >/dev/null
     for _ in $(seq 60); do [ -S "$out/view/watch" ] && break; sleep 0.5; done
     ;;
 shot)
