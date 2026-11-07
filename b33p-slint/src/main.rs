@@ -611,14 +611,15 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     logging::init();
+    // Restarted by an update: the old b33p first has to let go of the lock, the database and
+    // its exe (renamed aside, which the installed copy removes as it starts).
+    updates::wait_for_previous();
     // Run from the zip, a release copies itself to its place and starts from there.
     if install::on_start() == install::Flow::Exit {
         return Ok(());
     }
     memory::watch();
 
-    // Restarted by an update: the old b33p first has to let go of the lock and the database.
-    updates::wait_for_previous();
     // Before the backend opens the database.
     let instance = match instance::claim(Backend::mock_requested()) {
         instance::Claim::First(primary) => Some(primary),
