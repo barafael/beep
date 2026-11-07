@@ -32,6 +32,17 @@ should hold every outgoing `Preview` to a set `url`.
 
 Each is a test before it is a change: if b33p doesn't have the bug, record that and move on.
 
+**Results (2026-11-07):**
+
+| Item | Result |
+|---|---|
+| 0.1 ListView end of model | **Not reproduced.** Two Slint case tests (rows removed at the end, the view grown, a jump far past the end, a new model; uniform rows and tall-then-short rows) pass on Slint master `6a4ef80` *and* on v1.18.1. The `content_y_value += …` in that branch is dead (nothing in the loop reads it), but the layout still ends with the last row at the bottom; sigwin's patch seems to make it converge in one pass, which its first-frame `seek-end` needs. b33p's own "scroll to end" works. No upstream PR without a failing test |
+| 0.2 Caps Lock in Ctrl shortcuts | **Fixed upstream**, in our pin: `InternalKeyEvent::shortcut` compares in lower case (`input.rs:1175`), and b33p's own shortcuts use `eq_ignore_ascii_case` or test both cases. Left: winit reports a Ctrl+letter pressed during an IME composition as `Named(Process)` (Windows, Korean IME), which Slint drops; sigwin rewrites it in a winit event filter (`e3055df`). Windows only; goes with phase 4 |
+| 0.3 CJK fallback on winit | Open: needs a Windows or macOS machine with a CJK locale |
+| 0.4 Mentions while composing | **Done**, #135: candidates follow the composition. Still to check with a real input method: a name picked mid-syllable may get the syllable committed after it |
+| 0.5 Preview `url` | **Holds by construction**: the only place building a `Preview` sets `url` (`send.rs:608`); forwards and edits keep a preview only if its `url` is set and in the text (`commands.rs:922`, `:989`). No test added (it would need a manager) |
+| 0.6 Attachments at rest | **Already so**: downloads stay in memory; only Save (to Downloads, asked for) and Open (a `0600` copy in a private scratch directory, the runtime directory on Linux, cleaned) write files |
+
 1. **Slint ListView at the end of its model.** When the rows run out with room to spare,
    `update_visible_instances` raises `content_y` but not `new_offset_y`, so the next pass lays out the
    same rows and the view never moves up (sigwin `vendor/i-slint-core/model/repeater.rs:404`). It is
