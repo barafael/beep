@@ -311,3 +311,31 @@ Decisions needed:
 | Installing per user to `%LOCALAPPDATA%` | D.2, D.5 |
 | Self-update (and a minisign key in the repo's secrets) | D.5 |
 | Code signing, and with what | D.6 |
+
+### F. Implementation (started 2026-11-07, on the owner's "implement them")
+
+Found while planning:
+- Windows code that links C (BoringSSL, aws-lc, ring) can't be checked from Linux without
+  Microsoft's SDK. `cargo check --target x86_64-pc-windows-msvc` works only for `b33p-notify`.
+  The Windows CI job (A.1) is therefore the check for every item in D, and the D branches
+  stack on it until it merges.
+- **B.1 animated stickers moves to C**: a sticker's picture is converted in `items.rs`
+  (`:345`–`:413`), which the gpui branch reworks.
+
+Taken as decided by "implement them": A, B.2–B.4, D.2, D.3, D.4 and D.5. D.5 is off by
+default, and its release signing step skips when no key is set, so the code can merge before
+the owner creates the key. Still the owner's call: D.1 (the Windows evaluation image's licence
+and download), D.6 (a signing account), the key for D.5, and C.
+
+| Item | Branch | Files | Proof |
+|---|---|---|---|
+| A.1 Windows CI job | `windows-ci` | `.github/workflows/ci.yml` | the job green on the PR |
+| A.2 Smoke run with the mock, CJK in the mock | `windows-ci` | `ci.yml`, a `--smoke` exit in `main.rs` after the first frame and a screenshot, the mock's chat text | the screenshot artifact, looked at |
+| A.3 `mem:` line | `windows-ci` | a `memory` module in b33p-slint (Windows `GetProcessMemoryInfo`, Linux `/proc/self/status`), logged once a minute and at the smoke run's end | the number in the job log, written into phase 3 |
+| B.2 Notification settings per chat | `notify-per-chat` | `local.rs` table, `ChatSettings`, the notification decision in b33p-core, details panel | core tests per rule, ui test, harness action |
+| B.3 Image viewer overlay | `image-viewer` | a new `viewer.slint` with its own global, `src/ui/viewer.rs`, the picture click in `callbacks/chat.rs`; no `items.rs` | ui tests, harness `OpenViewer`/`ViewerNext`/`CloseViewer`, a screenshot |
+| B.4 fcitx5 Hangul check of #135 | none, or a fix | dev container | written up here |
+| D.2 Per-user install | `windows-install`, on `windows-ci` | `install.rs` (HKCU Uninstall key, Start menu `.lnk` via `IShellLinkW`), `main.rs` | Windows CI build, unit tests on the decisions (version compare, paths) |
+| D.3 Unread counts | `unread-badge`, on `windows-ci` | `badge.rs` (`ITaskbarList3`), a window subclass, the tray icon with a count on every platform | Windows CI build, a ui or unit test of the count's words and "99+" |
+| D.4 IME Ctrl shortcuts | upstream draft | winit or Slint | a draft PR, credited to sigwin |
+| D.5 Self-update | `self-update`, on `windows-install` | `update.rs` (`minisign-verify`), the setting, `release.yml` signing | unit tests on signature and version checks with a test key |
