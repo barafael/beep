@@ -1,10 +1,11 @@
 //! The icon in the system tray, which keeps b33p running while its window is closed.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
 use b33p_core::state::Update;
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::Image;
 
 use crate::Shared;
 
@@ -20,7 +21,7 @@ pub use generated::Tray;
 pub fn create(shared: &Rc<Shared>) -> Result<Tray, slint::PlatformError> {
     let tray = Tray::new()?;
     tray.set_shown(shared.settings.borrow().close_to_tray);
-    tray.set_unread_icon(unread_icon());
+    DRAWN.set(None);
     tray.on_open({
         let shared = Rc::downgrade(shared);
         move || {
@@ -36,9 +37,25 @@ pub fn create(shared: &Rc<Shared>) -> Result<Tray, slint::PlatformError> {
     Ok(tray)
 }
 
-/// The app icon with a red dot in its top right corner, for unread messages. Empty if the icon
+/// Shows `unread` on the tray icon: the count drawn into it, and in words in its tooltip.
+pub fn show_unread(tray: &Tray, unread: u32) {
+    tray.set_unread(unread.try_into().unwrap_or(i32::MAX));
+    tray.set_unread_words(crate::badge::words(unread).into());
+    // Redrawn only when what it says changes: above 9 it says "9+" for any count.
+    let label = crate::badge::tray_label(unread);
+    if label.is_some() && DRAWN.replace(label.clone()) != label {
+        tray.set_unread_icon(unread_icon(unread));
+    }
+}
+
+thread_local! {
+    /// What the tray icon drawn last says; reset with each new tray.
+    static DRAWN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The app icon with the count in a red circle in its top right corner. Empty if the icon
 /// can't be rendered, which leaves the plain icon.
-fn unread_icon() -> Image {
+fn unread_icon(unread: u32) -> Image {
     let svg = include_bytes!("../assets/b33p.svg");
     let Some(mut pixels) = Image::load_from_svg_data(svg)
         .ok()
@@ -46,41 +63,8 @@ fn unread_icon() -> Image {
     else {
         return Image::default();
     };
-    add_dot(&mut pixels);
+    crate::badge::add_to_icon(&mut pixels, unread);
     Image::from_rgba8(pixels)
-}
-
-/// Draws the unread dot: red with a white rim, so it stands out on the blue icon and on both
-/// light and dark panels. Anti-aliased by how much of each pixel the circles cover.
-fn add_dot(pixels: &mut SharedPixelBuffer<Rgba8Pixel>) {
-    let size = pixels.width().min(pixels.height()) as f32;
-    let radius = size * 0.16;
-    let rim = size * 0.04;
-    let (cx, cy) = (pixels.width() as f32 - radius - rim, radius + rim);
-    let width = pixels.width() as usize;
-    for (i, pixel) in pixels.make_mut_slice().iter_mut().enumerate() {
-        let (x, y) = ((i % width) as f32 + 0.5, (i / width) as f32 + 0.5);
-        let distance = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-        let cover = |r: f32| (r - distance + 0.5).clamp(0.0, 1.0);
-        let (outer, inner) = (cover(radius + rim), cover(radius));
-        if outer == 0.0 {
-            continue;
-        }
-        let blend = |under: u8, over: u8, alpha: f32| {
-            (under as f32 * (1.0 - alpha) + over as f32 * alpha).round() as u8
-        };
-        let (r, g, b) = (
-            blend(255, 0xe5, inner),
-            blend(255, 0x38, inner),
-            blend(255, 0x3b, inner),
-        );
-        *pixel = Rgba8Pixel {
-            r: blend(pixel.r, r, outer),
-            g: blend(pixel.g, g, outer),
-            b: blend(pixel.b, b, outer),
-            a: blend(pixel.a, 255, outer),
-        };
-    }
 }
 
 /// For a start into the tray (`--hidden`) before the desktop shows tray icons, as can happen
@@ -333,18 +317,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unread_icon_has_a_red_dot_top_right() {
-        let icon = unread_icon();
+    fn unread_icon_has_the_count_top_right() {
+        let icon = unread_icon(3);
         let pixels = icon.to_rgba8().expect("the icon renders");
+        crate::badge::tests::save("tray-3", &pixels);
+        let many = unread_icon(12).to_rgba8().expect("the icon renders");
+        crate::badge::tests::save("tray-12", &many);
         let (width, height) = (pixels.width() as usize, pixels.height() as usize);
         assert!(width >= 32 && height >= 32);
         let at = |x: usize, y: usize| pixels.as_slice()[y * width + x];
-        let size = width.min(height) as f32;
-        let centre = at(width - (size * 0.27) as usize, (size * 0.27) as usize);
-        assert_eq!(
-            (centre.r, centre.g, centre.b, centre.a),
-            (0xe5, 0x38, 0x3b, 255)
-        );
+        let rgba = |x, y| {
+            let p = at(x, y);
+            (p.r, p.g, p.b, p.a)
+        };
+        // Red just inside the circle's rim, at its middle height.
+        let radius = width.min(height) as f32 * 0.34;
+        let left = width - (2.0 * radius) as usize;
+        assert_eq!(rgba(left + 5, radius as usize), (0xe5, 0x38, 0x3b, 255));
+        // The count in white inside it, well inside the white rim.
+        let (cx, cy) = (width as f32 - radius, radius);
+        let white = (0..height)
+            .flat_map(|y| (left..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let distance = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
+                distance < radius * 0.75 && rgba(x, y) == (255, 255, 255, 255)
+            })
+            .count();
+        assert!(white > 20, "{white} white pixels");
         // The rest of the icon is untouched: its bottom left corner is still transparent.
         assert_eq!(at(0, height - 1).a, 0);
     }

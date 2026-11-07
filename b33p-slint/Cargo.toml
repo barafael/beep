@@ -101,6 +101,10 @@ windows = { version = "0.62", features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    # The unread count on the taskbar button (`badge.rs`).
+    "Win32_System_Com",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
 ] }
 # The autostart entry (`autostart.rs`).
 windows-registry = "0.6"
