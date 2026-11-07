@@ -52,6 +52,8 @@ mod text;
 mod theme;
 mod tray;
 #[cfg(test)]
+mod e2e_tests;
+#[cfg(test)]
 mod testing;
 mod widgets;
 mod window;

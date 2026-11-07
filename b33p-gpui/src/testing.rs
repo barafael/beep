@@ -56,16 +56,39 @@ pub struct Booted {
     pub shared: Rc<Shared>,
     pub window: WindowHandle<AppView>,
     /// Keeps the mock backend running until the test is over.
-    pub backend: Backend,
+    _backend: Backend,
+    /// What the app holds the other end of, which must stay open.
+    _kept: Box<dyn std::any::Any>,
 }
 
-/// Brings the app up on `chat`, with a window of `width` by `height` logical pixels.
+/// Brings the app up on `chat`, with a window of `width` by `height` logical pixels. Nothing
+/// arrives from the backend unless the test makes it: the chat state is what it was given.
 pub fn boot(cx: &mut TestAppContext, chat: ChatState, width: f32, height: f32) -> Booted {
+    let (booted, _) = boot_with(cx, chat, width, height, None);
+    booted
+}
+
+/// The app as `main` runs it: the backend's events, the notifications' actions and the rest of
+/// what arrives from outside are pumped into the window, and the agent listens at `socket`.
+pub fn boot_live(cx: &mut TestAppContext, socket: &std::path::Path) -> Booted {
+    let (booted, _) = boot_with(cx, ChatState::default(), 1000., 680., Some(socket));
+    booted
+}
+
+fn boot_with(
+    cx: &mut TestAppContext,
+    chat: ChatState,
+    width: f32,
+    height: f32,
+    live: Option<&std::path::Path>,
+) -> (Booted, ()) {
     init();
     let backend = Backend::mock();
-    let (notifier, _actions) = Notifier::new(&crate::APP);
-    let (desktop_requests, _desktop_queue) = async_channel::unbounded();
+    let (notifier, notifier_actions) = Notifier::new(&crate::APP);
+    let (desktop_requests, desktop_queue) = async_channel::unbounded();
+    let (quit, quit_asked) = async_channel::unbounded();
     let commands = backend.commands();
+    let events = backend.events();
     let shared = cx.update(|cx| {
         gpui_kit::init(cx);
         crate::actions::bind(cx);
@@ -83,12 +106,22 @@ pub fn boot(cx: &mut TestAppContext, chat: ChatState, width: f32, height: f32) -
         shared
     });
     let window = cx.update(|cx| open(&shared, width, height, cx));
+    if let Some(socket) = live {
+        cx.update(|cx| {
+            shared.refresh(crate::shared::everything(), cx);
+            #[cfg(all(feature = "harness", target_family = "unix"))]
+            crate::agent::start_at(socket.to_owned(), &shared, cx);
+            crate::spawn_pumps(&shared, events, notifier_actions, quit_asked, cx);
+        });
+    }
     cx.run_until_parked();
-    Booted {
+    let booted = Booted {
         shared,
         window,
-        backend,
-    }
+        _backend: backend,
+        _kept: Box::new((desktop_queue, quit)),
+    };
+    (booted, ())
 }
 
 fn open(shared: &Rc<Shared>, width: f32, height: f32, cx: &mut App) -> WindowHandle<AppView> {
