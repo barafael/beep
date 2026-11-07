@@ -70,11 +70,19 @@ Each is a test before it is a change: if b33p doesn't have the bug, record that 
 
 ## Phase 1: the conversation's feel (each change on its own)
 
-**Progress (2026-11-07):** 1.1 is #136 (desktop phase 28/28 with a new check). 1.2 waits for
-the b33p-gpui session's Slint performance pass, which rewrites the row builders: it adds
-`sent-minute` (minutes since the epoch, i32) to `MessageItem` and `ConversationItem`; once
-that is on `main`, 1.2 is a `Clock` global ticked once a minute and the arithmetic in the
-`Text`s, with no row rebuilt. 2.1 (pins) is on branch `message-pins`, stacked on #136.
+**Progress (2026-11-07, evening):**
+
+| Item | State |
+|---|---|
+| 0.4 mentions while composing | #135 |
+| 1.1 quote jump | #136 (desktop 28/28) |
+| 2.1 pinned messages | #137, stacked on #136 (all default phases 169/169; desktop 3 rounds) |
+| 1.4 Read more | #138 |
+| 1.3 readers, 1.6 message info | core in #139 (desktop 28/28, storage 13/13); the UI waits for the row model |
+| 1.2 elapsed times, 1.3/1.6 UI, 1.5, 2.3 albums | wait for the gpui branch's Slint pass on `main` (it reworks `items.rs` and `types.slint`, and adds `sent-minute` for 1.2) |
+| 2.2 viewer, 2.4 animated stickers, 2.5 | not started |
+| Phase 3 | needs a Windows machine to measure |
+| Phase 4 | waits for a yes |
 
 | # | Change | sigwin | b33p today | How |
 |---|---|---|---|---|
