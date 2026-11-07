@@ -12,6 +12,9 @@
 //! - `backlog`: that many messages, spread over the conversations, sent in one burst before the
 //!   mock says it has synced, as the real backend's catching up with what came while the
 //!   client was away.
+//!   They are dated as a server delivers them (oldest first, now and then one late): a burst
+//!   in the opposite order puts every message at the front of its chat's history, which
+//!   moves all that is there each time and says nothing about what the backend does.
 //!
 //! Made up the same way every time, so that two windows are shown the same.
 
@@ -116,9 +119,11 @@ impl Scale {
 const LONG: &str = "long";
 const CROWD: &str = "group-crowd";
 
-/// The `n`th message of the backlog, an incoming one in one of `chats` (their mock names), made
-/// up the same way every time.
-pub fn backlog_message(n: usize, chats: &[&str], now: u64) -> ChatMessage {
+/// The `n`th of `total` messages of the backlog, an incoming one in one of `chats` (their mock
+/// names), made up the same way every time. They are dated as a server delivers what came while
+/// the client was away: oldest first, over the last hour, and now and then one that took longer
+/// (sent half a minute earlier than those around it).
+pub fn backlog_message(n: usize, total: usize, chats: &[&str], now: u64) -> ChatMessage {
     let mut random = Random(0xdead_beef_cafe_f00d ^ n as u64);
     let chat = chats[n % chats.len()];
     let body = line(&mut random, 12);
@@ -127,7 +132,10 @@ pub fn backlog_message(n: usize, chats: &[&str], now: u64) -> ChatMessage {
     } else {
         chat
     };
-    message(chat, sender, &body, now - (n as u64 % 3_600) * 1_000, false)
+    const HOUR: u64 = 3_600_000;
+    let late = if n % 16 == 15 { 30_000 } else { 0 };
+    let sent = now - HOUR + n as u64 * HOUR / total.max(1) as u64 - late;
+    message(chat, sender, &body, sent, false)
 }
 
 /// The members of the big group.
@@ -317,10 +325,30 @@ mod tests {
     #[test]
     fn the_backlog_goes_round_the_chats() {
         let chats = ["alice", "group-1", "chat-3"];
-        let a = backlog_message(4, &chats, 1_000_000_000_000);
+        let a = backlog_message(4, 100, &chats, 1_000_000_000_000);
         assert_eq!(a.conversation, super::super::chat_id("group-1"));
         assert!(!a.outgoing);
-        assert_eq!(a.body, backlog_message(4, &chats, 1_000_000_000_000).body);
+        assert_eq!(
+            a.body,
+            backlog_message(4, 100, &chats, 1_000_000_000_000).body
+        );
+    }
+
+    #[test]
+    fn the_backlog_is_dated_oldest_first_with_some_late() {
+        let now = 1_000_000_000_000;
+        let chats = ["alice"];
+        let times: Vec<u64> = (0..200)
+            .map(|n| backlog_message(n, 200, &chats, now).timestamp)
+            .collect();
+        assert!(
+            times
+                .iter()
+                .all(|&t| t < now && t >= now - 3_600_000 - 30_000)
+        );
+        let late = times.windows(2).filter(|w| w[1] < w[0]).count();
+        assert!((1..=200 / 16 + 1).contains(&late), "{late} late ones");
+        assert!(times[0] < times[190]);
     }
 
     #[test]
