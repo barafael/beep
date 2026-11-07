@@ -173,3 +173,50 @@ the cosmetic fades.
 2. When the other session's PRs (#135 to #138: mention IME, quote jump, pins,
    read more) are merged, merge `main` into `gpui` and port quote jump
    (`Action::OpenQuote`), pins, relative times and receipts to `b33p-gpui`.
+
+## 9. After the parity pass (quote jump, pins, Read more, receipts, reaction bar, animations)
+
+Measured on the merged `gpui` branch (`f5e45be`) after the features of #134 to #139 and the
+parity gaps were ported to GPUI: two undisturbed rounds (`target/bench-final2-clean/`), Slint
+without the fork patches. Rounds three, the sync and the frame scenarios of the first run
+overlapped with a game starting on the machine and are not used; the sync and frames were run
+again (`target/bench-final3/`), at load 3 to 8 (the machine is never quiet: an emulator and other
+sessions run on it).
+
+| | Slint | GPUI | GPUI / Slint |
+|---|---|---|---|
+| 5 messages a second arriving, CPU | 22.2% | 4.2% | 0.19x |
+| Idle in a chat after 20 s, CPU / wakeups a second | 0.9% / 69 | 0 / 0 | |
+| Idle at the chat list, wakeups a second | 4.3 | 0.2 | |
+| Scrolling the 20k thread, up / down, CPU | 25.4% / 21.6% | 18.6% / 17.3% | 0.73x / 0.80x |
+| Switching 100 chats, CPU | 26.5% | 10.1% | 0.38x |
+| Typing 80 keys, CPU | 6.5% | 5.1% | 0.78x |
+| Details and media panels, CPU | 6.0% | 2.9% | 0.48x |
+| Wakeups a second while scrolling | 1960 | 173 | 0.09x |
+| RSS at the chat list | 97 MB | 114 MB | 1.17x |
+| RSS in an open chat | 95 MB | 125 MB | 1.32x |
+| RSS after all phases | 204 MB | 185 MB | 0.91x |
+| Anonymous memory after all phases | 142 MB | 97 MB | 0.68x |
+| GPU memory (VRAM) | 0 | 88 to 142 MB | |
+| Threads | 22 | 60 | 2.73x |
+| Release binary | 42.9 MB | 52.5 MB | 1.22x |
+| Start to chat list | 2.4 s | 2.2 s | 0.93x |
+
+The new features did not cost GPUI anything: idle is still 0 wakeups, incoming 4.2% (was 4.1%),
+switching 10.1% (was 10.6%), typing 5.1% (was 4.9%). The fades are skipped for messages that
+come within a second of another, which is what keeps a stream of messages from keeping the
+window drawing. The Slint column here is the build without the fork patches; with them incoming
+is 7.6% and idle 0 (section 3).
+
+Catching up with 200,000 messages: both clients at about 0.8 to 0.9 CPU seconds and 290 to
+300 MB, 3.0 s (Slint) and 3.8 s (GPUI) to caught up at load 3 to 8. The first run of this pass
+showed the CPU time doubling against the earlier 0.4 s; the same scenario with the binaries from
+before the merge, run right after under the same load, gave the same 0.86 and 0.78 s, so that is
+the machine's load, not a regression of the merge. The two clients are within 10% of each other.
+
+Frame pacing was not compared again: under load both clients reached only about 35 frames a
+second with logging on, equally. The earlier quiet run had both at 62 frames a second.
+
+Sizes: Slint is 7.7k lines of Rust plus 6.6k lines of `.slint` and 64 tests; GPUI is 20k lines of
+Rust (about 3.5k of them tests) and 115 tests, all headless. GPUI also has features Slint does not
+(the receipts dialog, readers' avatars).
