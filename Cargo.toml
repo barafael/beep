@@ -31,6 +31,10 @@ thiserror = "2"
 # (the Qt backend drawing emoji itself: Qt 6.4's QRawFont overruns the heap on them) have landed.
 # Merge master in when it moves; go back to crates.io once a release carries them both.
 slint = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699", default-features = false }
+# Slint's backend picker, for b33p-slint's `qt` feature: it turns the Qt backend on from a
+# dependency that only Linux has (see b33p-slint/Cargo.toml); `slint`'s own `backend-qt` can't be
+# limited to a platform by a feature.
+i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699", default-features = false }
 slint-build = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }
 # The internals b33p names directly. Its helper crates come with the fork.
 i-slint-core = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }

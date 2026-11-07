@@ -27,6 +27,14 @@ mod agent;
 #[cfg(all(feature = "harness", not(debug_assertions)))]
 compile_error!("the `harness` feature is for test builds: build without `--release`");
 mod capture;
+#[cfg(all(
+    target_os = "linux",
+    not(any(feature = "qt", feature = "gpu-femtovg", feature = "gpu-skia"))
+))]
+compile_error!(
+    "b33p-slint needs a graphics stack on Linux: the feature `qt`, `gpu-femtovg` or `gpu-skia`"
+);
+
 mod desktop;
 mod emoji;
 mod markdown;
@@ -446,7 +454,8 @@ impl Shared {
 
     /// Why the chosen style isn't showing yet, if it isn't.
     fn style_note(&self) -> String {
-        if QtStyle::of(self.settings.borrow().style) != self.qt_style_at_start {
+        // Only Qt reads a style once, at start; the winit builds have no such choice.
+        if ui::QT && QtStyle::of(self.settings.borrow().style) != self.qt_style_at_start {
             "Takes effect when b33p restarts.".into()
         } else {
             String::new()
@@ -580,7 +589,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     let settings = Settings::load();
     // Qt reads its style once, when it starts, so this has to come first.
-    let qt_style_at_start = if settings.style == WidgetStyle::Fusion
+    let qt_style_at_start = if ui::QT
+        && settings.style == WidgetStyle::Fusion
         && std::env::var_os("QT_STYLE_OVERRIDE").is_none()
     {
         // SAFETY: nothing else runs yet; the backend and Qt start below.

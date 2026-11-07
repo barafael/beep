@@ -1,6 +1,8 @@
 //! Compiles the UI. Slint fixes the widget style when it compiles a `.slint` file, and each
 //! style is a whole copy of the UI in the binary, so b33p ships one: the native one, which
-//! on Linux is Qt's (the desktop's Qt style, or Fusion; Qt picks between them at startup).
+//! on Linux is Qt's (the desktop's Qt style, or Fusion; Qt picks between them at startup) in a
+//! build with the `qt` feature, and Slint's own Fluent in one with `gpu-femtovg` or `gpu-skia`
+//! (no Qt, so no Qt style to compile against).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,8 +14,14 @@ fn main() {
     let input = manifest.join("ui/app.slint");
     // Named outright on Linux: Slint resolves "native" through a file it expects at a fixed
     // place in `target/`, which newer cargo layouts move, and then quietly builds Fluent.
+    // Without the `qt` feature there is no Qt backend, and Fluent is what "native" would
+    // have meant (src/ui/mod.rs's `QT` follows this choice).
     let native = if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux") {
-        "qt"
+        if std::env::var_os("CARGO_FEATURE_QT").is_some() {
+            "qt"
+        } else {
+            "fluent"
+        }
     } else {
         "native"
     };
