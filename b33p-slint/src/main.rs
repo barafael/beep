@@ -656,6 +656,16 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
+    // Qt names its Wayland window after the program; Slint's own winit backend names it
+    // nothing, so the desktop can't find b33p's launcher and icon for it. The name of the
+    // desktop file (packaging/linux), as the notifications use it. Once the platform is up (making
+    // the window does that), before the window is shown, when winit reads it.
+    if !ui::QT
+        && cfg!(target_os = "linux")
+        && let Err(error) = slint::set_xdg_app_id(APP.id)
+    {
+        tracing::warn!(%error, "failed to name the window's application");
+    }
     shared.apply_motion();
     // The desktop's reduced-motion preference, as it is and as it changes.
     let system_motion = motion::watch();
