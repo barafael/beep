@@ -423,49 +423,113 @@ export component Bubble inherits Rectangle {
                                 save(id) => { root.save-attachment(id); }
                                 open(id) => { root.open-attachment(id); }
                             }
-                            if item.has-body: StyledText {
-                                text: item.body;
-                                // A long unbreakable word (a URL) must not widen the bubble past
-                                // its limit: the list would then measure the row at that width
-                                // and give it too little height, so the next rows draw over it.
-                                min-width: 0px;
-                                // For screen readers (and finding messages in the UI tests).
-                                accessible-role: text;
-                                accessible-label: item.deleted ? "This message was deleted." : item.text;
-                                accessible-description: root.described;
-                                default-color: item.deleted ? root.faint : root.ink;
-                                link-color: item.outgoing ? root.ink : Theme.accent;
-                                // Spoilers are links that reveal them.
-                                link-clicked(link) => {
-                                    if link == "spoiler:" {
-                                        root.reveal();
-                                    } else {
-                                        root.open-link(link);
+                            // A long message shows its first lines, and the rest on "Read more", as
+                            // Signal's apps show it: not a screenful of one message to scroll past.
+                            if item.has-body: fold := VerticalLayout {
+                                // Past 800 characters, as Signal-Desktop folds them (MessageBodyReadMore);
+                                // by length, since the text's height comes from the bubble's width.
+                                property <bool> long: item.text.character-count > 800;
+                                // What a folded message shows: ten of its lines, whole.
+                                property <length> shown-height: 10 * line-probe.preferred-height;
+                                property <bool> expanded;
+                                // Rows are made again for other messages as the list scrolls: each starts
+                                // folded. Not on any change to the message, which a receipt is.
+                                property <string> key: item.key;
+                                changed key => {
+                                    self.expanded = false;
+                                }
+                                spacing: Theme.space-xs;
+                                // Folded: its first lines, cut off, as wide as a bubble gets. The text in
+                                // full is laid out below the cut, so its height doesn't come into it.
+                                if fold.long && !fold.expanded: Rectangle {
+                                    clip: true;
+                                    height: fold.shown-height;
+                                    min-width: 0px;
+                                    preferred-width: root.max-bubble-width;
+                                    StyledText {
+                                        y: 0;
+                                        width: parent.width;
+                                        height: 100 * fold.shown-height;
+                                        text: item.body;
+                                        accessible-role: text;
+                                        accessible-label: item.text;
+                                        accessible-description: root.described;
+                                        default-color: root.ink;
+                                        link-color: item.outgoing ? root.ink : Theme.accent;
+                                        link-clicked(link) => {
+                                            if link == "spoiler:" {
+                                                root.reveal();
+                                            } else {
+                                                root.open-link(link);
+                                            }
+                                        }
                                     }
                                 }
-                                // Text can be selected and copied; one message's at a time.
-                                selectable: !item.deleted;
-                                selection-background-color: root.ink.with-alpha(Theme.faint);
-                                selection-foreground-color: root.ink;
-                                property <int> owner: TextSelection.owner;
-                                changed owner => {
-                                    if self.owner != root.index {
-                                        self.clear-selection();
-                                    }
+                                if !fold.long || fold.expanded: VerticalLayout {
+                                        body := StyledText {
+                                            text: item.body;
+                                            // A long unbreakable word (a URL) must not widen the bubble past
+                                            // its limit: the list would then measure the row at that width
+                                            // and give it too little height, so the next rows draw over it.
+                                            min-width: 0px;
+                                            // For screen readers (and finding messages in the UI tests).
+                                            accessible-role: text;
+                                            accessible-label: item.deleted ? "This message was deleted." : item.text;
+                                            accessible-description: root.described;
+                                            default-color: item.deleted ? root.faint : root.ink;
+                                            link-color: item.outgoing ? root.ink : Theme.accent;
+                                            // Spoilers are links that reveal them.
+                                            link-clicked(link) => {
+                                                if link == "spoiler:" {
+                                                    root.reveal();
+                                                } else {
+                                                    root.open-link(link);
+                                                }
+                                            }
+                                            // Text can be selected and copied; one message's at a time.
+                                            selectable: !item.deleted;
+                                            selection-background-color: root.ink.with-alpha(Theme.faint);
+                                            selection-foreground-color: root.ink;
+                                            property <int> owner: TextSelection.owner;
+                                            changed owner => {
+                                                if self.owner != root.index {
+                                                    self.clear-selection();
+                                                }
+                                            }
+                                            changed has-selection => {
+                                                if self.has-selection {
+                                                    TextSelection.owner = root.index;
+                                                } else if TextSelection.owner == root.index {
+                                                    TextSelection.clear();
+                                                }
+                                            }
+                                            // Ctrl+C or the menu asks the message holding the selection to
+                                            // copy it; the element itself reaches the clipboard.
+                                            property <int> copy-request: TextSelection.copy-request;
+                                            changed copy-request => {
+                                                if TextSelection.owner == root.index && self.has-selection {
+                                                    self.copy();
+                                                }
+                                            }
+                                        }
                                 }
-                                changed has-selection => {
-                                    if self.has-selection {
-                                        TextSelection.owner = root.index;
-                                    } else if TextSelection.owner == root.index {
-                                        TextSelection.clear();
-                                    }
-                                }
-                                // Ctrl+C or the menu asks the message holding the selection to
-                                // copy it; the element itself reaches the clipboard.
-                                property <int> copy-request: TextSelection.copy-request;
-                                changed copy-request => {
-                                    if TextSelection.owner == root.index && self.has-selection {
-                                        self.copy();
+                                if fold.long && !fold.expanded: HorizontalLayout {
+                                    alignment: start;
+                                    Text {
+                                        text: "Read more";
+                                        font-weight: 600;
+                                        color: item.outgoing ? root.ink : Theme.accent;
+                                        accessible-role: button;
+                                        accessible-label: "Read more";
+                                        accessible-action-default => {
+                                            more-touch.clicked();
+                                        }
+                                        more-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                fold.expanded = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -670,6 +734,14 @@ export component Bubble inherits Rectangle {
     // Opens the message's menu at this place in the window (the "More" button's corner).
     function show-menu(x: length, y: length) {
         menu.show({ x: x - menu.absolute-position.x, y: y - menu.absolute-position.y });
+    }
+
+    // One line of message text, measured for folding long messages: it doesn't wrap, so its
+    // height doesn't depend on the bubble's width.
+    line-probe := Text {
+        text: "Xg";
+        visible: false;
+        accessible-role: none;
     }
 
     // On top: it takes only right clicks.
