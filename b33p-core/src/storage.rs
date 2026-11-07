@@ -79,6 +79,8 @@ pub(crate) enum Step {
     ReadPreferences,
     KeepPreferences,
     KeepFolders,
+    ReadNames,
+    KeepNames,
     ReadVerifications,
     TakeSettings,
     ReadSettings,
@@ -94,6 +96,8 @@ impl std::fmt::Display for Step {
             Self::ReadPreferences => "read the account's settings as the phone said them last",
             Self::KeepPreferences => "keep the account's settings as the phone says them",
             Self::KeepFolders => "keep the chat folders",
+            Self::ReadNames => "read the contacts' names as the phone said them last",
+            Self::KeepNames => "keep the contacts' names as the phone says them",
             Self::ReadVerifications => "read the verifications as the phone said them last",
             Self::TakeSettings => "take over the chats' settings from the phone",
             Self::ReadSettings => "read the chats' settings",
@@ -148,6 +152,8 @@ pub(crate) struct Synced {
     pub verifications: Option<Verifications>,
     /// The account's settings, if they changed on the phone since the last read.
     pub preferences: Option<AccountPreferences>,
+    /// Whether the names the phone gives contacts changed, so the chats are to be titled anew.
+    pub names_changed: bool,
 }
 
 /// Takes over what changed on the phone since the last time; tells the UI what changed here.
@@ -169,7 +175,12 @@ pub(crate) async fn sync(
         .remote_verifications_read()
         .await
         .map_err(at(Step::ReadVerificationsRead))?;
-    let known = if first {
+    // So did contacts' names.
+    let names_unread = !tables
+        .contact_names_read()
+        .await
+        .map_err(at(Step::ReadNames))?;
+    let known = if first || names_unread {
         0
     } else {
         tables
@@ -204,6 +215,7 @@ pub(crate) async fn sync(
     let ikm = (!manifest.record_ikm.is_empty()).then_some(&manifest.record_ikm[..]);
     let mut remote = HashMap::new();
     let mut verifications = HashMap::new();
+    let mut names = HashMap::new();
     let mut pins = Vec::new();
     let mut folders = Vec::new();
     let mut account_preferences = None;
@@ -218,6 +230,11 @@ pub(crate) async fn sync(
                         && let Some(verification) = verification(&contact)
                     {
                         verifications.insert(aci.service_id_string(), verification);
+                    }
+                    if let Some(aci) = aci
+                        && let Some(name) = shown_name(&contact)
+                    {
+                        names.insert(aci.service_id_string(), name);
                     }
                     if let Some(aci) = aci {
                         remote.insert(
@@ -314,6 +331,14 @@ pub(crate) async fn sync(
                 ))
             })
             .collect();
+    let names_before = tables.contact_names().await.map_err(at(Step::ReadNames))?;
+    let names_changed = names != names_before;
+    if names_changed || names_unread {
+        tables
+            .set_contact_names(&names)
+            .await
+            .map_err(at(Step::KeepNames))?;
+    }
     set_pins(&mut remote, &pins);
     let changed = tables
         .take_remote(&remote, manifest.version, merge)
@@ -340,7 +365,30 @@ pub(crate) async fn sync(
             now: verifications,
         }),
         preferences,
+        names_changed,
     })
+}
+
+/// What Signal's apps title a contact's chat by, as the phone's record of them says: the
+/// nickname given them, their name in the phone's address book, their profile name, their
+/// username; `None` with none of these, when the number is all there is. Signal-Desktop's
+/// `getTitle` (`util/getTitle.ts`) goes in this order.
+pub(crate) fn shown_name(contact: &presage::proto::ContactRecord) -> Option<String> {
+    let join = |given: &str, family: &str| format!("{} {}", given.trim(), family.trim());
+    let nickname = contact
+        .nickname
+        .as_ref()
+        .map(|name| join(&name.given, &name.family))
+        .unwrap_or_default();
+    [
+        nickname,
+        join(&contact.system_given_name, &contact.system_family_name),
+        join(&contact.given_name, &contact.family_name),
+        contact.username.clone(),
+    ]
+    .into_iter()
+    .map(|name| name.trim().to_owned())
+    .find(|name| !name.is_empty())
 }
 
 /// Puts the account record's pins on the phone's chats, archived ones left out: Signal unpins a
@@ -996,6 +1044,57 @@ fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// As Signal-Desktop titles a chat: the nickname, the address book's name, the profile's,
+    /// the username; nothing when only the number is known. Blank names don't count.
+    #[test]
+    fn contacts_are_named_as_signal_names_them() {
+        use presage::proto::{ContactRecord, contact_record::Name};
+        let all = ContactRecord {
+            nickname: Some(Name {
+                given: "Mum".into(),
+                family: String::new(),
+            }),
+            system_given_name: "Anna".into(),
+            system_family_name: "Schmidt".into(),
+            given_name: "Ann".into(),
+            family_name: "S.".into(),
+            username: "ann.42".into(),
+            e164: "+4915123456789".into(),
+            ..Default::default()
+        };
+        assert_eq!(shown_name(&all).as_deref(), Some("Mum"));
+        let no_nickname = ContactRecord {
+            nickname: Some(Name {
+                given: " ".into(),
+                family: String::new(),
+            }),
+            ..all.clone()
+        };
+        assert_eq!(shown_name(&no_nickname).as_deref(), Some("Anna Schmidt"));
+        let profile_only = ContactRecord {
+            system_given_name: String::new(),
+            system_family_name: String::new(),
+            ..no_nickname.clone()
+        };
+        assert_eq!(shown_name(&profile_only).as_deref(), Some("Ann S."));
+        let family_only = ContactRecord {
+            system_family_name: "Schmidt".into(),
+            ..profile_only.clone()
+        };
+        assert_eq!(shown_name(&family_only).as_deref(), Some("Schmidt"));
+        let username_only = ContactRecord {
+            given_name: String::new(),
+            family_name: String::new(),
+            ..profile_only
+        };
+        assert_eq!(shown_name(&username_only).as_deref(), Some("ann.42"));
+        let number_only = ContactRecord {
+            username: String::new(),
+            ..username_only
+        };
+        assert_eq!(shown_name(&number_only), None);
+    }
 
     fn id(s: &str) -> ConversationId {
         ConversationId(s.into())
