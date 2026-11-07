@@ -241,6 +241,7 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
             pin_verified(manager, who, verification).await;
         }
     }
+    load_storage_names(&ctx.tables).await;
     let contacts_read = store.contacts().await;
     if let Err(error) = &contacts_read {
         unreadable(ctx, "contacts", error);
@@ -253,7 +254,8 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
                 .as_ref()
                 .map(display_number)
                 .unwrap_or_default();
-            let name = crate::format::name(&contact.name);
+            let name = storage_name(ServiceId::Aci(contact.uuid.into()))
+                .unwrap_or_else(|| crate::format::name(&contact.name));
             let title = if name.is_empty() {
                 number.clone()
             } else {
@@ -413,10 +415,7 @@ pub(super) async fn sender_name(manager: &Mgr, names: &mut Names, sender: Servic
     if let Some(name) = names.get(&id) {
         return name.clone();
     }
-    let title = manager
-        .thread_title(&Thread::Contact(sender))
-        .await
-        .unwrap_or_default();
+    let title = contact_title(manager, sender).await;
     let name = crate::format::name(&title);
     // Without a contact yet, presage titles it with its id (`thread_title`): not kept, so the
     // name shows once the contact is saved.
@@ -424,6 +423,45 @@ pub(super) async fn sender_name(manager: &Mgr, names: &mut Names, sender: Servic
         names.insert(id, name.clone());
     }
     name
+}
+
+/// What the phone's storage service names contacts by (service id to name; see
+/// [`crate::storage::shown_name`]), as b33p keeps it: Signal's apps title chats by these, the
+/// name in the phone's address book above all, which presage never learns (its contacts carry
+/// the contact sync's or the profile's name, or none). Process-wide because contacts are named
+/// in many places that have only the manager; reloaded by [`send_conversations`], which runs at
+/// the start and after the storage service's names change.
+static STORAGE_NAMES: std::sync::RwLock<Option<HashMap<String, String>>> =
+    std::sync::RwLock::new(None);
+
+async fn load_storage_names(tables: &LocalStore) {
+    match tables.contact_names().await {
+        Ok(names) => {
+            *STORAGE_NAMES.write().unwrap_or_else(|e| e.into_inner()) = Some(names);
+        }
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to read the contacts' names");
+        }
+    }
+}
+
+/// The name the phone's storage service gives `who`, if any.
+fn storage_name(who: ServiceId) -> Option<String> {
+    let names = STORAGE_NAMES.read().unwrap_or_else(|e| e.into_inner());
+    let name = crate::format::name(names.as_ref()?.get(&who.service_id_string())?);
+    (!name.is_empty()).then_some(name)
+}
+
+/// What a contact's chat is titled by: the storage service's name, else presage's (the contact
+/// sync's or the profile's), else their id, which callers tell apart.
+async fn contact_title(manager: &Mgr, who: ServiceId) -> String {
+    if let Some(name) = storage_name(who) {
+        return name;
+    }
+    manager
+        .thread_title(&Thread::Contact(who))
+        .await
+        .unwrap_or_default()
 }
 
 /// We wrote to `id`, here or from another device of ours: that accepts the chat, as Signal's apps
@@ -492,7 +530,10 @@ pub(super) async fn ensure_conversation(
 ) -> ConversationId {
     let id = conversation_id(&thread);
     if !ctx.threads.borrow().contains_key(&id) {
-        let title = manager.thread_title(&thread).await.unwrap_or_default();
+        let title = match thread {
+            Thread::Contact(who) => contact_title(manager, who).await,
+            Thread::Group(_) => manager.thread_title(&thread).await.unwrap_or_default(),
+        };
         let subtitle = subtitle(manager, &thread).await;
         let timer = expire_timer(manager, &thread).await;
         let group = match &thread {
@@ -682,8 +723,8 @@ pub(super) async fn find_number(
     let thread = Thread::Contact(who);
     let id = conversation_id(&thread);
     if !ctx.threads.borrow().contains_key(&id) {
-        let title = match manager.thread_title(&thread).await {
-            Ok(title) if !title.is_empty() && title != who.service_id_string() => title,
+        let title = match contact_title(manager, who).await {
+            title if !title.is_empty() && title != who.service_id_string() => title,
             _ => shown.clone(),
         };
         let mut conversation = register(&ctx.threads, thread, title, shown, 0);
