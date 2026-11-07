@@ -99,6 +99,11 @@ is inflated.
   state. `tray.rs` is the icon (GPUI has none): StatusNotifierItem through `ksni` on Linux,
   `tray-icon` on Windows and macOS, and the icon's pixels drawn in Rust. Whether the desktop
   shows tray icons is `b33p_platform::tray_host`, which the Slint window uses too.
+- `animation.rs` is what moves (the durations of Slint's `Motion`, `fade_in`); every animation is
+  GPUI's animation element, which obeys the reduced-motion flag and stops asking for frames when
+  done, so nothing animated keeps the window drawing at rest. `reaction_bar.rs` is the quick
+  reactions that come over a message after the pointer has rested on it. `capture.rs` and the
+  Windows part of `shutdown.rs` are Windows-only and have been compile-checked, never run.
 - Keyboard shortcuts are GPUI actions (`actions.rs`) handled in `app.rs`; Esc (`CloseFront`)
   closes the innermost open thing, in the order `AppView::close_front` has.
 
