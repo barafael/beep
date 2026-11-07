@@ -39,6 +39,16 @@ The tray needs a session bus and a StatusNotifierWatcher, which the display's co
 The mock's chats are `c:alice`, `c:bob`, `g:rust`, `c:stranger`; the actions are the variants of
 `Action` in `b33p-harness`. Setting up the image and tools is in the script's header.
 
+## Testing it
+
+`cargo test -p b33p-gpui` runs the window's own tests on GPUI's headless test platform: no
+display, no GPU, no compositor. `src/ui_tests.rs` gives the views a chat state and input
+(`simulate_*`, selectors from `debug_selector`), and `src/testing.rs` is what they share; with
+`--features harness` `src/e2e_tests.rs` also drives the whole app, mock backend and agent socket
+included, through the protocol the Slint tests use. [PARITY.md](PARITY.md) says what each window
+does that the other does, what differs and why, and which Slint test each of these corresponds
+to.
+
 ## Measuring it against the Slint client
 
 `testbox/gpui-view/bench.py` runs both clients on the mock, with much more data
