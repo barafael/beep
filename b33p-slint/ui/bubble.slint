@@ -112,6 +112,8 @@ export component Bubble inherits Rectangle {
     callback open-attachment(string);
     callback open-link(string);
     callback reply;
+    // Shows the message this one quotes.
+    callback open-quote;
     callback react(string);
     // Sends a message that failed to go out again.
     callback retry;
@@ -323,7 +325,15 @@ export component Bubble inherits Rectangle {
                             spacing: 2px;
                             if item.quote-author != "" || item.quote-text != "": Rectangle {
                                 border-radius: Theme.radius-s;
-                                background: root.ink.with-alpha(Theme.fill);
+                                background: quote-touch.has-hover ? root.ink.with-alpha(2 * Theme.fill) : root.ink.with-alpha(Theme.fill);
+                                // As in Signal's apps, a click on the quote shows the message quoted.
+                                quote-touch := TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Show the quoted message from " + item.quote-author;
+                                    accessible-action-default => { self.clicked(); }
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-quote(); }
+                                }
                                 HorizontalLayout {
                                     Rectangle {
                                         width: 3px;

@@ -2994,6 +2994,113 @@ fn search_results_load_their_page_and_are_scrolled_to() {
     assert!(state.messages().next().unwrap().highlighted);
 }
 
+/// A message answering the one Ann sent at `quoted`.
+fn answer(timestamp: u64, quoted: u64) -> ChatMessage {
+    ChatMessage {
+        quote: Some(Quote {
+            author: "Ann".into(),
+            text: "the question".into(),
+            author_id: "ann".into(),
+            timestamp: quoted,
+        }),
+        ..message("a", "Bob", timestamp, false)
+    }
+}
+
+#[test]
+fn a_click_on_a_quote_loads_its_page_and_scrolls_to_it() {
+    let mut state = state();
+    let a = id("a");
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![message("a", "Ann", 30, false), answer(40, 10)],
+        reactions: Vec::new(),
+        older: Some(30),
+    });
+    state.take_commands();
+    state.open_quote(1);
+    assert!(matches!(
+        &state.take_commands()[..],
+        [Command::LoadHistory {
+            before: Some(30),
+            ..
+        }]
+    ));
+    assert_eq!(state.jump(), None);
+    state.apply(Event::History {
+        conversation: a,
+        messages: vec![
+            message("a", "Ann", 10, false),
+            message("a", "Ann", 20, false),
+        ],
+        reactions: Vec::new(),
+        older: Some(10),
+    });
+    assert_eq!(state.jump(), Some((0, 1)));
+    assert!(state.messages().next().unwrap().highlighted);
+    assert_eq!(state.error(), None);
+}
+
+/// A quoted message sent after where the next older page starts would be loaded already:
+/// it isn't on this device, and no page is asked for in vain.
+#[test]
+fn a_quote_of_a_message_not_here_says_so_without_loading_the_chat() {
+    let mut state = state();
+    let a = id("a");
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![message("a", "Ann", 30, false), answer(40, 35)],
+        reactions: Vec::new(),
+        older: Some(30),
+    });
+    state.take_commands();
+    state.open_quote(1);
+    assert!(state.take_commands().is_empty());
+    assert_eq!(state.jump(), None);
+    assert!(
+        state
+            .error()
+            .is_some_and(|e| e.contains("isn't on this device"))
+    );
+    assert!(state.messages().all(|view| !view.highlighted));
+
+    // At the beginning of the chat, an older one isn't here either.
+    state.dismiss_error();
+    state.apply(Event::History {
+        conversation: a,
+        messages: vec![message("a", "Ann", 20, false)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let answer_row = state.messages().position(|v| v.message.timestamp == 40);
+    state.open_quote(answer_row.unwrap());
+    assert!(state.take_commands().is_empty());
+    assert!(state.error().is_some());
+}
+
+/// A quote that doesn't say which message it is (old clients) leads nowhere.
+#[test]
+fn a_quote_without_its_message_s_time_does_nothing() {
+    let mut state = state();
+    let a = id("a");
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a,
+        messages: vec![message("a", "Ann", 30, false), answer(40, 0)],
+        reactions: Vec::new(),
+        older: Some(30),
+    });
+    state.take_commands();
+    state.open_quote(1);
+    state.open_quote(0);
+    state.open_quote(7);
+    assert!(state.take_commands().is_empty());
+    assert_eq!(state.jump(), None);
+    assert_eq!(state.error(), None);
+}
+
 #[test]
 fn snippets_show_the_match_in_context() {
     assert_eq!(

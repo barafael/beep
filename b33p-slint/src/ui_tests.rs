@@ -426,6 +426,30 @@ fn older_messages_put_in_above_leave_the_view_in_place() {
 }
 
 #[test]
+fn clicking_a_quote_asks_for_the_quoted_message() {
+    let (window, messages) = window_with_messages(2);
+    let opened = Rc::new(std::cell::RefCell::new(None));
+    window.global::<OpenChat>().on_open_quote({
+        let opened = opened.clone();
+        move |key| *opened.borrow_mut() = Some(key)
+    });
+    messages.set_vec(vec![
+        message("The question"),
+        MessageItem {
+            key: "answer".into(),
+            quote_author: "Ann".into(),
+            quote_text: "The question".into(),
+            ..message("The answer")
+        },
+    ]);
+    settle(&window);
+    find(&window, "Show the quoted message from Ann")
+        .expect("the quote is a button")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(opened.borrow().as_deref(), Some("answer"));
+}
+
+#[test]
 fn clicking_a_mention_candidate_picks_it() {
     let (window, _messages) = window_with_messages(3);
     let picked = Rc::new(Cell::new(None));
