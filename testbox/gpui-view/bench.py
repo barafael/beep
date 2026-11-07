@@ -186,7 +186,8 @@ def delta(before, after, probe):
 class Run:
     def __init__(self, ui, label, out, scale, frames=False):
         self.ui, self.label, self.out, self.scale, self.frames = ui, label, out, scale, frames
-        self.name = f"b33p-bench-{label}"
+        # BENCH_PREFIX: another worktree measuring at the same time needs container names of its own.
+        self.name = f"{os.environ.get('BENCH_PREFIX', 'b33p-bench')}-{label}"
         self.dir = os.path.join(out, label)
         self.view, self.run, self.data = (os.path.join(self.dir, d) for d in ("view", "run", "data"))
         self.n = 0
