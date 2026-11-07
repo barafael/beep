@@ -1256,6 +1256,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             ago(60 * 24 * 40),
             false,
         )],
+        "yuki" => vec![message(
+            "yuki",
+            "Yuki",
+            "駅で会おう、鉄道の国へ。민지도 같이 가요",
+            ago(4),
+            false,
+        )],
         "rust" => vec![
             message("rust", "Ferris", "Slint or iced?", ago(120), false),
             ChatMessage {
