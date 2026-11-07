@@ -197,15 +197,24 @@ async function typeAndSend(text: string): Promise<void> {
 }
 
 /** The newest message with `text`, hovered: what shows its buttons ("React to Message",
- * "Reply to Message", "More actions"; TimelineMessage.dom.tsx). */
+ * "Reply to Message", "More actions"; TimelineMessage.dom.tsx). By its own text, not a quote of
+ * it: a reply quoting it has the text too, and was taken for it (7 Nov: Desktop pinned its own
+ * reply, deleted a moment before but not drawn as deleted yet, whose menu then went away). */
 async function hovered(text: string): Promise<Locator> {
   const found = timeline()
     .locator('[data-testid]')
-    .filter({ hasText: text })
+    .filter({ has: page().locator('.module-message__text', { hasText: text }) })
     .filter({ has: page().getByRole('button', { name: 'More actions' }) })
     .last();
   await found.hover();
   return found;
+}
+
+/** Chooses `item` in the "More actions" menu of the message with `text`. */
+async function fromMessageMenu(text: string, item: string): Promise<void> {
+  const found = await hovered(text);
+  await found.getByRole('button', { name: 'More actions' }).click();
+  await page().getByRole('menuitem', { name: item, exact: true }).click();
 }
 
 /** Resolves to null, the methods' answer, once `locator` shows; rejects after `timeoutMs`. */
@@ -645,9 +654,7 @@ const methods = {
   /** Edits the message reading `old_text` to `text`, as edit_test.node.ts `sendEditedMessage`
    * does: the message's "More actions" menu, then "Edit", then the composer. */
   edit_message: async ({ old_text, text }: Text & { old_text: string }) => {
-    const edited = await hovered(old_text);
-    await edited.getByRole('button', { name: 'More actions' }).click();
-    await page().getByRole('menuitem', { name: 'Edit' }).click();
+    await fromMessageMenu(old_text, 'Edit');
     // The composer is there at once, and takes the message's text a moment later: what was typed
     // before that goes, and Enter on the old text sends nothing, without a word.
     const composition = enabledComposition();
@@ -691,28 +698,26 @@ const methods = {
    * DeleteMessagesModal.dom.tsx's button. Not its context menu, as attachments_test.node.ts
    * does: on Wayland a right-click opens none. */
   delete_for_everyone: async ({ text }: Text) => {
-    const deleted = await hovered(text);
-    await deleted.getByRole('button', { name: 'More actions' }).click();
-    await page().getByRole('menuitem', { name: 'Delete' }).click();
+    await fromMessageMenu(text, 'Delete');
     await page().getByRole('button', { name: 'Delete for everyone' }).click();
     return null;
   },
   /** Pins the message with `text` for `duration` ("24 hours", "7 days", "30 days", "Forever"):
    * its "More actions" menu's "Pin" (MessageContextMenu.dom.tsx), then PinMessageDialog.dom.tsx's
-   * choice and its "Pin". */
+   * choice and its "Pin"; done once the pinned bar shows it, so a pin of another message isn't
+   * taken for it. */
   pin_message: async ({ text, duration }: Text & { duration: string }) => {
-    const pinned = await hovered(text);
-    await pinned.getByRole('button', { name: 'More actions' }).click();
-    await page().getByRole('menuitem', { name: 'Pin', exact: true }).click();
+    await fromMessageMenu(text, 'Pin');
     await page().getByRole('radio', { name: duration, exact: true }).click();
     await page().getByRole('button', { name: 'Pin', exact: true }).click();
+    await pinnedBar().getByText(rendered(text, false)).waitFor();
     return null;
   },
-  /** Unpins the message with `text`: its "More actions" menu's "Unpin". */
+  /** Unpins the message with `text`: its "More actions" menu's "Unpin"; done once the pinned bar
+   * no longer shows it. */
   unpin_message: async ({ text }: Text) => {
-    const pinned = await hovered(text);
-    await pinned.getByRole('button', { name: 'More actions' }).click();
-    await page().getByRole('menuitem', { name: 'Unpin', exact: true }).click();
+    await fromMessageMenu(text, 'Unpin');
+    await pinnedBar().getByText(rendered(text, false)).waitFor({ state: 'detached' });
     return null;
   },
   /** Waits for the pinned bar (PinnedMessagesBar.dom.tsx, a `section` named "Pinned message" or
