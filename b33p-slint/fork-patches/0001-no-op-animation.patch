@@ -1,0 +1,22 @@
+diff --git a/internal/core/properties/properties_animations.rs b/internal/core/properties/properties_animations.rs
+index 6063095fb..12c14627b 100644
+--- a/internal/core/properties/properties_animations.rs
++++ b/internal/core/properties/properties_animations.rs
+@@ -409,6 +409,17 @@ fn evaluate(self: Pin<&Self>, value: &mut T) -> BindingResult {
+                 unsafe { self.original_binding.update(&mut new_to_value as *mut T) };
+                 animation_data.to_value = Some(new_to_value);
+ 
++                // A binding that never animated yet has no previous target, so its first
++                // change of dependencies would start an animation from the value it has to the
++                // same value: nothing to see, but it runs for its whole duration and keeps the
++                // window redrawing. (Rows of a list get their data after they are made, and
++                // are changed again when their neighbours change.)
++                if previous_to_value.is_none() && animation_data.to_value.as_ref() == Some(&*value)
++                {
++                    self.state.set(AnimatedBindingState::NotAnimating);
++                    return BindingResult::KeepBinding;
++                }
++
+                 if animation_data.to_value != previous_to_value {
+                     animation_data.state = AnimationState::Delaying;
+                     // Anchor timing to when the change was first signalled

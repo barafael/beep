@@ -134,6 +134,11 @@ runs every phase twice, `cargo testbox run desktop groups` only those.
 phases always are: slower, a box's setup for each, but no phase sees what another left, and
 their order doesn't matter.
 
+b33p is the Slint window's client in the box; `--ui gpui` (on `up`, `test` and `run`, or
+`TESTBOX_UI=gpui`) makes it b33p-gpui, the same client with its window drawn by GPUI, which
+Mesa's software Vulkan runs in the box's display. A GPUI window can't write itself to a file, so
+with `--screenshots` its screenshots are its display's, as Desktop's and Android's are.
+
 b33p is a debug build in the box, as in the checks' own builds. `--optimized` (on `up`, `test` and `run`)
 builds it optimized as it ships instead, which takes longer: for what only shows in an
 optimized build, or is too slow to tell apart in a debug one. It keeps debug assertions on

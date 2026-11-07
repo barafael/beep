@@ -289,8 +289,12 @@ pub(crate) fn render(
                     messages.set_row_data(before, item);
                 }
             }
+            // Fading a row in redraws the whole window for as long as it lasts (the Qt backend
+            // paints all of it at every frame), so only a message that comes after a quiet
+            // moment fades; in a stream of them nobody sees the single fades anyway.
+            let fresh = fade_in_allowed(std::time::Instant::now());
             messages.extend(chat.last_messages(n).map(|message| MessageItem {
-                fresh: true,
+                fresh,
                 ..message_item(&message, in_group, chat, images)
             }));
             window.global::<OpenChat>().set_appended_total(
@@ -299,7 +303,9 @@ pub(crate) fn render(
                     .get_appended_total()
                     .wrapping_add(n as i32),
             );
-            settle_fresh(window);
+            if fresh {
+                settle_fresh(window);
+            }
         }
         MessagesUpdate::Prepended(n) => {
             // In one go; the list keeps what is on screen in place.

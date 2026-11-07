@@ -415,9 +415,9 @@ impl ChatState {
                 let looking =
                     self.selected.as_ref() == Some(&id) && self.notifications.window_focused;
                 let notice = history[pos].notice;
-                let reference = history[pos].reference();
-                if !outgoing && !notice {
-                    let message = &history[pos];
+                let sent_at = history[pos].timestamp;
+                if !outgoing && !notice && self.wants_notice(&id) {
+                    let message = &self.history[&id][pos];
                     // A photo or sticker alone says what it is.
                     let body = match (message.body.is_empty(), message.attachments.first()) {
                         (true, Some(attachment)) => describe_kind_for_notice(attachment.kind),
@@ -435,7 +435,8 @@ impl ChatState {
                 }
                 if !outgoing && !notice {
                     let last_read = self.conversation(&id).map(|c| c.settings.last_read);
-                    if last_read.is_some_and(|last_read| reference.timestamp <= last_read) {
+                    if last_read.is_some_and(|last_read| sent_at <= last_read) {
+                        let reference = self.history[&id][pos].reference();
                         self.late.entry(id.clone()).or_default().push(reference);
                     }
                 }
