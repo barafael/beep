@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState};
 use b33p_core::{Conversation, ConversationId};
+use gpui_kit::Role;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Div, FontWeight, Hsla, SharedString, UniformListScrollHandle, Window, div, px,
@@ -15,7 +16,7 @@ use gpui_kit::{
 use crate::images::Drawn;
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::{avatar, avatar_color, icon};
+use crate::widgets::{Speaks as _, avatar, avatar_color, icon};
 
 /// The height of a row in a list of people.
 pub const PERSON_ROW: f32 = 48.0;
@@ -130,7 +131,7 @@ pub fn people(
                     .rounded(px(theme::RADIUS_S))
                     .cursor_pointer()
                     .hover(|row| row.bg(t.hover))
-                    .aria_label(row_label(&person, verb))
+                    .speaks(Role::Button, row_label(&person, verb))
                     .on_click(move |_, window, cx| pick(&target, window, cx))
                     .child(avatar(
                         36.,

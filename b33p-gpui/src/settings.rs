@@ -381,6 +381,7 @@ impl Render for SettingsView {
             ),
             Button::new("unlink")
                 .label("Unlink…")
+                .debug_selector(|| "Unlink…".into())
                 .on_click({
                     let shared = shared.clone();
                     move |_, _, cx| {
@@ -398,7 +399,8 @@ impl Render for SettingsView {
             Some("Free software under the GNU AGPL 3.0. Not made by Signal."),
             Button::new("source")
                 .label("Source code")
-                .on_click(|_, _, _| open_url(URL_SOURCE))
+                .debug_selector(|| "Source code".into())
+                .on_click(|_, _, _| crate::web::open(URL_SOURCE))
                 .into_any_element(),
         ));
         column.push(row(
@@ -415,6 +417,7 @@ impl Render for SettingsView {
                 .child(
                     Button::new("log-folder")
                         .label("Open log folder")
+                        .debug_selector(|| "Open log folder".into())
                         .on_click(|_, _, _| {
                             crate::start::open_folder(b33p_core::settings::log_dir())
                         }),
@@ -422,7 +425,8 @@ impl Render for SettingsView {
                 .child(
                     Button::new("report")
                         .label("Report…")
-                        .on_click(|_, _, _| open_url(URL_REPORT)),
+                        .debug_selector(|| "Report…".into())
+                        .on_click(|_, _, _| crate::web::open(URL_REPORT)),
                 )
                 .into_any_element(),
         ));
@@ -494,12 +498,6 @@ impl Render for SettingsView {
                             ),
                     ),
             )
-    }
-}
-
-fn open_url(url: &str) {
-    if let Err(error) = open::that_detached(url) {
-        tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "could not open a web page");
     }
 }
 

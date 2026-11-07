@@ -251,10 +251,15 @@ impl StartView {
                 div()
                     .flex()
                     .justify_center()
-                    .child(Button::new("skip").label("Skip").on_click({
-                        let shared = shared.clone();
-                        move |_, _, cx| shared.command(cx, |chat| chat.skip_history())
-                    }))
+                    .child(
+                        Button::new("skip")
+                            .label("Skip")
+                            .debug_selector(|| "Skip".into())
+                            .on_click({
+                                let shared = shared.clone();
+                                move |_, _, cx| shared.command(cx, |chat| chat.skip_history())
+                            }),
+                    )
                     .into_any_element(),
             );
         }
@@ -265,10 +270,16 @@ impl StartView {
                     .flex_col()
                     .items_center()
                     .gap(px(theme::SPACE_S))
-                    .child(Button::new("start").primary().label("Start").on_click({
-                        let shared = shared.clone();
-                        move |_, _, cx| shared.redraw(cx, |chat| chat.start())
-                    }))
+                    .child(
+                        Button::new("start")
+                            .primary()
+                            .label("Start")
+                            .debug_selector(|| "Start".into())
+                            .on_click({
+                                let shared = shared.clone();
+                                move |_, _, cx| shared.redraw(cx, |chat| chat.start())
+                            }),
+                    )
                     .child(
                         div()
                             .text_center()
@@ -326,6 +337,7 @@ impl StartView {
             children.push(
                 Button::new("forgot")
                     .label("Forgot your password?")
+                    .debug_selector(|| "Forgot your password?".into())
                     .on_click(move |_, _, cx| {
                         shared.ui.borrow_mut().confirm = Confirm::StartOver;
                         cx.refresh_windows();
@@ -371,6 +383,7 @@ impl StartView {
                 Button::new("retry")
                     .primary()
                     .label("Try again")
+                    .debug_selector(|| "Try again".into())
                     .on_click({
                         let shared = shared.clone();
                         move |_, _, cx| {
@@ -392,6 +405,7 @@ impl StartView {
             children.push(
                 Button::new("use-password")
                     .label("Use a password instead")
+                    .debug_selector(|| "Use a password instead".into())
                     .on_click({
                         let shared = shared.clone();
                         move |_, _, cx| {
@@ -413,6 +427,7 @@ impl StartView {
             children.push(
                 Button::new("start-over")
                     .label("Start over…")
+                    .debug_selector(|| "Start over…".into())
                     .on_click({
                         let shared = shared.clone();
                         move |_, _, cx| {
@@ -426,6 +441,7 @@ impl StartView {
         children.push(
             Button::new("data-folder")
                 .label("Open data folder")
+                .debug_selector(|| "Open data folder".into())
                 .on_click(|_, _, _| open_folder(b33p_core::settings::data_dir()))
                 .into_any_element(),
         );

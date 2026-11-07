@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use b33p_core::Picture;
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::*;
@@ -18,7 +19,7 @@ use gpui_kit::{
 use crate::images::{Drawn, draw};
 use crate::shared::Shared;
 use crate::theme;
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// Stickers to a row.
 const PER_ROW: usize = 6;
@@ -141,7 +142,7 @@ impl Render for StickerPicker {
                     .rounded_full()
                     .cursor_pointer()
                     .text_size(px(theme::BODY * theme::BODY_SMALL))
-                    .aria_label(title.clone())
+                    .speaks(Role::Tab, title.clone())
                     .when(selected, |tab| {
                         tab.bg(t.selected)
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
@@ -177,7 +178,7 @@ impl Render for StickerPicker {
                                         .justify_center()
                                         .rounded(px(theme::RADIUS_M))
                                         .cursor_pointer()
-                                        .aria_label(format!("Send sticker {emoji}"))
+                                        .speaks(Role::Button, format!("Send sticker {emoji}"))
                                         .hover(|tile| tile.bg(t.hover))
                                         .on_click(cx.listener(move |_, _, _, cx| {
                                             cx.emit(Picked {

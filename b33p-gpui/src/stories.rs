@@ -5,6 +5,7 @@ use std::rc::Rc;
 use b33p_core::state::{self, AttachmentState, ChatState};
 use b33p_core::{AttachmentId, ConversationId, NewStory, StoryContent};
 use b33p_platform::desktop::{self, Pick};
+use gpui_kit::Role;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectState};
@@ -20,7 +21,7 @@ use gpui_kit::{
 use crate::images::Drawn;
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::{avatar, avatar_color, icon};
+use crate::widgets::{Speaks as _, avatar, avatar_color, icon};
 
 /// The width of the list of who has stories.
 const LIST: f32 = 280.0;
@@ -275,7 +276,7 @@ fn stage_button(
         .rounded(px(theme::RADIUS_M))
         .cursor_pointer()
         .hover(|button| button.bg(t.on_stage.opacity(0.08)))
-        .aria_label(label)
+        .speaks(Role::Button, label)
         .child(icon(name).size(px(theme::ICON)).text_color(t.on_stage))
         .on_click(on_click)
 }
@@ -504,14 +505,18 @@ impl StoriesView {
                                 .flex_row()
                                 .gap(px(6.))
                                 .child(
-                                    Button::new("story-photo").label("Photo…").on_click(
-                                        cx.listener(|this, _, _, cx| this.post_photo(cx)),
-                                    ),
+                                    Button::new("story-photo")
+                                        .label("Photo…")
+                                        .debug_selector(|| "Photo…".into())
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.post_photo(cx)),
+                                        ),
                                 )
                                 .child(
                                     Button::new("story-post")
                                         .primary()
                                         .label("Post")
+                                        .debug_selector(|| "Post".into())
                                         .disabled(!can_post_text)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.post_text(window, cx)
@@ -543,7 +548,7 @@ impl StoriesView {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .aria_label(label)
+                .speaks(Role::Button, label)
                 .child(icon(name).size(px(28.)).text_color(t.on_stage))
                 .on_click(cx.listener(move |this, _, _, cx| this.step(by, cx)))
         };
@@ -683,13 +688,16 @@ impl StoriesView {
                         .child("Couldn't load the picture."),
                 )
                 .when(retryable, |column| {
-                    column.child(Button::new("retry-story").label("Try again").on_click(
-                        move |_, _, cx| {
-                            shared.act(cx, |chat| {
-                                (chat.fetch_attachment(&id), state::Update::default())
-                            });
-                        },
-                    ))
+                    column.child(
+                        Button::new("retry-story")
+                            .label("Try again")
+                            .debug_selector(|| "Try again".into())
+                            .on_click(move |_, _, cx| {
+                                shared.act(cx, |chat| {
+                                    (chat.fetch_attachment(&id), state::Update::default())
+                                });
+                            }),
+                    )
                 })
                 .into_any_element(),
         };

@@ -31,6 +31,8 @@ mod confirm;
 mod conversation;
 mod details;
 mod dialog;
+#[cfg(test)]
+mod e2e_tests;
 mod emoji;
 mod forward;
 mod group_draft;
@@ -48,13 +50,14 @@ mod shutdown;
 mod start;
 mod stickers;
 mod stories;
+#[cfg(test)]
+mod testing;
 mod text;
 mod theme;
 mod tray;
 #[cfg(test)]
-mod e2e_tests;
-#[cfg(test)]
-mod testing;
+mod ui_tests;
+mod web;
 mod widgets;
 mod window;
 

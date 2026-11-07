@@ -1222,6 +1222,31 @@ impl Commands {
     }
 }
 
+impl Commands {
+    /// Commands that go to no backend but to the [`Recorded`] returned with them, for tests of
+    /// what a window asks the backend for.
+    pub fn recorded() -> (Self, Recorded) {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        (Self(sender), Recorded(receiver))
+    }
+}
+
+/// What was sent to the [`Commands`] of [`Commands::recorded`].
+pub struct Recorded(Receiver<Request>);
+
+impl Recorded {
+    /// The commands sent since the last call, oldest first.
+    pub fn take(&self) -> Vec<Command> {
+        self.0
+            .try_iter()
+            .filter_map(|request| match request {
+                Request::Command(command) => Some(*command),
+                Request::Shutdown => None,
+            })
+            .collect()
+    }
+}
+
 /// Owner of a running backend. Dropping it stops the backend and waits until it has closed its
 /// database, so drop it before the process exits: library teardown in `exit()` crashes threads
 /// still using the database.

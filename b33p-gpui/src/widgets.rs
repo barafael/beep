@@ -13,6 +13,32 @@ use gpui_kit::{
 use crate::images::Drawn;
 use crate::theme::Tokens;
 
+/// Says what an element is to assistive technology: its role and its name. (GPUI hands an
+/// element to a screen reader only with an id *and* a role; a label alone says nothing, which
+/// is how the first port's labels went unheard.) The name is also the element's selector for
+/// the tests, which find it by what a screen reader would call it.
+pub trait Speaks: StatefulInteractiveElement + Sized {
+    fn speaks(self, role: gpui_kit::Role, label: impl Into<SharedString>) -> Self {
+        let label: SharedString = label.into();
+        let selector = label.to_string();
+        self.speaks_as(role, label, selector)
+    }
+
+    /// [`Speaks::speaks`] with a selector of its own, for one of many that say the same.
+    fn speaks_as(
+        self,
+        role: gpui_kit::Role,
+        label: impl Into<SharedString>,
+        selector: String,
+    ) -> Self {
+        self.role(role)
+            .aria_label(label)
+            .debug_selector(move || selector)
+    }
+}
+
+impl<T: StatefulInteractiveElement> Speaks for T {}
+
 /// A Lucide icon, by the name the Slint window's `@lucide/<name>.svg` uses.
 pub fn icon(name: &'static str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/{name}.svg")))
@@ -30,6 +56,8 @@ pub fn icon_button(
         .small()
         .icon(icon(name))
         .tooltip(label)
+        // Found by what it says, as a person (or a test) finds it.
+        .debug_selector(|| label.into())
         .on_click(on_click)
 }
 

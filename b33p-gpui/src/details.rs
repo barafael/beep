@@ -208,6 +208,7 @@ impl Render for DetailsPanel {
                     Button::new("details-media")
                         .icon(icon("image"))
                         .label("Media, files and links")
+                        .debug_selector(|| "Media, files and links".into())
                         .on_click({
                             let shared = shared.clone();
                             move |_, _, cx| {
@@ -307,6 +308,7 @@ impl DetailsPanel {
         let notifications = if page.muted {
             Button::new("details-unmute")
                 .label("Unmute")
+                .debug_selector(|| "Unmute".into())
                 .on_click({
                     let (shared, id) = (shared.clone(), id.clone());
                     move |_, _, cx| shared.chat_action(cx, &id, |chat, id| chat.mute(id, None))
@@ -317,6 +319,7 @@ impl DetailsPanel {
             Button::new("details-mute")
                 .outline()
                 .label("On")
+                .debug_selector(|| "On".into())
                 .dropdown_caret(true)
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu;
@@ -474,6 +477,7 @@ impl DetailsPanel {
                     .child(
                         Button::new("safety-copy")
                             .label("Copy")
+                            .debug_selector(|| "Copy".into())
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                             }),
@@ -484,6 +488,14 @@ impl DetailsPanel {
                                 "Clear verification"
                             } else {
                                 "Mark as verified"
+                            })
+                            .debug_selector(move || {
+                                if verified {
+                                    "Clear verification"
+                                } else {
+                                    "Mark as verified"
+                                }
+                                .into()
                             })
                             .on_click(move |_, _, cx| {
                                 shared.command(cx, |chat| chat.set_verified(!verified))
@@ -511,6 +523,7 @@ impl DetailsPanel {
                     .child(
                         Button::new("group-rename")
                             .label("Rename")
+                            .debug_selector(|| "Rename".into())
                             .on_click(cx.listener(|this, _, _, cx| this.rename(cx))),
                     ),
             )
@@ -523,6 +536,7 @@ impl DetailsPanel {
                     .child(
                         Button::new("group-describe")
                             .label("Save")
+                            .debug_selector(|| "Save".into())
                             .on_click(cx.listener(|this, _, _, cx| this.describe(cx))),
                     ),
             )
@@ -534,6 +548,7 @@ impl DetailsPanel {
                     .child(
                         Button::new("group-picture")
                             .label("Change picture…")
+                            .debug_selector(|| "Change picture…".into())
                             .on_click({
                                 let shared = shared.clone();
                                 move |_, _, cx| choose_picture(&shared, cx)
@@ -543,6 +558,7 @@ impl DetailsPanel {
                         row.child(
                             Button::new("group-picture-remove")
                                 .label("Remove picture")
+                                .debug_selector(|| "Remove picture".into())
                                 .on_click({
                                     let shared = shared.clone();
                                     move |_, _, cx| {
@@ -557,17 +573,27 @@ impl DetailsPanel {
                     .flex()
                     .flex_row()
                     .gap(px(theme::SPACE_S))
-                    .child(Button::new("group-add").label("Add members…").on_click({
-                        let shared = shared.clone();
-                        move |_, _, cx| shared.edit(cx, |chat| chat.open_add_members())
-                    }))
-                    .child(Button::new("group-leave").label("Leave group…").on_click({
-                        let shared = shared.clone();
-                        move |_, _, cx| {
-                            shared.ui.borrow_mut().confirm = Confirm::LeaveGroup;
-                            shared.refresh(Update::default(), cx);
-                        }
-                    })),
+                    .child(
+                        Button::new("group-add")
+                            .label("Add members…")
+                            .debug_selector(|| "Add members…".into())
+                            .on_click({
+                                let shared = shared.clone();
+                                move |_, _, cx| shared.edit(cx, |chat| chat.open_add_members())
+                            }),
+                    )
+                    .child(
+                        Button::new("group-leave")
+                            .label("Leave group…")
+                            .debug_selector(|| "Leave group…".into())
+                            .on_click({
+                                let shared = shared.clone();
+                                move |_, _, cx| {
+                                    shared.ui.borrow_mut().confirm = Confirm::LeaveGroup;
+                                    shared.refresh(Update::default(), cx);
+                                }
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -629,14 +655,20 @@ impl DetailsPanel {
                     .child(
                         Button::new("invite-copy")
                             .label("Copy")
+                            .debug_selector(|| "Copy".into())
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                             }),
                     )
                     .when(admin, |row| {
-                        row.child(Button::new("invite-reset").label("Reset").on_click(
-                            move |_, _, cx| edit_group(&shared, cx, GroupEdit::ResetInviteLink),
-                        ))
+                        row.child(
+                            Button::new("invite-reset")
+                                .label("Reset")
+                                .debug_selector(|| "Reset".into())
+                                .on_click(move |_, _, cx| {
+                                    edit_group(&shared, cx, GroupEdit::ResetInviteLink)
+                                }),
+                        )
                     })
             }))
             .into_any_element()
@@ -661,6 +693,7 @@ impl DetailsPanel {
                     .child(
                         Button::new(("request-deny", index))
                             .label("Turn down")
+                            .debug_selector(|| "Turn down".into())
                             .on_click(move |_, _, cx| {
                                 edit_group(
                                     &deny_shared,
@@ -673,6 +706,7 @@ impl DetailsPanel {
                         Button::new(("request-approve", index))
                             .primary()
                             .label("Let in")
+                            .debug_selector(|| "Let in".into())
                             .on_click(move |_, _, cx| {
                                 edit_group(
                                     &approve_shared,

@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState, ConversationView, PreviewKind, Update};
 use b33p_core::{AttachmentKind, ConversationId, now_millis};
+use gpui_kit::Role;
 use gpui_kit::component::Selectable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
@@ -18,7 +19,7 @@ use gpui_kit::{
 
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::{avatar, avatar_color, icon, icon_button};
+use crate::widgets::{Speaks as _, avatar, avatar_color, icon, icon_button};
 
 /// What a chat's menu entry does: to the conversation it is for.
 pub type MenuAction = Rc<dyn Fn(&Rc<Shared>, &ConversationId, &mut gpui_kit::App)>;
@@ -254,6 +255,10 @@ impl Render for ChatListView {
             div().px(px(theme::SPACE_M)).pb(px(theme::SPACE_S)).child(
                 Button::new("message-number")
                     .label(format!("Message {search_text}"))
+                    .debug_selector({
+                        let label = format!("Message {search_text}");
+                        move || label.clone()
+                    })
                     .on_click({
                         let number = search_text.clone();
                         cx.listener(move |this, _, _, cx| this.find_number(&number, cx))
@@ -511,7 +516,7 @@ fn row(
         .when(selected, |row| row.bg(t.selected))
         .when(!selected, |row| row.hover(|s| s.bg(t.hover)))
         .when(pointed_at, |row| row.border_1().border_color(t.accent))
-        .aria_label(SharedString::from(label))
+        .speaks(Role::ListItem, SharedString::from(label))
         .on_click(move |_, _, cx| click_shared.select(cx, &click_id))
         .context_menu(move |menu, _window, _cx| {
             let shared = menu_shared.clone();

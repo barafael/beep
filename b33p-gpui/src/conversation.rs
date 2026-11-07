@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, Update};
+use gpui_kit::Role;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
@@ -20,7 +21,7 @@ use crate::message_menu;
 use crate::shared::Shared;
 use crate::text::TextSelection;
 use crate::theme::{self, Tokens};
-use crate::widgets::{avatar, avatar_color, divider, icon, icon_button};
+use crate::widgets::{Speaks as _, avatar, avatar_color, divider, icon, icon_button};
 
 pub struct ConversationView {
     shared: Rc<Shared>,
@@ -253,7 +254,7 @@ impl ConversationView {
                             .items_center()
                             .gap(px(theme::SPACE_M))
                             .cursor_pointer()
-                            .aria_label(format!("Details of {title}"))
+                            .speaks(Role::Button, format!("Details of {title}"))
                             .on_click({
                                 let shared = shared.clone();
                                 move |_, _, cx| shared.command(cx, |chat| chat.open_details())

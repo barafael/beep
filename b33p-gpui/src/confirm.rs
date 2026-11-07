@@ -199,15 +199,21 @@ impl Render for ConfirmView {
                                 Button::new("confirm-cancel")
                                     .primary()
                                     .label("Cancel")
+                                    .debug_selector(|| "Cancel".into())
                                     .on_click({
                                         let shared = shared.clone();
                                         move |_, _, cx| dismissed(&shared, cx)
                                     }),
                             )
-                            .child(Button::new("confirm-action").label(texts.action).on_click({
-                                let shared = shared.clone();
-                                move |_, _, cx| confirmed(&shared, cx)
-                            })),
+                            .child(
+                                Button::new("confirm-action")
+                                    .label(texts.action)
+                                    .debug_selector(|| "Confirm".into())
+                                    .on_click({
+                                        let shared = shared.clone();
+                                        move |_, _, cx| confirmed(&shared, cx)
+                                    }),
+                            ),
                     ),
             );
         modal(&t, 420., content, move |_, cx| dismissed(&shared, cx))

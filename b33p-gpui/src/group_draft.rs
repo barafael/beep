@@ -151,10 +151,15 @@ impl Render for GroupDraftView {
         .child(list)
         .child(
             dialog::buttons()
-                .child(Button::new("draft-cancel").label("Cancel").on_click({
-                    let shared = shared.clone();
-                    move |_, _, cx| shared.edit(cx, |chat| chat.close_group_draft())
-                }))
+                .child(
+                    Button::new("draft-cancel")
+                        .label("Cancel")
+                        .debug_selector(|| "Cancel".into())
+                        .on_click({
+                            let shared = shared.clone();
+                            move |_, _, cx| shared.edit(cx, |chat| chat.close_group_draft())
+                        }),
+                )
                 .child(
                     Button::new("draft-finish")
                         .primary()

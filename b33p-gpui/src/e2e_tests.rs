@@ -283,12 +283,11 @@ fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
     }
 }
 
-
 /// Starting, connecting, and reading are the test; also that nonsense is refused.
 #[gpui::test]
 async fn an_agent_sees_the_chats(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let ping: Pong = agent.result(Call::Ping);
+        let ping: Pong = agent.result(Call::Ping);
         assert!(ping.mock);
         // Not a request at all, so by hand.
         agent.send_line(&json!({"id": 7, "method": "teleport"}).to_string());
@@ -310,7 +309,7 @@ async fn an_agent_sees_the_chats(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn a_sent_message_is_answered(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         let alice = id_of(&chats, "Alice");
         agent.select(&alice);
         assert!(selected_is(
@@ -335,7 +334,7 @@ async fn a_sent_message_is_answered(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn a_sent_message_is_edited(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         agent.select(&id_of(&chats, "Alice"));
         agent.type_text("Hello");
         agent.act(Action::Send);
@@ -359,7 +358,7 @@ async fn a_sent_message_is_edited(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn attachments_are_fetched_and_saved(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         agent.select(&id_of(&chats, "Alice"));
         let attachment = |snapshot: &Snapshot, id: &str| {
             snapshot
@@ -395,7 +394,7 @@ async fn attachments_are_fetched_and_saved(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn failures_offer_to_try_again_when_that_may_work(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         let alice = id_of(&chats, "Alice");
         agent.select(&alice);
         agent.wait_for("Alice selected", |s| selected_is(s, &alice));
@@ -435,7 +434,7 @@ async fn failures_offer_to_try_again_when_that_may_work(cx: &mut TestAppContext)
 #[gpui::test]
 async fn a_group_is_joined_through_its_link(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            wait_for_chats(agent);
+        wait_for_chats(agent);
         agent.act(Action::OpenJoinGroup {
             link: Some("https://signal.group/#mock-approve".to_owned()),
         });
@@ -473,9 +472,10 @@ async fn a_group_is_joined_through_its_link(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn stories_are_shown_in_turn(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
-        let story_by =
-            |s: &Snapshot, author: &str| s.story.as_ref().is_some_and(|story| story.author == author);
+        let chats = wait_for_chats(agent);
+        let story_by = |s: &Snapshot, author: &str| {
+            s.story.as_ref().is_some_and(|story| story.author == author)
+        };
         agent.act(Action::OpenStory {
             conversation: id_of(&chats, "Alice"),
         });
@@ -502,7 +502,7 @@ async fn stories_are_shown_in_turn(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn a_subscriber_hears_updates(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         let alice = id_of(&chats, "Alice");
         let bob = id_of(&chats, "Bob");
         agent.select(&alice);
@@ -535,7 +535,7 @@ async fn a_subscriber_hears_updates(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn settings_can_be_changed(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            wait_for_chats(agent);
+        wait_for_chats(agent);
         agent.act(theme_and_text_size(Theme::Dark, TextSize::Large));
         let settings = agent.snapshot().settings;
         assert_eq!(settings.theme, Theme::Dark);
@@ -559,7 +559,7 @@ async fn settings_can_be_changed(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn a_failure_can_be_tried_again(cx: &mut TestAppContext) {
     in_app(cx, &[("B33P_MOCK_FAIL", "key-missing")], |agent| {
-            let snapshot = agent.wait_for("the failure screen", |s| {
+        let snapshot = agent.wait_for("the failure screen", |s| {
             matches!(s.screen, ScreenSnapshot::Failed { .. })
         });
         let ScreenSnapshot::Failed { failure, .. } = snapshot.screen else {
@@ -575,7 +575,7 @@ async fn a_failure_can_be_tried_again(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn unlinking_starts_again_with_linking(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            wait_for_chats(agent);
+        wait_for_chats(agent);
         agent.act(Action::Unlink);
         let snapshot = agent.wait_for("the link screen", |s| {
             matches!(s.screen, ScreenSnapshot::Link { .. })
@@ -590,7 +590,7 @@ async fn unlinking_starts_again_with_linking(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn the_device_can_be_renamed(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            wait_for_chats(agent);
+        wait_for_chats(agent);
         let default = agent.snapshot().settings.device_name;
         assert!(default.starts_with("b33p"), "{default}");
         agent.act(Action::RenameDevice {
@@ -609,7 +609,7 @@ async fn the_device_can_be_renamed(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn a_safety_number_is_verified_and_a_chat_searched(cx: &mut TestAppContext) {
     in_app(cx, &[], |agent| {
-            let chats = wait_for_chats(agent);
+        let chats = wait_for_chats(agent);
         let alice = id_of(&chats, "Alice");
         agent.select(&alice);
         agent.wait_for("Alice selected", |s| selected_is(s, &alice));

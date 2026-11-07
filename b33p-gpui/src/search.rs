@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use b33p_core::state;
+use gpui_kit::Role;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -16,7 +17,7 @@ use gpui_kit::{
 use crate::panel;
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// How long typing must pause before the chat is searched; Enter does not wait.
 const PAUSE: Duration = Duration::from_millis(300);
@@ -210,7 +211,10 @@ fn result(index: usize, found: &Found, shared: &Rc<Shared>, t: &Tokens) -> AnyEl
         .cursor_pointer()
         .hover(|s| s.bg(t.hover))
         .active(|s| s.bg(t.pressed))
-        .aria_label(format!("{}, {}: {}", found.sender, found.when, found.text))
+        .speaks(
+            Role::ListItem,
+            format!("{}, {}: {}", found.sender, found.when, found.text),
+        )
         .on_click(move |_, _, cx| shared.redraw(cx, |chat| chat.show_result(index)))
         .child(
             div()

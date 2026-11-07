@@ -144,12 +144,17 @@ impl Render for ForwardView {
                     .h(px(dialog::height(window, 520.)))
                     .child(Input::new(&self.filter).cleanable(true))
                     .child(list)
-                    .child(dialog::buttons().child(
-                        Button::new("forward-cancel").label("Cancel").on_click({
-                            let cancel = cancel.clone();
-                            move |_, window, cx| cancel(window, cx)
-                        }),
-                    ))
+                    .child(
+                        dialog::buttons().child(
+                            Button::new("forward-cancel")
+                                .label("Cancel")
+                                .debug_selector(|| "Cancel".into())
+                                .on_click({
+                                    let cancel = cancel.clone();
+                                    move |_, window, cx| cancel(window, cx)
+                                }),
+                        ),
+                    )
                     .into_any_element()
             }
             Some((_, title)) => {
@@ -169,13 +174,19 @@ impl Render for ForwardView {
                             .child(quote(&t, preview))
                             .child(
                                 dialog::buttons()
-                                    .child(Button::new("forward-back").label("Back").on_click(
-                                        cx.listener(|this, _, window, cx| this.back(window, cx)),
-                                    ))
+                                    .child(
+                                        Button::new("forward-back")
+                                            .label("Back")
+                                            .debug_selector(|| "Back".into())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.back(window, cx)
+                                            })),
+                                    )
                                     .child(
                                         Button::new("forward-send")
                                             .primary()
                                             .label("Forward")
+                                            .debug_selector(|| "Forward".into())
                                             .on_click(
                                                 cx.listener(|this, _, _, cx| this.forward(cx)),
                                             ),

@@ -1,6 +1,7 @@
 //! The pieces the panels over the messages share: the sheet they are drawn on, their header
 //! with a way back, section titles, empty and busy states, and the pills of a tab row.
 
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::*;
@@ -10,7 +11,7 @@ use gpui_kit::{
 };
 
 use crate::theme::{self, Tokens};
-use crate::widgets::{divider, icon, icon_button};
+use crate::widgets::{Speaks as _, divider, icon, icon_button};
 
 /// What a panel is drawn on: it fills the place of the messages and takes every pointer event
 /// over them, so that the list beneath neither scrolls nor answers clicks.
@@ -146,7 +147,7 @@ pub fn pill(
         .rounded_full()
         .cursor_pointer()
         .text_size(px(theme::BODY * theme::BODY_SMALL))
-        .aria_label(label.clone())
+        .speaks(Role::Tab, label.clone())
         .when(selected, |p| p.bg(tint).font_weight(FontWeight::SEMIBOLD))
         .when(!selected, |p| p.hover(|s| s.bg(hover)))
         .on_click(on_click)

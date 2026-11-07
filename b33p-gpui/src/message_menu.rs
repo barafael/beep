@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use b33p_core::state::Update;
 use gpui_kit::Focusable as _;
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -18,7 +19,7 @@ use gpui_kit::{
 use crate::shared::{Confirm, Shared};
 use crate::text::TextSelection;
 use crate::theme::{self, Tokens};
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// What a menu entry does with the message it is for.
 type Run = Rc<dyn Fn(&Rc<Shared>, &Info, &mut Window, &mut App)>;
@@ -326,7 +327,7 @@ fn picker(
             .rounded_full()
             .cursor_pointer()
             .hover(move |s| s.bg(t.pressed))
-            .aria_label(format!("React with {emoji}"))
+            .speaks(Role::Button, format!("React with {emoji}"))
             .text_size(px(theme::BODY * theme::HEADING))
             .child(SharedString::from(emoji.to_owned()))
     };
@@ -352,7 +353,7 @@ fn picker(
                     .rounded_full()
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.pressed))
-                    .aria_label("More emoji")
+                    .speaks(Role::Button, "More emoji")
                     .child(icon("plus").size(px(theme::ICON)))
                     .on_click(move |_, _, cx| {
                         more.update(cx, |all, cx| {
@@ -433,6 +434,7 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
             .small()
             .icon(icon(name))
             .tooltip(label)
+            .debug_selector(|| label.into())
     };
     let delete = {
         let shared = shared.clone();

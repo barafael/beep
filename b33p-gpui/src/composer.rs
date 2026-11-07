@@ -9,6 +9,7 @@ use std::rc::Rc;
 use b33p_core::state::Update;
 use b33p_core::{ConversationId, GroupEdit, RequestResponse, Trust};
 use b33p_platform::desktop::{Pick, ask_paste, ask_pick};
+use gpui_kit::Role;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -24,7 +25,7 @@ use crate::emoji::{self, EmojiPicker};
 use crate::shared::{Confirm, Shared};
 use crate::stickers::{self, StickerPicker};
 use crate::theme::{self, Tokens};
-use crate::widgets::{icon, icon_button};
+use crate::widgets::{Speaks as _, icon, icon_button};
 
 /// What floats up from the composer's buttons, if anything.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,6 +135,19 @@ impl ComposerView {
         fill(&self.input, text, window, cx);
     }
 
+    /// What is written in the field.
+    pub fn text(&self, cx: &App) -> String {
+        self.input.read(cx).value().to_string()
+    }
+
+    /// Selects the bytes `range` of the field's text (the caret, if it is empty), as the
+    /// pointer would.
+    #[cfg(test)]
+    pub fn select(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |input, cx| input.set_selected_range(range, cx));
+    }
+
     /// Puts the caret in the field.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
@@ -141,7 +155,7 @@ impl ComposerView {
 
     /// Puts `text` where the caret is, in place of what is selected, and the caret after it,
     /// as an emoji from the picker is.
-    fn insert(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn insert(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_owned();
         self.input
             .update(cx, |input, cx| input.replace(text, window, cx));
@@ -512,15 +526,18 @@ impl ComposerView {
                 vec![
                     Button::new("request-block")
                         .label("Block…")
+                        .debug_selector(|| "Block…".into())
                         .on_click(answer(RequestResponse::Block))
                         .into_any_element(),
                     Button::new("request-delete")
                         .label("Delete…")
+                        .debug_selector(|| "Delete…".into())
                         .on_click(answer(RequestResponse::Delete))
                         .into_any_element(),
                     Button::new("request-accept")
                         .primary()
                         .label("Accept")
+                        .debug_selector(|| "Accept".into())
                         .on_click(answer(RequestResponse::Accept))
                         .into_any_element(),
                 ],
@@ -541,11 +558,13 @@ impl ComposerView {
                 vec![
                     Button::new("invitation-decline")
                         .label("Decline")
+                        .debug_selector(|| "Decline".into())
                         .on_click(respond(|| GroupEdit::DeclineInvitation))
                         .into_any_element(),
                     Button::new("invitation-accept")
                         .primary()
                         .label("Accept")
+                        .debug_selector(|| "Accept".into())
                         .on_click(respond(|| GroupEdit::AcceptInvitation))
                         .into_any_element(),
                 ],
@@ -561,6 +580,7 @@ impl ComposerView {
                 vec![
                     Button::new("take-request-back")
                         .label("Take request back")
+                        .debug_selector(|| "Take request back".into())
                         .on_click(move |_, _, cx| {
                             shared.command(cx, |chat| {
                                 chat.edit_group(&id, GroupEdit::CancelJoinRequest)
@@ -588,10 +608,12 @@ impl ComposerView {
                 vec![
                     Button::new("show-safety-number")
                         .label("Show safety number")
+                        .debug_selector(|| "Show safety number".into())
                         .on_click(move |_, _, cx| details.command(cx, |chat| chat.open_details()))
                         .into_any_element(),
                     Button::new("continue-unverified")
                         .label("Continue")
+                        .debug_selector(|| "Continue".into())
                         .on_click(move |_, _, cx| {
                             keep.command(cx, |chat| chat.confirm_safety_number(&id))
                         })
@@ -609,6 +631,7 @@ impl ComposerView {
                 vec![
                     Button::new("unblock")
                         .label("Unblock")
+                        .debug_selector(|| "Unblock".into())
                         .on_click(move |_, _, cx| {
                             shared.chat_action(cx, &id, |chat, id| chat.block(id, false))
                         })
@@ -640,7 +663,7 @@ impl ComposerView {
                     .items_center()
                     .rounded(px(theme::RADIUS_S))
                     .cursor_pointer()
-                    .aria_label(format!("Mention {name}"))
+                    .speaks(Role::Button, format!("Mention {name}"))
                     .when(index == at, |row| row.bg(t.selected))
                     .hover(|row| row.bg(t.pressed))
                     .on_click(cx.listener(move |this, _, window, cx| {

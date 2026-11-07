@@ -11,14 +11,14 @@ use b33p_core::{
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, FontWeight, MouseButton, SharedString, div, px};
+use gpui_kit::{AnyElement, App, FontWeight, MouseButton, Role, SharedString, div, px};
 
 use crate::attachments::{self, Env};
 use crate::message_menu::{self, Info};
 use crate::shared::Shared;
 use crate::text::{self, Look, RichText, Target};
 use crate::theme::{self, Tokens};
-use crate::widgets::{avatar, avatar_color, icon};
+use crate::widgets::{Speaks as _, avatar, avatar_color, icon};
 
 /// The row of message `index` of the open chat.
 pub fn row(index: usize, shared: &Rc<Shared>, cx: &mut App) -> AnyElement {
@@ -624,6 +624,7 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
             row.child(
                 div()
                     .id(SharedString::from(format!("retry-{index}")))
+                    .debug_selector(|| format!("Not sent {index}"))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -634,7 +635,7 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
                     .text_color(t.on_accent)
                     .when(can_send_again, |pill| {
                         pill.cursor_pointer()
-                            .aria_label("Send again")
+                            .speaks_as(Role::Button, "Send again", format!("Send again {index}"))
                             .on_click(move |_, _, cx| message_menu::retry(&shared, index, cx))
                             .child(icon("rotate-cw").size(px(11.)))
                     })

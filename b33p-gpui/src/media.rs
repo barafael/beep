@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use b33p_core::state::{self, AttachmentState, SaveState};
 use b33p_core::{Attachment, AttachmentKind};
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
@@ -17,7 +18,7 @@ use gpui_kit::{
 use crate::panel;
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// The tiles are about this wide, stretched to fill a row.
 const TILE: f32 = 110.;
@@ -307,7 +308,10 @@ fn tile(
         .overflow_hidden()
         .bg(t.surface_raised)
         .cursor_pointer()
-        .aria_label(if video { "Play video" } else { "Open picture" })
+        .speaks(
+            Role::Button,
+            if video { "Play video" } else { "Open picture" },
+        )
         .on_click(move |_, _, cx| shared.command(cx, |chat| chat.open_attachment(&id)))
         .children(placeholder.map(|blurred| {
             img(blurred)
@@ -476,6 +480,7 @@ fn file_row(
                         Button::new(("media-open", index))
                             .small()
                             .label("Open")
+                            .debug_selector(|| "Open".into())
                             .on_click(move |_, _, cx| {
                                 open_shared.command(cx, |chat| chat.open_attachment(&open_id))
                             }),
@@ -486,6 +491,7 @@ fn file_row(
                         Button::new(("media-save", index))
                             .small()
                             .label("Save")
+                            .debug_selector(|| "Save".into())
                             .on_click(move |_, _, cx| {
                                 save_shared.act(cx, |chat| {
                                     (chat.save_attachment(&save_id), state::Update::default())
@@ -521,7 +527,7 @@ fn link_row(
         .cursor_pointer()
         .hover(|s| s.bg(t.hover))
         .active(|s| s.bg(t.pressed))
-        .aria_label(format!("Open link {url}"))
+        .speaks(Role::Link, format!("Open link {url}"))
         .on_click(move |_, _, cx| open_link(&shared, &open, cx))
         .child(icon("link").size(px(theme::ICON)))
         .child(

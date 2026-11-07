@@ -41,6 +41,9 @@ impl AppView {
         let conversation = cx.new(|cx| ConversationView::new(shared.clone(), window, cx));
         let overlays = cx.new(|_| Overlays::new(shared.clone()));
         let focus = cx.focus_handle();
+        // Where the shortcuts start from: with nothing focused, a key goes to no element that
+        // handles it, and Ctrl+K would do nothing until the first click.
+        focus.focus(window, cx);
         // The window's own state, for what the state needs to know about it.
         cx.observe_window_activation(window, |this, window, cx| {
             this.shared.ui.borrow_mut().window_active = window.is_window_active();
@@ -229,7 +232,12 @@ impl AppView {
                 .bg(t.danger)
                 .text_color(t.on_accent)
                 .child(icon("circle-alert").size(px(theme::ICON)))
-                .child(div().flex_1().child(message))
+                .child(
+                    div()
+                        .flex_1()
+                        .debug_selector(|| "The error".into())
+                        .child(message),
+                )
                 .when(can_retry, |row| {
                     row.child(
                         Button::new("retry-error")
@@ -237,17 +245,18 @@ impl AppView {
                             .small()
                             .icon(icon("rotate-cw"))
                             .label("Try again")
+                            .debug_selector(|| "Try again".into())
                             .on_click(move |_, _, cx| {
                                 retry_shared.command(cx, |chat| chat.retry_error())
                             }),
                     )
                 })
-                .child(icon_button(
-                    "dismiss-error",
-                    "x",
-                    "Dismiss",
-                    move |_, _, cx| shared.edit(cx, |chat| chat.dismiss_error()),
-                ))
+                .child(
+                    icon_button("dismiss-error", "x", "Dismiss", move |_, _, cx| {
+                        shared.edit(cx, |chat| chat.dismiss_error())
+                    })
+                    .debug_selector(|| "Dismiss".into()),
+                )
                 .into_any_element(),
         )
     }

@@ -141,6 +141,7 @@ impl Render for JoinView {
                     .child(
                         Button::new("look-up")
                             .label("Look up")
+                            .debug_selector(|| "Look up".into())
                             .disabled(busy || blank)
                             .on_click(cx.listener(|this, _, _, cx| this.look_up(cx))),
                     ),
@@ -197,10 +198,15 @@ impl Render for JoinView {
             }))
             .child(
                 dialog::buttons()
-                    .child(Button::new("join-cancel").label("Cancel").on_click({
-                        let shared = shared.clone();
-                        move |_, _, cx| shared.edit(cx, |chat| chat.close_join())
-                    }))
+                    .child(
+                        Button::new("join-cancel")
+                            .label("Cancel")
+                            .debug_selector(|| "Cancel".into())
+                            .on_click({
+                                let shared = shared.clone();
+                                move |_, _, cx| shared.edit(cx, |chat| chat.close_join())
+                            }),
+                    )
                     .child(
                         Button::new("join")
                             .primary()

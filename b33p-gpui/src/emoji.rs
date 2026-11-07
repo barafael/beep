@@ -4,6 +4,7 @@
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use gpui_kit::Role;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -13,7 +14,7 @@ use gpui_kit::{
 
 use crate::shared::Shared;
 use crate::theme;
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// Results shown for a search at most: more don't fit on a screen anyway.
 const FOUND: usize = 120;
@@ -219,7 +220,7 @@ impl Render for EmojiPicker {
                 .justify_center()
                 .rounded(px(theme::RADIUS_S))
                 .cursor_pointer()
-                .aria_label(label)
+                .speaks(Role::Tab, label)
                 .when(selected, |tab| tab.bg(t.selected))
                 .hover(|tab| tab.bg(t.hover))
         };
@@ -279,7 +280,7 @@ impl Render for EmojiPicker {
                                             .rounded(px(theme::RADIUS_S))
                                             .cursor_pointer()
                                             .text_size(px(theme::BODY * theme::EMOJI))
-                                            .aria_label(emoji.clone())
+                                            .speaks(Role::Button, emoji.clone())
                                             .hover(|cell| cell.bg(t.hover))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.pick(&picked, cx)

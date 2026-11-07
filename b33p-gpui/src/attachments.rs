@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use b33p_core::state::{self, AttachmentState, SaveState};
 use b33p_core::{Attachment, AttachmentContent, AttachmentId, AttachmentKind};
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::*;
@@ -18,7 +19,7 @@ use gpui_kit::{
 use crate::images::{Drawn, Images};
 use crate::shared::Shared;
 use crate::theme::{self, Tokens};
-use crate::widgets::icon;
+use crate::widgets::{Speaks as _, icon};
 
 /// What to show of an attachment, from what the state knows of it.
 pub struct AttachmentItem {
@@ -193,7 +194,7 @@ fn action(
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(ink.opacity(theme::SECONDARY))
         .hover(move |s| s.text_color(ink))
-        .aria_label(format!("{text} {label}"))
+        .speaks(Role::Button, format!("{text} {label}"))
         .on_click(move |_, window, cx| run(window, cx))
         .child(text)
         .into_any_element()
@@ -310,16 +311,15 @@ pub fn view(
                 "Download again"
             };
             let (shared, id) = (shared.clone(), item.id.clone());
-            frame = frame
-                .cursor_pointer()
-                .aria_label(label)
-                .on_click(move |_, window, cx| {
+            frame = frame.cursor_pointer().speaks(Role::Button, label).on_click(
+                move |_, window, cx| {
                     if can_open {
                         open_it(window, cx);
                     } else {
                         fetch(&shared, &id, cx);
                     }
-                });
+                },
+            );
         }
         column = column.child(frame);
     }
@@ -465,7 +465,7 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
                 .cursor_pointer()
                 .bg(ink.opacity(0.1))
                 .hover(move |s| s.bg(ink.opacity(0.2)))
-                .aria_label(if playing { "Pause" } else { "Play" })
+                .speaks(Role::Button, if playing { "Pause" } else { "Play" })
                 .on_click({
                     let (shared, id) = (shared.clone(), item.id.clone());
                     move |_, _, cx| shared.toggle_playback(id.clone(), cx)
