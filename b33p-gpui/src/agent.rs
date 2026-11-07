@@ -5,7 +5,7 @@
 //! doesn't carry it; and only on Unix so far.
 //!
 //! It listens on the path in `B33P_AGENT_SOCKET`, if that is set; otherwise it does nothing.
-//! The protocol is one JSON document per line (a client lives in `tests/harness.rs`):
+//! The protocol is one JSON document per line (a client lives in `e2e_tests.rs`):
 //!
 //! → `{"id":1,"method":"ping"}`
 //! ← `{"id":1,"result":{"version":"…","mock":true}}`
