@@ -34,19 +34,19 @@ pub enum AutostartError {
     #[error("failed to open the registry key {key}")]
     OpenKey {
         key: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(windows)]
     #[error("failed to set the registry value {value}")]
     SetValue {
         value: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(windows)]
     #[error("failed to remove the registry value {value}")]
     RemoveValue {
         value: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     #[error("starting with the system isn't supported here")]
