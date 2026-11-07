@@ -218,5 +218,5 @@ Frame pacing was not compared again: under load both clients reached only about 
 second with logging on, equally. The earlier quiet run had both at 62 frames a second.
 
 Sizes: Slint is 7.7k lines of Rust plus 6.6k lines of `.slint` and 64 tests; GPUI is 20k lines of
-Rust (about 3.5k of them tests) and 115 tests, all headless. GPUI also has features Slint does not
+Rust (tests included) and 115 tests, all headless. GPUI also has features Slint does not
 (the receipts dialog, readers' avatars).
