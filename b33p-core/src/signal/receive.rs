@@ -1071,6 +1071,21 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
         warn!(error = %crate::scrub::chain(&error), "failed to remember a receipt");
     }
+    // And whose it was, for who has read what.
+    let recipient = sender.service_id_string();
+    if let Err(error) = ctx
+        .tables
+        .record_receipts(&found, &recipient, delivery, now_millis())
+        .await
+    {
+        warn!(error = %crate::scrub::chain(&error), "failed to remember whose receipt it was");
+    }
+    if delivery == Delivery::Read {
+        let groups: HashSet<&ConversationId> = found.iter().map(|(c, _)| c).collect();
+        for conversation in groups {
+            super::receipts::tell_readers(ctx, conversation).await;
+        }
+    }
     let mut by_conversation: HashMap<ConversationId, Vec<u64>> = HashMap::new();
     for (conversation, timestamp) in found {
         by_conversation

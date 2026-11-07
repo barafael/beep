@@ -445,9 +445,11 @@ async fn handle_command(
                 reactions,
                 older,
             });
-            // With the chat's newest page, what is pinned in it.
+            // With the chat's newest page, what is pinned in it and, in a group, who has
+            // read how far.
             if before.is_none() {
                 super::pins::tell_pins(manager, ctx, &id).await;
+                super::receipts::tell_readers(ctx, &id).await;
             }
         }
         Command::React {
@@ -824,6 +826,17 @@ async fn handle_command(
         Command::FindNumber { number, then } => {
             let conversation = find_number(manager, ctx, &number).await?;
             events.send(Event::Found { conversation, then });
+        }
+        Command::LoadMessageInfo {
+            conversation,
+            target,
+        } => {
+            let info = super::receipts::message_info(manager, ctx, &conversation, &target).await;
+            events.send(Event::MessageInfo {
+                conversation,
+                target,
+                info,
+            });
         }
         Command::LoadDetails(conversation) => {
             let Ok(thread) = thread(&conversation) else {

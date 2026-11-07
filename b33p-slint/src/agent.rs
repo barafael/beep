@@ -38,9 +38,9 @@ use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
     LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent,
-    QuoteSnapshot, ReactionSnapshot, Reply, Request, Saved, ScreenSnapshot, SearchResultSnapshot,
-    SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot, StickersSnapshot,
-    StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved, ScreenSnapshot,
+    SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot,
+    StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -561,6 +561,13 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
             chat.toggle_group_member(&ConversationId(conversation));
             (None, Update::default())
         }),
+        Action::OpenMessageInfo { index } => {
+            shared.act(|chat| (chat.open_message_info(index as usize), Update::default()))
+        }
+        Action::CloseMessageInfo => shared.act(|chat| {
+            chat.close_message_info();
+            (None, Update::default())
+        }),
         Action::OpenChatSearch => shared.act(|chat| {
             chat.open_chat_search();
             (None, Update::default())
@@ -1022,6 +1029,19 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                         .collect()
                 }),
             }),
+        message_info: chat.message_info().map(|(_, info)| {
+            info.map(|info| {
+                info.recipients
+                    .iter()
+                    .map(|receipt| ReceiptSnapshot {
+                        service_id: receipt.person.service_id.clone(),
+                        name: receipt.person.name.clone(),
+                        delivered_at: receipt.delivered_at,
+                        read_at: receipt.read_at,
+                    })
+                    .collect()
+            })
+        }),
         folders: chat
             .folders()
             .iter()

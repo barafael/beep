@@ -55,6 +55,29 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         Ok(delivered(b33p, b33p_text)?)
     });
 
+    // Kept as the peer's: the message's info names who received it, and when.
+    checks.record("the delivery receipt is kept as the peer's", || {
+        let index = outgoing_index(b33p, b33p_text)?;
+        b33p.act(Action::OpenMessageInfo { index })?;
+        let kept = b33p.wait_for("the message's info", PATIENCE, |snapshot| {
+            let recipients = snapshot.message_info.clone()??;
+            recipients
+                .iter()
+                .any(|receipt| receipt.delivered_at.is_some())
+                .then_some(recipients)
+        });
+        b33p.act(Action::CloseMessageInfo)?;
+        let recipients = kept?;
+        if recipients.len() == 1 {
+            Ok(())
+        } else {
+            Err(Failure::from(format!(
+                "the info names {} recipients, not the peer alone",
+                recipients.len()
+            )))
+        }
+    });
+
     // Read receipts are checked in `storage`.
 
     // TESTPLAN.md §1.4 and §1.6, b33p to Desktop. Desktop's selectors as its own mock tests use

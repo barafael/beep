@@ -13,7 +13,7 @@ use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Details, Event, Failure, HistoryTransfer, Mention,
-    MessageRef, Password, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
+    MessageInfo, MessageRef, Password, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
     RequestResponse, StyleRange, SyncStage, Unsent, apply_reaction, format, now_millis,
 };
 
@@ -26,6 +26,7 @@ mod list;
 mod panels;
 mod pins;
 mod reading;
+mod receipts;
 mod selection;
 mod session;
 mod text;
@@ -410,6 +411,11 @@ pub struct ChatState {
     jump: Option<(usize, u64)>,
     /// The search result shown, marked in the chat.
     highlight: Option<MessageRef>,
+    /// The info of one of the open chat's messages, while shown: `None` inside while gathered.
+    message_info: Option<(ConversationId, MessageRef, Option<MessageInfo>)>,
+    /// In each group, the newest of our messages each member has read (sent time, by service
+    /// id).
+    readers: HashMap<ConversationId, HashMap<String, u64>>,
     /// What is pinned in each conversation, oldest pin first, as the backend said last.
     pins: HashMap<ConversationId, Vec<PinnedMessage>>,
     /// The selected conversation's media, files and links, while shown: `None` inside while

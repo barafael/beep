@@ -238,6 +238,16 @@ const SCHEMA: &[&str] = &[
     )",
     // Receipts name only the time.
     "CREATE INDEX IF NOT EXISTS b33p_delivery_ts ON b33p_delivery (ts)",
+    // Each recipient's receipts for our messages: when each said it was delivered and read
+    // (ms, by our clock). `b33p_delivery` keeps the message's best state; this, who.
+    "CREATE TABLE IF NOT EXISTS b33p_receipt (
+        conversation TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        recipient TEXT NOT NULL,
+        delivered_at INTEGER,
+        read_at INTEGER,
+        PRIMARY KEY (conversation, ts, recipient)
+    )",
     "CREATE TABLE IF NOT EXISTS b33p_edit (
         conversation TEXT NOT NULL,
         author TEXT NOT NULL,
@@ -940,6 +950,79 @@ impl LocalStore {
         tx.commit().await
     }
 
+    /// Notes `recipient`'s receipt for each of `messages`, `delivery` at `at`: the first time
+    /// each says delivered and read counts. A read receipt also means delivered.
+    pub(crate) async fn record_receipts(
+        &self,
+        messages: &[(ConversationId, u64)],
+        recipient: &str,
+        delivery: Delivery,
+        at: u64,
+    ) -> Result<(), sqlx::Error> {
+        let read = (delivery == Delivery::Read).then_some(at as i64);
+        let mut tx = self.begin_write().await?;
+        for (conversation, ts) in messages {
+            sqlx::query(
+                "INSERT INTO b33p_receipt (conversation, ts, recipient, delivered_at, read_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT (conversation, ts, recipient) DO UPDATE SET
+                    delivered_at = coalesce(delivered_at, excluded.delivered_at),
+                    read_at = coalesce(read_at, excluded.read_at)",
+            )
+            .bind(&conversation.0)
+            .bind(*ts as i64)
+            .bind(recipient)
+            .bind(at as i64)
+            .bind(read)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Who said what of our message sent at `ts` in `conversation`: each recipient's service
+    /// id, and when they said it was delivered and read.
+    pub(crate) async fn receipts(
+        &self,
+        conversation: &ConversationId,
+        ts: u64,
+    ) -> Result<Vec<(String, Option<u64>, Option<u64>)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT recipient, delivered_at, read_at FROM b33p_receipt
+             WHERE conversation = ? AND ts = ? ORDER BY recipient",
+        )
+        .bind(&conversation.0)
+        .bind(ts as i64)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let at = |i: usize| row.get::<Option<i64>, _>(i).map(|at| at as u64);
+                (row.get(0), at(1), at(2))
+            })
+            .collect())
+    }
+
+    /// The newest of our messages each recipient has read in `conversation` (its sent time),
+    /// by service id.
+    pub(crate) async fn newest_read(
+        &self,
+        conversation: &ConversationId,
+    ) -> Result<HashMap<String, u64>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT recipient, max(ts) FROM b33p_receipt
+             WHERE conversation = ? AND read_at IS NOT NULL GROUP BY recipient",
+        )
+        .bind(&conversation.0)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| (row.get(0), row.get::<i64, _>(1) as u64))
+            .collect())
+    }
+
     /// Delivery states of our messages in a conversation sent in `range`, by timestamp.
     pub(crate) async fn deliveries(
         &self,
@@ -1535,6 +1618,8 @@ impl LocalStore {
                 "DELETE FROM b33p_expiry WHERE conversation = ? AND author = ? AND ts = ?",
                 "DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?",
                 "DELETE FROM b33p_deleted WHERE conversation = ? AND author = ? AND ts = ?",
+                // Only ours have receipts, kept by time alone (`?2`, the author, unused).
+                "DELETE FROM b33p_receipt WHERE conversation = ?1 AND ts = ?3",
                 "DELETE FROM b33p_pinned_message
                  WHERE conversation = ? AND author = ? AND ts = ?",
             ] {
@@ -2310,6 +2395,62 @@ mod tests {
             let kept = local.stories(15).await.unwrap();
             assert_eq!(kept.len(), 1);
             assert!(kept[0].viewed && kept[0].pointer.is_none());
+        });
+    }
+
+    /// Receipts per recipient: the first delivered and read count, a read means delivered, and
+    /// the newest read per recipient; forgotten with their message.
+    #[test]
+    fn receipts_are_kept_per_recipient() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let local = open(&dir).await;
+            let group = ConversationId("g:club".into());
+            let sent = |ts: u64| vec![(group.clone(), ts)];
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Delivered, 100)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Delivered, 150)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Read, 200)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "bob", Delivery::Read, 300)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(20), "ann", Delivery::Read, 400)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(20), "cid", Delivery::Delivered, 500)
+                .await
+                .unwrap();
+            assert_eq!(
+                local.receipts(&group, 10).await.unwrap(),
+                [
+                    ("ann".to_owned(), Some(100), Some(200)),
+                    ("bob".to_owned(), Some(300), Some(300)),
+                ]
+            );
+            let newest = local.newest_read(&group).await.unwrap();
+            assert_eq!(newest.get("ann"), Some(&20));
+            assert_eq!(newest.get("bob"), Some(&10));
+            assert_eq!(newest.get("cid"), None, "delivered isn't read");
+            local
+                .forget(&[(group.clone(), reference("me", 20))])
+                .await
+                .unwrap();
+            assert!(local.receipts(&group, 20).await.unwrap().is_empty());
+            assert_eq!(
+                local.newest_read(&group).await.unwrap().get("ann"),
+                Some(&10)
+            );
         });
     }
 

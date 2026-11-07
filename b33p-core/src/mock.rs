@@ -728,6 +728,33 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 }
                 events.send(Event::GroupJoined(id));
             }
+            // Everyone got it a minute ago, and Alice read it.
+            Ok(Command::LoadMessageInfo {
+                conversation,
+                target,
+            }) => {
+                let at = now_millis();
+                let receipt = |id: &str, name: &str, read: bool| crate::Receipt {
+                    person: Person {
+                        service_id: id.into(),
+                        name: name.into(),
+                    },
+                    delivered_at: Some(at - 60_000),
+                    read_at: read.then_some(at - 30_000),
+                };
+                let recipients = match chat_name(&conversation) {
+                    "rust" => vec![
+                        receipt("alice", "Alice", true),
+                        receipt("bob", "Bob", false),
+                    ],
+                    name => vec![receipt(name, name, name == "alice")],
+                };
+                events.send(Event::MessageInfo {
+                    conversation,
+                    target,
+                    info: crate::MessageInfo { recipients },
+                });
+            }
             Ok(Command::LoadDetails(conversation)) => {
                 let details = match chat_name(&conversation) {
                     "rust" => crate::Details {

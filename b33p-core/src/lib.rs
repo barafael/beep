@@ -45,6 +45,7 @@ mod wire;
 pub use error::{Chain, Classified, Error, ErrorKind};
 pub use qr::QrMatrix;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -201,6 +202,22 @@ pub struct GroupPreview {
     pub approval: bool,
     /// We asked to join already, and wait.
     pub requested: bool,
+}
+
+/// Who one of our messages went to, and what each said of it, for its info; see
+/// [`Command::LoadMessageInfo`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageInfo {
+    pub recipients: Vec<Receipt>,
+}
+
+/// One recipient's receipts for one of our messages: when they said it was delivered and read
+/// (ms since the epoch, by our clock); `None` until they did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Receipt {
+    pub person: Person,
+    pub delivered_at: Option<u64>,
+    pub read_at: Option<u64>,
 }
 
 /// More about a conversation, for its details page; see [`Command::LoadDetails`].
@@ -885,6 +902,18 @@ pub enum Event {
         conversation: ConversationId,
         trust: Trust,
     },
+    /// Answers [`Command::LoadMessageInfo`].
+    MessageInfo {
+        conversation: ConversationId,
+        target: MessageRef,
+        info: MessageInfo,
+    },
+    /// The newest of our messages each member of a group has read (its sent time), by service
+    /// id, replacing what was known: with the group's newest page, and as receipts come.
+    Readers {
+        conversation: ConversationId,
+        newest: HashMap<String, u64>,
+    },
     /// Answers [`Command::LoadDetails`].
     Details {
         conversation: ConversationId,
@@ -1055,6 +1084,12 @@ pub enum Command {
     },
     /// Gathers what the details page shows; see [`Event::Details`].
     LoadDetails(ConversationId),
+    /// Gathers who one of our messages went to and what each said of it; see
+    /// [`Event::MessageInfo`].
+    LoadMessageInfo {
+        conversation: ConversationId,
+        target: MessageRef,
+    },
     /// Finds who a phone number (as typed: international, or in our own country's way) belongs
     /// to on Signal, makes a chat with them, and answers with [`Event::Found`]; an error if
     /// nobody has it.
