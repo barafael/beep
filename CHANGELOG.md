@@ -52,6 +52,8 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- The names offered for an @mention follow a name typed through an input method (Hangul,
+  kana, pinyin) while it is composed, not a syllable behind.
 - Long messages reach phones: past 2000 characters the text goes out as Signal's apps send
   it, the first part inline and the whole as a text attachment. A phone dropped a message
   with more inline as invalid, and its sync of your own long message too.
