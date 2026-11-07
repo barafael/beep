@@ -1241,6 +1241,7 @@ The box itself:
 | tour, optimized, 256 MiB, each step 5 times | `group-notice-once` | 181 of 181; restart 0.74 s, peak 66.5 MiB |
 | default phases and the tour | `actors-owner`, before the notice fix | 256 of 256 |
 | tour, seed 1794003665 | `actors-owner` on the notice fix | 79 of 79 |
+| default phases and the tour, capture and screenshots | `actors-owner` on the notice fix, the whole stack | 256 of 256 |
 
 A harness snapshot goes from 4.5 ms to 40 ms over the soak as the open chat fills: harness only, but
 its cost is that of walking the shown messages, which the window does too. Worth a look with a chat of

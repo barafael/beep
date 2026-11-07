@@ -75,7 +75,6 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `reconcile-upstream` 280aa2f (#76: forks and PR branches reconciled with upstream) | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | `reconcile-upstream` 280aa2f, `--optimized` | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `forks-454` ac682da (#82: forks past presage#454, Slint #14449 as reviewed, no automatic link previews, join requests told, open-link joins) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
-
 | `forks-1106` (Slint 1.20, upstream merged into presage and libsignal-service) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 
 The run of ac682da also ran stress-interrupt, 1/1, beside an instance's `core` and the tour (#84).
