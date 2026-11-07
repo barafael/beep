@@ -39,6 +39,8 @@ The release workflow takes a version's notes from here (the section headed with 
   first, in the same dialog as unlinking.
 - Failures say whether trying again may help: the error offers **Try again** when it may;
   messages Signal refused and attachments gone from the server aren't offered again.
+- A long message (past 800 characters) shows its first ten lines and **Read more**, as in
+  Signal's apps, instead of a screenful of one message to scroll past.
 
 ### Looks
 
