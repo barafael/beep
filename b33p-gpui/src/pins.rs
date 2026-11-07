@@ -153,7 +153,7 @@ impl Render for PinBar {
                                     .w(px(3.))
                                     .h(px(height))
                                     .rounded_full()
-                                    .bg(if at == shown { t.accent } else { t.divider })
+                                    .bg(if at == shown { t.accent } else { t.text_faint })
                             },
                         )))
                     })
@@ -195,5 +195,52 @@ impl Render for PinBar {
             )
             .child(divider(&t))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use b33p_core::{Style, StyleRange};
+
+    #[test]
+    fn the_bar_starts_at_the_newest_and_goes_back_round() {
+        // Three pins, oldest first: the newest is index 2, a click turns to 1, then 0, then 2.
+        let shown: Vec<_> = (0..5).map(|back| shown_pin(3, back)).collect();
+        assert_eq!(shown, [2, 1, 0, 2, 1]);
+        assert_eq!(shown_pin(1, 7), 0);
+        assert_eq!(shown_pin(0, 0), 0, "no pins is not a panic");
+    }
+
+    #[test]
+    fn a_pin_says_its_first_line_without_spoilers() {
+        let message = |body: &str| ChatMessage {
+            body: body.into(),
+            ..ChatMessage::default()
+        };
+        assert_eq!(pin_text(&message("first\nsecond")), "first");
+        // A spoiler isn't given away in the bar.
+        let secret = ChatMessage {
+            body: "the butler did it".into(),
+            styles: vec![StyleRange {
+                start: 4,
+                end: 10,
+                style: Style::Spoiler,
+            }],
+            ..ChatMessage::default()
+        };
+        assert_eq!(pin_text(&secret), "the ▒▒▒▒▒▒ did it");
+    }
+
+    #[test]
+    fn the_bar_says_which_pin_it_is_to_a_screen_reader() {
+        assert_eq!(
+            bar_label(1, 0, "Ann", "hello"),
+            "Pinned message: Ann: hello"
+        );
+        assert_eq!(
+            bar_label(3, 1, "Ann", "hello"),
+            "Pinned message 2 of 3: Ann: hello"
+        );
     }
 }
