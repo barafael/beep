@@ -70,6 +70,12 @@ Each is a test before it is a change: if b33p doesn't have the bug, record that 
 
 ## Phase 1: the conversation's feel (each change on its own)
 
+**Progress (2026-11-07):** 1.1 is #136 (desktop phase 28/28 with a new check). 1.2 waits for
+the b33p-gpui session's Slint performance pass, which rewrites the row builders: it adds
+`sent-minute` (minutes since the epoch, i32) to `MessageItem` and `ConversationItem`; once
+that is on `main`, 1.2 is a `Clock` global ticked once a minute and the arithmetic in the
+`Text`s, with no row rebuilt. 2.1 (pins) is on branch `message-pins`, stacked on #136.
+
 | # | Change | sigwin | b33p today | How |
 |---|---|---|---|---|
 | 1.1 | **Click a quote to jump to the quoted message**, loading older history if needed | `992dc98`, `a7e3e42` | Quote is not clickable (`bubble.slint:324`) | A `TouchArea` on the quote and a core action that reuses search's `pending_jump` / `continue_jump` (`state/panels.rs:446`). A harness action, a ui test, and a testbox check with a Desktop quote of an old message |
