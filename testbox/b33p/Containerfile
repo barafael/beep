@@ -2,6 +2,9 @@
 # glibc 2.36, Qt 6.4: .github/workflows/ci.yml's image, .devcontainer/install-deps.sh), run in
 # Debian 13 as the box's other images, whose Qt 6.8 runs what Qt 6.4 built. The build context is
 # the repository; .containerignore leaves out build output and .git.
+#
+# `--build-arg UI=gpui` (`cargo testbox --ui gpui`) builds b33p-gpui, the window drawn with GPUI,
+# in place of b33p-slint: either way the binary is /usr/local/bin/b33p, which the box runs.
 
 # The server's image, which `cargo testbox` builds first, of its box (`--build-arg SERVER`).
 ARG SERVER=localhost/b33p-testbox-server
@@ -20,6 +23,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # `dev` as the checks' own builds, or `testbox` (`cargo testbox up --optimized`): optimized as b33p
 # ships, with the debug assertions `test-servers` needs (Cargo.toml).
 ARG PROFILE=dev
+# `slint` or `gpui`: which window b33p is.
+ARG UI=slint
 # The target cache is the host's, shared by every worktree's and every box's builds: locked, so
 # that one build at a time writes it and copies out what it built; the sources touched first, as
 # cargo goes by modification times, and another tree's later build would look newer than these.
@@ -28,9 +33,9 @@ RUN --network=none \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target,sharing=locked \
     find . -path ./target -prune -o -type f -exec touch {} + \
-    && cargo build --offline --locked --profile "$PROFILE" -p b33p-slint \
+    && cargo build --offline --locked --profile "$PROFILE" -p "b33p-$UI" \
         --features harness,test-servers \
-    && cp "target/$([ "$PROFILE" = dev ] && echo debug || echo "$PROFILE")/b33p" /usr/local/bin/b33p
+    && cp "target/$([ "$PROFILE" = dev ] && echo debug || echo "$PROFILE")/$([ "$UI" = gpui ] && echo b33p-gpui || echo b33p)" /usr/local/bin/b33p
 
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 # What b33p links against, and Qt's Wayland platform plugin (QT_QPA_PLATFORM); cage, wayvnc and
@@ -45,6 +50,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-noto-color-emoji fonts-wqy-microhei cage wayvnc wlr-randr \
     && rm -rf /var/lib/apt/lists/* \
     && rm /usr/bin/Xwayland
+# GPUI draws with Vulkan, and the box has no GPU: Mesa's software one (lavapipe), and the X11
+# libraries its X11 backend loads even where Wayland is what runs.
+ARG UI=slint
+RUN if [ "$UI" = gpui ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 libxkbcommon-x11-0 libxcb1 libxcb-xkb1 libx11-6 \
+            fonts-noto-core \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 COPY --from=build /usr/local/bin/b33p /usr/local/bin/b33p
 COPY --from=server /usr/local/bin/with-display /usr/local/bin/with-display
 ENTRYPOINT ["with-display", "/run/view", "1280x900", "--", "b33p"]

@@ -1,10 +1,14 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+mod scale;
+
+use scale::Scale;
+
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, ConversationKind, Delivery, Error, Event, Events,
     Failure, HistoryTransfer, Inbox, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
-    Style, StyleRange, now_millis,
+    Receipt, Style, StyleRange, now_millis,
 };
 
 /// What the mock backend fails with, said as the real one says it.
@@ -215,16 +219,48 @@ fn session(commands: &Inbox, events: &Events) -> bool {
         }
         events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
     }
-    let conversations = CONVERSATIONS
+    let scale = Scale::get();
+    let added = scale.conversations();
+    let mut conversations: Vec<Conversation> = CONVERSATIONS
         .iter()
         .map(|&(id, title, is_group)| conversation(id, title, is_group))
+        .chain(
+            added
+                .iter()
+                .map(|(id, title, is_group)| conversation(id, title, *is_group)),
+        )
         .collect();
+    if scale.members > 0
+        && let Some(crowd) = conversations.iter_mut().find(|c| c.title == "Big group")
+    {
+        crowd.members = scale::members(scale.members);
+        crowd.subtitle = format!("{} members", scale.members);
+    }
     events.send(Event::Conversations(conversations));
     events.send(Event::Avatar {
         conversation: chat_id("alice"),
         avatar: Some(Arc::new(gradient(96))),
     });
     events.send(Event::Connected);
+    // The backend's catching up with what came while the client was away: a burst of messages
+    // before it says it has synced.
+    if scale.backlog > 0 {
+        let names: Vec<&str> = CONVERSATIONS
+            .iter()
+            .map(|&(id, _, _)| id)
+            .filter(|&id| !matches!(id, "club" | "me" | "stranger" | "dana"))
+            .chain(added.iter().map(|(id, _, _)| id.as_str()))
+            .collect();
+        let now = now_millis();
+        for n in 0..scale.backlog {
+            events.send(Event::Message(scale::backlog_message(
+                n,
+                scale.backlog,
+                &names,
+                now,
+            )));
+        }
+    }
     events.send(Event::Synced);
     events.send(Event::StorageRead);
     // Two stories from Alice (a picture, then text) and one in the group.
@@ -289,18 +325,29 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();
     // Like the real backend: each conversation's newest message, for sorting and previews.
-    for &(id, _, _) in CONVERSATIONS {
+    let ids = CONVERSATIONS
+        .iter()
+        .map(|&(id, _, _)| id)
+        .chain(added.iter().map(|(id, _, _)| id.as_str()));
+    for id in ids {
         if let Some(latest) = history(&chat_id(id), started).pop() {
             events.send(Event::Latest(latest));
         }
     }
+    // With `incoming` set, the wait for a command is as long as the gap between two messages.
+    let gap = if scale.incoming > 0.0 {
+        Duration::from_secs_f32(1.0 / scale.incoming)
+    } else {
+        Duration::from_secs(20)
+    };
+    let mut arrived = 0u64;
 
     // What is pinned in each chat, as the real backend keeps it: the newest three.
     let mut pins: HashMap<ConversationId, Vec<PinnedMessage>> = HashMap::new();
     loop {
         let next = match queued.pop_front() {
             Some(command) => Ok(command),
-            None => commands.recv_timeout(Duration::from_secs(20)),
+            None => commands.recv_timeout(gap),
         };
         match next {
             // The state changes these settings itself; nothing to keep here.
@@ -422,7 +469,9 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                         Ok(AttachmentContent::Audio(tone_wav().into()))
                     }
-                    _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
+                    _ => Ok(AttachmentContent::Picture(Arc::new(gradient(
+                        Scale::get().picture,
+                    )))),
                 };
                 events.send(Event::Attachment {
                     id: attachment.id,
@@ -444,6 +493,20 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             }) => {
                 const PAGE: usize = 60;
                 let mut messages = history(&conversation, started);
+                // In a group, some members have read up to our newest message.
+                let readers: HashMap<String, u64> = if chat_name(&conversation) == "rust" {
+                    messages
+                        .iter()
+                        .rfind(|m| m.outgoing)
+                        .map(|ours| {
+                            ["carol", "dana"]
+                                .map(|member| (member.to_owned(), ours.timestamp))
+                                .into()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    HashMap::new()
+                };
                 messages.retain(|m| before.is_none_or(|before| m.timestamp < before));
                 let page = messages.split_off(messages.len().saturating_sub(PAGE));
                 // More before this page?
@@ -451,11 +514,17 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     .then(|| page.first().map(|m| m.timestamp))
                     .flatten();
                 events.send(Event::History {
-                    conversation,
+                    conversation: conversation.clone(),
                     messages: page,
                     reactions: Vec::new(),
                     older,
                 });
+                if !readers.is_empty() {
+                    events.send(Event::Readers {
+                        conversation,
+                        newest: readers,
+                    });
+                }
             }
             // Nothing to open: mock attachments have no content.
             Ok(Command::OpenAttachment(_)) => {}
@@ -737,7 +806,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 target,
             }) => {
                 let at = now_millis();
-                let receipt = |id: &str, name: &str, read: bool| crate::Receipt {
+                let receipt = |id: &str, name: &str, read: bool| Receipt {
                     person: Person {
                         service_id: id.into(),
                         name: name.into(),
@@ -747,8 +816,13 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 };
                 let recipients = match chat_name(&conversation) {
                     "rust" => vec![
-                        receipt("alice", "Alice", true),
-                        receipt("bob", "Bob", false),
+                        receipt("carol", "Carol", true),
+                        receipt("dana", "Dana", true),
+                        receipt("eve", "Eve", false),
+                        Receipt {
+                            delivered_at: None,
+                            ..receipt("ferris", "Ferris", false)
+                        },
                     ],
                     name => vec![receipt(name, name, name == "alice")],
                 };
@@ -925,10 +999,20 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 )));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                arrived += 1;
+                let (chat, sender, body) = if scale.incoming > 0.0 {
+                    (
+                        scale.incoming_chat(),
+                        "Casey",
+                        format!("incoming message number {arrived}"),
+                    )
+                } else {
+                    ("bob", "Bob", "ping".to_owned())
+                };
                 events.send(Event::Message(message(
-                    "bob",
-                    "Bob",
-                    "ping",
+                    chat,
+                    sender,
+                    &body,
                     now_millis(),
                     false,
                 )));
@@ -1003,6 +1087,9 @@ fn message(
 
 /// The stored history of a mock conversation, relative to `started`.
 fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
+    if let Some(added) = scale::history(chat_name(id), started) {
+        return added;
+    }
     let ago = |minutes: u64| started - minutes * 60_000;
     match chat_name(id) {
         "alice" => vec![
@@ -1021,10 +1108,12 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 true,
             ),
             ChatMessage {
+                // Names the message it quotes, so that a click on it can show that one.
                 quote: Some(Quote {
                     author: "You".into(),
                     text: "Building it right now, in Rust.".into(),
-                    ..Default::default()
+                    author_id: "you".into(),
+                    timestamp: ago(40),
                 }),
                 ..message("alice", "Alice", "Of course you are 😄", ago(39), false)
             },
@@ -1091,13 +1180,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     description:
                         "A language empowering everyone to build reliable and efficient software."
                             .into(),
-                    image: Some(attachment(
+                    image: Some(Box::new(attachment(
                         "preview",
                         AttachmentKind::Image,
                         "image/png",
                         None,
                         (1200, 630),
-                    )),
+                    ))),
                 }),
                 ..message(
                     "alice",
@@ -1245,6 +1334,11 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     (512, 512),
                 )],
                 ..message("rust", "Carol", "", ago(116), false)
+            },
+            // Ours, and read by two of the group: their pictures show under it.
+            ChatMessage {
+                delivery: Delivery::Delivered,
+                ..message("rust", "You", "Slint it is, then.", ago(115), true)
             },
         ],
         _ => Vec::new(),

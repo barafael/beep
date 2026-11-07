@@ -1,0 +1,55 @@
+diff --git a/internal/core/input.rs b/internal/core/input.rs
+index b69791322..753026df8 100644
+--- a/internal/core/input.rs
++++ b/internal/core/input.rs
+@@ -2187,8 +2187,15 @@ fn send_mouse_event_to_item(
+ pub(crate) struct TextCursorBlinker {
+     cursor_visible: Property<bool>,
+     cursor_blink_timer: crate::timers::Timer,
++    /// How many more times the cursor toggles before it settles, visible, until the next
++    /// call of `start`: a blinking cursor that nobody is using keeps the window redrawing.
++    toggles_left: core::cell::Cell<u32>,
+ }
+ 
++/// How long the cursor blinks without being moved or typed with, as in GTK's
++/// `gtk-cursor-blink-timeout`, after which it stays visible.
++const BLINK_TIMEOUT: Duration = Duration::from_secs(10);
++
+ impl TextCursorBlinker {
+     /// Creates a new instance, wrapped in a Pin<Rc<_>> because the boolean property
+     /// the blinker properties uses the property system that requires pinning.
+@@ -2196,6 +2203,7 @@ pub fn new() -> Pin<Rc<Self>> {
+         Rc::pin(Self {
+             cursor_visible: Property::new(true),
+             cursor_blink_timer: Default::default(),
++            toggles_left: Default::default(),
+         })
+     }
+ 
+@@ -2218,6 +2226,8 @@ pub fn set_binding(
+     /// Starts the blinking cursor timer that will toggle the cursor and update all bindings that
+     /// were installed on properties with set_binding call.
+     pub fn start(self: &Pin<Rc<Self>>, ctx: &crate::SlintContext, cycle_duration: Duration) {
++        let half_cycle = (cycle_duration / 2).max(Duration::from_millis(1));
++        self.toggles_left.set((BLINK_TIMEOUT.as_millis() / half_cycle.as_millis()).max(1) as u32);
+         if self.cursor_blink_timer.running() {
+             self.cursor_blink_timer.restart();
+         } else {
+@@ -2229,7 +2239,16 @@ pub fn start(self: &Pin<Rc<Self>>, ctx: &crate::SlintContext, cycle_duration: Du
+                             .cursor_visible()
+                             .apply_pin(blinker.as_ref())
+                             .get();
+-                        blinker.cursor_visible.set(!visible);
++                        let left = blinker.toggles_left.get().saturating_sub(1);
++                        blinker.toggles_left.set(left);
++                        if left == 0 {
++                            // Left visible, and the timer's wakeups and the redraws they ask
++                            // for stop until the cursor is used again.
++                            blinker.cursor_visible.set(true);
++                            blinker.cursor_blink_timer.stop();
++                        } else {
++                            blinker.cursor_visible.set(!visible);
++                        }
+                     }
+                 }
+             };

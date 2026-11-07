@@ -157,7 +157,7 @@ impl Record {
             let screens = pod.screens();
             let displays = screens
                 .iter()
-                .filter(|screen| !matches!(screen, Service::B33p(_)))
+                .filter(|screen| !(matches!(screen, Service::B33p(_)) && pod.ui().draws_to_file()))
                 .map(|&screen| {
                     format!(
                         "{}={}",
@@ -166,10 +166,13 @@ impl Record {
                     )
                 })
                 .collect();
+            // A GPUI b33p can't write its window to a file: its display, which shows only that,
+            // is taken as the other clients' are.
+            let draws_to_file = pod.ui().draws_to_file();
             let b33ps = screens
                 .iter()
                 .filter_map(|&screen| match screen {
-                    Service::B33p(n) => Some(B33pShot {
+                    Service::B33p(n) if draws_to_file => Some(B33pShot {
                         name: screen.name(),
                         socket: pod.run_dir().join(pod::agent_socket(n)),
                         run: pod.run_dir(),

@@ -177,7 +177,7 @@ impl ChatState {
         shown
             .chain(gathered)
             .flat_map(|m| {
-                let preview = m.preview.iter().filter_map(|p| p.image.as_ref());
+                let preview = m.preview.iter().filter_map(|p| p.image.as_deref());
                 m.attachments.iter().chain(preview)
             })
             .find(|a| &a.id == id)

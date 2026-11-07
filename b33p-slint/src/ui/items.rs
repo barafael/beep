@@ -107,6 +107,7 @@ pub(super) fn conversation_item(
             .map(|m| list_time(m.timestamp))
             .unwrap_or_default()
             .into(),
+        sent_minute: view.last_message.map_or(0, |m| sent_minute(m.timestamp)),
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
@@ -159,6 +160,21 @@ pub(super) fn avatar_color(id: &ConversationId) -> Color {
     Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
 }
 
+/// Minutes since the Unix epoch of a timestamp in milliseconds, for the UI to count from.
+fn sent_minute(timestamp: u64) -> i32 {
+    i32::try_from(timestamp / 60_000).unwrap_or(0)
+}
+
+/// A row's list of attachments or reactions. Most rows have none, and an empty `ModelRc` is
+/// free where an empty `VecModel` is two allocations a row (of tens of thousands in a long chat).
+fn nested_model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
+    if items.is_empty() {
+        ModelRc::default()
+    } else {
+        ModelRc::new(VecModel::from(items))
+    }
+}
+
 /// `in_group`: the open chat is a group, so the sender is named.
 pub(super) fn message_item(
     view: &MessageView,
@@ -181,6 +197,7 @@ pub(super) fn message_item(
         selected: view.selected,
         has_body: !view.body.is_empty(),
         time: state::format_clock(m.timestamp).into(),
+        sent_minute: sent_minute(m.timestamp),
         outgoing: m.outgoing,
         show_sender: view.show_sender,
         day: view.day.as_deref().unwrap_or_default().into(),
@@ -195,8 +212,8 @@ pub(super) fn message_item(
         sender_color: avatar_color(&sender),
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
-        attachments: ModelRc::new(VecModel::from(attachments)),
-        reactions: ModelRc::new(VecModel::from(reaction_items(&m.reactions))),
+        attachments: nested_model(attachments),
+        reactions: nested_model(reaction_items(&m.reactions)),
         text: if m.deleted { "" } else { view.body }.into(),
         delivery: match (m.outgoing, m.unsent, m.delivery) {
             (false, ..) => DeliveryState::Incoming,
@@ -291,6 +308,29 @@ pub(super) fn reaction_items(reactions: &[b33p_core::Reaction]) -> Vec<ReactionI
         }
     }
     items
+}
+
+/// How long after a message faded in the next one may fade in.
+const FADE_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a message appended at `now` fades in, given when the last fade began: not when
+/// that was less than [`FADE_GAP`] ago.
+fn fade_gap_passed(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|at| now.saturating_duration_since(at) >= FADE_GAP)
+}
+
+/// [`fade_gap_passed`] for the last fade of this process; counts the one it allows.
+pub(super) fn fade_in_allowed(now: std::time::Instant) -> bool {
+    thread_local! {
+        static LAST: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    }
+    LAST.with(|last| {
+        let allowed = fade_gap_passed(last.get(), now);
+        if allowed {
+            last.set(Some(now));
+        }
+        allowed
+    })
 }
 
 /// Once new rows had time to fade in, they are like the others: shown again (scrolled back to,
@@ -421,5 +461,26 @@ pub(super) fn attachment_item(
         video: kind == AttachmentKind::Video,
         audio: matches!(kind, AttachmentKind::Audio | AttachmentKind::VoiceNote),
         gif: attachment.gif,
+    }
+}
+
+#[cfg(test)]
+mod fade_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn only_a_message_after_a_quiet_moment_fades() {
+        let start = Instant::now();
+        assert!(fade_gap_passed(None, start));
+        assert!(!fade_gap_passed(
+            Some(start),
+            start + Duration::from_millis(200)
+        ));
+        assert!(!fade_gap_passed(
+            Some(start),
+            start + FADE_GAP - Duration::from_millis(1)
+        ));
+        assert!(fade_gap_passed(Some(start), start + FADE_GAP));
     }
 }

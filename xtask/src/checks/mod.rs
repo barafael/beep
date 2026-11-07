@@ -139,6 +139,7 @@ pub(crate) fn run(
         return Err(RunError::CaptureWithStress { phase: stress }.into());
     }
     containers.capture(*capture);
+    containers.set_ui(b33p.ui);
     let sockets = Sockets::new(containers);
     let files = containers.files_dir();
     let linked = chosen(phases, Phase::Linked);

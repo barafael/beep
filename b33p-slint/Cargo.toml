@@ -23,6 +23,7 @@ test-servers = ["b33p-core/test-servers"]
 thiserror.workspace = true
 b33p-core.workspace = true
 b33p-notify = { path = "../b33p-notify" }
+b33p-platform = { path = "../b33p-platform" }
 # Slint's defaults bring both the winit and the Qt backend; each platform picks one below.
 slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
 # Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
@@ -36,21 +37,11 @@ futures-channel = "0.3"
 b33p-harness = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-# Whether the desktop asks for reduced motion (`motion.rs`).
-mundy = { version = "0.2.3", default-features = false, features = ["reduced-motion", "callback", "async-io"] }
 # Opens links in the browser.
 open = "5"
-# The file picker for attachments (the desktop's own, through its portal on Linux).
-rfd = "0.17"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Pictures and files pasted into the composer (`clipboard.rs`).
-arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 png = "0.18"
 # Blurred stand-ins for pictures and videos not downloaded yet.
 blurhash = "0.2"
-# Plays audio and voice messages (`audio.rs`): Signal sends AAC (in MP4 or ADTS), others Ogg,
-# MP3, FLAC, WAV.
-rodio = { version = "0.23", default-features = false, features = ["playback", "mp4", "mp3", "vorbis", "flac", "wav", "symphonia-pcm"] }
 # Every emoji, by group and name, for the emoji picker (`emoji.rs`).
 emojis = "0.9"
 
@@ -72,19 +63,12 @@ slint = { workspace = true, features = ["backend-qt"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg"] }
 
-# Asks whether the desktop shows tray icons (`tray::host_present`), and keeps b33p to one
-# copy (`instance.rs`).
-[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
-# Where the autostart entry goes (`autostart.rs`).
-directories = "6"
-
 # Quitting cleanly when the system ends b33p (`shutdown.rs`).
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4"
 
-# The single-instance pipe (`instance.rs`), the window that hears the session end
-# (`shutdown.rs`), and the window kept out of screen capture (`capture.rs`).
+# The window that hears the session end (`shutdown.rs`), and the window kept out of screen
+# capture (`capture.rs`).
 [target.'cfg(windows)'.dependencies]
 slint = { workspace = true, features = ["raw-window-handle-06"] }
 # The version Slint's `raw-window-handle-06` hands out.
@@ -102,8 +86,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
-# The autostart entry (`autostart.rs`).
-windows-registry = "0.6"
 
 [dev-dependencies]
 # Slint's headless backend for the UI tests in `src/ui_tests.rs`; the same revision as slint.
@@ -112,8 +94,6 @@ i-slint-backend-testing.workspace = true
 # `src/markdown.rs` check the links and text it makes of message text.
 i-slint-common = { workspace = true, features = ["markdown"] }
 proptest = "1"
-# Scratch directories for the log file tests.
-tempfile = "3"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs

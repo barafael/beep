@@ -18,6 +18,25 @@ run:
 mock:
     B33P_MOCK=1 cargo run -p b33p-slint
 
+# The client with its window drawn by GPUI instead of Slint.
+[group('run')]
+run-gpui:
+    cargo run --release -p b33p-gpui
+
+# The GPUI window's offline fake.
+[group('run')]
+mock-gpui:
+    B33P_MOCK=1 cargo run -p b33p-gpui
+
+# The GPUI window on the mock, on a display of its own (a container: never the desktop), and its
+# first screenshot: target/gpui-view/shots/. See b33p-gpui/README.md.
+[group('run')]
+gpui-view:
+    cargo build -p b33p-gpui --features harness
+    testbox/gpui-view/view.sh start
+    sleep 5
+    testbox/gpui-view/view.sh shot first
+
 [group('check')]
 fmt:
     cargo fmt --all
