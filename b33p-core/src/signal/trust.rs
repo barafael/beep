@@ -191,15 +191,16 @@ pub(super) async fn refresh_trust(manager: &Mgr, ctx: &Ctx) {
 }
 
 /// [`refresh_trust`] for one contact: what came from them may have brought a new key.
+///
+/// Runs for every message that comes, so it asks the table for this contact's row alone, not for
+/// all of them (catching up is hundreds of messages in a row).
 pub(super) async fn refresh_trust_of(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
     use presage::proto::verified::State;
-    let Ok(all) = ctx.tables.verifications().await else {
+    let Ok(Some(verification)) = ctx.tables.verification(&who.service_id_string()).await else {
         return;
     };
-    if let Some(verification) = all.get(&who.service_id_string())
-        && verification.state != State::Default
-    {
-        let trust = trust_given(manager, who, Some(verification)).await;
+    if verification.state != State::Default {
+        let trust = trust_given(manager, who, Some(&verification)).await;
         publish_trust(ctx, who, trust);
     }
 }

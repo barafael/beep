@@ -564,7 +564,9 @@ pub struct LinkPreview {
     pub url: String,
     pub title: String,
     pub description: String,
-    pub image: Option<Attachment>,
+    /// Boxed: a message that has a preview is rare, and a message is as large as everything it
+    /// may have, which every one of a long history pays for.
+    pub image: Option<Box<Attachment>>,
 }
 
 /// Identifies a message the way Signal does: its author and sent time.
@@ -1305,6 +1307,31 @@ impl Commands {
         // The backend only goes away when it has failed fatally, which it reports as an event,
         // or when it was shut down.
         self.0.send(Request::Command(Box::new(command))).ok();
+    }
+}
+
+impl Commands {
+    /// Commands that go to no backend but to the [`Recorded`] returned with them, for tests of
+    /// what a window asks the backend for.
+    pub fn recorded() -> (Self, Recorded) {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        (Self(sender), Recorded(receiver))
+    }
+}
+
+/// What was sent to the [`Commands`] of [`Commands::recorded`].
+pub struct Recorded(Receiver<Request>);
+
+impl Recorded {
+    /// The commands sent since the last call, oldest first.
+    pub fn take(&self) -> Vec<Command> {
+        self.0
+            .try_iter()
+            .filter_map(|request| match request {
+                Request::Command(command) => Some(*command),
+                Request::Shutdown => None,
+            })
+            .collect()
     }
 }
 

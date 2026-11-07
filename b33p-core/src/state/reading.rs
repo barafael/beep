@@ -134,37 +134,40 @@ impl ChatState {
         std::mem::take(&mut self.notifications.pending)
     }
 
-    /// Notifies about an incoming message, as the app's settings and its chat's say. `for_me`:
-    /// it mentions us or replies to one of ours (see [`addresses`]).
-    pub(super) fn notify_message(
-        &mut self,
-        id: &ConversationId,
-        sender: String,
-        body: String,
-        for_me: bool,
-    ) {
-        let conversation = self
-            .conversation_at
-            .get(id)
-            .map(|&at| &self.conversations[at]);
+    /// Whether a message of `id` is to be told to the user as it comes, as far as that is known
+    /// without the message's text: not for a muted chat or the open one of a focused window, nor
+    /// for a chat that notifies only for mentions and replies unless it is one (`for_me`; see
+    /// [`addresses`]). While catching up it is only counted, for the one notification that sums
+    /// it up; the caller then needn't make the text up for each of a backlog's messages.
+    pub(super) fn wants_notice(&mut self, id: &ConversationId, for_me: bool) -> bool {
+        let conversation = self.conversation(id);
         let muted = conversation.is_some_and(|c| c.settings.muted(self.now()));
-        let chat = conversation.map(|c| c.settings.notify).unwrap_or_default();
+        let mentions_only = conversation.is_some_and(|c| c.settings.notify.mentions_only);
         let n = &mut self.notifications;
         if !n.enabled || muted || (n.window_focused && self.selected.as_ref() == Some(id)) {
-            return;
+            return false;
         }
-        if chat.mentions_only && !for_me {
-            return;
+        if mentions_only && !for_me {
+            return false;
         }
         if !self.synced {
             *n.caught_up.entry(id.clone()).or_default() += 1;
-            return;
+            return false;
         }
+        true
+    }
+
+    /// Tells the user of a message of `id` that [`ChatState::wants_notice`] said yes to, as the
+    /// app's settings and its chat's say.
+    pub(super) fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
+        let conversation = self.conversation(id);
+        let chat = conversation.map(|c| c.settings.notify).unwrap_or_default();
         let group = conversation.filter(|c| c.is_group());
         let name = match group {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
         };
+        let n = &mut self.notifications;
         // The chat's setting only ever hides more than the app's.
         let content = match n.content {
             NotificationContent::NameAndMessage if chat.hide_text => NotificationContent::NameOnly,

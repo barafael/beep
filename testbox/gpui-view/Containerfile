@@ -1,0 +1,10 @@
+# A display for looking at b33p-gpui while developing it, with nothing but a mock behind it: the
+# binary is built on the host (`just gpui-view`) and bind-mounted, so this image matches the
+# host's glibc (Arch) and holds only what the window needs: cage and wayvnc for the display
+# (testbox/tools `with-display`), Mesa's software Vulkan (lavapipe) for GPUI's renderer, and
+# the fonts and libraries a desktop has.
+FROM docker.io/library/archlinux:latest
+RUN pacman -Sy --noconfirm --needed cage wayvnc wlr-randr vulkan-swrast vulkan-icd-loader mesa \
+        libxkbcommon wayland fontconfig freetype2 ttf-dejavu noto-fonts noto-fonts-emoji \
+        alsa-lib dbus libx11 libxcb libxkbcommon-x11 libxcursor libxrandr libxi libxfixes libxext openssl zlib libdrm xcb-util-keysyms \
+    && pacman -Scc --noconfirm

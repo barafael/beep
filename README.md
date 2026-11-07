@@ -96,6 +96,10 @@ cargo run -p b33p-slint              # the same, unoptimized
 B33P_MOCK=1 cargo run -p b33p-slint  # an offline fake, for trying the UI: nothing is sent
 ```
 
+The same client with its window drawn by [GPUI](https://gpui.rs) instead of Slint is `b33p-gpui`
+(`cargo run -p b33p-gpui`, `B33P_MOCK=1` likewise; it needs no Qt, but Vulkan and the Wayland or
+X11 libraries): see [b33p-gpui/README.md](b33p-gpui/README.md).
+
 `B33P_MOCK` only works in debug builds — a stray variable in the environment must not turn a
 release binary into a convincing fake that swallows messages. The mock's window says so in its
 title, and it answers whatever you send.
@@ -106,6 +110,8 @@ title, and it answers whatever you send.
 |---|---|
 | `b33p-core` | The chat state and the backends: the real Signal backend (over [presage](https://github.com/whisperfish/presage)) and the mock. A headless state machine: events in, updates out; actions return commands. |
 | `b33p-slint` | The window: Slint UI wired to the chat state, tray, notifications playback, and the agent harness. |
+| `b33p-gpui` | The same window drawn with GPUI: the same features, its own look. |
+| `b33p-platform` | What the windows ask of the desktop, whichever toolkit draws them: one copy of b33p, the log, autostart, the clipboard, audio, reduced motion, file dialogs. |
 | `b33p-notify` | Desktop notifications with click-to-open and inline reply. |
 | `b33p-harness` | The agent harness's protocol, for the window and for whatever drives it. |
 | `xtask` | `cargo testbox`: brings the test box up and down and runs its checks. |

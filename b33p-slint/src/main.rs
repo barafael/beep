@@ -16,6 +16,9 @@ use b33p_core::{
     Failure, Picture, QrMatrix,
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
+// What b33p asks of the desktop, shared with the other window (b33p-gpui): under the names
+// these modules had here.
+use b33p_platform::{audio, autostart, clipboard, instance, logging, motion};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -23,16 +26,10 @@ mod agent;
 // The harness drives the whole app over a socket: test builds only, never a release.
 #[cfg(all(feature = "harness", not(debug_assertions)))]
 compile_error!("the `harness` feature is for test builds: build without `--release`");
-mod audio;
-mod autostart;
 mod capture;
-mod clipboard;
 mod desktop;
 mod emoji;
-mod instance;
-mod logging;
 mod markdown;
-mod motion;
 mod rows;
 mod shutdown;
 mod tray;
