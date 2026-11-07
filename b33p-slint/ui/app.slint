@@ -7,6 +7,7 @@ import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButto
 import { ConversationMenu, ConversationRow } from "conversation-row.slint";
 import { AttachmentView } from "attachment.slint";
 import { Bubble } from "bubble.slint";
+import { PinBar } from "pins.slint";
 import { ActivityCalendar, ActivityStrip } from "activity.slint";
 import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens.slint";
 import { SettingsPage } from "settings.slint";
@@ -435,6 +436,18 @@ export component AppWindow inherits Window {
                         }
                         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.divider; }
                     }
+                    if OpenChat.pins.length > 0: PinBar {
+                        pins: OpenChat.pins;
+                        can-unpin: OpenChat.can-pin;
+                        show(index) => { OpenChat.show-pinned(index); }
+                        unpin(key) => { OpenChat.unpin(key); }
+                    }
+                    // Pins run out: look again now and then while there are some.
+                    Timer {
+                        interval: 30s;
+                        running: OpenChat.pins.length > 0;
+                        triggered => { OpenChat.check-pins(); }
+                    }
                     chat-area := Rectangle {
                         vertical-stretch: 1;
                         // A panel covers the messages (search, details, media, the calendar): once it
@@ -598,6 +611,14 @@ export component AppWindow inherits Window {
                                     open-attachment(id) => { OpenChat.open-attachment(id); }
                                     open-link(link) => { OpenChat.open-link(link); }
                                     react(emoji) => { OpenChat.react(item.key, emoji); }
+                                    open-quote => { OpenChat.open-quote(item.key); }
+                                    // At most three pins, as Signal keeps them.
+                                    pinned: item.key == OpenChat.pinned-keys[0] || item.key == OpenChat.pinned-keys[1]
+                                        || item.key == OpenChat.pinned-keys[2];
+                                    can-pin: OpenChat.can-pin;
+                                    pins-full: OpenChat.pins-full;
+                                    pin(seconds) => { OpenChat.pin(item.key, seconds); }
+                                    unpin => { OpenChat.unpin(item.key); }
                                     retry => { OpenChat.retry-send(item.key); }
                                     edit => {
                                         OpenChat.edit(item.key);
@@ -1834,6 +1855,11 @@ export component AppWindow inherits Window {
                                         selection-foreground-color: Theme.selection-text;
                                         accessible-placeholder-text: Composer.editing ? "Edit message" : "Message";
                                         edited => { Composer.draft-edited(self.text); }
+                                        // A composition changes neither the text nor the caret.
+                                        changed preedit-text => {
+                                            Composer.composing = self.preedit-text;
+                                            Composer.composing-edited();
+                                        }
                                         // Where the caret is, for which line it is on.
                                         property <length> caret-y;
                                         // The caret stays in view.

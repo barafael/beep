@@ -186,6 +186,19 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    phone drops a message with more inline as invalid). Have them send one: it shows whole here.
    *(box: desktop, android)*
 
+### 1.13 Pinned messages
+
+1. Pin one of your messages from its menu, for 24 hours: the bar above the chat shows it, and
+   their phone and desktop show it pinned. *(box: desktop)*
+2. Have them pin one of yours and one of theirs: both show in the bar, newest first, with
+   "… pinned a message." in the chat. A click on the bar shows the message and turns to the
+   next pin. *(box: desktop, one pin)*
+3. Unpin from the bar's button, and have them unpin one: gone here and there.
+   *(box: desktop)*
+4. Pin a fourth: the oldest pin goes, here and on their side (the menu says so first).
+5. In a group where only admins may change its details, a member has no **Pin**; pins from
+   such a member don't take.
+
 ---
 
 ## 2. M2

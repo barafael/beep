@@ -25,10 +25,12 @@ use crate::{Images, Shared, qr_image};
 
 mod callbacks;
 mod items;
+mod pins;
 mod render;
 
 pub(crate) use items::set_up_models;
 use items::*;
+use pins::*;
 pub(crate) use render::render;
 use render::*;
 

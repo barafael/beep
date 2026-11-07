@@ -12,4 +12,5 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
     chat::wire(window, shared);
     groups::wire(window, shared);
     panels::wire(window, shared);
+    wire_pins(window, shared);
 }
