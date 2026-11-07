@@ -149,6 +149,9 @@ ctr = { opt-level = 3 }
 hmac = { opt-level = 3 }
 sha2 = { opt-level = 3 }
 libcrux-ml-kem = { opt-level = 3 }
+# The picture viewer resamples what it shows whenever the zoom changes: unoptimized, a photo
+# took seconds rather than milliseconds.
+fast_image_resize = { opt-level = 3 }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

@@ -277,6 +277,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::SetDeviceName(_)
         | Command::SkipHistory
         | Command::FetchAttachment(_)
+        | Command::FetchFullPicture(_)
         | Command::SaveAttachment(_)
         | Command::OpenAttachment(_)
         | Command::Send { .. }

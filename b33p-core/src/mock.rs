@@ -426,6 +426,22 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     content,
                 });
             }
+            // Twice the size the sender gave, so the viewer has something to zoom into.
+            Ok(Command::FetchFullPicture(attachment)) => {
+                std::thread::sleep(Duration::from_millis(300));
+                let (width, height) = match (attachment.width, attachment.height) {
+                    (0, _) | (_, 0) => (1600, 1200),
+                    (width, height) => (width * 2, height * 2),
+                };
+                events.send(Event::FullPicture {
+                    id: attachment.id,
+                    picture: Ok(crate::FullPicture {
+                        pixels: Arc::new(scene(width, height)),
+                        width,
+                        height,
+                    }),
+                });
+            }
             Ok(Command::SaveAttachment(attachment)) => {
                 let path = Ok(std::env::temp_dir()
                     .join(attachment.file_name.unwrap_or_else(|| "attachment".into())));
@@ -976,6 +992,50 @@ fn gradient(side: u32) -> Picture {
     Picture {
         width: side,
         height: side,
+        rgba,
+    }
+}
+
+/// A view from a hut, standing in for a photo: sky, sun, two ridges and a meadow of fine
+/// stripes that only show near 100%.
+fn scene(width: u32, height: u32) -> Picture {
+    let (w, h) = (width as f32, height as f32);
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let (u, v) = (x as f32 / w, y as f32 / h);
+            let far = 0.55 + 0.08 * (u * 9.0).sin() + 0.04 * (u * 23.0).cos();
+            let near = 0.72 + 0.06 * (u * 5.0 + 1.0).sin();
+            let sun = ((u - 0.7).powi(2) + ((v - 0.3) * h / w).powi(2)).sqrt() < 0.06;
+            let mix = |a: [f32; 3], b: [f32; 3], t: f32| {
+                [0, 1, 2].map(|i| (a[i] + (b[i] - a[i]) * t.clamp(0.0, 1.0)) as u8)
+            };
+            let [r, g, b] = if v > near {
+                // Stripes a pixel or two wide: grass, as a photo's detail.
+                let blade = if (x + y / 3) % 4 < 2 { 0.0 } else { 18.0 };
+                mix(
+                    [70.0, 140.0, 60.0],
+                    [40.0, 100.0, 40.0],
+                    (v - near) / (1.0 - near),
+                )
+                .map(|c| c.saturating_add(blade as u8))
+            } else if v > far {
+                mix(
+                    [90.0, 105.0, 140.0],
+                    [60.0, 80.0, 110.0],
+                    (v - far) / (near - far),
+                )
+            } else if sun {
+                [255, 236, 170]
+            } else {
+                mix([255.0, 170.0, 110.0], [90.0, 140.0, 210.0], 1.0 - v / far)
+            };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    Picture {
+        width,
+        height,
         rgba,
     }
 }

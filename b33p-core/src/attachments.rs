@@ -22,7 +22,8 @@ use tokio::sync::Semaphore;
 
 use crate::signal::errors::{kind_of, service_kind, upload_kind};
 use crate::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ErrorKind, Event, Events, Picture,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ErrorKind, Event, Events,
+    FullPicture, Picture,
 };
 use presage::libsignal_service::{
     attachment_cipher::AttachmentCipherError, push_service::ServiceError,
@@ -386,6 +387,71 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
         id: attachment.id,
         content: content.map_err(crate::Error::from),
     });
+}
+
+/// Downloads a picture for the picture viewer and reports it as [`Event::FullPicture`]: the
+/// whole picture rather than [`fetch`]'s bubble-sized one.
+pub(crate) async fn fetch_full(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
+    let picture = async {
+        let data = {
+            let _permit = downloads
+                .limit
+                .acquire()
+                .await
+                .map_err(AttachmentError::Ending)?;
+            download(&downloads.cdn, &attachment).await?
+        };
+        let _decoding = downloads
+            .decoding
+            .acquire()
+            .await
+            .map_err(AttachmentError::Ending)?;
+        tokio::task::spawn_blocking(move || decode_full(&data))
+            .await
+            .map_err(|source| AttachmentError::Stopped {
+                step: "decoding the picture",
+                source,
+            })?
+            .ok_or(AttachmentError::NotShowable)
+    }
+    .await;
+    if let Err(error) = &picture {
+        tracing::debug!(error = %crate::scrub::chain(error), "failed to fetch a picture to view");
+    }
+    events.send(Event::FullPicture {
+        id: attachment.id,
+        picture: picture.map_err(crate::Error::from),
+    });
+}
+
+/// Longest edge of pictures for the viewer. What Signal's apps send at their highest quality;
+/// larger ones (from elsewhere) are scaled down to it, which keeps the copies the window
+/// makes to draw it (each 64 MB at most) and the textures of GPU renderers in bounds.
+const VIEW_EDGE: u32 = 4096;
+
+/// Decodes a picture for the viewer (within [`decode_limited`]'s bounds, against decompression
+/// bombs), at most [`VIEW_EDGE`] a side; animated images show their first frame.
+fn decode_full(data: &[u8]) -> Option<FullPicture> {
+    let rgba = decode_limited(data)?.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    let picture = Picture {
+        width,
+        height,
+        rgba: rgba.into_raw(),
+    };
+    let edge = width.max(height);
+    let picture = if edge > VIEW_EDGE {
+        let (w, h) =
+            crate::resample::scaled((width, height), f64::from(VIEW_EDGE) / f64::from(edge));
+        crate::resample::shrink(&picture, w, h)?
+    } else {
+        picture
+    };
+    Some(FullPicture {
+        pixels: Arc::new(picture),
+        width,
+        height,
+    })
 }
 
 /// What a long text shows: up to [`LONG_TEXT_SHOWN`] bytes of it, cut between characters.
@@ -1125,5 +1191,33 @@ mod tests {
         png.extend_from_slice(&100_000u32.to_be_bytes());
         png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
         assert!(decode_limited(&png).is_none());
+    }
+
+    /// The viewer gets pictures as large as they are, up to its limit, which keeps their
+    /// shape and tells their real size; bombs are refused as for the bubbles.
+    #[test]
+    fn viewed_pictures_are_whole_up_to_the_limit() {
+        let png = |width, height| {
+            let mut png = Vec::new();
+            image::RgbaImage::from_pixel(width, height, image::Rgba([200, 100, 50, 255]))
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .unwrap();
+            png
+        };
+        let full = decode_full(&png(1600, 1200)).unwrap();
+        assert_eq!((full.pixels.width, full.pixels.height), (1600, 1200));
+        assert_eq!((full.width, full.height), (1600, 1200));
+        let large = decode_full(&png(8192, 2048)).unwrap();
+        assert_eq!((large.pixels.width, large.pixels.height), (VIEW_EDGE, 1024));
+        assert_eq!((large.width, large.height), (8192, 2048));
+        // A flat colour stays that colour: no fringes, nothing see-through.
+        assert!(
+            large
+                .pixels
+                .rgba
+                .chunks(4)
+                .all(|p| p == [200, 100, 50, 255])
+        );
+        assert!(decode_full(b"not an image").is_none());
     }
 }

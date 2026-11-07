@@ -13,6 +13,7 @@ impl ChatState {
         self.read_seen();
         if self.selected.as_ref() != Some(id) {
             self.media = None;
+            self.viewing = None;
             self.details = None;
             self.chat_search = None;
             self.pending_jump = None;
@@ -84,6 +85,7 @@ impl ChatState {
         self.read_seen();
         self.keep_draft_mentions();
         self.selected = None;
+        self.viewing = None;
         self.replying = None;
         self.editing = None;
         self.selection.clear();

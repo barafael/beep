@@ -26,6 +26,7 @@ mod outbox;
 #[cfg(feature = "signal")]
 mod preview;
 mod qr;
+pub mod resample;
 pub mod scratch;
 pub mod scrub;
 pub mod settings;
@@ -670,6 +671,26 @@ pub struct Attachment {
     pub(crate) pointer: Arc<[u8]>,
 }
 
+impl Attachment {
+    /// An attachment with nothing to download it by, as a UI's tests make them: the rest is
+    /// the caller's to fill in.
+    pub fn without_pointer(id: AttachmentId, kind: AttachmentKind) -> Self {
+        Self {
+            id,
+            kind,
+            content_type: String::new(),
+            file_name: None,
+            size: 0,
+            width: 0,
+            height: 0,
+            blurhash: None,
+            caption: None,
+            gif: false,
+            pointer: Arc::from(Vec::new()),
+        }
+    }
+}
+
 impl std::fmt::Debug for Attachment {
     // Leaves out the pointer, which holds the attachment's key.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -691,6 +712,16 @@ pub enum AttachmentContent {
     Text(String),
     /// Audio and voice messages, as downloaded (decoded by the player).
     Audio(Arc<[u8]>),
+}
+
+/// A picture for the picture viewer; see [`Event::FullPicture`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FullPicture {
+    /// At most the viewer's limit a side (scaled down if it was larger).
+    pub pixels: Arc<Picture>,
+    /// The size the picture really has, in pixels: what 100% shows.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Stages of the message history transfer; see [`Event::HistoryTransfer`].
@@ -834,6 +865,11 @@ pub enum Event {
     Attachment {
         id: AttachmentId,
         content: Result<AttachmentContent, Error>,
+    },
+    /// Answer to [`Command::FetchFullPicture`].
+    FullPicture {
+        id: AttachmentId,
+        picture: Result<FullPicture, Error>,
     },
     /// Answer to [`Command::SaveAttachment`]: where the file was written.
     AttachmentSaved {
@@ -1012,6 +1048,9 @@ pub enum Command {
     SkipHistory,
     /// Download an image, sticker or long text for display; see [`Event::Attachment`].
     FetchAttachment(Attachment),
+    /// Download a picture for the picture viewer, as large as it shows there; see
+    /// [`Event::FullPicture`].
+    FetchFullPicture(Attachment),
     /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
     SaveAttachment(Attachment),
     /// `quote` makes it a reply to that message; `files` are attached (the body may then be

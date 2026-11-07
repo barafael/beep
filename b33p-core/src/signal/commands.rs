@@ -368,6 +368,13 @@ async fn handle_command(
                 events.clone(),
             ));
         }
+        Command::FetchFullPicture(attachment) => {
+            tokio::task::spawn_local(attachments::fetch_full(
+                downloads.clone(),
+                attachment,
+                events.clone(),
+            ));
+        }
         Command::SaveAttachment(attachment) => {
             tokio::task::spawn_local(attachments::save(
                 downloads.clone(),
