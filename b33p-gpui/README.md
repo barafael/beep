@@ -62,6 +62,12 @@ is inflated.
 - Views read `shared.chat.borrow()` when they are drawn. There is no copy of the state and no
   diffing: GPUI draws what the tree says, and only the messages are a virtual list
   (`MessageScroller`, kept in step with `Update::messages` by `Shared::follow_messages`).
+- GPUI runs every view's `render` again for every frame, unless the view is drawn cached
+  (`Entity::cached`) and wasn't notified. The messages (`messages.rs`) and the chat list are, as
+  they are the costliest to build and most frames (scrolling, typing, the caret) change neither:
+  a cached view has to be notified by whatever it reads that isn't the state (the state's
+  changes refresh the whole window, which ignores the caches), so a view that reads another
+  entity or a global observes it (`MessagesView::new`, `ChatListView::new`).
 - `app.rs` is the root: banner, then `start.rs` (syncing, password, link, failed) or the chats:
   `chat_list.rs`, `conversation.rs` (header, messages from `bubble.rs`, `composer.rs`), and what
   covers them: `panels.rs` (over the messages) and `overlays.rs` (over the window), each a list
