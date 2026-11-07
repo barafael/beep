@@ -39,11 +39,15 @@ mod group_draft;
 mod images;
 mod join;
 mod media;
+mod message_info;
 mod message_menu;
+#[cfg(test)]
+mod message_tests;
 mod messages;
 mod overlays;
 mod panel;
 mod panels;
+mod pins;
 mod search;
 mod settings;
 mod shared;

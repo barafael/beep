@@ -354,6 +354,82 @@ async fn a_sent_message_is_edited(cx: &mut TestAppContext) {
     });
 }
 
+/// Pinning, as the menu does it: the bar lists the pins, a click on one shows its message, and
+/// unpinning takes it away.
+#[gpui::test]
+async fn messages_are_pinned_and_unpinned(cx: &mut TestAppContext) {
+    in_app(cx, &[], |agent| {
+        let chats = wait_for_chats(agent);
+        agent.select(&id_of(&chats, "Alice"));
+        let question = "Hey! Did you try the new client?";
+        let shown = agent.wait_for("Alice's question", |s| message(s, question).is_some());
+        let index = message(&shown, question).unwrap().index;
+        assert!(agent.act(Action::PinMessage {
+            index,
+            seconds: Some(24 * 3600),
+        }));
+        agent.wait_for("the pin", |s| s.pinned == [question]);
+        // Pinned already: nothing more to do.
+        assert!(!agent.act(Action::PinMessage {
+            index,
+            seconds: None,
+        }));
+        agent.act(Action::ShowPinned { index: 0 });
+        agent.wait_for("the pinned message marked", |s| {
+            message(s, question).is_some_and(|m| m.highlighted)
+        });
+        assert!(agent.act(Action::UnpinMessage { index }));
+        agent.wait_for("no pins", |s| s.pinned.is_empty());
+    });
+}
+
+/// A click on a quote shows the message quoted, marked.
+#[gpui::test]
+async fn a_quote_shows_the_message_it_quotes(cx: &mut TestAppContext) {
+    in_app(cx, &[], |agent| {
+        let chats = wait_for_chats(agent);
+        agent.select(&id_of(&chats, "Alice"));
+        let answer = "Of course you are 😄";
+        let quoted = "Building it right now, in Rust.";
+        let shown = agent.wait_for("the answer", |s| message(s, answer).is_some());
+        assert!(message(&shown, quoted).is_some_and(|m| !m.highlighted));
+        let index = message(&shown, answer).unwrap().index;
+        agent.act(Action::OpenQuote { index });
+        agent.wait_for("the quoted message marked", |s| {
+            message(s, quoted).is_some_and(|m| m.highlighted)
+        });
+    });
+}
+
+/// The info of a message of ours: gathered, then who got it, and closed again.
+#[gpui::test]
+async fn a_message_s_info_lists_who_got_it(cx: &mut TestAppContext) {
+    in_app(cx, &[], |agent| {
+        let chats = wait_for_chats(agent);
+        agent.select(&id_of(&chats, "Alice"));
+        let ours = "Building it right now, in Rust.";
+        let theirs = "Hey! Did you try the new client?";
+        let shown = agent.wait_for("the history", |s| {
+            message(s, ours).is_some() && message(s, theirs).is_some()
+        });
+        assert!(
+            !agent.act(Action::OpenMessageInfo {
+                index: message(&shown, theirs).unwrap().index,
+            }),
+            "only ours has an info"
+        );
+        assert!(agent.act(Action::OpenMessageInfo {
+            index: message(&shown, ours).unwrap().index,
+        }));
+        let info = agent.wait_for("the info", |s| matches!(s.message_info, Some(Some(_))));
+        let recipients = info.message_info.unwrap().unwrap();
+        assert_eq!(recipients.len(), 1);
+        assert!(recipients[0].delivered_at.is_some() && recipients[0].read_at.is_some());
+        agent.act(Action::CloseMessageInfo);
+        agent.wait_for("the info closed", |s| s.message_info.is_none());
+    });
+}
+
 /// A picture fetched for display and a file saved, with their states in the snapshot.
 #[gpui::test]
 async fn attachments_are_fetched_and_saved(cx: &mut TestAppContext) {

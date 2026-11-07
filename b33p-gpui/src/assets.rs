@@ -36,6 +36,7 @@ icon_assets!(
         MessageCircleQuestionMark,
         Paperclip,
         Pin,
+        PinOff,
         Reply,
         Send,
         ShieldAlert,

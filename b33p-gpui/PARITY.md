@@ -78,22 +78,29 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | Notices (safety number changed, timer changed) as a centred line | yes | yes | test `a_notice_is_drawn_as_a_line_not_a_message` |
 | Markdown (bold, italic, strike, monospace), spoilers revealed on click, links, mentions | yes | yes | code `text.rs` against `markdown.rs`; the unit tests of each |
 | Selecting text in one message and Ctrl+C; selecting in another drops the first | yes | yes | test `ctrl_c_copies_the_text_selected_in_one_message` |
-| Quote of the replied-to message, click shows it | yes | yes | code |
+| Quote of the replied-to message; a click on it shows the quoted message (scrolls there, loading older history first if needed, and marks it); the quote has a hover state and is named "Show the quoted message from Ann" | yes | yes | tests `a_click_on_a_quote_shows_the_quoted_message`, `a_quote_of_an_older_message_loads_it_first`; e2e `a_quote_shows_the_message_it_quotes`; display (the marked message after the jump). The mock's quote now says which message it quotes |
 | Link preview card (picture, title, description, site), click opens | yes | yes | code; named "Open link …" to a screen reader (GPUI: role added) |
 | Attachments: pictures (blurhash placeholder, fetch, retry), videos, GIF label, audio and voice messages with play, seek and time, files with Open and Save, stickers, long text | yes | yes | e2e `attachments_are_fetched_and_saved`; code. The audio position is a slider with its value to a screen reader in both (GPUI: added) |
 | Reactions: pills with counts, yours marked, click toggles; picker with every emoji | yes | yes | code |
 | Reacting: Slint shows a row of quick reactions after the pointer rests on a message; GPUI has "React" among the buttons that show on hover, which opens the same quick row and the full picker | popup after a dwell | toolbar button | see [Not the same](#not-the-same-and-why) |
 | Delivery ticks (sending, sent, delivered, read), "Sending…", "edited", the time a message has left | yes | yes | named for screen readers in both ("Sent", "Disappears in 50m"); GPUI: roles added; test `things_say_what_they_are_to_screen_readers` |
 | A failed message says so on every bubble that failed and offers "Send again"; one Signal refused doesn't | yes | yes | tests `a_failed_message_offers_a_retry`, `the_window_shows_the_chat_state`; e2e `failures_offer_to_try_again_when_that_may_work` |
-| Message menu: select, reply, react, copy selection, copy text, forward, edit, delete for me, delete for everyone (asks) | yes | yes, and also "Save attachment", "Send again" | GPUI's has two more entries |
+| Message menu: select, reply, react, copy selection, copy text, forward, edit, delete for me, delete for everyone (asks) | yes | yes, and also "Save attachment", "Send again", "Info" | GPUI's has three more entries; the pin entries are in the rows below |
 | Picking messages (Ctrl+click, Shift+click up to one, "Select") gets a bar: count, copy, forward (only when all can go), delete, clear | yes | yes | test `picked_messages_get_a_bar_to_act_on_them` |
 | Forwarding: pick a chat, then confirm "Forward to X?" | yes | yes | test `forwarding_goes_to_the_clicked_chat_once_confirmed` |
 | Older messages load as the top is neared, and the view stays where it was | yes | yes | tests `scrolling_to_the_top_asks_for_older_messages`, `older_messages_put_in_above_leave_the_view_in_place` |
 | Jumping to a message (search result, quote) scrolls it into view | yes | yes | tests `jumping_brings_the_row_into_view`, `clicking_a_search_result_shows_it` |
 | The jumped-to message flashes, then settles into its highlight | yes | yes | added in GPUI (`bubble.rs`), with motion off it is only the highlight: test `a_message_jumped_to_flashes_unless_motion_is_off` |
+| Pins: the bar above the messages (one pin at a time, newest first, a mark per pin when there are several, the pin's author and first line or kind, a click shows it in the chat and turns to the one pinned before, a button to unpin where messages can be pinned, "Pinned message 2 of 3: Ann: text" for a screen reader) | yes | yes | tests `the_pin_bar_shows_one_pin_at_a_time`, `the_pin_bar_unpins_for_those_who_may`; e2e `messages_are_pinned_and_unpinned`; display with 1 and 3 pins. One difference: the bar's unpin goes by the pin itself, so it works for a pin whose message is in older history that isn't loaded (Slint finds the message's row and does nothing then) |
+| Pins in the message menu: "Pin" with "For 24 hours", "For 7 days", "For 30 days", "Until unpinned"; "Pin, replacing the oldest pin" when three are pinned; "Unpin"; not for notices, deleted or unsent messages, nor where one may not pin | yes | yes | test `the_menu_offers_pinning_where_it_is_allowed` (the offer, and the command each choice sends); display of the menu. A bubble draws nothing for being pinned, as in Slint |
+| A pin that runs out leaves the bar at that moment | looks every 30 s | at the moment: a timer set from `ChatState::next_pin_expiry` after each draw, none while no pin runs out | test `a_pin_leaves_the_bar_when_it_runs_out`. `Update::pins` redraws the window like any update |
+| Messages over 800 characters fold to ten lines with "Read more"; the rest comes on a click, for that message | yes | yes | test `a_long_message_folds_until_read_more`; display folded and expanded. Slint's row is reused as it scrolls, so a message folds again when scrolled away; GPUI keeps it open until the chat is shown anew (`Shared::expanded`). A folded message's text can't be selected, as in Slint |
+| Message info: "Info" in the menu of our own sent messages opens a dialog (who got it, when each got and read it; "Finding out who received it…" while gathering; Esc, a click outside or "Close" closes it) | no (core only) | yes | designed here, plain and in Signal's style; tests `the_info_of_a_message_of_ours_lists_who_got_it`, `a_recipient_is_read_delivered_or_not_reached`; e2e `a_message_s_info_lists_who_got_it`; display with one and four recipients. Slint gets its own later: the texts are in `message_info.rs` |
+| Readers: under our newest message that group members have read, their small pictures (six, then "+n"), named "Read by Ann, Bob" | no (core only) | yes | test `readers_show_under_the_newest_message_they_read`; display. The mock's group now has an own message read by two members |
 | Button to the newest messages, counting those that came meanwhile | yes | yes | code |
 | Typing indicator under the title and in the list | yes | yes | code |
 | Disappearing messages: timer in the details, per-message countdown, counted down every minute | yes | yes | code `shared.rs` `expiry_timer` |
+| Times that change as time passes: the chat list's "14:05" becomes "Mon" and the day separators move on at midnight; the countdown of a disappearing message once a minute while the open chat has one; nothing else (a bubble's time is the time of day it was sent; Slint's `sent_minute` field is carried but no `.slint` file reads it) | yes | yes | code: the same two timers (`midnight_timer`, `expiry_timer`), and nothing runs while there is nothing to change, so an idle window costs nothing. No relative label ("2 min ago") exists in either window, so no further tick was added |
 
 ## Writing
 
@@ -172,7 +179,7 @@ tests find an element by its name, not its role.
   with).
 * **The Qt style** setting exists only with Qt.
 
-In GPUI and not in Slint: the "Send again" and "Save attachment" entries of the message menu.
+In GPUI and not in Slint: the "Send again" and "Save attachment" entries of the message menu, and the message info and readers (core has them; Slint has no window for them yet).
 
 ## Tests
 

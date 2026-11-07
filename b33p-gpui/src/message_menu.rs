@@ -41,7 +41,31 @@ pub struct Info {
     pub save: Option<b33p_core::AttachmentId>,
     /// A message that didn't go out and can be sent again.
     pub can_send_again: bool,
+    /// Pinning is offered (messages can be pinned in the chat, and this one isn't, and can be),
+    /// or unpinning is (it is pinned, and may be unpinned).
+    pub pin: PinOffer,
+    /// Pinning one more message replaces the chat's oldest pin.
+    pub pins_full: bool,
+    /// One of ours that went out: its info says who got it and read it.
+    pub can_info: bool,
 }
+
+/// What a message's menu offers about pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinOffer {
+    None,
+    Pin,
+    Unpin,
+}
+
+/// How long a pin lasts, as Signal-Desktop's "Pin message for…" offers, in seconds; `None` is
+/// until unpinned.
+pub const PIN_CHOICES: [(&str, Option<u32>); 4] = [
+    ("For 24 hours", Some(24 * 3600)),
+    ("For 7 days", Some(7 * 24 * 3600)),
+    ("For 30 days", Some(30 * 24 * 3600)),
+    ("Until unpinned", None),
+];
 
 /// Puts the cursor in the composer, as after a reply or an edit starts. (The composer's own
 /// area may offer this too; this reaches it through what `Shared` keeps.)
@@ -106,6 +130,19 @@ pub fn retry(shared: &Shared, index: usize, cx: &mut App) {
             },
         )
     });
+}
+
+pub fn pin(shared: &Shared, index: usize, seconds: Option<u32>, cx: &mut App) {
+    shared.command(cx, |chat| chat.pin_message(index, seconds));
+}
+
+pub fn unpin(shared: &Shared, index: usize, cx: &mut App) {
+    shared.command(cx, |chat| chat.unpin_message(index));
+}
+
+/// Opens the info of one of our messages: who it went to, and when they got it and read it.
+pub fn open_info(shared: &Shared, index: usize, cx: &mut App) {
+    shared.command(cx, |chat| chat.open_message_info(index));
 }
 
 pub fn toggle_select(shared: &Shared, index: usize, cx: &mut App) {
@@ -203,6 +240,34 @@ pub fn menu(
         menu = menu.item(item(
             "Send again",
             Rc::new(|s, i, _, cx| retry(s, i.index, cx)),
+        ));
+    }
+    // As Signal-Desktop's "Pin message for…", in a submenu instead of a dialog.
+    if info.pin == PinOffer::Pin {
+        let (shared, index) = (shared.clone(), info.index);
+        let label = if info.pins_full {
+            "Pin, replacing the oldest pin"
+        } else {
+            "Pin"
+        };
+        menu = menu.submenu(label, window, cx, move |mut sub, _, _| {
+            for (label, seconds) in PIN_CHOICES {
+                let shared = shared.clone();
+                sub = sub.item(
+                    PopupMenuItem::new(label)
+                        .on_click(move |_, _, cx| pin(&shared, index, seconds, cx)),
+                );
+            }
+            sub
+        });
+    }
+    if info.pin == PinOffer::Unpin {
+        menu = menu.item(item("Unpin", Rc::new(|s, i, _, cx| unpin(s, i.index, cx))));
+    }
+    if info.can_info {
+        menu = menu.item(item(
+            "Info",
+            Rc::new(|s, i, _, cx| open_info(s, i.index, cx)),
         ));
     }
     if !info.notice {

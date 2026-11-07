@@ -101,6 +101,10 @@ pub struct Shared {
     midnight_timer: RefCell<Option<Task<()>>>,
     /// Redraws the open chat's messages once a minute while some of them disappear.
     expiry_timer: RefCell<Option<Task<()>>>,
+    /// Redraws the pin bar when the next pin of the open chat runs out.
+    pin_timer: RefCell<Option<Task<()>>>,
+    /// The long messages shown in full ("Read more"), by their key; forgotten with the chat.
+    pub expanded: RefCell<std::collections::HashSet<String>>,
     /// Audio and voice messages playing here.
     pub player: RefCell<audio::Player>,
     /// Asked to play once downloaded.
@@ -172,6 +176,8 @@ impl Shared {
             typing_timer: RefCell::default(),
             midnight_timer: RefCell::default(),
             expiry_timer: RefCell::default(),
+            pin_timer: RefCell::default(),
+            expanded: RefCell::default(),
             player: RefCell::default(),
             pending_play: RefCell::default(),
             playback_timer: RefCell::default(),
@@ -329,6 +335,29 @@ impl Shared {
         } else {
             self.expiry_timer.take();
         }
+        // A pin runs out at a time of its own, which no event says: the bar looks again then.
+        match chat.next_pin_expiry() {
+            Some(at) => {
+                let wait = at.saturating_sub(b33p_core::now_millis()) + 50;
+                self.after(
+                    &self.pin_timer,
+                    Duration::from_millis(wait),
+                    cx,
+                    |shared, cx| {
+                        shared.refresh(
+                            Update {
+                                pins: true,
+                                ..Update::default()
+                            },
+                            cx,
+                        );
+                    },
+                );
+            }
+            None => {
+                self.pin_timer.take();
+            }
+        }
         // A download asked to play has arrived.
         let pending = self.pending_play.borrow().clone();
         if let Some(id) = pending {
@@ -359,6 +388,9 @@ impl Shared {
         ) {
             self.hovered_row.set(None);
             self.pinned_row.set(None);
+        }
+        if update.messages == MessagesUpdate::Reset {
+            self.expanded.borrow_mut().clear();
         }
         self.scroller.update(cx, |scroller, cx| {
             match update.messages {
