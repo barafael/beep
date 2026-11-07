@@ -25,8 +25,6 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### New
 
-- On Windows, b33p installs itself when started from the zip, with a Start menu entry and an
-  Installed apps entry that removes it again.
 - **Start** on the start-up screen while catching up: the chats show at once, and the rest
   comes in as they do.
 - A chat with many unread messages opens at the first of them; a ↓ button goes back to the

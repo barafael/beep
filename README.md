@@ -60,12 +60,8 @@ notarized, so macOS refuses to open it at first: right-click it in Applications 
 Open, or run `xattr -dr com.apple.quarantine /Applications/b33p.app`. There are no
 notifications on macOS yet.
 
-**Windows** (10 or newer): unpack the `.zip` and run `b33p.exe`. It installs itself for you
-alone, without admin rights: to `%LOCALAPPDATA%\b33p\b33p.exe`, with a Start menu entry and
-one in Installed apps, which also removes it (and your data, if you say so). A newer version
-installs over an older one; an older one never replaces a newer, it starts the installed one.
-`B33P_NO_INSTALL=1` runs it where it is. It isn't signed, so SmartScreen may stop it: More
-info → Run anyway.
+**Windows** (10 or newer): unpack the `.zip` and run `b33p.exe`. It isn't signed, so SmartScreen
+may stop it: More info → Run anyway. Its `README.txt` says how to remove it again.
 
 ### Where b33p keeps things
 
@@ -74,7 +70,6 @@ info → Run anyway.
 | Messages and keys | `~/.local/share/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\data` |
 | Log | `~/.local/share/b33p/logs` | the same, `logs` | `%LOCALAPPDATA%\barafael\b33p\data\logs` |
 | Settings | `~/.config/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\config` |
-| The program | where you installed it | `/Applications/b33p.app` | `%LOCALAPPDATA%\b33p\b33p.exe` |
 
 The database is encrypted with a key kept in the system keyring (or, without one, derived
 from a password you choose). Settings → About opens the log folder.
@@ -100,6 +95,10 @@ cargo run -p b33p-slint              # the same, unoptimized
 B33P_MOCK=1 cargo run -p b33p-slint  # an offline fake, for trying the UI: nothing is sent
 ```
 
+The same client with its window drawn by [GPUI](https://gpui.rs) instead of Slint is `b33p-gpui`
+(`cargo run -p b33p-gpui`, `B33P_MOCK=1` likewise; it needs no Qt, but Vulkan and the Wayland or
+X11 libraries): see [b33p-gpui/README.md](b33p-gpui/README.md).
+
 `B33P_MOCK` only works in debug builds — a stray variable in the environment must not turn a
 release binary into a convincing fake that swallows messages. The mock's window says so in its
 title, and it answers whatever you send.
@@ -110,6 +109,8 @@ title, and it answers whatever you send.
 |---|---|
 | `b33p-core` | The chat state and the backends: the real Signal backend (over [presage](https://github.com/whisperfish/presage)) and the mock. A headless state machine: events in, updates out; actions return commands. |
 | `b33p-slint` | The window: Slint UI wired to the chat state, tray, notifications playback, and the agent harness. |
+| `b33p-gpui` | The same window drawn with GPUI: the same features, its own look. |
+| `b33p-platform` | What the windows ask of the desktop, whichever toolkit draws them: one copy of b33p, the log, autostart, the clipboard, audio, reduced motion, file dialogs. |
 | `b33p-notify` | Desktop notifications with click-to-open and inline reply. |
 | `b33p-harness` | The agent harness's protocol, for the window and for whatever drives it. |
 | `xtask` | `cargo testbox`: brings the test box up and down and runs its checks. |

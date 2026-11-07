@@ -37,7 +37,7 @@ jobs:
       # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
       - name: Test
         shell: pwsh
-        run: cargo test --locked --no-fail-fast -p b33p-core -p b33p-slint -p b33p-notify
+        run: cargo test --locked --no-fail-fast -p b33p-core -p b33p-platform -p b33p-slint -p b33p-notify
 
   # The release build on the mock, as a person would start it: does the window draw, with the
   # fonts Windows has (the mock's "Yuki 駅 鉄 国 · 김민지" chat shows whether ideographs and

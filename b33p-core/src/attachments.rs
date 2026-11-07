@@ -229,10 +229,10 @@ pub(crate) fn describe(pointer: &AttachmentPointer, view_once: bool) -> Attachme
 /// A link preview's picture: as [`describe`], but with an id of its own. That says what it is
 /// when it is fetched (by the attachment alone), so it is decoded smaller, and keeps it apart
 /// from the same file attached to a message, which shows larger.
-pub(crate) fn describe_preview(pointer: &AttachmentPointer) -> Attachment {
+pub(crate) fn describe_preview(pointer: &AttachmentPointer) -> Box<Attachment> {
     let mut attachment = describe(pointer, false);
     attachment.id = AttachmentId(format!("{PREVIEW_ID}{}", attachment.id.0));
-    attachment
+    Box::new(attachment)
 }
 
 /// What a picture is scaled to fit for the UI, width and height: twice what it is shown at.

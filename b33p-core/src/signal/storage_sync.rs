@@ -27,6 +27,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
             Ok(synced) => {
                 let known = synced.known;
+                retitle(&ctx, synced.names_changed);
                 hand_over(&ctx, synced.verifications);
                 take_preferences(&ctx, synced.preferences);
                 if known && !ctx.events.sent(Event::StorageRead) {
@@ -88,6 +89,13 @@ fn taken(before: Preferences, account: AccountPreferences) -> Preferences {
 }
 
 /// Hands the verifications read to the session, which takes them over.
+/// Titles the chats anew when the phone's names for contacts changed.
+fn retitle(ctx: &Ports, names_changed: bool) {
+    if names_changed {
+        ctx.session.send(ForSession::Conversations).ok();
+    }
+}
+
 fn hand_over(ctx: &Ports, verifications: Option<crate::storage::Verifications>) {
     if let Some(verifications) = verifications {
         ctx.session
@@ -138,6 +146,7 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ports) {
             Ok(Written::Stale) => {
                 match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
                     Ok(synced) => {
+                        retitle(ctx, synced.names_changed);
                         hand_over(ctx, synced.verifications);
                         take_preferences(ctx, synced.preferences);
                     }

@@ -16,6 +16,9 @@ use b33p_core::{
     Failure, Picture, QrMatrix,
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
+// What b33p asks of the desktop, shared with the other window (b33p-gpui): under the names
+// these modules had here.
+use b33p_platform::{audio, autostart, clipboard, instance, logging, motion};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -23,18 +26,11 @@ mod agent;
 // The harness drives the whole app over a socket: test builds only, never a release.
 #[cfg(all(feature = "harness", not(debug_assertions)))]
 compile_error!("the `harness` feature is for test builds: build without `--release`");
-mod audio;
-mod autostart;
 mod capture;
-mod clipboard;
 mod desktop;
 mod emoji;
-mod install;
-mod instance;
-mod logging;
 mod markdown;
 mod memory;
-mod motion;
 mod rows;
 mod shutdown;
 mod tray;
@@ -566,9 +562,7 @@ fn command_line_answer() -> Option<String> {
              \x20 --hidden      start in the tray, as when starting with the system\n\
              \x20 --version     print the version\n\
              \x20 --unregister  stop starting with the system, and forget the notification\n\
-             \x20               registration (Windows), before deleting b33p\n\
-             \x20 --uninstall   remove the installed b33p (Windows), asking whether to\n\
-             \x20               delete the messages and keys too\n\n\
+             \x20               registration (Windows), before deleting b33p\n\n\
              RUST_LOG raises how much is logged. Logs go to {}.\n\
              {}",
             env!("CARGO_PKG_VERSION"),
@@ -585,11 +579,6 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("{answer}");
         return Ok(());
     }
-    // Before the log opens: it is in a folder this may delete.
-    if std::env::args().nth(1).as_deref() == Some(install::UNINSTALL) {
-        install::uninstall();
-        return Ok(());
-    }
     let settings = Settings::load();
     // Qt reads its style once, when it starts, so this has to come first.
     let qt_style_at_start = if settings.style == WidgetStyle::Fusion
@@ -603,10 +592,6 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     logging::init();
-    // Run from the zip, a release copies itself to its place and starts from there.
-    if install::on_start() == install::Flow::Exit {
-        return Ok(());
-    }
     memory::watch();
 
     // Before the backend opens the database.
@@ -696,21 +681,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let activations = instance.activations.clone();
         let shared = shared.clone();
         slint::spawn_local(async move {
-            while let Ok(request) = activations.recv().await {
-                match request {
-                    instance::Request::Show(token) => {
-                        tracing::info!(
-                            token = token.is_some(),
-                            "started again; showing the window"
-                        );
-                        shared.activate(token);
-                    }
-                    instance::Request::Quit => {
-                        tracing::info!("asked to quit, to install or uninstall b33p");
-                        // Fails only once the event loop has stopped: quitting already.
-                        slint::quit_event_loop().ok();
-                    }
-                }
+            while let Ok(token) = activations.recv().await {
+                tracing::info!(token = token.is_some(), "started again; showing the window");
+                shared.activate(token);
             }
         })
         .expect("the event loop is set up");

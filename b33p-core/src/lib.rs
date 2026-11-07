@@ -39,7 +39,6 @@ pub mod timeline;
 mod transfer;
 #[cfg(feature = "signal")]
 mod vault;
-pub mod version;
 #[cfg(feature = "signal")]
 mod wire;
 
@@ -550,7 +549,9 @@ pub struct LinkPreview {
     pub url: String,
     pub title: String,
     pub description: String,
-    pub image: Option<Attachment>,
+    /// Boxed: a message that has a preview is rare, and a message is as large as everything it
+    /// may have, which every one of a long history pays for.
+    pub image: Option<Box<Attachment>>,
 }
 
 /// Identifies a message the way Signal does: its author and sent time.
@@ -1287,6 +1288,31 @@ impl Commands {
     }
 }
 
+impl Commands {
+    /// Commands that go to no backend but to the [`Recorded`] returned with them, for tests of
+    /// what a window asks the backend for.
+    pub fn recorded() -> (Self, Recorded) {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        (Self(sender), Recorded(receiver))
+    }
+}
+
+/// What was sent to the [`Commands`] of [`Commands::recorded`].
+pub struct Recorded(Receiver<Request>);
+
+impl Recorded {
+    /// The commands sent since the last call, oldest first.
+    pub fn take(&self) -> Vec<Command> {
+        self.0
+            .try_iter()
+            .filter_map(|request| match request {
+                Request::Command(command) => Some(*command),
+                Request::Shutdown => None,
+            })
+            .collect()
+    }
+}
+
 /// Owner of a running backend. Dropping it stops the backend and waits until it has closed its
 /// database, so drop it before the process exits: library teardown in `exit()` crashes threads
 /// still using the database.
@@ -1368,14 +1394,6 @@ impl Drop for Backend {
             tracing::error!("the backend thread panicked");
         }
     }
-}
-
-/// Removes the database key b33p keeps in the system keyring for its standard data directory:
-/// for uninstalling with the data, after which the key would open nothing. Done if there was
-/// none.
-#[cfg(feature = "signal")]
-pub fn forget_database_key() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    Ok(vault::delete_keyring_key(vault::DEFAULT_ACCOUNT)?)
 }
 
 /// Current time in Signal's timestamp format.

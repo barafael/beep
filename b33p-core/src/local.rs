@@ -333,6 +333,13 @@ const SCHEMA: &[&str] = &[
         identity_key BLOB NOT NULL,
         verified INTEGER NOT NULL
     )",
+    // What the phone's storage service names each contact by (service id): the nickname given
+    // them, their name in the phone's address book, or their profile name, as Signal's apps
+    // title chats; see `storage::shown_name`. Replaced as a whole on each full read.
+    "CREATE TABLE IF NOT EXISTS b33p_contact_name (
+        aci TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL
+    )",
     // The same as the storage service said it last, to tell its changes from ours.
     "CREATE TABLE IF NOT EXISTS b33p_remote_verification (
         aci TEXT PRIMARY KEY NOT NULL,
@@ -893,6 +900,50 @@ impl LocalStore {
         }
         sqlx::query(
             "INSERT INTO b33p_meta (key, value) VALUES ('remote_verifications', 1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// What the storage service names contacts by, as read last: service id to name.
+    pub(crate) async fn contact_names(&self) -> Result<HashMap<String, String>, sqlx::Error> {
+        let rows = sqlx::query("SELECT aci, name FROM b33p_contact_name")
+            .fetch_all(&self.db)
+            .await?;
+        Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
+    }
+
+    /// Whether contacts' names were ever read from the storage service: until then, the whole
+    /// manifest is read again even if it didn't change.
+    pub(crate) async fn contact_names_read(&self) -> Result<bool, sqlx::Error> {
+        let read: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'contact_names'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(read.is_some())
+    }
+
+    /// Keeps `names` as what the storage service names contacts by, in place of what it said
+    /// before.
+    pub(crate) async fn set_contact_names(
+        &self,
+        names: &HashMap<String, String>,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM b33p_contact_name")
+            .execute(&mut *tx)
+            .await?;
+        for (aci, name) in names {
+            sqlx::query("INSERT INTO b33p_contact_name (aci, name) VALUES (?, ?)")
+                .bind(aci)
+                .bind(name)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO b33p_meta (key, value) VALUES ('contact_names', 1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
         .execute(&mut *tx)
@@ -1978,6 +2029,27 @@ mod tests {
                 local.remote_verifications().await.unwrap().is_empty(),
                 "replaced as a whole"
             );
+        });
+    }
+
+    /// The storage service's names for contacts, kept until the next read replaces them all.
+    #[test]
+    fn contact_names_are_replaced_as_a_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            assert!(!local.contact_names_read().await.unwrap());
+            assert!(local.contact_names().await.unwrap().is_empty());
+            let names = HashMap::from([
+                ("ann".to_string(), "Ann Smith".to_string()),
+                ("bob".to_string(), "Bobby".to_string()),
+            ]);
+            local.set_contact_names(&names).await.unwrap();
+            assert!(local.contact_names_read().await.unwrap());
+            assert_eq!(local.contact_names().await.unwrap(), names);
+            let now = HashMap::from([("bob".to_string(), "Robert".to_string())]);
+            local.set_contact_names(&now).await.unwrap();
+            assert_eq!(local.contact_names().await.unwrap(), now, "Ann's is gone");
         });
     }
 
