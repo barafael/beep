@@ -291,3 +291,205 @@ async fn a_typed_number_can_be_messaged(tc: &mut TestAppContext) {
         "the number is looked up"
     );
 }
+
+/// Incoming messages "Message 0" to "Message {count - 1}" in a chat open with Ann, with older
+/// ones still to load if `older`.
+fn many(count: usize, older: Option<u64>) -> ChatState {
+    let mut chat = testing::chats(&["Ann"]);
+    let ann = ConversationId::contact("ann");
+    chat.select(&ann);
+    chat.apply(Event::History {
+        conversation: ann,
+        messages: (0..count).map(|n| theirs(&format!("Message {n}"), n as u64)).collect(),
+        reactions: Vec::new(),
+        older,
+    });
+    chat
+}
+
+fn theirs(body: &str, number: u64) -> ChatMessage {
+    ChatMessage {
+        conversation: ConversationId::contact("ann"),
+        sender_id: "ann".into(),
+        sender: "Ann".into(),
+        body: body.into(),
+        timestamp: 1_700_000_000_000 + number * 1000,
+        ..ChatMessage::default()
+    }
+}
+
+#[gpui::test]
+async fn scrolling_to_the_top_asks_for_older_messages(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(60, Some(1_699_999_999_000)));
+    // Opened at the newest messages; nothing older is asked for yet.
+    let (top, _) = ui.top_row();
+    assert!(top >= 40, "opened at row {top}");
+    ui.settle();
+    let loads = |ui: &Ui| {
+        ui.sent()
+            .iter()
+            .filter(|command| matches!(command, Command::LoadHistory { .. }))
+            .count()
+    };
+    assert_eq!(loads(&ui), 0, "nothing older is asked for yet");
+    for _ in 0..40 {
+        ui.scroll(400.);
+    }
+    assert_eq!(ui.top_row().0, 0, "scrolled to the top");
+    assert_eq!(loads(&ui), 1, "older messages are asked for, once");
+}
+
+#[gpui::test]
+async fn older_messages_put_in_above_leave_the_view_in_place(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(60, Some(1_699_999_990_000)));
+    // Away from the bottom, so the list no longer follows new messages.
+    for _ in 0..2 {
+        ui.scroll(300.);
+    }
+    let (row, offset) = ui.top_row();
+    assert!(row > 10 && row < 55, "scrolled to row {row}");
+    ui.act(|chat| {
+        chat.apply(Event::History {
+            conversation: ConversationId::contact("ann"),
+            messages: (0..10)
+                .map(|n| ChatMessage {
+                    timestamp: 1_699_999_990_000 + n * 100,
+                    ..theirs(&format!("Older {n}"), 0)
+                })
+                .collect(),
+            reactions: Vec::new(),
+            older: None,
+        })
+    });
+    let (after_row, after_offset) = ui.top_row();
+    assert_eq!(after_row, row + 10, "the same message is on top");
+    assert!(
+        (after_offset - offset).abs() < 2.,
+        "moved from {offset} to {after_offset}"
+    );
+}
+
+#[gpui::test]
+async fn jumping_brings_the_row_into_view(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(60, None));
+    assert!(ui.top_row().0 > 20, "opened at the newest");
+    // As a click on a search result does.
+    ui.act(|chat| {
+        chat.open_chat_search();
+        chat.search_chat("Message 10");
+        chat.apply(Event::SearchResults {
+            conversation: ConversationId::contact("ann"),
+            query: "Message 10".into(),
+            messages: vec![theirs("Message 10", 10)],
+        });
+        chat.show_result(0)
+    });
+    let (top, _) = ui.top_row();
+    assert!(top <= 10 && 10 - top < 15, "row 10 is in view from row {top}");
+}
+
+/// The chat search lists what it found, and showing a result closes it and marks the message.
+#[gpui::test]
+async fn clicking_a_search_result_shows_it(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(3, None));
+    ui.act(|chat| {
+        chat.open_chat_search();
+        chat.search_chat("moon");
+        chat.apply(Event::SearchResults {
+            conversation: ConversationId::contact("ann"),
+            query: "moon".into(),
+            messages: vec![theirs("the moon", 1), theirs("a moon rising", 2)],
+        });
+        Update::default()
+    });
+    assert!(ui.shown("Search result 1"), "the results are listed");
+    ui.click("Search result 1");
+    assert!(
+        ui.booted.shared.chat.borrow().chat_search().is_none(),
+        "showing a result closes the search"
+    );
+}
+
+#[gpui::test]
+async fn clicking_a_mention_candidate_picks_it(tc: &mut TestAppContext) {
+    let person = |name: &str| Person {
+        service_id: name.to_lowercase(),
+        name: name.into(),
+    };
+    let group = Conversation {
+        id: ConversationId("g".into()),
+        title: "Rust".into(),
+        kind: ConversationKind::Group,
+        members: vec![person("Ann"), person("Andrea"), person("Bob")],
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    };
+    let mut ui = Ui::new(tc, open_with(group));
+    ui.type_in_composer("hi @An");
+    assert!(ui.shown("Mention Ann"), "listed");
+    assert!(!ui.shown("Mention Bob"), "only who matches");
+    ui.click("Mention Andrea");
+    assert_eq!(ui.composer_text(), "hi @Andrea ");
+}
+
+#[gpui::test]
+async fn forwarding_goes_to_the_clicked_chat_once_confirmed(tc: &mut TestAppContext) {
+    let mut chat = testing::chats(&["Ann", "Bob", "Carol"]);
+    for (name, number) in [("bob", 1), ("carol", 2)] {
+        chat.apply(Event::Latest(ChatMessage {
+            conversation: ConversationId::contact(name),
+            sender_id: name.into(),
+            ..theirs("hello", number)
+        }));
+    }
+    let ann = ConversationId::contact("ann");
+    chat.select(&ann);
+    chat.apply(Event::History {
+        conversation: ann,
+        messages: vec![theirs("Message 0", 0)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    chat.start_forward(0);
+    let mut ui = Ui::new(tc, chat);
+    assert!(ui.booted.shared.chat.borrow().forwarding());
+    ui.click("Forward to Carol");
+    assert!(
+        !ui.sent().iter().any(|c| matches!(c, Command::Forward { .. })),
+        "asks first"
+    );
+    assert!(ui.shown("Back"), "and says where it goes");
+    ui.click("Forward");
+    let sent = ui.sent();
+    assert!(
+        sent.iter().any(|c| matches!(
+            c,
+            Command::Forward { conversation, .. } if *conversation == ConversationId::contact("carol")
+        )),
+        "sent to Carol"
+    );
+}
+
+#[gpui::test]
+async fn picked_messages_get_a_bar_to_act_on_them(tc: &mut TestAppContext) {
+    let mut chat = many(3, None);
+    chat.apply(Event::Message(ChatMessage {
+        deleted: true,
+        ..theirs("gone", 5)
+    }));
+    let mut ui = Ui::new(tc, chat);
+    assert!(!ui.shown("Clear selection"));
+    ui.act(|chat| chat.toggle_selected(0));
+    assert!(ui.shown("Clear selection"), "the bar shows");
+    assert!(ui.shown("Forward selected"), "while all can go");
+    ui.act(|chat| chat.toggle_selected(3));
+    assert!(
+        !ui.shown("Forward selected"),
+        "not once one that was deleted is picked"
+    );
+    ui.click("Clear selection");
+    assert!(!ui.booted.shared.chat.borrow().has_selection());
+}

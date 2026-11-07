@@ -211,9 +211,10 @@ fn result(index: usize, found: &Found, shared: &Rc<Shared>, t: &Tokens) -> AnyEl
         .cursor_pointer()
         .hover(|s| s.bg(t.hover))
         .active(|s| s.bg(t.pressed))
-        .speaks(
+        .speaks_as(
             Role::ListItem,
             format!("{}, {}: {}", found.sender, found.when, found.text),
+            format!("Search result {index}"),
         )
         .on_click(move |_, _, cx| shared.redraw(cx, |chat| chat.show_result(index)))
         .child(

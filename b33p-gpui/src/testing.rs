@@ -116,8 +116,11 @@ fn boot_with(
         crate::window::apply_motion(&shared, cx);
         shared
     });
-    let window = cx.update(|cx| open(&shared, width, height, cx));
+    // What the state holds is told to the message list before the first frame, so that the
+    // list isn't first seen empty (and at its top, where it asks for older messages).
     cx.update(|cx| shared.refresh(crate::shared::everything(), cx));
+    cx.run_until_parked();
+    let window = cx.update(|cx| open(&shared, width, height, cx));
     if let Some(socket) = live {
         cx.update(|cx| {
             #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -224,6 +227,29 @@ impl Ui {
         self.cx
             .update(|_, cx| self.booted.shared.refresh(update, cx));
         self.settle();
+    }
+
+    /// Turns the wheel over the messages by `pixels`: positive goes towards older ones.
+    pub fn scroll(&mut self, pixels: f32) {
+        let size = self.window_size();
+        let position = gpui::point(size.width * 0.7, size.height * 0.4);
+        self.cx.simulate_event(gpui::ScrollEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(pixels))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            source: gpui::ScrollSource::Pointer,
+        });
+        self.settle();
+    }
+
+    /// Where the message list is scrolled to: the first row shown, and how far into it.
+    pub fn top_row(&mut self) -> (usize, f32) {
+        let scroller = self.booted.shared.scroller.clone();
+        self.cx.update(|_, cx| {
+            let top = scroller.read(cx).logical_scroll_top();
+            (top.item_ix, top.offset_in_item.into())
+        })
     }
 
     /// Presses `keys` (as GPUI spells them, "ctrl-k"), which go where the focus is.
