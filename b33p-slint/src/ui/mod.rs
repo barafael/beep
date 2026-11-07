@@ -155,6 +155,14 @@ impl Window {
             .set_scale(if enabled { 1.0 } else { 0.0 });
     }
 
+    /// What "Check for updates" found (`version`, empty if nothing) and is doing.
+    pub fn show_update(&self, version: &str, status: &str, updating: bool) {
+        let prefs = self.0.global::<Prefs>();
+        prefs.set_update_offer(version.into());
+        prefs.set_update_status(status.into());
+        prefs.set_updating(updating);
+    }
+
     /// Puts `settings` on the window, as at start-up, after they changed from outside it: by
     /// the harness, or on the phone.
     pub fn show_settings(&self, settings: &Settings, style_note: &str) {
@@ -279,6 +287,12 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         .set_close_to_tray(settings.close_to_tray);
     window
         .global::<Prefs>()
+        .set_update_supported(crate::updates::supported());
+    window
+        .global::<Prefs>()
+        .set_check_updates(settings.check_updates);
+    window
+        .global::<Prefs>()
         .set_read_receipts(settings.preferences.read_receipts);
     window
         .global::<Prefs>()
@@ -324,6 +338,7 @@ fn read_settings(window: &AppWindow) -> Settings {
         show_activity: window.global::<Prefs>().get_show_activity(),
         show_calendar: window.global::<Prefs>().get_show_calendar(),
         close_to_tray: window.global::<Prefs>().get_close_to_tray(),
+        check_updates: window.global::<Prefs>().get_check_updates(),
         device_name: None,
         recent_emoji: Vec::new(),
         preferences: b33p_core::Preferences {

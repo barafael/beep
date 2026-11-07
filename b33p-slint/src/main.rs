@@ -40,6 +40,7 @@ mod shutdown;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod updates;
 
 use markdown::{highlighted, rich_text};
 
@@ -108,6 +109,8 @@ pub struct Shared {
     me: std::rc::Weak<Shared>,
     /// The file dialogs and the clipboard; see `desktop.rs`.
     desktop: desktop::Requests,
+    /// "Check for updates"; see `updates.rs`.
+    updates: updates::Updates,
     /// Answers the agent harness's socket (`--features harness`).
     #[cfg(all(feature = "harness", target_family = "unix"))]
     agent: agent::Handle,
@@ -216,6 +219,9 @@ impl Shared {
             } else if matches!(screen, Screen::Chats) {
                 self.start_hidden.set(false);
             }
+        }
+        if matches!(chat.screen(), Screen::Chats) {
+            self.chats_shown();
         }
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
@@ -526,6 +532,8 @@ impl Shared {
                 },
             )
         });
+        // Turned on, it checks now; off, it offers nothing more.
+        self.check_for_update();
     }
 }
 
@@ -609,6 +617,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     memory::watch();
 
+    // Restarted by an update: the old b33p first has to let go of the lock and the database.
+    updates::wait_for_previous();
     // Before the backend opens the database.
     let instance = match instance::claim(Backend::mock_requested()) {
         instance::Claim::First(primary) => Some(primary),
@@ -658,6 +668,7 @@ fn main() -> Result<(), slint::PlatformError> {
         playback_timer: slint::Timer::default(),
         me: me.clone(),
         desktop,
+        updates: updates::Updates::default(),
         #[cfg(all(feature = "harness", target_family = "unix"))]
         agent: agent::Handle::default(),
     });

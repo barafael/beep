@@ -250,6 +250,12 @@ export component AppWindow inherits Window {
                     show-activity <=> Prefs.show-activity;
                     show-calendar <=> Prefs.show-calendar;
                     close-to-tray <=> Prefs.close-to-tray;
+                    update-supported: Prefs.update-supported;
+                    check-updates <=> Prefs.check-updates;
+                    update-offer: Prefs.update-offer;
+                    update-status: Prefs.update-status;
+                    updating: Prefs.updating;
+                    update-now => { Prefs.update-now(); }
                     tray-available: Prefs.tray-available;
                     autostart-supported: Prefs.autostart-supported;
                     notifications-supported: Prefs.notifications-supported;

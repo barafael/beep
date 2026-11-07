@@ -78,6 +78,16 @@ export global Prefs {
     in-out property <bool> sync-to-phone;
     in-out property <bool> show-activity;
     in-out property <bool> show-calendar;
+    // Updates (`updates.rs`): offered at all only by a Windows build with an update key,
+    // running as the installed copy.
+    in property <bool> update-supported;
+    in-out property <bool> check-updates;
+    // The newer version found, empty if none.
+    in property <string> update-offer;
+    // While downloading, or why the last update failed; empty otherwise.
+    in property <string> update-status;
+    in property <bool> updating;
+    callback update-now;
     in-out property <bool> settings-open;
     // Factor for the chosen text size, applied to the platform's font size, which is captured
     // before it is changed.

@@ -242,6 +242,14 @@ pub fn on_start() -> Flow {
     Flow::Continue
 }
 
+/// The running exe, if it is the installed copy: only that one updates itself.
+pub fn installed_self() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return win::installed_self();
+    #[cfg(not(windows))]
+    None
+}
+
 /// `b33p --uninstall`.
 pub fn uninstall() {
     #[cfg(windows)]
@@ -286,6 +294,15 @@ mod win {
             opted_out: std::env::var_os(super::NO_INSTALL).is_some(),
             mock: b33p_core::Backend::mock_requested(),
         }
+    }
+
+    pub fn installed_self() -> Option<PathBuf> {
+        if skip().any() {
+            return None;
+        }
+        let layout = Layout::user()?;
+        let exe = std::env::current_exe().ok()?;
+        super::same_path(&exe, &layout.exe).then_some(layout.exe)
     }
 
     pub fn on_start() -> Flow {

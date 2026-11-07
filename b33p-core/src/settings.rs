@@ -167,6 +167,9 @@ pub struct Settings {
     pub show_calendar: bool,
     /// Closing the window leaves b33p running in the tray, still receiving messages.
     pub close_to_tray: bool,
+    /// Asks GitHub once a day whether a newer b33p is out, and offers it (Windows builds
+    /// with an update key; see `update.rs`). Off unless chosen: it is traffic of its own.
+    pub check_updates: bool,
     /// How this computer appears under Linked devices on the phone, if chosen; otherwise
     /// [`default_device_name`].
     pub device_name: Option<String>,
@@ -191,6 +194,7 @@ impl Default for Settings {
             show_activity: false,
             show_calendar: false,
             close_to_tray: true,
+            check_updates: false,
             device_name: None,
             preferences: crate::Preferences::default(),
             recent_emoji: Vec::new(),
@@ -324,6 +328,8 @@ impl Settings {
                 ("show_calendar", "false") => settings.show_calendar = false,
                 ("close_to_tray", "true") => settings.close_to_tray = true,
                 ("close_to_tray", "false") => settings.close_to_tray = false,
+                ("check_updates", "true") => settings.check_updates = true,
+                ("check_updates", "false") => settings.check_updates = false,
                 ("read_receipts", "true") => settings.preferences.read_receipts = true,
                 ("read_receipts", "false") => settings.preferences.read_receipts = false,
                 ("typing_indicators", "true") => settings.preferences.typing_indicators = true,
@@ -353,7 +359,7 @@ impl Settings {
         format!(
             "theme = {}\nstyle = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {}\nshow_activity = {}\nshow_calendar = {}\n\
-             close_to_tray = {}\n\
+             close_to_tray = {}\ncheck_updates = {}\n\
              read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
             self.theme.key(),
             self.style.key(),
@@ -365,6 +371,7 @@ impl Settings {
             self.show_activity,
             self.show_calendar,
             self.close_to_tray,
+            self.check_updates,
             self.preferences.read_receipts,
             self.preferences.typing_indicators,
             self.preferences.link_previews,
@@ -462,6 +469,7 @@ mod tests {
                 show_activity: true,
                 show_calendar: true,
                 close_to_tray: false,
+                check_updates: true,
                 device_name: Some("Work = laptop".into()),
                 preferences: crate::Preferences {
                     read_receipts: false,

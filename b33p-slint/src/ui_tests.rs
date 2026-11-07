@@ -1087,6 +1087,39 @@ fn settings_say_where_to_report_a_problem() {
     );
 }
 
+/// An update found is offered above the chat list and in Settings, only by a build that can
+/// update itself.
+#[test]
+fn an_update_is_offered_only_where_updating_works() {
+    let (window, _) = window_with_messages(1);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 4000.));
+    let prefs = window.global::<Prefs>();
+    prefs.set_update_offer("9.9.9".into());
+    prefs.set_settings_open(true);
+    settle(&window);
+    assert!(find(&window, "Update and restart").is_none());
+
+    prefs.set_update_supported(true);
+    settle(&window);
+    let offered = ElementHandle::find_by_accessible_label(&window, "Update and restart").count();
+    assert_eq!(offered, 2, "above the chat list and in Settings");
+    let asked = Rc::new(Cell::new(false));
+    prefs.on_update_now({
+        let asked = asked.clone();
+        move || asked.set(true)
+    });
+    find(&window, "Update and restart")
+        .expect("offered")
+        .invoke_accessible_default_action();
+    assert!(asked.get());
+
+    prefs.set_update_offer("".into());
+    settle(&window);
+    assert!(find(&window, "Update and restart").is_none());
+}
+
 /// A button that is only an icon says what it does when the pointer rests on it.
 #[test]
 fn icon_buttons_have_tooltips() {
