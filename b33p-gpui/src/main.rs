@@ -25,6 +25,7 @@ mod app;
 mod assets;
 mod attachments;
 mod bubble;
+mod capture;
 mod chat_list;
 mod composer;
 mod confirm;

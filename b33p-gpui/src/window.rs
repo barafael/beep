@@ -54,6 +54,8 @@ pub fn open(shared: &Rc<Shared>, cx: &mut App) -> Result<()> {
         ..WindowOptions::default()
     };
     gpui_kit::open_window(options, cx, |window, cx| {
+        // The native window exists by now; Windows is asked to keep it out of captures.
+        crate::capture::exclude(window);
         cx.new(|cx| crate::app::AppView::new(shared.clone(), window, cx))
     })?;
     cx.activate(true);
