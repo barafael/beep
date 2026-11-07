@@ -287,7 +287,7 @@ pub fn menu(
 }
 
 /// Quick reactions, as in Signal's own apps.
-const QUICK: [&str; 6] = ["❤️", "👍", "👎", "😂", "😮", "😢"];
+pub const QUICK: [&str; 6] = ["❤️", "👍", "👎", "😂", "😮", "😢"];
 
 /// A message's buttons, which show while the pointer is on it: react, reply, more. The `group`
 /// is the name of the row they show with.
@@ -368,21 +368,23 @@ fn reaction_button(shared: &Rc<Shared>, index: usize) -> Popover {
                 .icon(icon("heart"))
                 .tooltip("React"),
         )
-        .content(move |_, window, cx| picker(&shared, index, window, cx))
+        .content(move |_, window, cx| picker(&shared, index, false, window, cx))
 }
 
-/// The picker's content: the quick row, or every emoji by group after "+".
-fn picker(
+/// The picker's content: the quick row, or every emoji by group after "+" (at once, if `full`:
+/// the quick row is on the bar over the message, which has its own "+").
+pub fn picker(
     shared: &Rc<Shared>,
     index: usize,
+    full: bool,
     window: &mut Window,
     cx: &mut Context<gpui_kit::component::popover::PopoverState>,
 ) -> AnyElement {
     let t = theme::tokens(cx);
     let all = window.use_keyed_state(
-        SharedString::from(format!("react-all-{index}")),
+        SharedString::from(format!("react-all-{index}-{full}")),
         cx,
-        |_, _| false,
+        move |_, _| full,
     );
     let group = window.use_keyed_state(
         SharedString::from(format!("react-group-{index}")),
@@ -542,61 +544,63 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
             }
         })
     };
-    Some(
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(theme::SPACE_XS))
-            .pl(px(theme::SPACE_L))
-            .pr(px(theme::SPACE_S))
-            .bg(t.surface_raised)
-            .border_t_1()
-            .border_color(t.divider)
-            // Over the composer: nothing under it answers the pointer.
-            .occlude()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(if count == 1 {
-                        "1 message selected".to_owned()
-                    } else {
-                        format!("{count} messages selected")
-                    }),
+    let bar = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACE_XS))
+        .pl(px(theme::SPACE_L))
+        .pr(px(theme::SPACE_S))
+        .bg(t.surface_raised)
+        .border_t_1()
+        .border_color(t.divider)
+        // Over the composer: nothing under it answers the pointer.
+        .occlude()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if count == 1 {
+                    "1 message selected".to_owned()
+                } else {
+                    format!("{count} messages selected")
+                }),
+        )
+        .child(button("selection-copy", "copy", "Copy selected").on_click({
+            let shared = shared.clone();
+            move |_, _, cx| {
+                let text = shared.chat.borrow().selected_text();
+                copy(text, cx);
+                shared.redraw(cx, |chat| chat.clear_selection());
+            }
+        }))
+        .when(can_forward, |bar| {
+            let shared = shared.clone();
+            bar.child(
+                button("selection-forward", "forward", "Forward selected").on_click(
+                    move |_, _, cx| {
+                        shared.edit(cx, |chat| {
+                            chat.start_forward_selection();
+                        })
+                    },
+                ),
             )
-            .child(button("selection-copy", "copy", "Copy selected").on_click({
-                let shared = shared.clone();
-                move |_, _, cx| {
-                    let text = shared.chat.borrow().selected_text();
-                    copy(text, cx);
-                    shared.redraw(cx, |chat| chat.clear_selection());
-                }
-            }))
-            .when(can_forward, |bar| {
-                let shared = shared.clone();
-                bar.child(
-                    button("selection-forward", "forward", "Forward selected").on_click(
-                        move |_, _, cx| {
-                            shared.edit(cx, |chat| {
-                                chat.start_forward_selection();
-                            })
-                        },
-                    ),
-                )
-            })
-            .child(delete)
-            .child(button("selection-clear", "x", "Clear selection").on_click({
-                let shared = shared.clone();
-                move |_, _, cx| shared.redraw(cx, |chat| chat.clear_selection())
-            }))
+        })
+        .child(delete)
+        .child(button("selection-clear", "x", "Clear selection").on_click({
+            let shared = shared.clone();
+            move |_, _, cx| shared.redraw(cx, |chat| chat.clear_selection())
+        }));
+    // Fades in over the composer.
+    Some(
+        crate::animation::fade_in("selection-bar-fade", crate::animation::FAST, bar)
             .into_any_element(),
     )
 }

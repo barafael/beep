@@ -25,7 +25,7 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | Failure screen: message, "Try again" (when it may work), "Use a password instead" (locked keyring only), "Start over…", "Open data folder" | yes | yes | test `a_failure_offers_a_way_out`; e2e `a_failure_can_be_tried_again` |
 | Asking before what can't be undone (unlink, start over, leave group, block or delete a request, delete for everyone); Cancel is the default, Esc cancels | yes | yes | test `a_failure_offers_a_way_out`; code `confirm.rs` |
 | Error banner: the message, "Try again" only when that may work, "Dismiss" | yes | yes | tests `the_error_offers_to_try_again_when_that_may_work`, `a_long_error_wraps`. A long message did not wrap in GPUI (the text ran out of the window): fixed |
-| Error banner slides open and closed | yes | no | cosmetic, see [Animations](#animations) |
+| Error banner slides open and closed | yes | yes | `app.rs` `banner`, kept while it slides away; to a guessed height (a line, plus a half for each hundred characters), then its real one. Tests `the_error_banner_slides`, `the_error_banner_does_not_slide_with_motion_off`; see [Animations](#animations) |
 | Error banner is announced at once by a screen reader | text role | alert role | GPUI: `Role::Alert` |
 | "Not connected" / "Catching up…" line over the chat list | yes | yes | code |
 | The backend ending without a word becomes the failure screen | yes | yes | code `main.rs` |
@@ -42,12 +42,12 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | Closing the window leaves b33p in the tray (setting "Keep running in the tray"), or ends it where there is no tray | yes (hides it) | yes (closes it) | GPUI windows can't be hidden: "in the tray" is no window and the process running, and opening it again opens a window. Everything shown is in `Shared`, so nothing is lost |
 | Tray icon: "Open b33p" and "Quit", the unread dot and the tooltip with the count, shown only with the setting | yes | yes | code `tray.rs` (a StatusNotifierItem through `ksni`; `tray-icon` on Windows and macOS) against `tray.slint`; unit tests of the icon and the tooltip |
 | `--hidden` starts in the tray, and opens the window if no tray host appears in 10 s or the user is needed | yes | yes | code `window.rs` |
-| One copy of b33p; starting it again shows the first | yes | yes | code. Wayland activation tokens handed over by a second start or a notification are only logged in GPUI, which takes none after startup: the window asks the compositor for focus by opening anew |
+| One copy of b33p; starting it again shows the first | yes | yes | code. A Wayland activation token handed over by a second start or a notification is given to the compositor: GPUI takes one only when it connects, so with a token and no active window the window closes, GPUI goes headless and windowed again with the token (`GraphicalEnvironment::activation_token`, public API made for this) and a window opens (`window.rs` `reconnect_with`). Without a token the window is closed and opened anew, as before. Display: the window comes back, draws and the agent answers; the private display's compositor (cage) has no `xdg_activation_v1`, so that the compositor took the token is not seen. The new connection drops a selection copied to the clipboard from b33p |
 | Notifications: setting, content (name and message, name only, nothing), click opens the chat, inline reply, withdrawn once read | yes | yes | the same `b33p-notify` and `ChatState` notices |
 | Starting with the system | yes | yes | `b33p-platform` |
 | Quitting cleanly on SIGTERM, SIGINT, SIGHUP | yes | yes | code `shutdown.rs` |
-| Quitting cleanly at Windows' session end (`WM_ENDSESSION`) | yes | no | Windows only; can't be built or tried here. GPUI's `shutdown.rs` says so |
-| The window kept out of screenshots, screen sharing and Recall (`SetWindowDisplayAffinity`) | yes (Windows) | no | Windows only; the call goes through the window's raw handle once it is open. Can't be built or tried here |
+| Quitting cleanly at Windows' session end (`WM_ENDSESSION`) | yes | yes, not run | Windows only: `shutdown.rs` (`windows_session`) is Slint's window procedure on a thread of its own, telling the app to quit and waiting up to 4 s for the backend. Compile-checked (the module alone, `cargo check --target x86_64-pc-windows-msvc`: the whole crate can't be checked here, its C dependencies need the Windows SDK); never run on Windows |
+| The window kept out of screenshots, screen sharing and Recall (`SetWindowDisplayAffinity`) | yes (Windows) | yes, not run | Windows only: `capture.rs`, through the window's raw handle (`HasWindowHandle` on GPUI's `Window`) as the window opens. Compile-checked as above, never run on Windows |
 | Reduced motion: "Animations" = As the desktop says / On / Off, following the desktop live | yes | yes | see [Animations](#animations) |
 | Theme System / Light / Dark; "System" follows the desktop as it changes | yes | yes | GPUI took the scheme only when b33p started or the setting changed: it follows `observe_window_appearance` now (not testable: the test platform has no way to change the appearance) |
 | Text size small / default / large | yes | yes | code |
@@ -82,7 +82,7 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | Link preview card (picture, title, description, site), click opens | yes | yes | code; named "Open link …" to a screen reader (GPUI: role added) |
 | Attachments: pictures (blurhash placeholder, fetch, retry), videos, GIF label, audio and voice messages with play, seek and time, files with Open and Save, stickers, long text | yes | yes | e2e `attachments_are_fetched_and_saved`; code. The audio position is a slider with its value to a screen reader in both (GPUI: added) |
 | Reactions: pills with counts, yours marked, click toggles; picker with every emoji | yes | yes | code |
-| Reacting: Slint shows a row of quick reactions after the pointer rests on a message; GPUI has "React" among the buttons that show on hover, which opens the same quick row and the full picker | popup after a dwell | toolbar button | see [Not the same](#not-the-same-and-why) |
+| Reacting: a row of quick reactions (six emoji and "+" for every emoji) over the bubble's top edge after the pointer has rested on the message 350 ms, kept while the pointer is on the message or the bar, gone with it | yes | yes, and "React" among the buttons that show on hover | `reaction_bar.rs`. Display: real pointer moves over the VNC socket (bar after the dwell, pointer on to it keeps it, "+" opens the picker above, an emoji reacts and closes both); tests `the_reaction_bar_comes_after_a_dwell`, `the_reaction_bar_goes_with_the_pointer`. While the pointer is on the bar the message's own buttons are hidden (they are drawn for the hovered row only) |
 | Delivery ticks (sending, sent, delivered, read), "Sending…", "edited", the time a message has left | yes | yes | named for screen readers in both ("Sent", "Disappears in 50m"); GPUI: roles added; test `things_say_what_they_are_to_screen_readers` |
 | A failed message says so on every bubble that failed and offers "Send again"; one Signal refused doesn't | yes | yes | tests `a_failed_message_offers_a_retry`, `the_window_shows_the_chat_state`; e2e `failures_offer_to_try_again_when_that_may_work` |
 | Message menu: select, reply, react, copy selection, copy text, forward, edit, delete for me, delete for everyone (asks) | yes | yes, and also "Save attachment", "Send again", "Info" | GPUI's has three more entries; the pin entries are in the rows below |
@@ -150,7 +150,13 @@ What moves in Slint, and in GPUI:
 | Spinners, tooltips, caret blink | yes | yes | the component library's, which obeys the flag |
 | Hover and press colour changes | fades | at once | cosmetic |
 | A new message fades in | yes | no | the row's fresh state is not in the view model GPUI reads; cosmetic |
-| Error banner slides, panels and dialogs fade, pictures fade over their placeholder, the audio bar glides | yes | no | cosmetic; the picture fade is in `images.rs`, which the performance work owns |
+| Error banner slides open and closed | yes | yes | `app.rs`; the closing one is kept for the length of the slide, with no alert role |
+| Dialogs and panels fade in | yes (dialogs also grow from 97%) | fade only | `widgets::modal`, `panels.rs`; GPUI has no element transform, so no growing |
+| The selection bar and files staged for sending fade in | yes | yes | `message_menu.rs`, `composer.rs` |
+| A new message fades in | yes | yes, but not those in a stream | `bubble::row`, from `Shared::arrived` (what the list was told). Not for one that came less than a second after another: a fade draws a frame at a time, and five a second would have the window drawing all the time |
+| Reply and edit bars slide, the typing line and the unread badge fade or grow, the audio bar glides, pictures fade over their placeholder | yes | no | cosmetic; the first two would need the closing kept (as the banner's is), the audio bar the last position |
+
+Idle: every one of these is GPUI's animation element, which asks for a frame at a time while it runs and not after; with motion off it draws the end state at once. Checked in the private display by counting `wl_surface.commit` requests (`WAYLAND_DEBUG=1`): 4 commits in the half second after a panel opens, then 0 in the next four seconds (the others in a window that is not typing show 0 to 2 in four seconds, the same as before). Test `dialogs_and_new_messages_fade_in_unless_motion_is_off` checks that the setting turns them all off.
 
 ## Accessibility
 
@@ -164,19 +170,21 @@ tests find an element by its name, not its role.
 
 ## Not the same, and why
 
-* **Reactions**: no popup after the pointer rests on a message. The message already has hover
-  buttons (reply, react, more) in GPUI, and "React" opens the quick row and the full picker, so
-  nothing is missing but the dwell; a timer that opens a popup under a resting pointer is more to
-  get wrong than it is worth.
 * **Settings choices** are segmented buttons (they look at home in GPUI); Slint's are combo boxes.
-* **The animations in the last table** that are not done: cosmetic, and the picture fade would
-  touch `images.rs`.
-* **Windows and macOS** are untested for GPUI; the two Windows-only features above (session end,
-  capture exclusion) are not written, since they can't be built or tried here.
-* **Harness `screenshot`** is unsupported: GPUI draws on the GPU and does not hand the frame back.
-  The display's screenshot (`testbox/gpui-view/view.sh shot`) is the way.
-* **Wayland activation tokens** after startup are only logged (GPUI takes only the one it starts
-  with).
+* **The animations in the last table** that are not done: hover colour fades, pictures and the
+  audio bar, the reply and edit bars, the typing line and the badge. Cosmetic.
+* **Windows and macOS** are untested for GPUI. The two Windows-only features above (session end,
+  capture exclusion) are written after Slint's and compile-checked, not run. macOS (`cargo check
+  --target aarch64-apple-darwin`) can't be checked here either: the target is installed, but the
+  C dependencies need the macOS SDK.
+* **Harness `screenshot`** is unsupported: the Wayland window can't give the frame back. GPUI's
+  `Window::render_to_image` (feature `test-support`) is only implemented by its test window,
+  which draws with a headless wgpu renderer when the app runs in `HeadlessAppContext`; the
+  Wayland window's renderer (`WgpuRenderer`) has no read-back, and the scene it would draw is
+  private to GPUI. What would make it work: a patch to `gpui-pre-linux`/`gpui-pre-wgpu` (the
+  surface texture with `COPY_SRC` and `render_to_image` on the Wayland window), or running the
+  harness build entirely offscreen. The display's screenshot (`testbox/gpui-view/view.sh shot`)
+  is the way, as before. The error says so.
 * **The Qt style** setting exists only with Qt.
 
 In GPUI and not in Slint: the "Send again" and "Save attachment" entries of the message menu, and the message info and readers (core has them; Slint has no window for them yet).

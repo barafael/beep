@@ -589,6 +589,8 @@ async fn the_error_offers_to_try_again_when_that_may_work(tc: &mut TestAppContex
         });
         Update::default()
     });
+    // The banner slides open first.
+    ui.wait(crate::animation::NORMAL * 2);
     ui.click("Try again");
     assert!(
         ui.sent()

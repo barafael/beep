@@ -58,6 +58,18 @@ signal-hook = "0.4"
 # `b33p-platform` use, with the async-io runtime they use. (Slint's own tray is this crate too.)
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 
+[target.'cfg(windows)'.dependencies]
+# The window that hears the session end (`shutdown.rs`), and the window kept out of screen
+# capture (`capture.rs`, through the window's raw handle, in the version GPUI hands out).
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    # `WNDCLASSW` is behind it.
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 # The tray icon (`tray.rs`) where there is no StatusNotifierItem.
 tray-icon = { version = "0.26", default-features = false }

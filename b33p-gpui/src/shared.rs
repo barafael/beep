@@ -123,6 +123,15 @@ pub struct Shared {
     /// more to lay out than the rest of the row together. See `message_menu::toolbar`.
     pub hovered_row: Cell<Option<usize>>,
     pub pinned_row: Cell<Option<usize>>,
+    /// The messages that came last: the row of the first, and when they did. They fade in, for as
+    /// long as that is news (`bubble::row`); messages drawn as a chat opens or scrolls do not.
+    /// Not for those that come in a stream (one less than a second after the one before): every
+    /// frame of a fade is drawn, and a stream would have the window drawing all the time.
+    pub arrived: Cell<Option<(usize, std::time::Instant)>>,
+    /// When messages came last, which `arrived` is not told of for those in a stream.
+    last_arrival: Cell<Option<std::time::Instant>>,
+    /// The quick reactions that come over a message once the pointer rests on it.
+    pub reaction_bar: crate::reaction_bar::State,
     /// The composer, which holds the text being written: the harness types into it.
     pub composer: RefCell<Option<gpui_kit::WeakEntity<crate::composer::ComposerView>>>,
     /// The icon in the system tray, if the platform has one (`window.rs`, `tray.rs`).
@@ -186,6 +195,9 @@ impl Shared {
             jump_serial: Cell::new(0),
             hovered_row: Cell::new(None),
             pinned_row: Cell::new(None),
+            arrived: Cell::new(None),
+            last_arrival: Cell::new(None),
+            reaction_bar: crate::reaction_bar::State::default(),
             composer: RefCell::default(),
             tray: RefCell::default(),
             start_hidden: Cell::new(false),
@@ -388,6 +400,7 @@ impl Shared {
         ) {
             self.hovered_row.set(None);
             self.pinned_row.set(None);
+            self.reaction_bar.reset();
         }
         if update.messages == MessagesUpdate::Reset {
             self.expanded.borrow_mut().clear();
@@ -400,6 +413,10 @@ impl Shared {
                     }
                 }
                 MessagesUpdate::Appended(n) => {
+                    let now = cx.background_executor().now();
+                    let calm = crate::animation::is_calm(self.last_arrival.replace(Some(now)), now);
+                    self.arrived
+                        .set(calm.then_some((count - n.min(count), now)));
                     if scroller.is_scrolled_up() {
                         self.unseen.set(self.unseen.get() + n);
                     }
