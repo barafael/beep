@@ -15,6 +15,7 @@ use crate::confirm::ConfirmView;
 use crate::forward::ForwardView;
 use crate::group_draft::GroupDraftView;
 use crate::join::JoinView;
+use crate::message_info::MessageInfoView;
 use crate::shared::{Confirm, Shared};
 use crate::stories::StoriesView;
 
@@ -25,6 +26,7 @@ pub struct Overlays {
     confirm: Option<Entity<ConfirmView>>,
     join: Option<Entity<JoinView>>,
     forward: Option<Entity<ForwardView>>,
+    message_info: Option<Entity<MessageInfoView>>,
     /// What had the focus before the first dialog opened, to give it back when the last closes:
     /// without a focused element Esc and the shortcuts have nowhere to start from.
     before: Option<FocusHandle>,
@@ -40,6 +42,7 @@ impl Overlays {
             confirm: None,
             join: None,
             forward: None,
+            message_info: None,
             before: None,
             any_open: false,
         }
@@ -65,17 +68,18 @@ fn keep<V: Render + 'static>(
 impl Render for Overlays {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let shared = self.shared.clone();
-        let (stories, group_draft, join, forwarding) = {
+        let (stories, group_draft, join, forwarding, info) = {
             let chat = shared.chat.borrow();
             (
                 shared.ui.borrow().stories_open,
                 chat.group_draft().is_some(),
                 chat.join().is_some(),
                 chat.forwarding(),
+                chat.message_info().is_some(),
             )
         };
         let confirming = shared.ui.borrow().confirm != Confirm::None;
-        let will_open = stories || group_draft || join || forwarding || confirming;
+        let will_open = stories || group_draft || join || forwarding || info || confirming;
         // The focus is noted before a view takes it, and given back after the last is gone.
         if will_open && !self.any_open {
             self.before = window.focused(cx);
@@ -101,6 +105,10 @@ impl Render for Overlays {
             keep(&mut self.forward, forwarding, window, cx, {
                 let shared = shared.clone();
                 move |window, cx| ForwardView::new(shared, window, cx)
+            }),
+            keep(&mut self.message_info, info, window, cx, {
+                let shared = shared.clone();
+                move |window, cx| MessageInfoView::new(shared, window, cx)
             }),
         ];
         if !will_open

@@ -27,6 +27,8 @@ pub struct ConversationView {
     strip: Entity<crate::activity::ActivityStrip>,
     /// The open chat's messages, drawn cached (see `messages.rs`).
     messages: Entity<MessagesView>,
+    /// The bar of pinned messages under the header.
+    pins: Entity<crate::pins::PinBar>,
 }
 
 impl ConversationView {
@@ -35,12 +37,14 @@ impl ConversationView {
         let panels = crate::panels::Panels::new(&shared, window, cx);
         let strip = cx.new(|cx| crate::activity::ActivityStrip::new(shared.clone(), cx));
         let messages = cx.new(|cx| MessagesView::new(shared.clone(), cx));
+        let pins = cx.new(|_| crate::pins::PinBar::new(shared.clone()));
         Self {
             shared,
             composer,
             panels,
             strip,
             messages,
+            pins,
         }
     }
 }
@@ -77,6 +81,7 @@ impl Render for ConversationView {
             .flex_col()
             .bg(t.surface)
             .child(header)
+            .children(crate::pins::PinBar::shown(&self.pins, &shared))
             .child(
                 div()
                     .flex_1()

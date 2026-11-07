@@ -94,7 +94,9 @@ impl AppView {
         }
         let mut chat = shared.chat.borrow_mut();
         let mut update = Update::default();
-        if chat.join().is_some() {
+        if chat.message_info().is_some() {
+            chat.close_message_info();
+        } else if chat.join().is_some() {
             chat.close_join();
         } else if shared.ui.borrow().stories_open {
             if chat.current_story().is_some() {

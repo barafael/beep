@@ -17,11 +17,18 @@ use gpui_kit::{
 };
 
 use crate::attachments::{self, Env};
-use crate::message_menu::{self, Info};
+use crate::message_menu::{self, Info, PinOffer};
 use crate::shared::Shared;
 use crate::text::{self, Look, RichText, Target};
 use crate::theme::{self, Tokens};
 use crate::widgets::{Speaks as _, avatar, avatar_color, icon};
+
+/// Messages longer than this many characters are folded, as Signal-Desktop folds them.
+const FOLD_CHARACTERS: usize = 800;
+/// How many lines of a folded message show.
+const FOLD_LINES: usize = 10;
+/// The line height of a folded message's text, in font sizes.
+const FOLD_LINE_HEIGHT: f32 = 1.5;
 
 /// The row of message `index` of the open chat.
 pub fn row(index: usize, shared: &Rc<Shared>, cx: &mut App) -> AnyElement {
@@ -71,6 +78,9 @@ fn build(
             .find(|a| attachments::can_save(a.kind))
             .map(|a| a.id.clone()),
         can_send_again: m.unsent == Some(Unsent::Failed),
+        pin: pin_offer(chat, index, m),
+        pins_full: chat.pins_full(),
+        can_info: m.outgoing && !m.notice && m.unsent.is_none(),
     };
     // Inside the row, which the scroller gives no sides, so that a picked message's tint
     // reaches the edges of the list.
@@ -168,6 +178,20 @@ fn build(
             message_menu::menu(menu, &menu_shared, &info, window, cx)
         })
         .into_any_element()
+}
+
+/// Whether the menu offers to pin the message, to unpin it, or neither: as Slint's, only where
+/// messages can be pinned, and not for a notice, a deleted message or one not sent yet.
+pub(crate) fn pin_offer(chat: &ChatState, index: usize, m: &b33p_core::ChatMessage) -> PinOffer {
+    if !chat.can_pin_messages() {
+        PinOffer::None
+    } else if chat.is_pinned(index) {
+        PinOffer::Unpin
+    } else if m.deleted || m.notice || m.unsent.is_some() {
+        PinOffer::None
+    } else {
+        PinOffer::Pin
+    }
 }
 
 /// The name of the row's hover group, which the buttons that show on hover go by.
@@ -357,13 +381,29 @@ fn message(
         });
 
     if let Some(quote) = &m.quote {
+        let open_shared = shared.clone();
         bubble = bubble.child(
             div()
+                .id(SharedString::from(format!("quote-{index}")))
                 .flex()
                 .flex_row()
                 .rounded(px(theme::RADIUS_S))
                 .bg(ink.opacity(0.1))
                 .overflow_hidden()
+                // As in Signal's apps, a click on the quote shows the message quoted.
+                .when(!selecting, |quote_box| {
+                    quote_box
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(ink.opacity(0.2)))
+                        .speaks_as(
+                            Role::Button,
+                            format!("Show the quoted message from {}", quote.author),
+                            format!("Quote {index}"),
+                        )
+                        .on_click(move |_, _, cx| {
+                            open_shared.redraw(cx, |chat| chat.open_quote(index))
+                        })
+                })
                 .child(
                     div()
                         .flex_none()
@@ -437,12 +477,47 @@ fn message(
         let body = RichText::new(key(view), rich, look, on_target)
             .interactive(!selecting)
             .selectable(!m.deleted);
+        // Past 800 characters a message shows its first ten lines and "Read more", as Signal's
+        // apps fold them: not a screenful of one message to scroll past.
+        let key = key(view);
+        let long = !m.deleted && view.body.chars().count() > FOLD_CHARACTERS;
+        let folded = long && !shared.expanded.borrow().contains(key.as_ref());
+        let line: f32 = (theme::body(shared.settings.borrow().text_size.scale())
+            * FOLD_LINE_HEIGHT)
+            .round()
+            .into();
+        let body = if folded { body.selectable(false) } else { body };
         bubble = bubble.child(
             div()
                 .min_w_0()
                 .when(m.deleted, |d| d.italic().text_color(faint))
+                // The text's own lines are cut off whole: a line height of our own makes ten of
+                // them a height that is known without laying the text out.
+                .when(long, |d| d.line_height(px(line)))
+                .when(folded, |d| {
+                    d.max_h(px(line * FOLD_LINES as f32)).overflow_hidden()
+                })
                 .child(body),
         );
+        if folded {
+            let shared = shared.clone();
+            bubble = bubble.child(
+                div()
+                    .id(SharedString::from(format!("read-more-{index}")))
+                    .cursor_pointer()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if outgoing { ink } else { t.accent })
+                    .speaks_as(Role::Button, "Read more", format!("Read more {index}"))
+                    .on_click(move |_, _, cx| {
+                        shared.expanded.borrow_mut().insert(key.to_string());
+                        shared.redraw(cx, |_| Update {
+                            rows: true,
+                            ..Update::default()
+                        });
+                    })
+                    .child("Read more"),
+            );
+        }
     }
 
     let footer = Footer {
@@ -525,7 +600,8 @@ fn message(
             )
         })
         .child(bubble)
-        .children(reactions);
+        .children(reactions)
+        .children(readers(index, outgoing && in_group, chat, shared, t));
     let row = div()
         .w_full()
         .flex()
@@ -561,6 +637,68 @@ fn message(
         row.child(content).children(toolbar)
     }
     .into_any_element()
+}
+
+/// How many of the members who read a message have their picture shown under it; the rest are
+/// counted.
+const READERS_SHOWN: usize = 6;
+
+/// Under our newest message that members of a group have read, their small pictures, as
+/// Signal's apps show who has read up to there.
+fn readers(
+    index: usize,
+    group_message: bool,
+    chat: &ChatState,
+    shared: &Rc<Shared>,
+    t: &Tokens,
+) -> Option<AnyElement> {
+    if !group_message {
+        return None;
+    }
+    let people = chat.readers_of(index);
+    if people.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = people.iter().map(|p| p.name.as_str()).collect();
+    let more = people.len().saturating_sub(READERS_SHOWN);
+    Some(
+        div()
+            .id(SharedString::from(format!("readers-{index}")))
+            .speaks_as(
+                Role::Label,
+                format!("Read by {}", names.join(", ")),
+                format!("Readers {index}"),
+            )
+            .flex()
+            .flex_row()
+            .justify_end()
+            .items_center()
+            .gap(px(2.))
+            .px(px(6.))
+            .pt(px(2.))
+            .children(people.iter().take(READERS_SHOWN).map(|person| {
+                let id = ConversationId::contact(&person.service_id);
+                let picture = shared
+                    .images
+                    .avatar(&format!("person:{}", person.service_id), chat.avatar(&id));
+                avatar(
+                    16.,
+                    &state::initials(&person.name),
+                    avatar_color(&id),
+                    picture,
+                    t,
+                )
+            }))
+            .when(more > 0, |row| {
+                row.child(
+                    div()
+                        .text_size(px(theme::BODY * theme::CAPTION))
+                        .text_color(t.text_secondary)
+                        .child(SharedString::from(format!("+{more}"))),
+                )
+            })
+            .into_any_element(),
+    )
 }
 
 /// The time, ticks and the like, at the end of a bubble.
