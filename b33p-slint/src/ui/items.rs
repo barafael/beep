@@ -473,8 +473,14 @@ mod fade_tests {
     fn only_a_message_after_a_quiet_moment_fades() {
         let start = Instant::now();
         assert!(fade_gap_passed(None, start));
-        assert!(!fade_gap_passed(Some(start), start + Duration::from_millis(200)));
-        assert!(!fade_gap_passed(Some(start), start + FADE_GAP - Duration::from_millis(1)));
+        assert!(!fade_gap_passed(
+            Some(start),
+            start + Duration::from_millis(200)
+        ));
+        assert!(!fade_gap_passed(
+            Some(start),
+            start + FADE_GAP - Duration::from_millis(1)
+        ));
         assert!(fade_gap_passed(Some(start), start + FADE_GAP));
     }
 }
