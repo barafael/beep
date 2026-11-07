@@ -218,6 +218,10 @@ export global Composer {
     in-out property <int> paste-text;
     // Files dropped onto the open chat, to attach.
     callback files-dropped(DropEvent);
+    // What an input method is composing (Hangul, kana, …), not yet in the draft. A name to
+    // mention is looked for in the draft with it.
+    in-out property <string> composing;
+    callback composing-edited;
     // Group members matching the "@…" the draft ends with.
     in property <[string]> mention-candidates;
     callback pick-mention(int);

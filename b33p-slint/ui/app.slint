@@ -1834,6 +1834,11 @@ export component AppWindow inherits Window {
                                         selection-foreground-color: Theme.selection-text;
                                         accessible-placeholder-text: Composer.editing ? "Edit message" : "Message";
                                         edited => { Composer.draft-edited(self.text); }
+                                        // A composition changes neither the text nor the caret.
+                                        changed preedit-text => {
+                                            Composer.composing = self.preedit-text;
+                                            Composer.composing-edited();
+                                        }
                                         // Where the caret is, for which line it is on.
                                         property <length> caret-y;
                                         // The caret stays in view.
