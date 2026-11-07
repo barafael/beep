@@ -41,6 +41,10 @@ jobs:
       # workspace-wide runs turn `signal` on by unifying features, which hides a missing cfg.
       - run: cargo clippy -p b33p-core --all-targets --locked --no-default-features -- -D warnings
       - run: cargo test --workspace --locked
+      # The GPUI window's end-to-end tests drive the app over the agent harness's socket, on GPUI's
+      # headless test platform (no display, no GPU): they need the feature, which the run above
+      # leaves off.
+      - run: cargo test -p b33p-gpui --features harness --locked
       # BoringSSL (contact discovery) can't be linked next to OpenSSL's libcrypto, so SQLCipher must
       # build with the crypto provider in pure Rust (Cargo.toml); without that feature, libsqlite3-sys
       # links the system's libcrypto without a word.

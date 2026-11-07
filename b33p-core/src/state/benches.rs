@@ -601,6 +601,180 @@ fn bench_catch_up() {
     );
 }
 
+/// Chats a backlog goes to: prime, so that messages cycling through the chats and through an hour of
+/// seconds never repeat a (chat, time) pair, which would be dropped as a message already there.
+const CHATS: usize = 211;
+
+/// The backend catching up: `n` incoming messages in a burst, spread over `chats` chats, their
+/// times scattered over an hour (messages that come late or from several devices), as the mock's
+/// backlog does.
+fn backlog(n: usize, chats: usize, in_order: bool) -> Vec<Event> {
+    let now = now_millis();
+    let mut rng = Rng(5);
+    (0..n)
+        .map(|i| {
+            let words: Vec<&str> = (0..1 + rng.below(12))
+                .map(|_| ["the", "meeting", "was", "moved", "to", "friday"][rng.below(6) as usize])
+                .collect();
+            let chat = i % chats;
+            Event::Message(ChatMessage {
+                conversation: contact(chat),
+                sender_id: sender_id(chat),
+                sender: format!("Person {chat}"),
+                body: words.join(" "),
+                timestamp: if in_order {
+                    // As a server delivers: oldest first, now and then one that took longer.
+                    let late = if i % 16 == 0 { 30_000 } else { 0 };
+                    now - 3_600_000 + i as u64 * 3_600_000 / n as u64 - late
+                } else {
+                    now - (i as u64 % 3_600) * 1_000
+                },
+                ..ChatMessage::default()
+            })
+        })
+        .collect()
+}
+
+/// A fresh state that has linked and connected, with `chats` contacts listed, not yet synced.
+fn catching_up(chats: usize) -> ChatState {
+    let mut chat = ChatState::default();
+    chat.apply(Event::Linked {
+        account: "me".into(),
+    });
+    chat.apply(Event::Conversations(
+        (0..chats)
+            .map(|i| Conversation {
+                id: contact(i),
+                title: format!("Person {i}"),
+                settings: ChatSettings {
+                    accepted: true,
+                    ..ChatSettings::default()
+                },
+                ..Conversation::default()
+            })
+            .collect(),
+    ));
+    chat.apply(Event::Connected);
+    chat
+}
+
+#[test]
+#[ignore]
+fn bench_backlog() {
+    let _one = ONE_AT_A_TIME.lock();
+    println!(
+        "size of a ChatMessage: {} bytes",
+        std::mem::size_of::<ChatMessage>()
+    );
+    for (n, in_order) in [(20_000, false), (200_000, false), (200_000, true)] {
+        let events = backlog(n, CHATS, in_order);
+        let order = if in_order { "in order" } else { "scattered" };
+        bench_with(
+            &format!("g. {n} backlog messages ({order}) over {CHATS} chats, batches of 500"),
+            3,
+            || (catching_up(CHATS), events.clone()),
+            |(mut chat, events)| {
+                let mut events = events.into_iter();
+                loop {
+                    let batch: Vec<Event> = events.by_ref().take(500).collect();
+                    if batch.is_empty() {
+                        break;
+                    }
+                    chat.apply_all(batch);
+                }
+                chat.apply(Event::Synced);
+                chat
+            },
+        );
+    }
+}
+
+/// The mock's own backlog (`B33P_MOCK_SCALE`'s `backlog=`), as a window takes it: the events of
+/// the backend thread, applied in batches of a few milliseconds, each event taken from the
+/// channel as it is applied. Needs the debug assertions the mock's scale needs:
+/// `cargo test -p b33p-core --profile testbox -- --ignored bench_mock_backlog --nocapture`.
+#[test]
+#[ignore]
+fn bench_mock_backlog() {
+    let _one = ONE_AT_A_TIME.lock();
+    let backlog = std::env::var("BENCH_BACKLOG").unwrap_or_else(|_| "200000".into());
+    // SAFETY: nothing else in this process reads the environment meanwhile (one test at a time).
+    unsafe {
+        std::env::set_var(
+            "B33P_MOCK_SCALE",
+            format!("chats=200,messages=20000,members=500,picture=640,backlog={backlog}"),
+        );
+    }
+    let backend = crate::Backend::mock();
+    let events = backend.events();
+    let mut chat = ChatState::default();
+    let (mut batches, mut count) = (0, 0);
+    let mut synced = false;
+    let mut waiting = Duration::ZERO;
+    let mut working = Duration::ZERO;
+    while !synced {
+        let wait = Instant::now();
+        let Ok(first) = events.recv_blocking() else {
+            break;
+        };
+        waiting += wait.elapsed();
+        let started = Instant::now();
+        let batch = std::iter::once(first).chain(std::iter::from_fn(|| {
+            (started.elapsed() < Duration::from_millis(8))
+                .then(|| events.try_recv().ok())
+                .flatten()
+        }));
+        chat.apply_all(batch.inspect(|event| {
+            count += 1;
+            synced |= matches!(event, Event::Synced);
+        }));
+        black_box(chat.unread_total());
+        working += started.elapsed();
+        batches += 1;
+    }
+    println!(
+        "mock backlog: {count} events in {batches} batches, {working:?} taking and applying them \
+         ({waiting:?} waiting for the first of each), {} unread",
+        chat.unread_total()
+    );
+}
+
+/// Resident memory of this process, in bytes.
+fn resident() -> usize {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|statm| statm.split_whitespace().nth(1)?.parse::<usize>().ok())
+        .map_or(0, |pages| pages * 4096)
+}
+
+#[test]
+#[ignore]
+fn bench_backlog_memory() {
+    let _one = ONE_AT_A_TIME.lock();
+    let n = 200_000;
+    let events = backlog(n, CHATS, true);
+    let mut chat = catching_up(CHATS);
+    let before = resident();
+    let mut events = events.into_iter();
+    loop {
+        let batch: Vec<Event> = events.by_ref().take(500).collect();
+        if batch.is_empty() {
+            break;
+        }
+        chat.apply_all(batch);
+    }
+    chat.apply(Event::Synced);
+    let after = resident();
+    // The events were made before `before`, and what they hold (the strings) is moved into the
+    // histories, so this counts what is new: the histories' own slots, one per message.
+    println!(
+        "memory: {n} messages take {:.1} MB resident in the histories, {} bytes each",
+        (after - before.min(after)) as f64 / 1e6,
+        (after - before.min(after)) / n
+    );
+    black_box(&chat);
+}
+
 #[test]
 #[ignore]
 fn bench_chat_list() {

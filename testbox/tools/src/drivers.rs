@@ -315,6 +315,12 @@ pub enum Android {
     SetTimer {
         seconds: u32,
     },
+    /// Gives the open conversation's contact the nickname `given` (a first name only), from its
+    /// chat settings; back in the conversation after. Kept in the storage service, as a name
+    /// from the phone's address book is.
+    SetNickname {
+        given: String,
+    },
     /// Posts a text story with `text` to the group `group` names, from the Stories tab; back in
     /// the chats after.
     PostStory {

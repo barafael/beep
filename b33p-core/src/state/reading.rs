@@ -134,25 +134,33 @@ impl ChatState {
         std::mem::take(&mut self.notifications.pending)
     }
 
-    pub(super) fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
-        let conversation = self
-            .conversation_at
-            .get(id)
-            .map(|&at| &self.conversations[at]);
-        let muted = conversation.is_some_and(|c| c.settings.muted(self.now()));
+    /// Whether a message of `id` is to be told to the user as it comes, as far as that is known
+    /// without the message: not for a muted chat or the open one of a focused window. While
+    /// catching up it is only counted, for the one notification that sums it up; the caller
+    /// then needn't make the text up for each of a backlog's messages.
+    pub(super) fn wants_notice(&mut self, id: &ConversationId) -> bool {
+        let muted = self
+            .conversation(id)
+            .is_some_and(|c| c.settings.muted(self.now()));
         let n = &mut self.notifications;
         if !n.enabled || muted || (n.window_focused && self.selected.as_ref() == Some(id)) {
-            return;
+            return false;
         }
         if !self.synced {
             *n.caught_up.entry(id.clone()).or_default() += 1;
-            return;
+            return false;
         }
-        let group = conversation.filter(|c| c.is_group());
+        true
+    }
+
+    /// Tells the user of a message of `id` that [`ChatState::wants_notice`] said yes to.
+    pub(super) fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
+        let group = self.conversation(id).filter(|c| c.is_group());
         let name = match group {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
         };
+        let n = &mut self.notifications;
         let (title, body) = match n.content {
             NotificationContent::NameAndMessage => (name, body),
             NotificationContent::NameOnly => (name, "New message".into()),
