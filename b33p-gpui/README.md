@@ -39,6 +39,19 @@ The tray needs a session bus and a StatusNotifierWatcher, which the display's co
 The mock's chats are `c:alice`, `c:bob`, `g:rust`, `c:stranger`; the actions are the variants of
 `Action` in `b33p-harness`. Setting up the image and tools is in the script's header.
 
+## Measuring it against the Slint client
+
+`testbox/gpui-view/bench.py` runs both clients on the mock, with much more data
+(`B33P_MOCK_SCALE`, see `b33p-core/src/mock/scale.rs`), each in a display of its own that draws on
+the host's GPU through its render node, and reports the processor and GPU time, memory, threads,
+wakeups and frame gaps of scrolling, switching, typing, resizing, panels, arriving messages and a
+soak. Its header says what to build first. Two things about that display matter for any
+measurement of a GPUI window: without a keyboard in the compositor's seat no window is ever
+active (GPUI takes keyboard focus for it), which `bench.py` gives it with a key press on the VNC
+socket; and the display's compositor must draw with the GPU (`WITH_DISPLAY_RENDERER=gles2`) for
+GPUI to present through Vulkan on it, else it falls back to Mesa's software one and every number
+is inflated.
+
 ## How it is put together
 
 - `shared.rs`: `Shared`, everything that outlives a window: the `ChatState`, the backend's
