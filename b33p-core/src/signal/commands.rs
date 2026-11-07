@@ -1133,7 +1133,7 @@ async fn handle_command(
             start_timers(ctx, &conversation, &expiring, now_millis()).await;
             tokio::task::spawn_local(send_read(
                 manager.clone(),
-                ctx.clone(),
+                ctx.ports.clone(),
                 conversation,
                 messages,
             ));

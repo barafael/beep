@@ -31,7 +31,7 @@ use crate::{
 };
 
 use super::{
-    Ctx, Mgr,
+    Ctx, Mgr, Ports,
     conversations::{
         Names, accepted, e164_of, expire_timer, is_blocked, or_logged, own_id, sender_name,
         thread_of, wrote_to,
@@ -764,7 +764,7 @@ const STORAGE_WAIT: Duration = Duration::from_secs(2 * 60);
 
 pub(super) async fn send_read(
     manager: Mgr,
-    ctx: Ctx,
+    ctx: Ports,
     conversation: ConversationId,
     messages: Vec<MessageRef>,
 ) {

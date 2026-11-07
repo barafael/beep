@@ -34,8 +34,8 @@ use crate::{
 };
 
 use super::{
-    Background, Ctx, GroupIds, Mgr,
-    avatars::AvatarFetcher,
+    Ctx, Mgr, Ports,
+    avatars::Avatars,
     commands::{handle, send_interrupted},
     conversations::{display_number, send_conversations, send_latest_messages, send_unread},
     send::request_sync,
@@ -896,8 +896,8 @@ async fn run_linked(
     let storage_read = tables.storage_version().await.unwrap_or(0) > 0;
     let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
     let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
-    let ctx = Ctx {
-        threads: Rc::default(),
+    let (to_session, for_session) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = Ctx::new(Ports {
         events: events.clone(),
         tables: tables.clone(),
         preferences: preferences.clone(),
@@ -905,12 +905,9 @@ async fn run_linked(
         story_kept: Rc::default(),
         storage_changed: Rc::default(),
         storage_read: Rc::new(tokio::sync::watch::Sender::new(storage_read)),
-        trust: Rc::default(),
-        group_ids: GroupIds::default(),
-        background: Background::default(),
         outbox,
-    };
-    let (threads, events) = (ctx.threads.clone(), ctx.events.clone());
+        session: to_session,
+    });
     if send_conversations(&manager, &ctx).await == 0 {
         // Phones don't push their contacts to a newly linked device; they have to be asked.
         // The answer arrives through receiving, as `Received::Contacts`.
@@ -935,29 +932,35 @@ async fn run_linked(
 
     let story_over = send_stories(&manager, &ctx).await;
     // In the background, so receiving starts right away.
-    let latest = tokio::task::spawn_local(send_latest_messages(manager.clone(), ctx.clone()));
-    let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.clone()));
+    let latest = tokio::task::spawn_local(send_latest_messages(
+        manager.clone(),
+        ctx.threads_now(),
+        events.clone(),
+    ));
+    let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.ports.clone()));
 
     let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
-    let avatars = AvatarFetcher::new(manager.clone(), threads.clone(), events.clone());
-    avatars.request();
+    // Ends after its pass once the session has dropped its end.
+    let (avatars, asked) = tokio::sync::mpsc::unbounded_channel();
+    tokio::task::spawn_local(Avatars::new(manager.clone(), events.clone()).event_loop(asked));
+    avatars.send(ctx.threads_now()).ok();
     // What the other side sees, one command at a time and in order; see `outgoing`. Their
     // sends then go through the outbox, with everyone else's.
-    let (in_order, mut ordered) = tokio::sync::mpsc::unbounded_channel::<Command>();
+    let (in_order, mut ordered) = tokio::sync::mpsc::unbounded_channel::<(Command, Ctx)>();
     let ordering = tokio::task::spawn_local({
-        let (mut manager, ctx, downloads) = (manager.clone(), ctx.clone(), downloads.clone());
+        let (mut manager, downloads) = (manager.clone(), downloads.clone());
         async move {
-            while let Some(command) = ordered.recv().await {
+            while let Some((command, ctx)) = ordered.recv().await {
                 handle(&mut manager, &ctx, &downloads, command).await;
             }
         }
     });
 
-    let session = Session::new(manager, ctx.clone(), downloads, avatars, in_order);
-    let (_, ended) = session
-        .event_loop(pending, command_rx, device_name, story_over)
+    let session = Session::new(manager, ctx, downloads, avatars, in_order);
+    let (session, ended) = session
+        .event_loop(pending, command_rx, for_session, device_name, story_over)
         .await;
-    ctx.background.stop();
+    session.stop_background();
     ordering.abort();
     latest.abort();
     following.abort();

@@ -32,7 +32,7 @@ use crate::{
 
 use super::{
     Ctx, Mgr,
-    avatars::{AvatarFetcher, send_group_avatar},
+    avatars::{AvatarRequests, send_group_avatar},
     conversations::{
         Names, accepted, conversation_id, e164_of, ensure_conversation, is_blocked, own_id,
         send_conversations, sender_name, thread_of, wrote_to,
@@ -236,7 +236,7 @@ async fn watch_wakeups(_: Rc<tokio::sync::Notify>) {}
 pub(super) async fn handle_incoming(
     manager: &Mgr,
     ctx: &Ctx,
-    avatars: &AvatarFetcher,
+    avatars: &AvatarRequests,
     kept: &mut Kept,
     repairs: &mut Repairs,
     incoming: Incoming,
@@ -260,7 +260,7 @@ pub(super) async fn handle_incoming(
 async fn handle_received(
     manager: &Mgr,
     ctx: &Ctx,
-    avatars: &AvatarFetcher,
+    avatars: &AvatarRequests,
     kept: &mut Kept,
     repairs: &mut Repairs,
     received: Received,
@@ -287,7 +287,7 @@ async fn handle_received(
             names.clear();
             send_conversations(manager, ctx).await;
             // A newly linked device first learns its contacts here.
-            avatars.request();
+            avatars.send(ctx.threads_now()).ok();
             true
         }
         Received::DecryptionError {
