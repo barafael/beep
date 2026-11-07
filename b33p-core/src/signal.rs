@@ -45,7 +45,7 @@ fn wipe_data() -> Result<(), WipeError> {
 pub(crate) type Mgr = Manager<SqliteStore, Registered>;
 
 /// Maps the opaque ids handed to the UI back to presage threads.
-type Threads = Rc<RefCell<HashMap<ConversationId, Thread>>>;
+type Threads = RefCell<HashMap<ConversationId, Thread>>;
 
 pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
@@ -106,10 +106,9 @@ pub fn run(config: Config, commands: Inbox, events: Events) {
     attachments::clean_opened();
 }
 
-/// What the parts of a linked session share.
+/// Where the parts of a linked session send to, and the tables: any of them may hold a copy.
 #[derive(Clone)]
-struct Ctx {
-    threads: Threads,
+struct Ports {
     events: Events,
     tables: LocalStore,
     preferences: Rc<Cell<Preferences>>,
@@ -124,13 +123,82 @@ struct Ctx {
     /// Whether the phone's settings (who was accepted, who is blocked) have been read from the
     /// storage service: not yet right after linking.
     storage_read: Rc<tokio::sync::watch::Sender<bool>>,
-    /// How far each contact's safety number is trusted, as the UI was last told; see
-    /// [`publish_trust`].
-    trust: Rc<RefCell<HashMap<ServiceId, crate::Trust>>>,
-    group_ids: GroupIds,
-    background: Background,
     /// Every send goes through here, one at a time ([`outbox`](crate::outbox)).
     outbox: crate::outbox::Outbox,
+    /// What the session is to do for the parts beside it; see [`ForSession`].
+    session: tokio::sync::mpsc::UnboundedSender<ForSession>,
+}
+
+/// What a part beside the session hands it to do, as only the session changes [`Ctx`]'s maps.
+enum ForSession {
+    /// Sends the conversations again: a new sender was saved as a contact.
+    Conversations,
+    /// Takes over the verifications the phone's storage service had.
+    Verifications(crate::storage::Verifications),
+    /// Tells the UI how far a contact's safety number is trusted, if that changed.
+    Trust(ServiceId, crate::Trust),
+}
+
+/// What a linked session knows of its conversations, with its [`Ports`]. The session owns the
+/// one that counts ([`Role::Session`]); a command taken in order runs on a copy made for it
+/// ([`Ctx::copy_for_command`]), whose news of trust goes to the session.
+struct Ctx {
+    ports: Ports,
+    role: Role,
+    threads: Threads,
+    /// How far each contact's safety number is trusted, as the UI was last told; see
+    /// [`publish_trust`](trust::publish_trust).
+    trust: RefCell<HashMap<ServiceId, crate::Trust>>,
+    group_ids: GroupIds,
+    background: Background,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Session,
+    Copy,
+}
+
+impl std::ops::Deref for Ctx {
+    type Target = Ports;
+
+    fn deref(&self) -> &Ports {
+        &self.ports
+    }
+}
+
+impl Ctx {
+    fn new(ports: Ports) -> Self {
+        Self {
+            ports,
+            role: Role::Session,
+            threads: Threads::default(),
+            trust: RefCell::default(),
+            group_ids: GroupIds::default(),
+            background: Background::default(),
+        }
+    }
+
+    /// A copy for one command taken in order, which runs beside the session.
+    fn copy_for_command(&self) -> Self {
+        Self {
+            ports: self.ports.clone(),
+            role: Role::Copy,
+            threads: self.threads.clone(),
+            trust: self.trust.clone(),
+            group_ids: GroupIds::default(),
+            background: Background::default(),
+        }
+    }
+
+    /// The threads as they are now, for a part beside the session.
+    fn threads_now(&self) -> Vec<(ConversationId, Thread)> {
+        self.threads
+            .borrow()
+            .iter()
+            .map(|(id, thread)| (id.clone(), thread.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -138,8 +206,7 @@ impl Ctx {
     /// A session's context on `tables` alone, without a manager; with what it sends the UI.
     async fn for_tests(tables: LocalStore) -> (Self, async_channel::Receiver<Event>) {
         let (events, ui) = async_channel::unbounded();
-        let ctx = Ctx {
-            threads: Rc::default(),
+        let ctx = Ctx::new(Ports {
             events: Events::new(events),
             tables,
             preferences: Rc::new(Cell::new(Preferences::default())),
@@ -147,11 +214,9 @@ impl Ctx {
             story_kept: Rc::default(),
             storage_changed: Rc::default(),
             storage_read: Rc::new(tokio::sync::watch::Sender::new(false)),
-            trust: Rc::default(),
-            group_ids: GroupIds::default(),
-            background: Background::default(),
             outbox: tokio::sync::mpsc::channel(1).0,
-        };
+            session: tokio::sync::mpsc::unbounded_channel().0,
+        });
         (ctx, ui)
     }
 }
@@ -159,8 +224,8 @@ impl Ctx {
 /// Commands that read a lot (a chat's whole history, every sticker) and so run beside the
 /// command loop rather than hold up what comes after them. A newer one of a kind makes the
 /// older one pointless (the UI shows only the answer to the latest), so it stops that.
-#[derive(Clone, Default)]
-struct Background(Rc<RefCell<HashMap<BackgroundKind, tokio::task::AbortHandle>>>);
+#[derive(Default)]
+struct Background(RefCell<HashMap<BackgroundKind, tokio::task::AbortHandle>>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum BackgroundKind {
@@ -190,8 +255,8 @@ impl Background {
 /// The groups of [`Ctx::threads`] by the id typing indicators and sync messages name them by
 /// (see [`group_identifier`]), each worked out once: that is elliptic-curve arithmetic, too
 /// much to do for every group whenever someone types.
-#[derive(Clone, Default)]
-struct GroupIds(Rc<RefCell<GroupIdIndex>>);
+#[derive(Default)]
+struct GroupIds(RefCell<GroupIdIndex>);
 
 #[derive(Default)]
 struct GroupIdIndex {

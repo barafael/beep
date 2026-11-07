@@ -1,6 +1,7 @@
 //! The box as one pod under `podman kube play` (testbox/pod.yaml), not Compose: that would be a
 //! second definition of the box beside the pod. Revise if the box has to run on Docker.
 
+use std::collections::HashSet;
 use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -542,6 +543,8 @@ pub struct Pod {
     rendered: PathBuf,
     /// What tells of a lost message, from outside the containers' logs ([`Self::note_lost`]).
     lost: Mutex<Vec<String>>,
+    /// What presage-cli printed having received, by account and time ([`Self::note_printed`]).
+    printed: Mutex<HashSet<(String, u64)>>,
     /// Whether the boxes it plays write the wire down ([`Self::capture`]).
     capture: AtomicBool,
     /// Which window b33p is ([`Self::set_ui`]), a [`Ui`] as a number.
@@ -577,6 +580,7 @@ impl Pod {
             name,
             target,
             lost: Mutex::default(),
+            printed: Mutex::default(),
             capture: AtomicBool::new(false),
             ui: AtomicU8::new(Ui::Slint as u8),
         })
@@ -890,6 +894,10 @@ impl Pod {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
+        self.printed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         self.play(clients, b33ps)
     }
 
@@ -1164,6 +1172,22 @@ impl Pod {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(line);
+    }
+
+    /// Notes that presage-cli, on `account`, printed having received the message of `timestamp`.
+    pub fn note_printed(&self, account: &str, timestamp: u64) {
+        self.printed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((account.to_owned(), timestamp));
+    }
+
+    /// Whether [`Self::note_printed`] noted that.
+    pub fn was_printed(&self, account: &str, timestamp: u64) -> bool {
+        self.printed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(account.to_owned(), timestamp))
     }
 
     /// What [`Self::note_lost`] noted.

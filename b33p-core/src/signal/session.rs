@@ -1,8 +1,10 @@
 //! A linked session's actor, [`Session`]: it takes the commands from the UI and what
 //! [`Receiver`] receives, deletes disappearing messages when due, and takes stories off the
-//! list once their day is over, one at a time. Beside it
-//! run the workers it hands work to: the outbox, the commands taken in order, the jobs of
-//! [`Background`](super::Background), the avatars; and the storage service's follower.
+//! list once their day is over, one at a time. It alone changes what the session knows of its
+//! conversations ([`Ctx`]'s maps). Beside it run the workers it hands work to: the outbox, the
+//! commands taken in order (each on a copy of the maps), the jobs of
+//! [`Background`](super::Background), the avatars; and the storage service's follower. What
+//! those find that changes the maps comes back as [`ForSession`].
 
 use std::{cell::RefCell, panic::AssertUnwindSafe, rc::Rc, time::Duration};
 
@@ -13,13 +15,16 @@ use tracing::{info, warn};
 use crate::{Command, Event, attachments, scrub};
 
 use super::{
-    Ctx, Mgr,
-    avatars::AvatarFetcher,
+    Ctx, ForSession, Mgr,
+    avatars::AvatarRequests,
     commands::{command_failed, handle, outgoing},
+    conversations::send_conversations,
     history::sweep_expired,
     lifecycle::{CommandRx, Notice, unlink},
     receive::{Incoming, Kept, Receiver, Repairs, handle_incoming},
+    storage_sync::take_verifications,
     stories::{send_stories, stories_over},
+    trust::publish_trust,
 };
 
 /// How [`Session::event_loop`] ended.
@@ -36,13 +41,13 @@ pub(super) struct Session {
     manager: Mgr,
     ctx: Ctx,
     downloads: Rc<attachments::Downloads>,
-    avatars: AvatarFetcher,
+    avatars: AvatarRequests,
     /// What handling what is received keeps from one message to the next.
     kept: Kept,
     /// Kept across restarts of receiving: the limits it keeps must outlive one.
     repairs: Repairs,
-    /// Where commands go that are taken in order; see [`outgoing`].
-    in_order: mpsc::UnboundedSender<Command>,
+    /// Where commands go that are taken in order, each with its copy; see [`outgoing`].
+    in_order: mpsc::UnboundedSender<(Command, Ctx)>,
 }
 
 impl Session {
@@ -50,8 +55,8 @@ impl Session {
         manager: Mgr,
         ctx: Ctx,
         downloads: Rc<attachments::Downloads>,
-        avatars: AvatarFetcher,
-        in_order: mpsc::UnboundedSender<Command>,
+        avatars: AvatarRequests,
+        in_order: mpsc::UnboundedSender<(Command, Ctx)>,
     ) -> Self {
         Self {
             manager,
@@ -64,14 +69,15 @@ impl Session {
         }
     }
 
-    /// Takes `pending` first, then `commands` as they come and what is received, until the UI
-    /// goes away, this device is unlinked, or Signal removes it. A new device name is put in
-    /// `device_name`, for the next link. `story_over` is when the first story is over, as
-    /// [`send_stories`] said.
+    /// Takes `pending` first, then `commands` as they come, what is received, and what the
+    /// workers beside it hand it, until the UI goes away, this device is unlinked, or Signal
+    /// removes it. A new device name is put in `device_name`, for the next link. `story_over`
+    /// is when the first story is over, as [`send_stories`] said.
     pub(super) async fn event_loop(
         mut self,
         pending: Vec<Command>,
         commands: &mut CommandRx,
+        mut for_session: mpsc::UnboundedReceiver<ForSession>,
         device_name: &RefCell<String>,
         story_over: Option<u64>,
     ) -> (Self, Ended) {
@@ -114,6 +120,10 @@ impl Session {
                     // It may be over before the first one known, or be the first one.
                     () = self.ctx.story_kept.notified() => {
                         stories_due.as_mut().reset(Instant::now());
+                        continue;
+                    }
+                    Some(asked) = for_session.recv() => {
+                        self.on_asked(asked).await;
                         continue;
                     }
                     arrived = incoming.recv() => match arrived {
@@ -170,7 +180,9 @@ impl Session {
             // It fails only if the task taking them in order panicked: then say the message
             // failed rather than show it as on its way. It is kept, so it shows as failed at
             // the next start too.
-            if let Err(mpsc::error::SendError(command)) = self.in_order.send(command) {
+            if let Err(mpsc::error::SendError((command, _))) =
+                self.in_order.send((command, self.ctx.copy_for_command()))
+            {
                 if let Command::Send {
                     conversation,
                     timestamp,
@@ -192,6 +204,23 @@ impl Session {
             return;
         }
         handle(&mut self.manager, &self.ctx, &self.downloads, command).await;
+    }
+
+    /// Stops the jobs of [`Background`](super::Background) still running.
+    pub(super) fn stop_background(&self) {
+        self.ctx.background.stop();
+    }
+
+    async fn on_asked(&mut self, asked: ForSession) {
+        match asked {
+            ForSession::Conversations => {
+                send_conversations(&self.manager, &self.ctx).await;
+            }
+            ForSession::Verifications(verifications) => {
+                take_verifications(&self.manager, &self.ctx, verifications).await;
+            }
+            ForSession::Trust(who, trust) => publish_trust(&self.ctx, who, trust),
+        }
     }
 
     /// Returns `false` once the UI has gone away.

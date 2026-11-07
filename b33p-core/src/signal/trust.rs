@@ -15,7 +15,7 @@ use tracing::warn;
 use crate::{ConversationId, Event, local::LocalStore, now_millis};
 
 use super::{
-    Ctx, Mgr,
+    Ctx, ForSession, Mgr, Role,
     conversations::{Names, conversation_id, is_blocked, own_id},
     history::{stored_since, to_chat_message},
 };
@@ -157,8 +157,15 @@ fn trust(
     }
 }
 
-/// Tells the UI how far `who`'s safety number is trusted, if that isn't what it was last told.
-fn publish_trust(ctx: &Ctx, who: ServiceId, trust: crate::Trust) {
+/// Tells the UI how far `who`'s safety number is trusted, if that isn't what it was last told;
+/// from a copy ([`Role::Copy`]), through the session, which knows what that was.
+pub(super) fn publish_trust(ctx: &Ctx, who: ServiceId, trust: crate::Trust) {
+    if ctx.role == Role::Copy {
+        // Kept in the copy too, for what the command reads after.
+        ctx.trust.borrow_mut().insert(who, trust);
+        ctx.session.send(ForSession::Trust(who, trust)).ok();
+        return;
+    }
     if ctx.trust.borrow_mut().insert(who, trust) != Some(trust) {
         ctx.events.send(Event::Trust {
             conversation: conversation_id(&Thread::Contact(who)),

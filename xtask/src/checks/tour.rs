@@ -41,7 +41,8 @@ const SAMPLE_EVERY: Duration = Duration::from_secs(30);
 const DETAILS_AGAIN: Duration = Duration::from_secs(3);
 /// How many steps in a row may be drawn to let the rest go before the tour gives up on it.
 const FILLERS: usize = 8;
-/// The most groups the tour makes.
+/// The most groups the tour makes, for each time each step comes up ([`repeat`]): that many times
+/// a group is made, and as many again for a step short of one.
 const GROUPS: usize = 2;
 const EMOJI: [&str; 5] = ["👍", "❤️", "😂", "😮", "🎉"];
 
@@ -258,6 +259,22 @@ impl Seen {
             preview: None,
         }
     }
+}
+
+/// A notice of someone leaving, joining, being added or removed right after the same notice, if
+/// the chat shows one: without the opposite between, it can't have happened twice. The model
+/// leaves notices out, so this is all that sees one told twice.
+fn told_twice(notices: &[&str]) -> Option<String> {
+    let membership = |text: &str| {
+        text.ends_with(" left the group.")
+            || text.ends_with(" joined the group.")
+            || text.contains(" removed ")
+            || text.contains(" added ")
+    };
+    notices
+        .windows(2)
+        .find(|pair| pair[0] == pair[1] && membership(pair[0]))
+        .map(|pair| pair[0].to_owned())
 }
 
 /// What `k`'s b33p shows in its open chat, from `since` on, as the model has it; a sender that
@@ -569,6 +586,12 @@ enum TourError {
         #[source]
         source: HarnessError,
     },
+    #[error("{chat} on b33p {k} tells this twice: {notice}")]
+    ToldTwice {
+        chat: String,
+        k: usize,
+        notice: String,
+    },
     #[error("b33p {k} shows the group {title:?} as a message request")]
     GroupRequest {
         k: usize,
@@ -629,7 +652,7 @@ pub(super) fn tour(
         "  seed {seed}, each step {repeat} times, {b33ps} b33ps (TESTBOX_SEED, TESTBOX_TOUR_REPEAT)"
     );
     checks.kept.write("seed", &format!("{seed}\n"));
-    let mut tour = Tour::new(&mut mesh.b33ps, containers, sockets, seed);
+    let mut tour = Tour::new(&mut mesh.b33ps, containers, sockets, seed, repeat);
     // Read receipts go once a chat shows, with the window focused.
     checks.require("every b33p's window counts as focused", || {
         for each in tour.b33ps.iter_mut() {
@@ -672,9 +695,14 @@ pub(super) fn tour(
             }
         };
         let name = format!("step {number}: {}", tour.world.describe(&step));
-        let started = Instant::now();
-        let outcome = checks.require(&name, || tour.perform(&step));
-        let took = started.elapsed();
+        // The step alone: `require` then takes the displays with `--screenshots`, about a second.
+        let mut took = Duration::ZERO;
+        let outcome = checks.require(&name, || {
+            let started = Instant::now();
+            let outcome = tour.perform(&step);
+            took = started.elapsed();
+            outcome
+        });
         tour.steps.push(StepRecord {
             number,
             kind: kind.into(),
@@ -721,6 +749,8 @@ pub(super) fn tour(
 struct World {
     /// How many b33ps the mesh has.
     count: usize,
+    /// How many times each step comes up.
+    repeat: usize,
     acis: Vec<String>,
     threads: Vec<Thread>,
     groups: usize,
@@ -730,7 +760,7 @@ struct World {
 
 impl World {
     /// The chats of two of `count` b33ps, nothing in them yet.
-    fn new(acis: Vec<String>, seed: u64) -> Self {
+    fn new(acis: Vec<String>, seed: u64, repeat: usize) -> Self {
         let count = acis.len();
         let threads = (0..count)
             .flat_map(|a| (a + 1..count).map(move |b| (a, b)))
@@ -750,6 +780,7 @@ impl World {
             .collect();
         Self {
             count,
+            repeat,
             acis,
             threads,
             groups: 0,
@@ -1087,7 +1118,7 @@ impl World {
                 }
             }
             Kind::CreateGroup => {
-                if self.groups >= GROUPS || count < 2 {
+                if self.groups >= GROUPS * self.repeat || count < 2 {
                     return None;
                 }
                 let by = self.below(count);
@@ -1373,10 +1404,11 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         containers: &'run Pod,
         sockets: &'run Sockets,
         seed: u64,
+        repeat: usize,
     ) -> Self {
         let count = b33ps.len();
         let acis = b33ps.iter().map(|each| each.aci.clone()).collect();
-        let mut world = World::new(acis, seed);
+        let mut world = World::new(acis, seed, repeat);
         // The chats' first messages, the primaries' (setup.rs `mesh_hello`), are before the tour.
         let start = now_ms();
         for thread in &mut world.threads {
@@ -1881,17 +1913,33 @@ impl<'run, 'pod> Tour<'run, 'pod> {
             PATIENCE,
             |snapshot| {
                 last = seen(snapshot, k, &acis, since);
-                (last == expected).then_some(())
+                (last == expected).then(|| {
+                    let notices: Vec<&str> = snapshot
+                        .messages
+                        .iter()
+                        .filter(|message| message.notice)
+                        .map(|message| message.text.as_str())
+                        .collect();
+                    told_twice(&notices)
+                })
             },
         );
-        outcome.map_err(|source| TourError::Messages {
-            chat: name,
+        let twice = outcome.map_err(|source| TourError::Messages {
+            chat: name.clone(),
             k,
             expected,
             shown: last,
             source,
         })?;
-        Ok(())
+        match twice {
+            Some(notice) => Err(TourError::ToldTwice {
+                chat: name,
+                k,
+                notice,
+            }
+            .into()),
+            None => Ok(()),
+        }
     }
 
     /// Waits until every member of the group `thread` lists it with its title and picture, and not
@@ -2777,6 +2825,26 @@ impl Spread {
 mod tests {
     use super::*;
 
+    /// However long the tour, a group can be made as often as each step comes up.
+    #[test]
+    fn every_group_a_longer_tour_wants_can_be_made() {
+        let mut world = World::new(vec!["a".into(), "b".into(), "c".into()], 1, 5);
+        for _ in 0..5 {
+            assert!(world.plan(Kind::CreateGroup).is_some());
+        }
+    }
+
+    #[test]
+    fn a_membership_notice_told_twice_is_seen() {
+        let shown = |texts: &[&str]| told_twice(texts);
+        let left = "Mesh 1 left the group.";
+        assert_eq!(shown(&[left, left]).as_deref(), Some(left));
+        assert_eq!(shown(&[left, "Mesh 1 joined the group.", left]), None);
+        // A picture can change twice in a row.
+        let picture = "You changed the group's picture.";
+        assert_eq!(shown(&[picture, picture]), None);
+    }
+
     /// One message's reactions are compared as the viewer sees them: its own, or someone's.
     #[test]
     fn a_reaction_is_ours_only_to_its_reactor() {
@@ -2815,7 +2883,7 @@ mod tests {
     /// Three b33ps, a message in the chat of 0 and 1, and a group of 0 (its admin) and 1 that 2
     /// left.
     fn world(seed: u64) -> World {
-        let mut world = World::new(vec!["a".into(), "b".into(), "c".into()], seed);
+        let mut world = World::new(vec!["a".into(), "b".into(), "c".into()], seed, 2);
         world.threads[0].messages.push(Expected {
             ts: 1,
             from: 0,
@@ -2915,7 +2983,7 @@ mod tests {
     /// Nothing that needs a message or a group is drawn before there is one.
     #[test]
     fn a_step_waits_for_what_it_needs() {
-        let mut world = World::new(vec!["a".into(), "b".into()], 3);
+        let mut world = World::new(vec!["a".into(), "b".into()], 3, 2);
         for kind in [
             Kind::Edit,
             Kind::React,

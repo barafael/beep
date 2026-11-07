@@ -32,14 +32,14 @@ use crate::{
 
 use super::{
     Ctx, Mgr,
-    avatars::{AvatarFetcher, send_group_avatar},
+    avatars::{AvatarRequests, send_group_avatar},
     conversations::{
         Names, accepted, conversation_id, e164_of, ensure_conversation, is_blocked, own_id,
         send_conversations, sender_name, thread_of, wrote_to,
     },
     groups::{
         accept_from_trusted, forget_membership, is_announcement, is_member, lets_us_in,
-        own_membership_change, refresh_group, signed_group_change,
+        own_membership_change, refresh_group, signed_group_change, told_changes,
     },
     history::{
         author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
@@ -236,7 +236,7 @@ async fn watch_wakeups(_: Rc<tokio::sync::Notify>) {}
 pub(super) async fn handle_incoming(
     manager: &Mgr,
     ctx: &Ctx,
-    avatars: &AvatarFetcher,
+    avatars: &AvatarRequests,
     kept: &mut Kept,
     repairs: &mut Repairs,
     incoming: Incoming,
@@ -260,7 +260,7 @@ pub(super) async fn handle_incoming(
 async fn handle_received(
     manager: &Mgr,
     ctx: &Ctx,
-    avatars: &AvatarFetcher,
+    avatars: &AvatarRequests,
     kept: &mut Kept,
     repairs: &mut Repairs,
     received: Received,
@@ -287,7 +287,7 @@ async fn handle_received(
             names.clear();
             send_conversations(manager, ctx).await;
             // A newly linked device first learns its contacts here.
-            avatars.request();
+            avatars.send(ctx.threads_now()).ok();
             true
         }
         Received::DecryptionError {
@@ -813,6 +813,27 @@ async fn handle_content(
             conversation: id,
             target,
         });
+    }
+    // A change with nothing else to say that the group's log told already, as an admin's details
+    // read it just before its message came: told once, here and in the history.
+    if let Thread::Group(key) = thread
+        && data.body.is_none()
+        && let Some(revision) = data
+            .group_v2
+            .as_ref()
+            .filter(|context| context.group_change.is_some())
+            .and_then(|context| context.revision)
+    {
+        let own = stored_at(content);
+        let told = told_changes(manager, key, |told| told == revision).await;
+        if told.iter().any(|(_, at)| *at != own) {
+            debug!(revision, "a group change told already");
+            let mut store = manager.store().clone();
+            if let Err(error) = store.delete_message(&thread, own).await {
+                warn!(error = %crate::scrub::chain(&error), "failed to drop a group change told already");
+            }
+            return true;
+        }
     }
     let Some(message) = to_chat_message(manager, names, id.clone(), content).await else {
         return true;

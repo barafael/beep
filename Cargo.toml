@@ -26,19 +26,16 @@ crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 thiserror = "2"
 
-# Branch langis/integration of our Slint fork: master (1.19, as of 2026-10-27) plus selecting text
-# in a `StyledText` (`selectable`, `has-selection`, `copy()`; slint-ui/slint#13985, as reviewed),
-# which the messages need, and the Qt backend drawing emoji (color bitmap glyphs) itself: Qt 6.4's
-# QRawFont overruns the heap on them (slint-ui/slint#14449, as reviewed). Landed upstream and
-# dropped from the branch: #14426 (the Qt backend draws variable fonts at their default instance,
-# not the thinnest). Rebuild the branch when master moves; drop it once these have landed upstream
-# and a release carries them.
-slint = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
+# Branch langis/integration of our Slint fork, which is upstream master now (1.20, as of
+# 2026-11-06), nothing more: slint-ui/slint#13985 (selecting text in a `StyledText`) and #14449
+# (the Qt backend drawing emoji itself: Qt 6.4's QRawFont overruns the heap on them) have landed.
+# Merge master in when it moves; go back to crates.io once a release carries them both.
+slint = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "f0c244a22c1190707182e0d4eeba59521704c699" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
 # open pull requests, so b33p builds on exactly what is proposed upstream:
@@ -90,18 +87,18 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "75
 #   #493 group changes applied from the messages that carry them, the log read for gaps,
 #        missed changes passed on, `update_group` (needs libsignal-service-rs#496 and #497)
 #   (no PR yet) a group message sent with a sender key, in one request; `renew_sender_key`
-# Rebuilt on upstream main past #454, 2026-10-27.
+# Rebuilt on upstream main past #454, 2026-10-27; upstream main merged in as it moves (last 2026-11-06).
 # Landed upstream and dropped from the branch: #442 (history-transfer key on
 # RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
 # master key of the wrong length), #454 (write transactions take the lock up front) and #460
 # (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
 # accounts) is now libsignal-service-rs#474's job.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "53fb55a226535983349c66e5eacb5a223d33045c" }
+presage = { git = "https://github.com/barafael/presage", rev = "c40361c699ceeb4f04e317ef7e1645d114cfb1ad" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53fb55a226535983349c66e5eacb5a223d33045c", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "c40361c699ceeb4f04e317ef7e1645d114cfb1ad", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -140,7 +137,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "0f9454bf372b8b0566ac846a5d0424e8a34fc2e3" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "470e2b08712b8755fff752337e223d4b7cc92644" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when

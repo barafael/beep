@@ -1,6 +1,6 @@
 //! Profile and group pictures for the UI: fetched from presage, cropped and scaled down.
 
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 use presage::{
     Error as PresageError,
@@ -14,10 +14,12 @@ use presage::{
 use presage_store_sqlite::SqliteStoreError;
 use tracing::{debug, warn};
 
-use crate::{Event, Events, Picture, attachments};
+use tokio::sync::mpsc;
+
+use crate::{ConversationId, Event, Events, Picture, attachments};
 
 use super::{
-    Ctx, Mgr, Threads,
+    Ctx, Mgr,
     conversations::{conversation_id, tag},
 };
 
@@ -96,70 +98,40 @@ async fn contact_picture(
 /// Side of decoded avatars: a 40 px circle at up to 3x scaling.
 const AVATAR_SIDE: u32 = 128;
 
-/// Runs [`fetch_avatars`] one pass at a time: asking during a pass schedules one more after it,
-/// instead of a second pass sending the same requests alongside.
-#[derive(Clone)]
-pub(super) struct AvatarFetcher {
-    run: Rc<Cell<AvatarRun>>,
+/// Where the session asks [`Avatars`] for the pictures of the threads it has now.
+pub(super) type AvatarRequests = mpsc::UnboundedSender<Vec<(ConversationId, Thread)>>;
+
+/// Runs [`fetch_avatars`] one pass at a time: what is asked during a pass, the latest of it,
+/// makes one more pass after it, instead of a second pass sending the same requests alongside.
+pub(super) struct Avatars {
     manager: Mgr,
-    threads: Threads,
     events: Events,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AvatarRun {
-    Idle,
-    Running,
-    Again,
-}
-
-impl AvatarFetcher {
-    pub(super) fn new(manager: Mgr, threads: Threads, events: Events) -> Self {
-        Self {
-            run: Rc::new(Cell::new(AvatarRun::Idle)),
-            manager,
-            threads,
-            events,
-        }
+impl Avatars {
+    pub(super) fn new(manager: Mgr, events: Events) -> Self {
+        Self { manager, events }
     }
 
-    pub(super) fn request(&self) {
-        match self.run.get() {
-            AvatarRun::Idle => {
-                self.run.set(AvatarRun::Running);
-                let this = self.clone();
-                tokio::task::spawn_local(async move {
-                    loop {
-                        fetch_avatars(
-                            this.manager.clone(),
-                            this.threads.clone(),
-                            this.events.clone(),
-                        )
-                        .await;
-                        if this.run.get() == AvatarRun::Again {
-                            this.run.set(AvatarRun::Running);
-                        } else {
-                            this.run.set(AvatarRun::Idle);
-                            break;
-                        }
-                    }
-                });
+    /// Until every [`AvatarRequests`] is dropped and the last pass is done.
+    pub(super) async fn event_loop(
+        self,
+        mut asked: mpsc::UnboundedReceiver<Vec<(ConversationId, Thread)>>,
+    ) -> Self {
+        while let Some(mut threads) = asked.recv().await {
+            while let Ok(newer) = asked.try_recv() {
+                threads = newer;
             }
-            AvatarRun::Running => self.run.set(AvatarRun::Again),
-            AvatarRun::Again => {}
+            fetch_avatars(self.manager.clone(), threads, self.events.clone()).await;
         }
+        self
     }
 }
 
 /// Sends each conversation's profile or group picture. presage caches them in the store, so
 /// only the first run downloads them, one at a time to stay clear of rate limits; a contact's
 /// is fetched again when their details are opened (`Command::LoadDetails`).
-async fn fetch_avatars(mut manager: Mgr, threads: Threads, events: Events) {
-    let threads: Vec<_> = threads
-        .borrow()
-        .iter()
-        .map(|(id, thread)| (id.clone(), thread.clone()))
-        .collect();
+async fn fetch_avatars(mut manager: Mgr, threads: Vec<(ConversationId, Thread)>, events: Events) {
     let (mut found, mut none, mut failed) = (0, 0, 0);
     for (id, thread) in threads {
         let picture = match thread {

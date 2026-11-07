@@ -77,10 +77,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # The emulator and its system image without Google Play services: Signal then uses its websocket
 # instead of FCM, which the box can't reach.
 FROM sdk AS emulator
-# sdkmanager takes no version for these or for the SDK stage's platform-tools and installs the
-# newest, so the revisions are checked. Here, where the image takes platform-tools from: in the
-# SDK stage, a changed check would rebuild every later stage.
-RUN sdkmanager --sdk_root="$ANDROID_HOME" "emulator" "system-images;android-35;default;x86_64"
+# sdkmanager takes no version and installs the newest, so what it installed is checked. Here, where
+# the image takes platform-tools from: in the SDK stage, a changed check would rebuild every later
+# stage. The emulator is the archive of its revision instead, with the package.xml sdkmanager wrote
+# for the one the system image brought (avdmanager wants one): it moves every few weeks, and this
+# step's text is then what says which one a cached layer has. With only `sdkmanager emulator`, a
+# layer from before a move matches the step as well as one from after, and the store picks.
+RUN sdkmanager --sdk_root="$ANDROID_HOME" "system-images;android-35;default;x86_64" \
+    && mv "$ANDROID_HOME/emulator/package.xml" /tmp/ \
+    && rm -rf "$ANDROID_HOME/emulator" \
+    && curl -fsSL -o /tmp/emulator.zip https://dl.google.com/android/repository/emulator-linux_x64-16740729.zip \
+    && echo "f41f9e31eb5ca64926603c03265c50bbc0ff4172  /tmp/emulator.zip" | sha1sum -c - \
+    && unzip -q /tmp/emulator.zip -d "$ANDROID_HOME" \
+    && mv /tmp/package.xml "$ANDROID_HOME/emulator/" \
+    && rm /tmp/emulator.zip
 RUN { grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properties" \
     && grep -qx "Pkg.Revision=37.2.13" "$ANDROID_HOME/emulator/source.properties" \
     && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties"; } \

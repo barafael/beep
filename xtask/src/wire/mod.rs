@@ -532,9 +532,10 @@ impl Identities {
                 None => "presage-rs".to_owned(),
             }
         } else if agent == "WhatsApp/2" {
-            // Desktop's link preview fetch (ts/linkPreviews/linkPreviewFetch.std.ts, which
-            // asks for a page as WhatsApp does, so sites answer with their tags).
-            "desktop".to_owned()
+            // A link preview's fetch: Desktop's (ts/linkPreviews/linkPreviewFetch.std.ts) or
+            // b33p's (b33p-core/src/preview.rs). Both ask for a page as WhatsApp does, so sites
+            // answer with their tags, and they say nothing else that tells them apart.
+            "link preview".to_owned()
         } else if agent == "undici" {
             // wrangler's dev server, in front of CDN3, asking its own worker (`/cdn-cgi/`).
             "cdn3-itself".to_owned()

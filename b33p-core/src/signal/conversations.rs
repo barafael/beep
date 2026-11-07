@@ -10,12 +10,12 @@ use presage::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    ChatMessage, ChatSettings, Conversation, ConversationId, ConversationKind, Event,
+    ChatMessage, ChatSettings, Conversation, ConversationId, ConversationKind, Event, Events,
     local::LocalStore,
 };
 
 use super::{
-    Ctx, Mgr, Threads,
+    Ctx, ForSession, Mgr, Ports, Threads,
     groups::group_conversation,
     history::{stored_at, stored_since, to_chat_message},
     trust::{pin_verified, safety_number, trust_given, trust_of},
@@ -308,13 +308,11 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
 
 /// Sends each conversation's newest stored message, so the UI can order conversations by
 /// activity and show previews before any history is opened.
-pub(super) async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
-    let threads: Vec<_> = ctx
-        .threads
-        .borrow()
-        .iter()
-        .map(|(id, thread)| (id.clone(), thread.clone()))
-        .collect();
+pub(super) async fn send_latest_messages(
+    manager: Mgr,
+    threads: Vec<(ConversationId, Thread)>,
+    events: Events,
+) {
     let mut names = Names::new();
     for (id, thread) in threads {
         // Only for the preview and the order: `LoadHistory` replaces it with the full message
@@ -322,7 +320,7 @@ pub(super) async fn send_latest_messages(manager: Mgr, ctx: Ctx) {
         let Some(latest) = latest_message(&manager, &mut names, &id, &thread).await else {
             continue;
         };
-        if !ctx.events.sent(Event::Latest(latest)) {
+        if !events.sent(Event::Latest(latest)) {
             return;
         }
     }
@@ -446,7 +444,7 @@ pub(super) async fn wrote_to(ctx: &Ctx, id: &ConversationId) {
     }
 }
 
-pub(super) async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
+pub(super) async fn is_blocked(ctx: &Ports, id: &ConversationId) -> bool {
     ctx.tables
         .settings(id)
         .await
@@ -458,7 +456,7 @@ pub(super) async fn is_blocked(ctx: &Ctx, id: &ConversationId) -> bool {
 /// Whether `id` may be told that its messages arrived or were read: not while it is a message
 /// request. Which chats are comes with the phone's settings (`settings_read`); before those are
 /// read, only a chat accepted here counts, which is known without the phone.
-pub(super) async fn accepted(ctx: &Ctx, id: &ConversationId, settings_read: bool) -> bool {
+pub(super) async fn accepted(ctx: &Ports, id: &ConversationId, settings_read: bool) -> bool {
     if settings_read {
         !is_unanswered_request(ctx, id).await
     } else {
@@ -473,7 +471,7 @@ pub(super) async fn accepted(ctx: &Ctx, id: &ConversationId, settings_read: bool
 
 /// Whether `id` is a message request not answered yet. Only known once the phone's settings
 /// (which say who was accepted) have been read.
-pub(super) async fn is_unanswered_request(ctx: &Ctx, id: &ConversationId) -> bool {
+pub(super) async fn is_unanswered_request(ctx: &Ports, id: &ConversationId) -> bool {
     ctx.tables.storage_version().await.unwrap_or(0) > 0
         && !ctx
             .tables
@@ -541,14 +539,14 @@ pub(super) async fn ensure_conversation(
 /// sender's profile, with their name, in a task of its own when their message comes, and says
 /// nothing when it is done: until then their chat is titled by their id.
 fn retitle_once_saved(manager: &Mgr, ctx: &Ctx, who: ServiceId) {
-    let (manager, ctx) = (manager.clone(), ctx.clone());
+    let (manager, session) = (manager.clone(), ctx.session.clone());
     tokio::task::spawn_local(async move {
         // About a minute in all: the fetch is a request to the server.
         let mut wait = Duration::from_millis(250);
         for _ in 0..8 {
             tokio::time::sleep(wait).await;
             if matches!(manager.store().contact_by_id(&who).await, Ok(Some(_))) {
-                send_conversations(&manager, &ctx).await;
+                session.send(ForSession::Conversations).ok();
                 return;
             }
             wait *= 2;

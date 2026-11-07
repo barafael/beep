@@ -105,6 +105,19 @@ pub(super) struct Presage<'pod> {
     account: Account,
 }
 
+/// The time of the message a line of presage-cli's says it received or sent ("From <who> @ 1793…:
+/// / text", "To <who> @ 1793… / text").
+fn printed_at(line: &str) -> Option<u64> {
+    if !line.starts_with("From ") && !line.starts_with("To ") {
+        return None;
+    }
+    let (_, rest) = line.split_once(" @ ")?;
+    let digits = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..digits].parse().ok()
+}
+
 impl<'pod> Presage<'pod> {
     pub(super) fn new(containers: &'pod Pod, account: Account) -> Self {
         Self {
@@ -146,11 +159,14 @@ impl<'pod> Presage<'pod> {
     /// got to. One that is stored is no loss but a redelivery: presage-cli exited after storing
     /// it and before acknowledging it.
     fn noting_lost(&self, output: String) -> String {
+        let account = self.account.name();
+        for timestamp in output.lines().filter_map(printed_at) {
+            self.containers.note_printed(&account, timestamp);
+        }
         for line in output.lines().filter(|line| line.contains(LOST)) {
             if self.stored(line) {
                 continue;
             }
-            let account = self.account.name();
             self.containers
                 .note_lost(format!("presage-cli ({account}): {}", line.trim()));
         }
@@ -169,6 +185,14 @@ impl<'pod> Presage<'pod> {
         else {
             return false;
         };
+        // A delete or an edit is applied, not stored at its own time: that it was received, an
+        // earlier run printed. A message used the counter once, and it is here again.
+        if timestamp
+            .parse()
+            .is_ok_and(|at| self.containers.was_printed(&self.account.name(), at))
+        {
+            return true;
+        }
         let listed = |thread: &str| {
             self.cli("list-messages", &["-u", thread, "--from", timestamp], "")
                 .is_ok_and(|listed| listed.contains(&format!(" @ {timestamp}: ")))
@@ -336,5 +360,23 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
                 received,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_presage_cli_printed_has_its_time_read() {
+        assert_eq!(
+            printed_at("From Primary: x @ 1794005612019:  / Empty data message"),
+            Some(1794005612019)
+        );
+        assert_eq!(printed_at("To Peer @ 17 / text"), Some(17));
+        assert_eq!(
+            printed_at("failed to decrypt a message from x of 17: old"),
+            None
+        );
     }
 }
