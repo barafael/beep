@@ -48,12 +48,15 @@ impl ChatListView {
     pub fn new(shared: Rc<Shared>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search or start a chat"));
         let subscription = cx.subscribe_in(&search, window, Self::search_event);
+        // The list is drawn cached (see `AppView`): the field's caret blinking, its focus and
+        // selection are the field's own state, which GPUI doesn't count as a change of the list.
+        let field = cx.observe(&search, |_, _, cx| cx.notify());
         Self {
             shared,
             search,
             cursor: 0,
             scroll: UniformListScrollHandle::new(),
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, field],
         }
     }
 

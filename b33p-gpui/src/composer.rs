@@ -112,8 +112,13 @@ impl ComposerView {
             InputEvent::PressEnter { shift: false, .. } => {
                 self.send(window, cx);
             }
-            // The field's outline follows the focus.
-            InputEvent::Focus | InputEvent::Blur => cx.notify(),
+            // The field's outline follows the focus. Writing drops the selection of text in the
+            // messages, so that Ctrl+C there copies the composer's own.
+            InputEvent::Focus => {
+                crate::text::TextSelection::clear(cx);
+                cx.notify();
+            }
+            InputEvent::Blur => cx.notify(),
             _ => {}
         }
     }

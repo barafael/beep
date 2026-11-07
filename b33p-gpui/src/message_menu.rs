@@ -234,6 +234,19 @@ pub fn toolbar(
 ) -> AnyElement {
     let id = info.index;
     let reacts = !info.deleted && !info.notice;
+    // Every row has room for its buttons, so that a bubble doesn't move as they come and go, but
+    // only the row the pointer is on, or whose buttons were pressed last, has them: three
+    // buttons with their menus on each of the dozen rows on screen were more than a quarter of
+    // what drawing a frame cost while scrolling.
+    if shared.hovered_row.get() != Some(id) && shared.pinned_row.get() != Some(id) {
+        let buttons = if reacts { 3. } else { 1. };
+        // The size of a small button, in rems as the button is, and the gaps of 2 pixels (an
+        // eighth of a rem) between them.
+        return div()
+            .flex_none()
+            .w(gpui_kit::rems(1.5 * buttons + 0.125 * (buttons - 1.)))
+            .into_any_element();
+    }
     let more = {
         let (shared, info) = (shared.clone(), info.clone());
         Button::new(SharedString::from(format!("more-{id}")))
@@ -263,7 +276,13 @@ pub fn toolbar(
         // Always laid out, so the bubble doesn't move as they come and go; only seen while the
         // pointer is on the row, or on them (a menu or the picker open).
         .invisible()
-        .group_hover(group, |s| s.visible());
+        .group_hover(group, |s| s.visible())
+        // A menu or the picker open from these buttons outlives the pointer being on the row, and
+        // goes with the buttons: they stay for as long as no other row's are pressed.
+        .on_mouse_down(gpui_kit::MouseButton::Left, {
+            let shared = shared.clone();
+            move |_, _, _| shared.pinned_row.set(Some(id))
+        });
     if outgoing {
         buttons.child(more).children(react).children(reply)
     } else {

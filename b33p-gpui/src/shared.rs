@@ -114,6 +114,11 @@ pub struct Shared {
     pub unseen: Cell<usize>,
     /// The scroll request of [`ChatState::jump`] last carried out.
     jump_serial: Cell<u64>,
+    /// The row of messages the pointer is on, and the one whose buttons were last pressed (its
+    /// menu or picker may be open): only these rows are drawn with their buttons, which cost
+    /// more to lay out than the rest of the row together. See `message_menu::toolbar`.
+    pub hovered_row: Cell<Option<usize>>,
+    pub pinned_row: Cell<Option<usize>>,
     /// The composer, which holds the text being written: the harness types into it.
     pub composer: RefCell<Option<gpui_kit::WeakEntity<crate::composer::ComposerView>>>,
     /// The icon in the system tray, if the platform has one (`window.rs`, `tray.rs`).
@@ -173,6 +178,8 @@ impl Shared {
             playback: RefCell::default(),
             unseen: Cell::new(0),
             jump_serial: Cell::new(0),
+            hovered_row: Cell::new(None),
+            pinned_row: Cell::new(None),
             composer: RefCell::default(),
             tray: RefCell::default(),
             start_hidden: Cell::new(false),
@@ -249,6 +256,7 @@ impl Shared {
         };
         let mut chat = self.chat.borrow_mut();
         self.images.forget_gone(&chat);
+        self.images.release(cx);
         self.follow_messages(&chat, update, cx);
         #[cfg(all(feature = "harness", target_family = "unix"))]
         self.agent.publish(&chat, &self.settings.borrow(), self);
@@ -344,6 +352,14 @@ impl Shared {
     /// in place.
     fn follow_messages(&self, chat: &ChatState, update: Update, cx: &mut App) {
         let count = chat.messages().len();
+        // Rows have other numbers after these, and the pointer is on another message.
+        if matches!(
+            update.messages,
+            MessagesUpdate::Reset | MessagesUpdate::Prepended(_)
+        ) {
+            self.hovered_row.set(None);
+            self.pinned_row.set(None);
+        }
         self.scroller.update(cx, |scroller, cx| {
             match update.messages {
                 MessagesUpdate::Unchanged => {

@@ -40,6 +40,7 @@ mod images;
 mod join;
 mod media;
 mod message_menu;
+mod messages;
 mod overlays;
 mod panel;
 mod panels;
