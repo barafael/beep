@@ -49,8 +49,9 @@ RENDER_NODE = os.environ.get("BENCH_RENDER_NODE", "/dev/dri/renderD128")
 # Chats, a long thread, a big group, pictures of a size a camera's thumbnail has.
 SCALE = "chats=200,messages=20000,members=500,picture=640"
 BINARIES = {
-    "slint": os.path.join(ROOT, "target/testbox/b33p"),
-    "gpui": os.path.join(ROOT, "target/testbox/b33p-gpui"),
+    # BENCH_SLINT, BENCH_GPUI: other binaries, to measure a build against another's.
+    "slint": os.environ.get("BENCH_SLINT", os.path.join(ROOT, "target/testbox/b33p")),
+    "gpui": os.environ.get("BENCH_GPUI", os.path.join(ROOT, "target/testbox/b33p-gpui")),
 }
 WIDTH, HEIGHT = 1280, 900
 GEOMETRY = f"{WIDTH}x{HEIGHT}"
@@ -507,7 +508,7 @@ def run_all(args):
     meta = environment()
     json.dump(meta, open(os.path.join(args.out, "environment.json"), "w"), indent=1)
     print("environment:", json.dumps(meta), flush=True)
-    order = ["slint", "gpui"]
+    order = [ui for ui in ("slint", "gpui") if ui in args.uis.split(",")]
     jobs = []
     for round_ in range(1, args.rounds + 1):
         for ui in (order if round_ % 2 else order[::-1]):
@@ -595,6 +596,7 @@ def main():
     run = sub.add_parser("run")
     run.add_argument("--rounds", type=int, default=5)
     run.add_argument("--frames-rounds", type=int, default=1)
+    run.add_argument("--uis", default="slint,gpui", help="which clients to run")
     run.add_argument("--sync-rounds", type=int, default=3, help="runs of catching up with a backlog")
     run.add_argument("--backlog", type=int, default=20000, help="messages the mock sends before it has synced")
     run.add_argument("--soak", type=int, default=120, help="seconds of arriving messages for the memory slope")
