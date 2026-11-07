@@ -235,6 +235,8 @@ impl AppView {
                 .child(
                     div()
                         .flex_1()
+                        // Wraps in the width there is, however long the words.
+                        .min_w_0()
                         .debug_selector(|| "The error".into())
                         .child(message),
                 )

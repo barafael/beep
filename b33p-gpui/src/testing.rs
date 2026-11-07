@@ -340,3 +340,23 @@ impl Ui {
         self.settle();
     }
 }
+
+/// An error of `kind` that says `message`, as the backend's failures are shown.
+pub fn error(kind: b33p_core::ErrorKind, message: &str) -> b33p_core::Error {
+    #[derive(Debug, thiserror::Error)]
+    #[error("{message}")]
+    struct Said {
+        kind: b33p_core::ErrorKind,
+        message: String,
+    }
+    impl b33p_core::Classified for Said {
+        fn kind(&self) -> b33p_core::ErrorKind {
+            self.kind
+        }
+    }
+    Said {
+        kind,
+        message: message.to_owned(),
+    }
+    .into()
+}

@@ -300,7 +300,9 @@ fn many(count: usize, older: Option<u64>) -> ChatState {
     chat.select(&ann);
     chat.apply(Event::History {
         conversation: ann,
-        messages: (0..count).map(|n| theirs(&format!("Message {n}"), n as u64)).collect(),
+        messages: (0..count)
+            .map(|n| theirs(&format!("Message {n}"), n as u64))
+            .collect(),
         reactions: Vec::new(),
         older,
     });
@@ -385,7 +387,10 @@ async fn jumping_brings_the_row_into_view(tc: &mut TestAppContext) {
         chat.show_result(0)
     });
     let (top, _) = ui.top_row();
-    assert!(top <= 10 && 10 - top < 15, "row 10 is in view from row {top}");
+    assert!(
+        top <= 10 && 10 - top < 15,
+        "row 10 is in view from row {top}"
+    );
 }
 
 /// The chat search lists what it found, and showing a result closes it and marks the message.
@@ -458,7 +463,9 @@ async fn forwarding_goes_to_the_clicked_chat_once_confirmed(tc: &mut TestAppCont
     assert!(ui.booted.shared.chat.borrow().forwarding());
     ui.click("Forward to Carol");
     assert!(
-        !ui.sent().iter().any(|c| matches!(c, Command::Forward { .. })),
+        !ui.sent()
+            .iter()
+            .any(|c| matches!(c, Command::Forward { .. })),
         "asks first"
     );
     assert!(ui.shown("Back"), "and says where it goes");
@@ -492,4 +499,198 @@ async fn picked_messages_get_a_bar_to_act_on_them(tc: &mut TestAppContext) {
     );
     ui.click("Clear selection");
     assert!(!ui.booted.shared.chat.borrow().has_selection());
+}
+
+/// A notice (here, a new safety number) is drawn as a line of text of its own, between
+/// messages, not as one of the contact's messages: centred, where a message starts at the left.
+#[gpui::test]
+async fn a_notice_is_drawn_as_a_line_not_a_message(tc: &mut TestAppContext) {
+    let notice = ChatMessage {
+        notice: true,
+        body: "Your safety number with Ann has changed.".into(),
+        ..theirs("", 2)
+    };
+    let mut chat = testing::chats(&["Ann"]);
+    let ann = ConversationId::contact("ann");
+    chat.select(&ann);
+    chat.apply(Event::History {
+        conversation: ann,
+        messages: vec![theirs("Message 0", 1), notice, theirs("After", 3)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let mut ui = Ui::new(tc, chat);
+    let notice = ui.bounds("Notice").expect("the notice is shown");
+    let after = ui.bounds("Message 2").expect("so is the next message");
+    let before = ui.bounds("Message 0").expect("and the one before");
+    assert!(before.origin.y < notice.origin.y);
+    assert!(notice.origin.y < after.origin.y);
+    let list = ui.bounds("Messages").expect("a chat is open");
+    let (left, width) = (list.origin.x, list.size.width);
+    let offset = |b: gpui::Bounds<gpui::Pixels>| b.origin.x - left;
+    let centre = offset(notice) + notice.size.width / 2.;
+    assert!(
+        (centre - width / 2.).abs() < gpui::px(20.),
+        "centred at {centre:?} in {width:?}"
+    );
+    assert!(
+        offset(after) < width * 0.2,
+        "a message starts at the left, at {:?}",
+        offset(after)
+    );
+    assert!(
+        offset(notice) > offset(after) + gpui::px(20.),
+        "the notice is indented to the middle"
+    );
+}
+
+/// A long error wraps in the banner instead of being cut off after a line.
+#[gpui::test]
+async fn a_long_error_wraps(tc: &mut TestAppContext) {
+    let mut ui = Ui::sized(tc, many(1, None), 400., 500.);
+    let long = "This device was removed from your Signal account. Scan the code to link it \
+                again; the messages here are kept.";
+    ui.act(|chat| {
+        chat.apply(Event::Error(testing::error(
+            b33p_core::ErrorKind::Refused,
+            long,
+        )));
+        Update::default()
+    });
+    let text = ui.bounds("The error").expect("the banner shows it");
+    assert!(
+        text.size.height > gpui::px(30.),
+        "one line only: {:?}",
+        text.size
+    );
+}
+
+/// The error banner offers to try again only when that may work.
+#[gpui::test]
+async fn the_error_offers_to_try_again_when_that_may_work(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(1, None));
+    ui.act(|chat| {
+        chat.apply(Event::Error(testing::error(
+            b33p_core::ErrorKind::Unreachable,
+            "Couldn't reach Signal.",
+        )));
+        Update::default()
+    });
+    assert!(ui.shown("Dismiss"), "the banner shows");
+    assert!(!ui.shown("Try again"), "nothing to try again");
+
+    ui.act(|chat| {
+        chat.apply(Event::CommandFailed {
+            error: testing::error(
+                b33p_core::ErrorKind::Unreachable,
+                "Couldn't look the group up.",
+            ),
+            command: Command::PreviewGroupLink("https://signal.group/#x".into()),
+        });
+        Update::default()
+    });
+    ui.click("Try again");
+    assert!(
+        ui.sent()
+            .iter()
+            .any(|command| matches!(command, Command::PreviewGroupLink(_))),
+        "the lookup goes out again"
+    );
+}
+
+/// Screen readers hear a chat row as one item that says what matters, and can open it.
+#[gpui::test]
+async fn chat_rows_speak_for_themselves(tc: &mut TestAppContext) {
+    let mut chat = testing::chats(&["Ann"]);
+    let bob = ConversationId::contact("bob");
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: bob.clone(),
+        title: "Bob".into(),
+        settings: ChatSettings {
+            accepted: true,
+            muted_until: Some(u64::MAX),
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    chat.apply(Event::Latest(ChatMessage {
+        conversation: bob.clone(),
+        sender_id: "bob".into(),
+        ..theirs("See you", 4)
+    }));
+    chat.apply(Event::Unread(vec![(bob.clone(), 2)]));
+    let mut ui = Ui::new(tc, chat);
+    assert!(
+        ui.shown("Bob, 2 unread, muted, See you"),
+        "one item says it all"
+    );
+    ui.click("Bob, 2 unread, muted, See you");
+    assert_eq!(
+        ui.booted
+            .shared
+            .chat
+            .borrow()
+            .selected()
+            .map(|c| c.id.clone()),
+        Some(bob)
+    );
+}
+
+/// The chat list follows events: a chat with a new message moves to the top with its new
+/// preview, and the rows it passed move down.
+#[gpui::test]
+async fn the_chat_list_follows_events(tc: &mut TestAppContext) {
+    let mut chat = testing::chats(&["ann", "bob", "cid"]);
+    let from = |name: &str, body: &str, number: u64| {
+        Event::Message(ChatMessage {
+            conversation: ConversationId::contact(name),
+            sender_id: name.into(),
+            sender: name.into(),
+            ..theirs(body, number)
+        })
+    };
+    chat.apply_all([
+        from("ann", "a", 3),
+        from("bob", "b", 2),
+        from("cid", "c", 1),
+    ]);
+    let mut ui = Ui::new(tc, chat);
+    let y = |ui: &mut Ui, label: &str| ui.bounds(label).map(|b| b.origin.y);
+    assert!(y(&mut ui, "ann, 1 unread, a").is_some());
+    ui.act(|chat| chat.apply(from("cid", "newest", 4)));
+    let cid = y(&mut ui, "cid, 2 unread, newest").expect("its new preview");
+    let ann = y(&mut ui, "ann, 1 unread, a").expect("ann is still listed");
+    let bob = y(&mut ui, "bob, 1 unread, b").expect("so is bob");
+    assert!(cid < ann && ann < bob, "{cid:?} {ann:?} {bob:?}");
+}
+
+/// Settings lead to the issue tracker.
+#[gpui::test]
+async fn settings_say_where_to_report_a_problem(tc: &mut TestAppContext) {
+    // Tall enough for the whole page: what is scrolled away isn't there to find.
+    let mut ui = Ui::sized(tc, many(1, None), 800., 4000.);
+    ui.booted.shared.ui.borrow_mut().settings_open = true;
+    ui.settle();
+    ui.click("Report…");
+    let opened = crate::web::OPENED.with(|opened| opened.borrow().clone());
+    assert!(
+        opened
+            .last()
+            .is_some_and(|url| url.ends_with("/issues/new")),
+        "{opened:?}"
+    );
+}
+
+/// The settings page shrinks with the window, next to the chat list or in its place: none of
+/// its controls runs out of the window (which it did, with a page too wide to shrink).
+#[gpui::test]
+async fn settings_fit_a_narrow_window(tc: &mut TestAppContext) {
+    for width in [400., 640., 800.] {
+        let mut ui = Ui::sized(tc, many(1, None), width, 4000.);
+        ui.booted.shared.ui.borrow_mut().settings_open = true;
+        ui.settle();
+        let report = ui.bounds("Report…").expect("the page is shown");
+        let right: f32 = (report.origin.x + report.size.width).into();
+        assert!(right <= width, "at {width}: the button ends at {right}");
+    }
 }

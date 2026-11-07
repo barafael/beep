@@ -185,6 +185,7 @@ fn notice(view: &MessageView, t: &Tokens) -> AnyElement {
         })
         .child(
             div()
+                .debug_selector(|| "Notice".into())
                 .min_w_0()
                 .text_center()
                 .text_size(px(theme::BODY * theme::SMALL))
@@ -307,7 +308,11 @@ fn message(
     let described = described(view);
     let mut bubble = div()
         .id(SharedString::from(format!("bubble-{index}")))
-        .aria_label(SharedString::from(described))
+        .speaks_as(
+            Role::Article,
+            SharedString::from(described),
+            format!("Message {index}"),
+        )
         // The time of a message within a run, which shows it only on the run's last.
         .when(!view.last_of_run && !time.is_empty(), |b| {
             let time = SharedString::from(time.clone());

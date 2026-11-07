@@ -158,6 +158,7 @@ impl ConversationView {
         });
         div()
             .id("messages-area")
+            .debug_selector(|| "Messages".into())
             .size_full()
             .key_context("Messages")
             .track_focus(&self.messages_focus)

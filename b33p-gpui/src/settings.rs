@@ -436,6 +436,9 @@ impl Render for SettingsView {
             .role(Role::Group)
             .aria_label("Settings")
             .size_full()
+            // Shrinks with the window, however long its rows: next to the chat list, a page
+            // that can't would run out of the window.
+            .min_w_0()
             .flex()
             .flex_col()
             .child(
@@ -479,6 +482,7 @@ impl Render for SettingsView {
                     .id("settings-scroll")
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
                     .overflow_y_scrollbar()
                     .child(
                         div()
@@ -489,6 +493,7 @@ impl Render for SettingsView {
                             .child(
                                 div()
                                     .w_full()
+                                    .min_w_0()
                                     .max_w(px(COLUMN))
                                     .py(px(theme::SPACE_XL))
                                     .flex()
