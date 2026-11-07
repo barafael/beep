@@ -1,14 +1,15 @@
 # Upstream PR: skip animations from a value to itself
 
-Status: prepared, not pushed. Branch `no-op-animation` (commit `d4a708214`) in
+Status: opened as a draft, https://github.com/slint-ui/slint/pull/14823 (branch pushed to the
+`barafael/slint` fork). Branch `no-op-animation` (commit `d4a708214`) in
 `/home/rafael/code/beep-gpui-patch/slint`, based on upstream `slint-ui/slint` master `8d51770e7`
 (2026-11-07). b33p carries the same change as
 `b33p-slint/fork-patches/0001-no-op-animation.patch` until this is merged.
 
-## Open the draft PR
+## How the draft PR was opened
 
-Push the branch to the fork, then open the PR as a draft (per the owner's rule).
-Both commands are for the owner to run; nothing here has been run.
+The branch was pushed to the fork and the PR opened as a draft (per the owner's rule), with
+these commands:
 
 ```sh
 cd /home/rafael/code/beep-gpui-patch/slint
