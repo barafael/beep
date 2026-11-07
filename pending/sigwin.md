@@ -340,6 +340,24 @@ and download), D.6 (a signing account), the key for D.5, and C.
 | D.4 IME Ctrl shortcuts | `ime-ctrl` (#143), on `windows-ci` | `keys.rs`: a filter through Slint's public winit hook, no fork patch (Slint's own fallback, `key_without_modifiers`, is `Process` too) | unit tests in the Windows CI job |
 | D.5 Self-update | `self-update`, on `windows-install` | `update.rs` (`minisign-verify`), the setting, `release.yml` signing | unit tests on signature and version checks with a test key |
 
+**A results (2026-11-07, #141):**
+- **The first Windows run found main broken there**:
+  - since 9b642ac, `windows_registry::Error` is private, so no Windows build since then compiled;
+  - a migrations test compared CRLF-checked-out text;
+  - two variants that only Unix builds were unused on Windows.
+
+  All fixed in #141, and the test job now treats warnings as errors.
+- **0.3 CJK fallback**: on an en-US Windows Server 2025 runner, femtovg shows 駅 鉄 国 and Hangul in names and previews. sigwin's blanks came from a Korean locale picking Malgun Gothic for every ideograph; that needs a Korean-locale machine (D.1).
+- **3.1 memory, idle on the mock**:
+
+  | Renderer | Private | Working set |
+  |---|---|---|
+  | femtovg | 10.6 MiB | 39.1 MiB |
+  | software | 8.9 MiB | 36.3 MiB |
+
+  The runner has no GPU driver, so the cost sigwin measured for femtovg (212 MB, the driver loaded into the process) can't show here. That number still needs real hardware.
+- **Found by #144: screen-capture exclusion never took effect on Windows**: it asked before Slint had made the window. Fixed in #148, with a Screen security setting as in Signal Desktop and a smoke check.
+
 **B.4 result (2026-11-07):**
 - With a real fcitx5 Hangul input method, `@` followed by composing 가 closes the @mention list: b33p sees the composition while its committed draft is still `@`. Before #135 the list showed every name. #135 holds.
 - **New finding:** Enter in the middle of a syllable commits it *and sends* the message in one press (`@가` went out). Chromium, and so Signal-Desktop, spends that first Enter on finishing the syllable. Changing it needs to know that the commit and the Enter came from one key press: Qt's fcitx plugin commits the preedit before it delivers the Return, so `Composer.composing` is already empty when the composer sees Enter. Owner's call whether to match Desktop.
