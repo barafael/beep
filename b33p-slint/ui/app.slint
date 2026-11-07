@@ -3,7 +3,7 @@ import { Motion, Theme } from "theme.slint";
 import { EmojiPicker } from "emoji.slint";
 import { ActivityItem, AttachmentItem, CalendarYear, CandidateItem, ConversationItem, MemberItem, MessageItem, RequestAnswer, RingItem, Screen, SearchResult, SharedItem, StickerRow, StoryItem, Confirm } from "types.slint";
 import { MuteChoices, TextSelection, TimerChoices } from "globals.slint";
-import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Display, EmptyState, FadeIn, Heading, Hint, Icon, IconButton, PanelHeader, Popover, Pressable, SectionTitle, SendButton, SettingRow, Small, Tab, Title } from "widgets.slint";
+import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Display, EmptyState, FadeIn, Heading, Hint, Icon, IconButton, PanelHeader, Popover, Pressable, SectionTitle, SendButton, SettingRow, Small, SwitchRow, Tab, Title } from "widgets.slint";
 import { ConversationMenu, ConversationRow } from "conversation-row.slint";
 import { AttachmentView } from "attachment.slint";
 import { Bubble } from "bubble.slint";
@@ -13,13 +13,13 @@ import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens
 import { SettingsPage } from "settings.slint";
 import { ChatListPane } from "chat-list.slint";
 import { StoriesOverlay, GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
-import { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels } from "state.slint";
+import { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
 
 // What Rust reaches: the window, its data types and the globals it sets.
 export * from "types.slint";
 export { Motion } from "theme.slint";
 export { Playback } from "globals.slint";
-export { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels } from "state.slint";
+export { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
 export { Emojis, EmojiGroup } from "emoji.slint";
 
 export component AppWindow inherits Window {
@@ -861,6 +861,32 @@ export component AppWindow inherits Window {
                                                     }
                                                 }
                                             }
+                                        }
+                                        // How it notifies when not muted (muting wins); this
+                                        // computer's alone, the phone doesn't know of it.
+                                        SettingRow {
+                                            label: "Notify for";
+                                            hint: chat.muted ? "Once unmuted" : "";
+                                            ComboBox {
+                                                width: 200px;
+                                                accessible-label: "Notify for";
+                                                model: ["All messages", "Mentions and replies"];
+                                                current-index <=> ChatNotify.notify-for;
+                                                selected => { ChatNotify.changed(); }
+                                            }
+                                        }
+                                        SwitchRow {
+                                            label: "Show message text";
+                                            // The app's setting hides it already; this can't show it.
+                                            hint: Prefs.notification-content > 0 ? "Hidden for every chat in Settings" : "";
+                                            enabled: Prefs.notification-content == 0;
+                                            checked <=> ChatNotify.show-text;
+                                            toggled => { ChatNotify.changed(); }
+                                        }
+                                        SwitchRow {
+                                            label: "Notification sound";
+                                            checked <=> ChatNotify.sound;
+                                            toggled => { ChatNotify.changed(); }
                                         }
                                         // Only where we can still write: the timer is a message to them.
                                         if !chat.request && !chat.blocked && !chat.left: SettingRow {

@@ -134,14 +134,26 @@ impl ChatState {
         std::mem::take(&mut self.notifications.pending)
     }
 
-    pub(super) fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
+    /// Notifies about an incoming message, as the app's settings and its chat's say. `for_me`:
+    /// it mentions us or replies to one of ours (see [`addresses`]).
+    pub(super) fn notify_message(
+        &mut self,
+        id: &ConversationId,
+        sender: String,
+        body: String,
+        for_me: bool,
+    ) {
         let conversation = self
             .conversation_at
             .get(id)
             .map(|&at| &self.conversations[at]);
         let muted = conversation.is_some_and(|c| c.settings.muted(self.now()));
+        let chat = conversation.map(|c| c.settings.notify).unwrap_or_default();
         let n = &mut self.notifications;
         if !n.enabled || muted || (n.window_focused && self.selected.as_ref() == Some(id)) {
+            return;
+        }
+        if chat.mentions_only && !for_me {
             return;
         }
         if !self.synced {
@@ -153,7 +165,12 @@ impl ChatState {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
         };
-        let (title, body) = match n.content {
+        // The chat's setting only ever hides more than the app's.
+        let content = match n.content {
+            NotificationContent::NameAndMessage if chat.hide_text => NotificationContent::NameOnly,
+            content => content,
+        };
+        let (title, body) = match content {
             NotificationContent::NameAndMessage => (name, body),
             NotificationContent::NameOnly => (name, "New message".into()),
             NotificationContent::Nothing => ("b33p".into(), "New message".into()),
@@ -162,10 +179,16 @@ impl ChatState {
             conversation: Some(id.clone()),
             title,
             body,
+            silent: chat.silent,
         });
     }
 
     pub(super) fn announce_caught_up(&mut self) {
+        // Quiet if every chat in it is.
+        let silent = self.notifications.caught_up.keys().all(|id| {
+            self.conversation(id)
+                .is_some_and(|c| c.settings.notify.silent)
+        });
         let n = &mut self.notifications;
         let chats = n.caught_up.len();
         let messages: usize = n.caught_up.drain().map(|(_, count)| count).sum();
@@ -181,6 +204,25 @@ impl ChatState {
             conversation: None,
             title: "b33p".into(),
             body,
+            silent,
         });
     }
+}
+
+/// Whether an incoming message is for us in particular: it mentions us (`own`, our service ID),
+/// or replies to one of our messages. The quote names its author; one that doesn't is looked
+/// for in `history`, its conversation's.
+pub(super) fn addresses(message: &ChatMessage, own: &str, history: &[ChatMessage]) -> bool {
+    let mentioned = !own.is_empty() && message.mentions.iter().any(|m| m.service_id == own);
+    let replied = message.quote.as_ref().is_some_and(|quote| {
+        if quote.author_id.is_empty() {
+            quote.timestamp != 0
+                && history
+                    .iter()
+                    .any(|m| m.outgoing && m.timestamp == quote.timestamp)
+        } else {
+            quote.author_id == own
+        }
+    });
+    mentioned || replied
 }

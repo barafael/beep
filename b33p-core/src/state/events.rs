@@ -79,8 +79,12 @@ impl ChatState {
                 self.screen = Screen::Link(qr);
                 update.screen = true;
             }
-            Event::Linked { account } => {
+            Event::Linked {
+                account,
+                service_id,
+            } => {
                 self.account = account;
+                self.service_id = service_id;
                 // A sticker load cut off by relinking never answers; ask again next time.
                 if matches!(self.sticker_packs, Some(None)) {
                     self.sticker_packs = None;
@@ -421,7 +425,8 @@ impl ChatState {
                         _ => format::hide_spoilers(&message.body, &message.styles),
                     };
                     let sender = message.sender.clone();
-                    self.notify_message(&id, sender, body);
+                    let for_me = super::reading::addresses(message, &self.service_id, history);
+                    self.notify_message(&id, sender, body, for_me);
                 }
                 if self.selected.as_ref() == Some(&id) {
                     update.messages = if appended {

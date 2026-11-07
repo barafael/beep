@@ -248,6 +248,15 @@ impl ChatState {
         })
     }
 
+    /// Sets how a conversation's new messages notify (when it isn't muted).
+    pub fn set_chat_notify(&mut self, id: &ConversationId, notify: ChatNotify) -> Option<Command> {
+        self.change_settings(id, |s| s.notify = notify)?;
+        Some(Command::SetChatNotify {
+            conversation: id.clone(),
+            notify,
+        })
+    }
+
     pub fn archive(&mut self, id: &ConversationId, archived: bool) -> Option<Command> {
         self.change_settings(id, |s| s.set_archived(archived))?;
         if archived && self.selected.as_ref() == Some(id) {

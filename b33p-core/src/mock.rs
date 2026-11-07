@@ -180,6 +180,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     std::thread::sleep(Duration::from_secs(2));
     events.send(Event::Linked {
         account: "+49 151 0000000 (mock)".into(),
+        // What `message` makes of "You", the sender of our own messages.
+        service_id: "you".into(),
     });
     // `B33P_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
     // phone takes 6 seconds and can be skipped.
@@ -315,6 +317,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 | Command::SetPins(_)
                 | Command::Mute { .. }
                 | Command::Archive { .. }
+                | Command::SetChatNotify { .. }
                 | Command::SetTimer { .. }
                 | Command::DropUnsent { .. }
                 | Command::Preferences(_),

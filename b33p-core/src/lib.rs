@@ -340,6 +340,21 @@ pub struct ChatSettings {
     pub blocked: bool,
     /// Accepted as a chat, not a message request: here, on the phone, or by writing to it.
     pub accepted: bool,
+    /// How its new messages notify, when it isn't muted.
+    pub notify: ChatNotify,
+}
+
+/// How a chat's new messages notify, besides muting it (which wins over all of this). Kept on
+/// this computer only: Signal's storage service has no place for it, so the phone and other
+/// devices neither see nor change it. The default notifies as the app's settings say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatNotify {
+    /// Only messages that mention us or reply to one of ours notify.
+    pub mentions_only: bool,
+    /// Notifications say who wrote, not what. The app's "Show" setting can hide more still.
+    pub hide_text: bool,
+    /// Notifications come without a sound, where the desktop lets them (see `b33p-notify`).
+    pub silent: bool,
 }
 
 impl ChatSettings {
@@ -806,6 +821,8 @@ pub enum Event {
     /// Linked (or loaded an existing registration) as `account`.
     Linked {
         account: String,
+        /// Our own service ID (ACI), as messages name their authors and whom they mention.
+        service_id: String,
     },
     /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
     Reconnecting,
@@ -1157,6 +1174,11 @@ pub enum Command {
     Archive {
         conversation: ConversationId,
         archived: bool,
+    },
+    /// Sets how a chat's new messages notify; kept here only, never sent anywhere.
+    SetChatNotify {
+        conversation: ConversationId,
+        notify: ChatNotify,
     },
     /// Sets the disappearing-message timer (seconds; 0 turns it off).
     SetTimer {
