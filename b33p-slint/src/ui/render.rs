@@ -92,6 +92,7 @@ pub(crate) fn render(
         a == b
     });
     render_media(window, chat, images);
+    render_pins(window, chat);
     render_stickers(window, chat);
     render_details(window, chat);
     render_stories(window, chat, images);
@@ -464,6 +465,14 @@ pub(super) fn redraw_message(messages: &Rows<MessageItem>, row: usize, item: Mes
     }
 }
 
+/// The draft with what an input method is composing after it: the "@…" being typed, for
+/// people to mention. A name typed in Hangul or kana is in the draft only once each syllable
+/// is done, so without it the list would lag a syllable behind.
+pub(super) fn draft_as_typed(window: &AppWindow) -> String {
+    let composer = window.global::<Composer>();
+    format!("{}{}", composer.get_draft(), composer.get_composing())
+}
+
 /// What the composer offers for its draft: sending it, and people to mention.
 pub(super) fn render_composer(window: &AppWindow, chat: &ChatState) {
     let draft = window.global::<Composer>().get_draft();
@@ -471,7 +480,7 @@ pub(super) fn render_composer(window: &AppWindow, chat: &ChatState) {
         .global::<Composer>()
         .set_can_send(chat.can_compose(&draft));
     let candidates: Vec<SharedString> = chat
-        .mention_candidates(&draft)
+        .mention_candidates(&draft_as_typed(window))
         .iter()
         .map(|p| p.name.as_str().into())
         .collect();

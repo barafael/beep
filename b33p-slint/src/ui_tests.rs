@@ -425,6 +425,60 @@ fn older_messages_put_in_above_leave_the_view_in_place() {
     );
 }
 
+/// A long message shows its first lines and "Read more"; a click shows the rest, and a short
+/// message has no such link.
+#[test]
+fn a_long_message_folds_until_read_more() {
+    let (window, messages) = window_with_messages(1);
+    let long = "Words that go on. ".repeat(60);
+    messages.set_vec(vec![
+        MessageItem {
+            key: "long".into(),
+            ..message(&long)
+        },
+        MessageItem {
+            key: "short".into(),
+            ..message("Short.")
+        },
+    ]);
+    settle(&window);
+    assert!(find(&window, &long).is_some(), "the text is there, folded");
+    let more: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Read more").collect();
+    assert_eq!(more.len(), 1, "only the long message folds");
+    more[0].invoke_accessible_default_action();
+    settle(&window);
+    assert!(find(&window, "Read more").is_none(), "unfolded");
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, &long).count(),
+        1,
+        "the whole text, once"
+    );
+}
+
+#[test]
+fn clicking_a_quote_asks_for_the_quoted_message() {
+    let (window, messages) = window_with_messages(2);
+    let opened = Rc::new(std::cell::RefCell::new(None));
+    window.global::<OpenChat>().on_open_quote({
+        let opened = opened.clone();
+        move |key| *opened.borrow_mut() = Some(key)
+    });
+    messages.set_vec(vec![
+        message("The question"),
+        MessageItem {
+            key: "answer".into(),
+            quote_author: "Ann".into(),
+            quote_text: "The question".into(),
+            ..message("The answer")
+        },
+    ]);
+    settle(&window);
+    find(&window, "Show the quoted message from Ann")
+        .expect("the quote is a button")
+        .mock_single_click(PointerEventButton::Left);
+    assert_eq!(opened.borrow().as_deref(), Some("answer"));
+}
+
 #[test]
 fn clicking_a_mention_candidate_picks_it() {
     let (window, _messages) = window_with_messages(3);
@@ -449,6 +503,46 @@ fn clicking_a_mention_candidate_picks_it() {
             .row_count(),
         2
     );
+}
+
+#[test]
+fn a_composition_reaches_rust_before_it_is_committed() {
+    use i_slint_core::input::{InternalKeyEvent, KeyEventType};
+    use i_slint_core::platform::WindowEvent;
+    let (window, _messages) = window_with_messages(3);
+    let told = Rc::new(Cell::new(0));
+    window.global::<Composer>().on_composing_edited({
+        let told = told.clone();
+        move || told.set(told.get() + 1)
+    });
+    ElementHandle::find_by_element_id(&window, "AppWindow::composer")
+        .next()
+        .expect("composer")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    window.global::<Composer>().set_draft("@".into());
+    // As the Qt backend hands on an input method's composition: "홍", not yet committed.
+    let compose = |preedit: &str| {
+        let event = InternalKeyEvent {
+            event_type: KeyEventType::UpdateComposition,
+            preedit_text: preedit.into(),
+            ..Default::default()
+        };
+        window.window().dispatch_event(WindowEvent::internal(event));
+        settle(&window);
+    };
+    compose("호");
+    compose("홍");
+    assert_eq!(window.global::<Composer>().get_composing(), "홍");
+    assert_eq!(
+        window.global::<Composer>().get_draft(),
+        "@",
+        "not in the draft yet"
+    );
+    assert_eq!(told.get(), 2, "told of each change");
+    compose("");
+    assert_eq!(window.global::<Composer>().get_composing(), "");
+    assert_eq!(told.get(), 3);
 }
 
 #[test]

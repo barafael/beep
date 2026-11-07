@@ -496,6 +496,7 @@ impl ChatState {
                 target,
                 mut message,
             } => {
+                update.pins |= self.pinned_edited(&conversation, &target, &message);
                 // Only a message's sender edits it; the history is sorted by (time, sender),
                 // which an edit by anyone else would break.
                 if message.sender_id == target.author_id
@@ -555,11 +556,16 @@ impl ChatState {
                 conversation,
                 target,
             } => {
+                update.pins |= self.unpin_gone(&conversation, std::slice::from_ref(&target));
                 if let Some(message) = self.find_message(&conversation, &target) {
                     tombstone(message);
                     update.rows = self.rows_changed(&conversation, [target]);
                     update.conversations = true;
                 }
+            }
+            Event::PinnedMessages { conversation, pins } => {
+                update.pins = self.selected.as_ref() == Some(&conversation);
+                self.pins.insert(conversation, pins);
             }
             Event::Expiring {
                 conversation,
@@ -576,6 +582,7 @@ impl ChatState {
                 conversation,
                 targets,
             } => {
+                update.pins |= self.unpin_gone(&conversation, &targets);
                 if let Some(history) = self.history.get_mut(&conversation) {
                     let before = history.len();
                     let mut keep = vec![true; history.len()];
@@ -727,6 +734,25 @@ impl ChatState {
                     listed.trust = trust;
                     update.conversations = true;
                 }
+            }
+            Event::MessageInfo {
+                conversation,
+                target,
+                info,
+            } => {
+                if let Some((shown, message, shown_info)) = &mut self.message_info
+                    && *shown == conversation
+                    && *message == target
+                {
+                    *shown_info = Some(info);
+                }
+            }
+            Event::Readers {
+                conversation,
+                newest,
+            } => {
+                update.rows = self.selected.as_ref() == Some(&conversation);
+                self.readers.insert(conversation, newest);
             }
             Event::Details {
                 conversation,

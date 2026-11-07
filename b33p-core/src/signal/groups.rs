@@ -66,6 +66,9 @@ pub(super) async fn group_conversation(
     let mut conversation = register(threads, Thread::Group(key), group.title, subtitle, timer);
     conversation.members = people;
     conversation.admin = admin;
+    conversation.members_edit_details = group.access_control.is_some_and(|access| {
+        access.attributes == presage::libsignal_service::groups_v2::AccessRequired::Member
+    });
     conversation.left = left;
     conversation.invited = invited;
     conversation.requested = requested;

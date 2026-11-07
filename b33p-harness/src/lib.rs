@@ -281,6 +281,24 @@ pub enum Action {
         index: u32,
     },
     CancelReply,
+    /// Clicks the quote in the `index`th message: shows the message it quotes.
+    OpenQuote {
+        index: u32,
+    },
+    /// Pins the `index`th message for everyone in the chat, for `seconds` or, without, until
+    /// unpinned (the menu's "Pin…" and its choice).
+    PinMessage {
+        index: u32,
+        #[serde(default)]
+        seconds: Option<u32>,
+    },
+    UnpinMessage {
+        index: u32,
+    },
+    /// Clicks the `index`th pin (in [`Snapshot::pinned`]'s order) in the bar above the chat.
+    ShowPinned {
+        index: u32,
+    },
     React {
         index: u32,
         emoji: String,
@@ -421,6 +439,11 @@ pub enum Action {
         conversation: String,
     },
     OpenChatSearch,
+    /// Opens the info of the `index`th message (ours): who it went to, and what each said.
+    OpenMessageInfo {
+        index: u32,
+    },
+    CloseMessageInfo,
     CloseChatSearch,
     SearchChat {
         text: String,
@@ -548,6 +571,10 @@ pub struct Snapshot {
     pub conversations: Vec<ConversationSnapshot>,
     pub selected: Option<String>,
     pub messages: Vec<MessageSnapshot>,
+    /// What is pinned in the open conversation, oldest pin first: each message's text. Absent
+    /// in a b33p built before it.
+    #[serde(default)]
+    pub pinned: Vec<String>,
     pub draft: String,
     pub replying_to: Option<QuoteSnapshot>,
     pub editing: bool,
@@ -565,6 +592,19 @@ pub struct Snapshot {
     pub details: Option<DetailsSnapshot>,
     /// The search in the open conversation, while open (`OpenChatSearch`).
     pub chat_search: Option<ChatSearchSnapshot>,
+    /// A message's info, while open (`OpenMessageInfo`); `None` inside while gathered. Absent
+    /// in a b33p built before it.
+    #[serde(default)]
+    pub message_info: Option<Option<Vec<ReceiptSnapshot>>>,
+}
+
+/// One recipient of a message of ours, and when they said it was delivered and read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReceiptSnapshot {
+    pub service_id: String,
+    pub name: String,
+    pub delivered_at: Option<u64>,
+    pub read_at: Option<u64>,
 }
 
 /// A search in the open conversation: what is looked for, and what was found, in the order
@@ -745,6 +785,10 @@ pub struct MessageSnapshot {
     pub day: Option<String>,
     pub first_unread: bool,
     pub selected: bool,
+    /// Marked as what a jump went to: a search result shown, a quoted message clicked. Absent
+    /// in a b33p built before it.
+    #[serde(default)]
+    pub highlighted: bool,
     pub reactions: Vec<ReactionSnapshot>,
     pub quote: Option<QuoteSnapshot>,
     pub attachments: Vec<AttachmentSnapshot>,

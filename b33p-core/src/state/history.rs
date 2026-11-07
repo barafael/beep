@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// A jump's message (most often a quoted one) isn't in this device's store.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "That message isn't on this device: it was deleted, or sent before this device was linked."
+)]
+struct MessageMissing;
+
+impl crate::Classified for MessageMissing {
+    fn kind(&self) -> crate::ErrorKind {
+        crate::ErrorKind::Refused
+    }
+}
+
 impl ChatState {
     /// Asks for the selected conversation's next older page of history, e.g. when scrolled to
     /// the top; once at a time, and not past the beginning.
@@ -26,7 +39,8 @@ impl ChatState {
             .is_some_and(Option::is_some)
     }
 
-    /// Scrolls to the pending search result if it is loaded, or asks for the page before.
+    /// Scrolls to the pending jump's message (a search result, a quoted message) if it is
+    /// loaded, or asks for the page before. Says so if the store doesn't have it.
     pub(super) fn continue_jump(&mut self) {
         let Some(target) = self.pending_jump.clone() else {
             return;
@@ -36,18 +50,30 @@ impl ChatState {
             .as_ref()
             .and_then(|id| self.history.get(id))
             .and_then(|history| find(history, ref_key(&target)));
-        match found {
-            Some(row) => {
-                self.pending_jump = None;
-                let count = self.jump.map_or(1, |(_, count)| count + 1);
-                self.jump = Some((row, count));
-            }
-            None => match self.load_older() {
-                Some(command) => self.queued.push(command),
-                // Not in the store after all (deleted meanwhile).
-                None if !self.has_older() => self.pending_jump = None,
-                None => {}
-            },
+        if let Some(row) = found {
+            self.pending_jump = None;
+            let count = self.jump.map_or(1, |(_, count)| count + 1);
+            self.jump = Some((row, count));
+            return;
+        }
+        // Older pages hold only what was sent before where the next one starts: a message
+        // sent since that isn't loaded isn't in the store (deleted, or from before this
+        // device was linked), and looking further would load the whole chat for nothing.
+        let next_page = id.as_ref().and_then(|id| self.older.get(id)).copied();
+        let beyond_reach = match next_page {
+            Some(Some(before)) => target.timestamp >= before,
+            Some(None) => true,
+            // Not loaded yet: its first page will call again.
+            None => false,
+        };
+        if beyond_reach {
+            self.pending_jump = None;
+            self.highlight = None;
+            self.show_error(MessageMissing.into(), None);
+            return;
+        }
+        if let Some(command) = self.load_older() {
+            self.queued.push(command);
         }
     }
 

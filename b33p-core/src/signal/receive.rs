@@ -45,6 +45,7 @@ use super::{
         author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
         stored_at, stored_timers, to_chat_message, to_reaction,
     },
+    pins::{PinOutcome, on_pin_change, pin_change},
     stories::on_story,
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
 };
@@ -814,6 +815,17 @@ async fn handle_content(
             target,
         });
     }
+    if let Some(change) = pin_change(data) {
+        match on_pin_change(manager, ctx, &id, content, change).await {
+            // Stays, and shows as "… pinned a message".
+            PinOutcome::Pinned => {}
+            // Nothing to show of it, now or in the history.
+            PinOutcome::Done | PinOutcome::Refused => {
+                forget_stored(manager, content).await;
+                return true;
+            }
+        }
+    }
     // A change with nothing else to say that the group's log told already, as an admin's details
     // read it just before its message came: told once, here and in the history.
     if let Thread::Group(key) = thread
@@ -1058,6 +1070,21 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
     found = theirs;
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
         warn!(error = %crate::scrub::chain(&error), "failed to remember a receipt");
+    }
+    // And whose it was, for who has read what.
+    let recipient = sender.service_id_string();
+    if let Err(error) = ctx
+        .tables
+        .record_receipts(&found, &recipient, delivery, now_millis())
+        .await
+    {
+        warn!(error = %crate::scrub::chain(&error), "failed to remember whose receipt it was");
+    }
+    if delivery == Delivery::Read {
+        let groups: HashSet<&ConversationId> = found.iter().map(|(c, _)| c).collect();
+        for conversation in groups {
+            super::receipts::tell_readers(ctx, conversation).await;
+        }
     }
     let mut by_conversation: HashMap<ConversationId, Vec<u64>> = HashMap::new();
     for (conversation, timestamp) in found {

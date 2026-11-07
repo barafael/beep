@@ -128,10 +128,34 @@ export global ChatList {
     in property <int> focus-search-request;
 }
 
+// A message pinned in the open chat, for the bar above it.
+export struct PinItem {
+    // The row's key, as `MessageItem.key`.
+    key: string,
+    author: string,
+    // Its first line, or what it is ("Photo").
+    text: string,
+}
+
 // The open chat's messages: loading them, acting on them, picking them, and where the
 // list scrolls to.
 export global OpenChat {
     in property <[MessageItem]> messages;
+    // What is pinned in the open chat, oldest pin first.
+    in property <[PinItem]> pins;
+    // The pinned rows' keys, for their menus: at most three, as Signal pins.
+    in property <[string]> pinned-keys;
+    // Messages can be pinned in the open chat: a chat of two, or a group we may change.
+    in property <bool> can-pin;
+    // Pinning one more message replaces the oldest pin.
+    in property <bool> pins-full;
+    // Pins the message with this key for this many seconds, 0 until unpinned.
+    callback pin(string, int);
+    callback unpin(string);
+    // Shows the pin at this index of `pins` in the chat.
+    callback show-pinned(int);
+    // A while has passed: pins may have run out.
+    callback check-pins;
     // The open chat's activity strip; empty while the strip is off.
     in property <[ActivityItem]> activity;
     // The open chat's calendar, filled when it opens.
@@ -143,6 +167,8 @@ export global OpenChat {
     callback open-link(string);
     // Messages are named by their `key`.
     callback reply(string);
+    // Shows the message the message with this key quotes.
+    callback open-quote(string);
     callback react(string, string);
     callback retry-send(string);
     callback fetch-attachment(string);
@@ -218,6 +244,10 @@ export global Composer {
     in-out property <int> paste-text;
     // Files dropped onto the open chat, to attach.
     callback files-dropped(DropEvent);
+    // What an input method is composing (Hangul, kana, …), not yet in the draft. A name to
+    // mention is looked for in the draft with it.
+    in-out property <string> composing;
+    callback composing-edited;
     // Group members matching the "@…" the draft ends with.
     in property <[string]> mention-candidates;
     callback pick-mention(int);

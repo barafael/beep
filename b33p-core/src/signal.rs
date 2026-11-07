@@ -7,6 +7,8 @@ pub(crate) mod errors;
 mod groups;
 mod history;
 mod lifecycle;
+mod pins;
+mod receipts;
 mod receive;
 mod send;
 mod session;

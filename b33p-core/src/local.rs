@@ -238,6 +238,16 @@ const SCHEMA: &[&str] = &[
     )",
     // Receipts name only the time.
     "CREATE INDEX IF NOT EXISTS b33p_delivery_ts ON b33p_delivery (ts)",
+    // Each recipient's receipts for our messages: when each said it was delivered and read
+    // (ms, by our clock). `b33p_delivery` keeps the message's best state; this, who.
+    "CREATE TABLE IF NOT EXISTS b33p_receipt (
+        conversation TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        recipient TEXT NOT NULL,
+        delivered_at INTEGER,
+        read_at INTEGER,
+        PRIMARY KEY (conversation, ts, recipient)
+    )",
     "CREATE TABLE IF NOT EXISTS b33p_edit (
         conversation TEXT NOT NULL,
         author TEXT NOT NULL,
@@ -269,6 +279,17 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (conversation, author, ts)
     )",
     "CREATE INDEX IF NOT EXISTS b33p_expiry_at ON b33p_expiry (expires_at)",
+    // Messages pinned in their chat, as Signal's apps keep them: presage stores the pin and
+    // unpin messages but no state. `pinned_at` is when the pin came, which orders them;
+    // `expires_at` is NULL for a pin until unpinned.
+    "CREATE TABLE IF NOT EXISTS b33p_pinned_message (
+        conversation TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        pinned_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        PRIMARY KEY (conversation, author, ts)
+    )",
     // What the storage service said last, per conversation; see `storage.rs`. `accepted` is
     // its "whitelisted".
     "CREATE TABLE IF NOT EXISTS b33p_remote (
@@ -929,6 +950,79 @@ impl LocalStore {
         tx.commit().await
     }
 
+    /// Notes `recipient`'s receipt for each of `messages`, `delivery` at `at`: the first time
+    /// each says delivered and read counts. A read receipt also means delivered.
+    pub(crate) async fn record_receipts(
+        &self,
+        messages: &[(ConversationId, u64)],
+        recipient: &str,
+        delivery: Delivery,
+        at: u64,
+    ) -> Result<(), sqlx::Error> {
+        let read = (delivery == Delivery::Read).then_some(at as i64);
+        let mut tx = self.begin_write().await?;
+        for (conversation, ts) in messages {
+            sqlx::query(
+                "INSERT INTO b33p_receipt (conversation, ts, recipient, delivered_at, read_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT (conversation, ts, recipient) DO UPDATE SET
+                    delivered_at = coalesce(delivered_at, excluded.delivered_at),
+                    read_at = coalesce(read_at, excluded.read_at)",
+            )
+            .bind(&conversation.0)
+            .bind(*ts as i64)
+            .bind(recipient)
+            .bind(at as i64)
+            .bind(read)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Who said what of our message sent at `ts` in `conversation`: each recipient's service
+    /// id, and when they said it was delivered and read.
+    pub(crate) async fn receipts(
+        &self,
+        conversation: &ConversationId,
+        ts: u64,
+    ) -> Result<Vec<(String, Option<u64>, Option<u64>)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT recipient, delivered_at, read_at FROM b33p_receipt
+             WHERE conversation = ? AND ts = ? ORDER BY recipient",
+        )
+        .bind(&conversation.0)
+        .bind(ts as i64)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let at = |i: usize| row.get::<Option<i64>, _>(i).map(|at| at as u64);
+                (row.get(0), at(1), at(2))
+            })
+            .collect())
+    }
+
+    /// The newest of our messages each recipient has read in `conversation` (its sent time),
+    /// by service id.
+    pub(crate) async fn newest_read(
+        &self,
+        conversation: &ConversationId,
+    ) -> Result<HashMap<String, u64>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT recipient, max(ts) FROM b33p_receipt
+             WHERE conversation = ? AND read_at IS NOT NULL GROUP BY recipient",
+        )
+        .bind(&conversation.0)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| (row.get(0), row.get::<i64, _>(1) as u64))
+            .collect())
+    }
+
     /// Delivery states of our messages in a conversation sent in `range`, by timestamp.
     pub(crate) async fn deliveries(
         &self,
@@ -1161,12 +1255,18 @@ impl LocalStore {
         .bind(ts)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?")
-            .bind(&conversation)
-            .bind(&author)
-            .bind(ts)
-            .execute(&mut *tx)
-            .await?;
+        // A deleted message is no longer pinned (Signal-Desktop pins none).
+        for statement in [
+            "DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?",
+            "DELETE FROM b33p_pinned_message WHERE conversation = ? AND author = ? AND ts = ?",
+        ] {
+            sqlx::query(statement)
+                .bind(&conversation)
+                .bind(&author)
+                .bind(ts)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await
     }
 
@@ -1251,6 +1351,101 @@ impl LocalStore {
                 .await?
                 .get(0);
         Ok((due, next.map(|n| n as u64)))
+    }
+
+    /// Pins `message` in its chat from `pinned_at` until `expires_at` (`None`: until unpinned),
+    /// as Signal-Desktop does (`appendPinnedMessage`): a pin of a message pinned already
+    /// replaces it only if newer, and the chat keeps its `limit` newest pins. Whether `message`
+    /// is pinned now, as asked.
+    pub(crate) async fn pin_message(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+        pinned_at: u64,
+        expires_at: Option<u64>,
+        limit: usize,
+    ) -> Result<bool, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO b33p_pinned_message (conversation, author, ts, pinned_at, expires_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (conversation, author, ts) DO UPDATE
+             SET pinned_at = excluded.pinned_at, expires_at = excluded.expires_at
+             WHERE excluded.pinned_at > pinned_at",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .bind(pinned_at as i64)
+        .bind(expires_at.map(|at| at as i64))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM b33p_pinned_message WHERE conversation = ?1 AND rowid NOT IN (
+                SELECT rowid FROM b33p_pinned_message WHERE conversation = ?1
+                ORDER BY pinned_at DESC LIMIT ?2)",
+        )
+        .bind(&conversation)
+        .bind(limit as i64)
+        .execute(&mut *tx)
+        .await?;
+        let pinned: Option<i64> = sqlx::query_scalar(
+            "SELECT pinned_at FROM b33p_pinned_message
+             WHERE conversation = ? AND author = ? AND ts = ?",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(pinned == Some(pinned_at as i64))
+    }
+
+    /// Unpins `message`; whether it was pinned.
+    pub(crate) async fn unpin_message(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+    ) -> Result<bool, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        let done = sqlx::query(
+            "DELETE FROM b33p_pinned_message WHERE conversation = ? AND author = ? AND ts = ?",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .execute(&self.db)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// The messages pinned in a conversation at `now`, oldest pin first, with when each pin
+    /// runs out. Those run out by `now` are dropped.
+    pub(crate) async fn pinned_messages(
+        &self,
+        conversation: &ConversationId,
+        now: u64,
+    ) -> Result<Vec<(MessageRef, Option<u64>)>, sqlx::Error> {
+        sqlx::query("DELETE FROM b33p_pinned_message WHERE expires_at <= ?")
+            .bind(now as i64)
+            .execute(&self.db)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT author, ts, expires_at FROM b33p_pinned_message
+             WHERE conversation = ? ORDER BY pinned_at",
+        )
+        .bind(&conversation.0)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let expires_at: Option<i64> = row.get(2);
+                (message_at(row, 0), expires_at.map(|at| at as u64))
+            })
+            .collect())
     }
 
     /// Keeps `send` (a [`Command::Send`]; anything else is ignored) until [`Self::sent`]: if
@@ -1423,6 +1618,10 @@ impl LocalStore {
                 "DELETE FROM b33p_expiry WHERE conversation = ? AND author = ? AND ts = ?",
                 "DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?",
                 "DELETE FROM b33p_deleted WHERE conversation = ? AND author = ? AND ts = ?",
+                // Only ours have receipts, kept by time alone (`?2`, the author, unused).
+                "DELETE FROM b33p_receipt WHERE conversation = ?1 AND ts = ?3",
+                "DELETE FROM b33p_pinned_message
+                 WHERE conversation = ? AND author = ? AND ts = ?",
             ] {
                 sqlx::query(statement)
                     .bind(&conversation)
@@ -2196,6 +2395,157 @@ mod tests {
             let kept = local.stories(15).await.unwrap();
             assert_eq!(kept.len(), 1);
             assert!(kept[0].viewed && kept[0].pointer.is_none());
+        });
+    }
+
+    /// Receipts per recipient: the first delivered and read count, a read means delivered, and
+    /// the newest read per recipient; forgotten with their message.
+    #[test]
+    fn receipts_are_kept_per_recipient() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let local = open(&dir).await;
+            let group = ConversationId("g:club".into());
+            let sent = |ts: u64| vec![(group.clone(), ts)];
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Delivered, 100)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Delivered, 150)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "ann", Delivery::Read, 200)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(10), "bob", Delivery::Read, 300)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(20), "ann", Delivery::Read, 400)
+                .await
+                .unwrap();
+            local
+                .record_receipts(&sent(20), "cid", Delivery::Delivered, 500)
+                .await
+                .unwrap();
+            assert_eq!(
+                local.receipts(&group, 10).await.unwrap(),
+                [
+                    ("ann".to_owned(), Some(100), Some(200)),
+                    ("bob".to_owned(), Some(300), Some(300)),
+                ]
+            );
+            let newest = local.newest_read(&group).await.unwrap();
+            assert_eq!(newest.get("ann"), Some(&20));
+            assert_eq!(newest.get("bob"), Some(&10));
+            assert_eq!(newest.get("cid"), None, "delivered isn't read");
+            local
+                .forget(&[(group.clone(), reference("me", 20))])
+                .await
+                .unwrap();
+            assert!(local.receipts(&group, 20).await.unwrap().is_empty());
+            assert_eq!(
+                local.newest_read(&group).await.unwrap().get("ann"),
+                Some(&10)
+            );
+        });
+    }
+
+    /// Pins as Signal-Desktop keeps them: the newest three, a newer pin of the same message
+    /// replacing the older, pins running out, and none of a deleted or forgotten message.
+    #[test]
+    fn pins_keep_the_newest_and_run_out() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let local = open(&dir).await;
+            let chat = ConversationId("c:ann".into());
+            let other = ConversationId("c:bob".into());
+            let pinned = |at: u64| {
+                let local = &local;
+                let chat = &chat;
+                async move {
+                    local
+                        .pinned_messages(chat, at)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .map(|(message, _)| message.timestamp)
+                        .collect::<Vec<_>>()
+                }
+            };
+            for (ts, at) in [(1, 100), (2, 200), (3, 300)] {
+                assert!(
+                    local
+                        .pin_message(&chat, &reference("ann", ts), at, None, 3)
+                        .await
+                        .unwrap()
+                );
+            }
+            assert!(
+                local
+                    .pin_message(&other, &reference("bob", 9), 50, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [1, 2, 3]);
+            // A fourth pushes out the oldest pin.
+            assert!(
+                local
+                    .pin_message(&chat, &reference("ann", 4), 400, Some(1000), 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [2, 3, 4]);
+            // An older pin of a pinned message changes nothing; a newer one moves it last.
+            assert!(
+                !local
+                    .pin_message(&chat, &reference("ann", 2), 150, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [2, 3, 4]);
+            assert!(
+                local
+                    .pin_message(&chat, &reference("ann", 2), 500, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [3, 4, 2]);
+            // A pin older than the three kept is dropped at once.
+            assert!(
+                !local
+                    .pin_message(&chat, &reference("ann", 5), 10, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [3, 4, 2]);
+            // The pin until 1000 runs out.
+            assert_eq!(pinned(1000).await, [3, 2]);
+            assert!(
+                local
+                    .unpin_message(&chat, &reference("ann", 3))
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !local
+                    .unpin_message(&chat, &reference("ann", 3))
+                    .await
+                    .unwrap()
+            );
+            local
+                .record_deleted(&chat, &reference("ann", 2))
+                .await
+                .unwrap();
+            assert!(pinned(1000).await.is_empty());
+            local
+                .forget(&[(other.clone(), reference("bob", 9))])
+                .await
+                .unwrap();
+            assert!(local.pinned_messages(&other, 0).await.unwrap().is_empty());
         });
     }
 }

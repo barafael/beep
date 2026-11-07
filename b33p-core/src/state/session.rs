@@ -254,6 +254,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::Block { .. }
         | Command::Respond { .. }
         | Command::LoadDetails(_)
+        | Command::LoadMessageInfo { .. }
         | Command::FindNumber { .. }
         | Command::SetVerified { .. }
         | Command::LoadMedia(_)
@@ -265,6 +266,8 @@ fn offers_retry(command: &Command) -> bool {
         | Command::Mute { .. }
         | Command::Archive { .. }
         | Command::SetTimer { .. }
+        | Command::PinMessage { .. }
+        | Command::UnpinMessage { .. }
         | Command::React { .. } => true,
         Command::Unlock(_)
         | Command::Retry

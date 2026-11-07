@@ -27,7 +27,8 @@ read, answered and reacted to:
 - Linking (with message history transfer), relinking, encrypted store (keyring or password)
 - Read state and receipts, delivery ticks, typing indicators, edits and deletions, disappearing
   messages, markdown formatting, mentions
-- Message requests, blocking, pinned / muted / archived chats, folders, Note to Self
+- Message requests, blocking, pinned / muted / archived chats, pinned messages, folders,
+  Note to Self
 - Groups: create, rename, describe, timer, members and admins, leave, invitations
 - Attachments: pictures, voice messages and audio playback, files, stickers, link previews,
   paste and drag-and-drop
