@@ -9,7 +9,7 @@ use super::b33p::{
 use super::clients::{desktop_shows, desktop_shows_whole, desktop_text};
 use super::presage::Account;
 use super::setup::LinkedBox;
-use super::{Checks, Failure, PATIENCE_MS};
+use super::{Checks, Failure, PATIENCE, PATIENCE_MS};
 use crate::harness::{Harness, HarnessError};
 use testbox_tools::drivers;
 
@@ -183,6 +183,53 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         })?;
         Ok(b33p_shows(b33p, "Desktop's reply deleted", |message| {
             message.timestamp == timestamp && message.deleted
+        })?)
+    });
+
+    // Pins (Signal-Desktop's PinnedMessages): Desktop names b33p's message by its edit's time,
+    // and its pin says "… pinned a message" in the chat. After Desktop's reply is gone: it
+    // quotes the same text, and the driver finds a message by its text.
+    checks.record("a pin from Desktop shows in b33p, with its notice", || {
+        desktop.call(drivers::Desktop::PinMessage {
+            text: edited_text.to_owned(),
+            duration: "24 hours".to_owned(),
+        })?;
+        b33p.wait_for("Desktop's pin in b33p", PATIENCE, |snapshot| {
+            (snapshot.pinned == [edited_text]).then_some(())
+        })?;
+        Ok(b33p_shows(b33p, "the pin's notice", |message| {
+            message.notice && message.text.ends_with("pinned a message.")
+        })?)
+    });
+
+    checks.record("an unpin from Desktop shows in b33p", || {
+        desktop.call(drivers::Desktop::UnpinMessage {
+            text: edited_text.to_owned(),
+        })?;
+        Ok(
+            b33p.wait_for("Desktop's unpin in b33p", PATIENCE, |snapshot| {
+                snapshot.pinned.is_empty().then_some(())
+            })?,
+        )
+    });
+
+    checks.record("a pin from b33p shows on Desktop", || {
+        let index = outgoing_index(b33p, edited_text)?;
+        b33p.act(Action::PinMessage {
+            index,
+            seconds: Some(24 * 3600),
+        })?;
+        Ok(desktop.call(drivers::Desktop::WaitForPinned {
+            text: edited_text.to_owned(),
+            timeout_ms: PATIENCE_MS,
+        })?)
+    });
+
+    checks.record("an unpin from b33p shows on Desktop", || {
+        let index = outgoing_index(b33p, edited_text)?;
+        b33p.act(Action::UnpinMessage { index })?;
+        Ok(desktop.call(drivers::Desktop::WaitForNoPins {
+            timeout_ms: PATIENCE_MS,
         })?)
     });
 

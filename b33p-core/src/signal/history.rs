@@ -559,6 +559,12 @@ pub(super) async fn to_chat_message(
         timer_change = timer_change.or(timer);
         notice = true;
     }
+    // A pin that took (`pins.rs` drops the others from the store): who pinned, as
+    // Signal-Desktop's notice says. An unpin says nothing.
+    if body.is_empty() && data.pin_message.is_some() {
+        body = format!("{sender} pinned a message.");
+        notice = true;
+    }
     if body.is_empty() && attachments.is_empty() {
         return None;
     }

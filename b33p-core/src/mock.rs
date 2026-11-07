@@ -1,10 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, ConversationKind, Delivery, Error, Event, Events,
-    Failure, HistoryTransfer, Inbox, Person, Picture, QrMatrix, Quote, Reaction, Style, StyleRange,
-    now_millis,
+    Failure, HistoryTransfer, Inbox, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
+    Style, StyleRange, now_millis,
 };
 
 /// What the mock backend fails with, said as the real one says it.
@@ -90,6 +90,7 @@ fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
         expire_timer: if id == "alice" { 3600 } else { 0 },
         note_to_self: id == "me",
         admin: is_group && id != "club",
+        members_edit_details: false,
         left: id == "club",
         invited: id == "club",
         requested: false,
@@ -291,6 +292,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
         }
     }
 
+    // What is pinned in each chat, as the real backend keeps it: the newest three.
+    let mut pins: HashMap<ConversationId, Vec<PinnedMessage>> = HashMap::new();
     loop {
         let next = match queued.pop_front() {
             Some(command) => Ok(command),
@@ -351,6 +354,41 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 });
             }
             Ok(Command::Delete { .. }) => {}
+            Ok(Command::PinMessage {
+                conversation,
+                target,
+                seconds,
+            }) => {
+                // Only the mock's own history can be pinned; what was sent since is not kept.
+                if let Some(message) = history(&conversation, started)
+                    .into_iter()
+                    .find(|m| m.is(&target))
+                {
+                    let pinned = pins.entry(conversation.clone()).or_default();
+                    pinned.retain(|pin| !pin.message.is(&target));
+                    pinned.push(PinnedMessage {
+                        message,
+                        expires_at: seconds.map(|s| now_millis() + u64::from(s) * 1000),
+                    });
+                    let excess = pinned.len().saturating_sub(crate::state::PIN_LIMIT);
+                    pinned.drain(..excess);
+                    events.send(Event::PinnedMessages {
+                        pins: pinned.clone(),
+                        conversation,
+                    });
+                }
+            }
+            Ok(Command::UnpinMessage {
+                conversation,
+                target,
+            }) => {
+                let pinned = pins.entry(conversation.clone()).or_default();
+                pinned.retain(|pin| !pin.message.is(&target));
+                events.send(Event::PinnedMessages {
+                    pins: pinned.clone(),
+                    conversation,
+                });
+            }
             Ok(Command::React {
                 conversation,
                 target,

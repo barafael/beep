@@ -107,6 +107,9 @@ pub struct Conversation {
     pub members: Vec<Person>,
     /// A group we are an administrator of.
     pub admin: bool,
+    /// A group whose members, not only its administrators, may change its details (its
+    /// name, picture and timer), and pin messages in it.
+    pub members_edit_details: bool,
     /// A group we are no longer in: it can be read, not written to.
     pub left: bool,
     /// A group we are invited to (and not in yet): it can be accepted or declined.
@@ -539,6 +542,15 @@ pub struct MessageRef {
     pub timestamp: u64,
 }
 
+/// A message pinned in its chat, as its latest version reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinnedMessage {
+    /// Its `timestamp` is the one it was first sent at, which names it.
+    pub message: ChatMessage,
+    /// When the pin runs out (ms since the epoch); `None` until unpinned.
+    pub expires_at: Option<u64>,
+}
+
 /// Someone's emoji reaction to a message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reaction {
@@ -835,6 +847,11 @@ pub enum Event {
         conversation: ConversationId,
         target: MessageRef,
     },
+    /// What is pinned in a conversation now, oldest pin first (replacing what was before).
+    PinnedMessages {
+        conversation: ConversationId,
+        pins: Vec<PinnedMessage>,
+    },
     /// Disappearing messages started counting down (ms since the epoch when each goes).
     Expiring {
         conversation: ConversationId,
@@ -1118,6 +1135,18 @@ pub enum Command {
         target: MessageRef,
         emoji: String,
         remove: bool,
+    },
+    /// Pins a message in its chat for everyone in it, for `seconds` or, with `None`, until
+    /// unpinned; see [`PinnedMessage`].
+    PinMessage {
+        conversation: ConversationId,
+        target: MessageRef,
+        seconds: Option<u32>,
+    },
+    /// Unpins a message in its chat for everyone in it.
+    UnpinMessage {
+        conversation: ConversationId,
+        target: MessageRef,
     },
 }
 

@@ -3913,3 +3913,182 @@ fn a_sticker_pack_changed_elsewhere_gathers_the_packs_again() {
     assert_eq!(loads(&mut state), 1);
     assert_eq!(state.sticker_packs(), Some(Some(&[][..])));
 }
+
+fn pin(message: ChatMessage, expires_at: Option<u64>) -> PinnedMessage {
+    PinnedMessage {
+        message,
+        expires_at,
+    }
+}
+
+/// The open chat's pins as the backend tells them, without those run out, and following
+/// what happens to their messages: deleted, disappeared, edited.
+#[test]
+fn pins_show_while_they_last_and_follow_their_messages() {
+    let mut state = state();
+    let clock = Clock::fixed(1_000);
+    state.set_clock(clock.clone());
+    let a = id("a");
+    state.select(&a);
+    let texts = |state: &ChatState| -> Vec<String> {
+        state
+            .pinned_messages()
+            .iter()
+            .map(|pin| pin.message.body.clone())
+            .collect()
+    };
+    let update = state.apply(Event::PinnedMessages {
+        conversation: a.clone(),
+        pins: vec![
+            pin(message("a", "Ann", 10, false), None),
+            pin(message("a", "Ann", 20, false), Some(5_000)),
+            pin(message("a", "Ann", 30, false), Some(9_000)),
+        ],
+    });
+    assert!(update.pins);
+    assert_eq!(texts(&state).len(), 3);
+    assert_eq!(state.next_pin_expiry(), Some(5_000));
+    // Another chat's pins don't touch the open one's.
+    let other = state.apply(Event::PinnedMessages {
+        conversation: id("g"),
+        pins: vec![pin(message("g", "Bob", 5, false), None)],
+    });
+    assert!(!other.pins);
+    assert_eq!(texts(&state).len(), 3);
+
+    clock.set(5_000);
+    assert_eq!(
+        texts(&state),
+        ["Ann at 10\nsecond line", "Ann at 30\nsecond line"]
+    );
+    assert_eq!(state.next_pin_expiry(), Some(9_000));
+
+    let edited = ChatMessage {
+        body: "Ann's new words".into(),
+        edited_at: Some(4_000),
+        ..message("a", "Ann", 4_000, false)
+    };
+    let update = state.apply(Event::Edited {
+        conversation: a.clone(),
+        target: message("a", "Ann", 10, false).reference(),
+        message: edited,
+    });
+    assert!(update.pins);
+    assert_eq!(state.pinned_messages()[0].message.body, "Ann's new words");
+    assert_eq!(
+        state.pinned_messages()[0].message.timestamp,
+        10,
+        "named by its first time"
+    );
+
+    let update = state.apply(Event::Deleted {
+        conversation: a.clone(),
+        target: message("a", "Ann", 10, false).reference(),
+    });
+    assert!(update.pins);
+    let update = state.apply(Event::Expired {
+        conversation: a,
+        targets: vec![message("a", "Ann", 30, false).reference()],
+    });
+    assert!(update.pins);
+    assert!(texts(&state).is_empty());
+    assert_eq!(state.next_pin_expiry(), None);
+}
+
+/// A click on a pin in the bar shows its message, as a search result is shown.
+#[test]
+fn a_pin_clicked_is_scrolled_to() {
+    let mut state = state();
+    let a = id("a");
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![
+            message("a", "Ann", 10, false),
+            message("a", "Ann", 20, false),
+        ],
+        reactions: Vec::new(),
+        older: None,
+    });
+    state.apply(Event::PinnedMessages {
+        conversation: a,
+        pins: vec![pin(message("a", "Ann", 10, false), None)],
+    });
+    state.show_pinned(0);
+    assert_eq!(state.jump(), Some((0, 1)));
+    assert!(state.messages().next().unwrap().highlighted);
+    state.show_pinned(3);
+    assert_eq!(state.jump(), Some((0, 1)), "no such pin");
+}
+
+/// Who pins what, as Signal-Desktop lets them: anyone in a chat of two; in a group an admin,
+/// or anyone if the group lets members change its details; not notices or deleted messages.
+#[test]
+fn messages_are_pinned_where_signal_lets_them() {
+    let mut state = state();
+    let a = id("a");
+    let g = id("g");
+    let notice = ChatMessage {
+        notice: true,
+        ..message("a", "Ann", 30, false)
+    };
+    let deleted = ChatMessage {
+        deleted: true,
+        ..message("a", "Ann", 40, false)
+    };
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![
+            message("a", "Ann", 10, false),
+            message("a", "Me", 20, true),
+            notice,
+            deleted,
+        ],
+        reactions: Vec::new(),
+        older: None,
+    });
+    assert!(state.can_pin_messages());
+    assert!(matches!(
+        state.pin_message(0, Some(86_400)),
+        Some(Command::PinMessage { seconds: Some(86_400), ref target, .. }) if target.timestamp == 10
+    ));
+    assert!(state.pin_message(1, None).is_some(), "ours too");
+    assert!(state.pin_message(2, None).is_none(), "not a notice");
+    assert!(
+        state.pin_message(3, None).is_none(),
+        "not a deleted message"
+    );
+    assert!(state.unpin_message(0).is_none(), "not pinned");
+
+    state.apply(Event::PinnedMessages {
+        conversation: a.clone(),
+        pins: vec![pin(message("a", "Ann", 10, false), None)],
+    });
+    assert!(state.is_pinned(0));
+    assert!(state.pin_message(0, None).is_none(), "pinned already");
+    assert!(matches!(
+        state.unpin_message(0),
+        Some(Command::UnpinMessage { .. })
+    ));
+    assert!(!state.pins_full());
+
+    // A group: only if we may change its details.
+    state.select(&g);
+    state.apply(Event::History {
+        conversation: g.clone(),
+        messages: vec![message("g", "Bob", 10, false)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    assert!(!state.can_pin_messages());
+    assert!(state.pin_message(0, None).is_none());
+    let mut members_may = conversation("g", true);
+    members_may.members_edit_details = true;
+    state.apply(Event::Conversations(vec![members_may]));
+    assert!(state.can_pin_messages());
+    let mut admin = conversation("g", true);
+    admin.admin = true;
+    state.apply(Event::Conversations(vec![admin]));
+    assert!(state.pin_message(0, None).is_some());
+}

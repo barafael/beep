@@ -13,8 +13,8 @@ use crate::timeline;
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, Details, Event, Failure, HistoryTransfer, Mention,
-    MessageRef, Password, Person, Picture, QrMatrix, Quote, Reaction, RequestResponse, StyleRange,
-    SyncStage, Unsent, apply_reaction, format, now_millis,
+    MessageRef, Password, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
+    RequestResponse, StyleRange, SyncStage, Unsent, apply_reaction, format, now_millis,
 };
 
 mod attachments;
@@ -24,6 +24,7 @@ mod events;
 mod history;
 mod list;
 mod panels;
+mod pins;
 mod reading;
 mod selection;
 mod session;
@@ -33,6 +34,7 @@ mod views;
 pub use attachments::*;
 pub use clock::*;
 use history::*;
+pub use pins::PIN_LIMIT;
 pub use text::*;
 use views::*;
 
@@ -100,6 +102,8 @@ pub struct Update {
     pub rows: bool,
     /// The user sent a message: show the end of the open chat, wherever it was scrolled to.
     pub scroll_to_end: bool,
+    /// What is pinned in the open chat changed; see [`ChatState::pinned_messages`].
+    pub pins: bool,
 }
 
 impl Update {
@@ -121,6 +125,7 @@ impl Update {
             messages: self.messages.merge(other.messages),
             rows: self.rows || other.rows,
             scroll_to_end: self.scroll_to_end || other.scroll_to_end,
+            pins: self.pins || other.pins,
         }
     }
 }
@@ -405,6 +410,8 @@ pub struct ChatState {
     jump: Option<(usize, u64)>,
     /// The search result shown, marked in the chat.
     highlight: Option<MessageRef>,
+    /// What is pinned in each conversation, oldest pin first, as the backend said last.
+    pins: HashMap<ConversationId, Vec<PinnedMessage>>,
     /// The selected conversation's media, files and links, while shown: `None` inside while
     /// they are gathered.
     media: Option<(ConversationId, Option<Gathered>)>,
