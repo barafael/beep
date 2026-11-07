@@ -15,12 +15,15 @@
 #                           after 10 s), applied to a copy of the pinned Slint revision that the
 #                           workspace is pointed at for that one cargo call; Cargo.toml and
 #                           Cargo.lock are put back afterwards, whatever happens.
+# The out directory must not be inside the worktree (cargo would take the patched copy of Slint
+# for a member of b33p's workspace) and holds about 300 MB for that copy.
 # SLINT_FORK: a Slint checkout at the pinned revision to patch instead of a copy of cargo's own
 # (it is patched in a copy at <out-dir>/slint-fork-patched either way).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 out=$(mkdir -p "${1:?usage: build-ways.sh <out-dir> [variant...]}" && cd "$1" && pwd)
 shift
+case $out/ in "$root"/*) echo "the out dir must be outside $root" >&2; exit 2 ;; esac
 variants=("$@")
 [ ${#variants[@]} -eq 0 ] && variants=(slint-qt slint-femtovg slint-skia slint-qt-patched slint-femtovg-patched slint-skia-patched)
 
