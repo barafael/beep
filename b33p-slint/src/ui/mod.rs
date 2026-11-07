@@ -96,9 +96,14 @@ impl Window {
         render(&self.0, chat, images, update, whole_list);
     }
 
+    /// Keeps the window out of screen captures, or no longer (`capture.rs`).
+    pub fn set_screen_security(&self, on: bool) {
+        crate::capture::set(on, Some(&self.0));
+    }
+
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         self.0.show()?;
-        crate::capture::exclude(self.0.window());
+        crate::capture::apply(&self.0);
         Ok(())
     }
 
@@ -116,7 +121,7 @@ impl Window {
     pub fn raise(&self) {
         self.0.window().set_minimized(false);
         match self.0.show() {
-            Ok(()) => crate::capture::exclude(self.0.window()),
+            Ok(()) => crate::capture::apply(&self.0),
             Err(error) => tracing::warn!(%error, "failed to show the window"),
         }
         // Not in Slint's public API. On Qt this raises and activates the window, which on
@@ -279,6 +284,9 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         .set_close_to_tray(settings.close_to_tray);
     window
         .global::<Prefs>()
+        .set_screen_security(settings.screen_security);
+    window
+        .global::<Prefs>()
         .set_read_receipts(settings.preferences.read_receipts);
     window
         .global::<Prefs>()
@@ -292,6 +300,9 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
     window
         .global::<Prefs>()
         .set_autostart_supported(crate::autostart::SUPPORTED);
+    window
+        .global::<Prefs>()
+        .set_screen_security_supported(crate::capture::SUPPORTED);
     window
         .global::<Prefs>()
         .set_start_with_system(crate::autostart::enabled());
@@ -324,6 +335,7 @@ fn read_settings(window: &AppWindow) -> Settings {
         show_activity: window.global::<Prefs>().get_show_activity(),
         show_calendar: window.global::<Prefs>().get_show_calendar(),
         close_to_tray: window.global::<Prefs>().get_close_to_tray(),
+        screen_security: window.global::<Prefs>().get_screen_security(),
         device_name: None,
         recent_emoji: Vec::new(),
         preferences: b33p_core::Preferences {

@@ -66,6 +66,9 @@ export global Prefs {
     in-out property <bool> show-avatars: true;
     in-out property <bool> notifications: true;
     in-out property <bool> close-to-tray: true;
+    in-out property <bool> screen-security: true;
+    // Only Windows can keep a window out of captures.
+    in property <bool> screen-security-supported;
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
     in property <bool> notifications-supported: true;

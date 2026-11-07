@@ -59,6 +59,9 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- Windows: b33p's window is kept out of screenshots, screen sharing and Recall, as it was meant
+  to be all along: the request was made before the window existed, so it never took effect.
+  **Settings → Privacy → Screen security** turns it off, as in Signal Desktop.
 - The names offered for an @mention follow a name typed through an input method (Hangul,
   kana, pinyin) while it is composed, not a syllable behind.
 - Long messages reach phones: past 2000 characters the text goes out as Signal's apps send
