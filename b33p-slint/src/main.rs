@@ -30,6 +30,8 @@ mod clipboard;
 mod desktop;
 mod emoji;
 mod instance;
+#[cfg(windows)]
+mod keys;
 mod logging;
 mod markdown;
 mod memory;
