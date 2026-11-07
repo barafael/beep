@@ -238,6 +238,20 @@ fn session(commands: &Inbox, events: &Events) -> bool {
         avatar: Some(Arc::new(gradient(96))),
     });
     events.send(Event::Connected);
+    // The backend's catching up with what came while the client was away: a burst of messages
+    // before it says it has synced.
+    if scale.backlog > 0 {
+        let names: Vec<&str> = CONVERSATIONS
+            .iter()
+            .map(|&(id, _, _)| id)
+            .filter(|&id| !matches!(id, "club" | "me" | "stranger" | "dana"))
+            .chain(added.iter().map(|(id, _, _)| id.as_str()))
+            .collect();
+        let now = now_millis();
+        for n in 0..scale.backlog {
+            events.send(Event::Message(scale::backlog_message(n, &names, now)));
+        }
+    }
     events.send(Event::Synced);
     events.send(Event::StorageRead);
     // Two stories from Alice (a picture, then text) and one in the group.

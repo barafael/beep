@@ -8,7 +8,10 @@
 //!   (short and long, links, quotes, reactions, now and then a picture or a file);
 //! - `members`: one more group, "Big group", with that many members;
 //! - `picture`: the side, in pixels, of the pictures downloaded (320 otherwise);
-//! - `incoming`: messages a second arriving in "Long thread" (or Bob's chat without it).
+//! - `incoming`: messages a second arriving in "Long thread" (or Bob's chat without it);
+//! - `backlog`: that many messages, spread over the conversations, sent in one burst before the
+//!   mock says it has synced, as the real backend's catching up with what came while the
+//!   client was away.
 //!
 //! Made up the same way every time, so that two windows are shown the same.
 
@@ -25,6 +28,7 @@ pub struct Scale {
     pub members: usize,
     pub picture: u32,
     pub incoming: f32,
+    pub backlog: usize,
 }
 
 impl Default for Scale {
@@ -35,6 +39,7 @@ impl Default for Scale {
             members: 0,
             picture: 320,
             incoming: 0.0,
+            backlog: 0,
         }
     }
 }
@@ -62,6 +67,7 @@ impl Scale {
                         .unwrap_or(scale.picture);
                 }
                 "incoming" => scale.incoming = value.parse().unwrap_or(scale.incoming),
+                "backlog" => scale.backlog = value.parse().unwrap_or(scale.backlog),
                 _ => {}
             }
         }
@@ -109,6 +115,16 @@ impl Scale {
 /// The long conversation's name, and the big group's.
 const LONG: &str = "long";
 const CROWD: &str = "group-crowd";
+
+/// The `n`th message of the backlog, an incoming one in one of `chats` (their mock names), made
+/// up the same way every time.
+pub fn backlog_message(n: usize, chats: &[&str], now: u64) -> ChatMessage {
+    let mut random = Random(0xdead_beef_cafe_f00d ^ n as u64);
+    let chat = chats[n % chats.len()];
+    let body = line(&mut random, 12);
+    let sender = if chat.starts_with("group-") { "Friend" } else { chat };
+    message(chat, sender, &body, now - (n as u64 % 3_600) * 1_000, false)
+}
 
 /// The members of the big group.
 pub fn members(count: usize) -> Vec<Person> {
@@ -274,6 +290,7 @@ mod tests {
                 members: 500,
                 picture: 640,
                 incoming: 2.5,
+                backlog: 0,
             }
         );
     }
@@ -291,6 +308,15 @@ mod tests {
         assert_eq!(all.len(), 6);
         assert_eq!(all.iter().filter(|(_, _, group)| *group).count(), 3);
         assert!(all.iter().any(|(id, _, _)| id == LONG));
+    }
+
+    #[test]
+    fn the_backlog_goes_round_the_chats() {
+        let chats = ["alice", "group-1", "chat-3"];
+        let a = backlog_message(4, &chats, 1_000_000_000_000);
+        assert_eq!(a.conversation, super::super::chat_id("group-1"));
+        assert!(!a.outgoing);
+        assert_eq!(a.body, backlog_message(4, &chats, 1_000_000_000_000).body);
     }
 
     #[test]

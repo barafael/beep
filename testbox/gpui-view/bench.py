@@ -22,6 +22,7 @@ Each round runs both clients, in alternating order, in a container of their own 
   static  startup, idle at the list, idle in a long chat, scrolling by the mouse wheel, switching
           between chats, resizing, typing with the keyboard, and the details and media panels
   live    messages arriving in the open chat, then a soak of that, for memory growth
+  sync    catching up with a backlog of messages the mock sends in one burst
   frames  the scrolling again, with the Wayland requests logged, for the gaps
           between frames (the logging costs processor time: those runs are not the others')
 Every number is a /proc or drm counter read before and after, over the whole phase.
@@ -387,6 +388,49 @@ def slope(points):
     return round(60 * sum((x - mx) * (y - my) for x, y in points) / den, 2) if den else None
 
 
+def scenario_sync(r):
+    """Catching up: the mock sends the backlog in one burst before it says it has synced, as the
+    backend does for what came while the client was away. The time is from the process's start
+    (the mock itself waits two seconds to link, which both clients wait alike) until the state
+    has synced and its unread count has stopped rising; the polling is itself the probe of the
+    window: a snapshot is answered on the window's own thread, so its time is how long the
+    window was not responding."""
+    r.result, r.windows = {}, {}
+    before = r.probe.sample()
+    latencies, last, since, synced_at = [], -1, None, None
+    while True:
+        t = time.time()
+        snap = r.snapshot()
+        latencies.append(time.time() - t)
+        unread = snap.get("unread_total", 0)
+        if snap.get("synced") and synced_at is None:
+            synced_at = time.time() - r.t0
+        if snap.get("synced") and unread == last and unread > 0:
+            if since is None:
+                since = t
+            elif t - since > 1.5:
+                break
+        else:
+            since, last = None, unread
+        if time.time() - r.t0 > 300:
+            break
+        time.sleep(0.05)
+    done = time.time() - r.t0 - 1.5
+    latencies.sort()
+    after = r.probe.sample()
+    r.result["sync"] = {
+        **delta(before, after, r.probe),
+        "synced_flag_s": round(synced_at or 0, 2),
+        "caught_up_s": round(done, 2),
+        "unread_total": unread,
+        "snapshot_ms_p50": round(1000 * percentile(latencies, 50), 1),
+        "snapshot_ms_p95": round(1000 * percentile(latencies, 95), 1),
+        "snapshot_ms_max": round(1000 * latencies[-1], 1),
+    }
+    r.result["sync"]["cpu_total_s"] = round(after["cpu"], 2)
+    return r.result
+
+
 def scenario_frames(r):
     """The scrolling and the arriving of the other scenarios, with the requests logged."""
     r.result, r.windows = {}, {}
@@ -468,6 +512,9 @@ def run_all(args):
         for ui in (order if round_ % 2 else order[::-1]):
             jobs.append((ui, "static", round_))
             jobs.append((ui, "live", round_))
+    for round_ in range(1, args.sync_rounds + 1):
+        for ui in (order if round_ % 2 else order[::-1]):
+            jobs.append((ui, "sync", round_))
     for round_ in range(1, args.frames_rounds + 1):
         for ui in (order if round_ % 2 else order[::-1]):
             jobs.append((ui, "frames", round_))
@@ -476,6 +523,7 @@ def run_all(args):
         print(f"== {label}", flush=True)
         # The live runs have messages arriving, five a second, in the long thread.
         scale = args.scale + (",incoming=5" if mode == "live" else "")
+        scale += f",backlog={args.backlog}" if mode == "sync" else ""
         r = Run(ui, label, args.out, scale, frames=(mode == "frames"))
         try:
             r.start()
@@ -483,6 +531,8 @@ def run_all(args):
                 result = scenario_static(r)
             elif mode == "live":
                 result = scenario_live(r, args.soak)
+            elif mode == "sync":
+                result = scenario_sync(r)
             else:
                 result = scenario_frames(r)
         finally:
@@ -515,7 +565,8 @@ def report(directory):
         print()
     show = ("cpu_pct", "gpu_s", "wakeups_per_s", "frames_per_s", "gap_ms_p95", "gap_ms_p99", "gap_ms_max",
             "gaps_over_33ms", "rss_mb", "pss_mb", "anon_mb", "vram_mb", "gtt_mb", "threads",
-            "harness_ready_s", "chat_list_s", "rss_slope_mb_per_min", "anon_slope_mb_per_min")
+            "harness_ready_s", "chat_list_s", "synced_flag_s", "caught_up_s", "snapshot_ms_p95", "snapshot_ms_max",
+            "cpu_s", "unread_total", "rss_slope_mb_per_min", "anon_slope_mb_per_min")
     print("| phase | metric | slint | gpui | gpui / slint |")
     print("|---|---|---|---|---|")
     for (mode, scenario), metrics in table.items():
@@ -543,6 +594,8 @@ def main():
     run = sub.add_parser("run")
     run.add_argument("--rounds", type=int, default=5)
     run.add_argument("--frames-rounds", type=int, default=1)
+    run.add_argument("--sync-rounds", type=int, default=3, help="runs of catching up with a backlog")
+    run.add_argument("--backlog", type=int, default=20000, help="messages the mock sends before it has synced")
     run.add_argument("--soak", type=int, default=120, help="seconds of arriving messages for the memory slope")
     run.add_argument("--scale", default=SCALE, help="B33P_MOCK_SCALE; incoming= is added to the live runs")
     run.add_argument("--out", default=os.path.join(ROOT, "target/bench"))
