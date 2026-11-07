@@ -21,6 +21,7 @@ mod agent;
 compile_error!("the `harness` feature is for test builds: build without `--release`");
 mod actions;
 mod activity;
+mod animation;
 mod app;
 mod assets;
 mod attachments;

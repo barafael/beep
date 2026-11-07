@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, Window};
+use gpui_kit::{AnyElement, App, Context, Entity, Window, div};
 
 use crate::activity::CalendarPanel;
 use crate::details::DetailsPanel;
@@ -57,16 +57,30 @@ impl Panels {
         if !details {
             self.details.update(cx, |panel, _| panel.closed());
         }
-        if media {
-            Some(self.media.clone().into_any_element())
+        // Each fades in as it opens; one that stays open does not fade again.
+        let panel = if media {
+            ("media", self.media.clone().into_any_element())
         } else if details {
-            Some(self.details.clone().into_any_element())
+            ("details", self.details.clone().into_any_element())
         } else if search {
-            Some(self.search.clone().into_any_element())
+            ("search", self.search.clone().into_any_element())
         } else if calendar {
-            Some(self.calendar.clone().into_any_element())
+            ("calendar", self.calendar.clone().into_any_element())
         } else {
-            None
-        }
+            return None;
+        };
+        Some(fade(panel.0, panel.1))
     }
+}
+
+/// `panel` fading in over the messages, as Slint's panels do. A box of its own, as large as the
+/// place of the messages, holds the panel (which fills it) so that the panel's own element
+/// stays as it is.
+fn fade(name: &'static str, panel: AnyElement) -> AnyElement {
+    crate::animation::fade_in(
+        name,
+        crate::animation::NORMAL,
+        div().id(name).absolute().inset_0().child(panel),
+    )
+    .into_any_element()
 }

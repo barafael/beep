@@ -8,13 +8,14 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable, IntoElement, MouseMoveEvent, Render, StyleRefinement,
-    Window, div, px,
+    Animation, AnimationExt as _, Context, Entity, FocusHandle, Focusable, IntoElement,
+    MouseMoveEvent, Render, StyleRefinement, Window, div, px,
 };
 
 use crate::actions::{
     CloseFront, FocusSearch, NextChat, NextUnreadChat, Pinned, PreviousChat, SearchInChat,
 };
+use crate::animation;
 use crate::chat_list::ChatListView;
 use crate::conversation::ConversationView;
 use crate::overlays::Overlays;
@@ -22,6 +23,12 @@ use crate::shared::Shared;
 use crate::start::StartView;
 use crate::theme::{self, Tokens};
 use crate::widgets::{icon, icon_button};
+
+/// The most that the error banner is guessed to need, to slide to: a long message wraps to a
+/// few lines.
+const BANNER_MAX_HEIGHT: f32 = 96.;
+/// The height of a line of it, which is what a banner is at least.
+const BANNER_LINE: f32 = 36.;
 
 pub struct AppView {
     shared: Rc<Shared>,
@@ -37,6 +44,15 @@ pub struct AppView {
     /// Whether the settings were open when the chat list was last drawn: the list is drawn
     /// cached, and shows it on its button.
     list_showed_settings: bool,
+    /// The error the banner shows, kept for as long as it takes to slide away once there is none.
+    banner: std::cell::RefCell<Option<BannerShown>>,
+}
+
+/// What the error banner shows, and since when it has been closing, if it is.
+struct BannerShown {
+    message: gpui_kit::SharedString,
+    can_retry: bool,
+    closing_since: Option<std::time::Instant>,
 }
 
 impl AppView {
@@ -74,6 +90,7 @@ impl AppView {
             focus,
             dragging: None,
             list_showed_settings: false,
+            banner: std::cell::RefCell::default(),
         }
     }
 
@@ -179,7 +196,7 @@ impl Render for AppView {
             }
         });
         let screen = shared.chat.borrow().screen().clone();
-        let banner = self.banner(&t);
+        let banner = self.banner(&t, cx);
         let content = match screen {
             Screen::Chats => self.chats(narrow, &t, window, cx).into_any_element(),
             _ => self.start.clone().into_any_element(),
@@ -234,60 +251,118 @@ impl Render for AppView {
 }
 
 impl AppView {
-    /// The error, which slides down from the top while there is one.
-    fn banner(&self, t: &Tokens) -> Option<gpui_kit::AnyElement> {
+    /// The error, which slides down from the top while there is one, and back up when there is
+    /// none (it is kept to slide away: the state has already forgotten it).
+    fn banner(&self, t: &Tokens, cx: &gpui_kit::App) -> Option<gpui_kit::AnyElement> {
         let chat = self.shared.chat.borrow();
-        let message = chat.error()?;
-        let can_retry = chat.can_retry_error();
+        let now = cx.background_executor().now();
+        let mut shown = self.banner.borrow_mut();
+        let closing = match chat.error() {
+            Some(message) => {
+                *shown = Some(BannerShown {
+                    message: message.clone().into(),
+                    can_retry: chat.can_retry_error(),
+                    closing_since: None,
+                });
+                false
+            }
+            None => {
+                let since = shown
+                    .as_mut()
+                    .map(|shown| *shown.closing_since.get_or_insert(now));
+                let done = since.is_none_or(|since| {
+                    !self.shared.animates() || now.duration_since(since) >= animation::NORMAL
+                });
+                if done {
+                    *shown = None;
+                    return None;
+                }
+                true
+            }
+        };
+        let BannerShown {
+            message, can_retry, ..
+        } = shown.as_ref()?;
+        let (message, can_retry) = (message.clone(), *can_retry);
+        drop(shown);
+        drop(chat);
+        // About how tall it comes to, which it slides to (it is not known before it is laid out):
+        // a line is 36, and a line takes about a hundred characters. Past it, the real height.
+        let height =
+            (BANNER_LINE + BANNER_LINE / 2. * (message.len() / 100) as f32).min(BANNER_MAX_HEIGHT);
         let shared = self.shared.clone();
         let retry_shared = self.shared.clone();
-        Some(
-            div()
-                .id("error-banner")
-                // Said at once, whatever has the focus.
-                .role(Role::Alert)
-                .aria_label(message.clone())
-                .flex_none()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(theme::SPACE_S))
-                .pl(px(theme::SPACE_L))
-                .pr(px(theme::SPACE_S))
-                .py(px(6.))
-                .min_h(px(36.))
-                .bg(t.danger)
-                .text_color(t.on_accent)
-                .child(icon("circle-alert").size(px(theme::ICON)))
-                .child(
-                    div()
-                        .flex_1()
-                        // Wraps in the width there is, however long the words.
-                        .min_w_0()
-                        .debug_selector(|| "The error".into())
-                        .child(message),
+        let bar = div()
+            .id("error-banner")
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(theme::SPACE_S))
+            .pl(px(theme::SPACE_L))
+            .pr(px(theme::SPACE_S))
+            .py(px(6.))
+            .min_h(px(BANNER_LINE))
+            .bg(t.danger)
+            .text_color(t.on_accent)
+            // Said at once, whatever has the focus; not again while it slides away.
+            .when(!closing, |bar| {
+                bar.role(Role::Alert).aria_label(message.clone())
+            })
+            .child(icon("circle-alert").size(px(theme::ICON)))
+            .child(
+                div()
+                    .flex_1()
+                    // Wraps in the width there is, however long the words.
+                    .min_w_0()
+                    .debug_selector(|| "The error".into())
+                    .child(message),
+            )
+            .when(can_retry, |row| {
+                row.child(
+                    Button::new("retry-error")
+                        .ghost()
+                        .small()
+                        .icon(icon("rotate-cw"))
+                        .label("Try again")
+                        .debug_selector(|| "Try again".into())
+                        .on_click(move |_, _, cx| {
+                            retry_shared.command(cx, |chat| chat.retry_error())
+                        }),
                 )
-                .when(can_retry, |row| {
-                    row.child(
-                        Button::new("retry-error")
-                            .ghost()
-                            .small()
-                            .icon(icon("rotate-cw"))
-                            .label("Try again")
-                            .debug_selector(|| "Try again".into())
-                            .on_click(move |_, _, cx| {
-                                retry_shared.command(cx, |chat| chat.retry_error())
-                            }),
-                    )
+            })
+            .child(
+                icon_button("dismiss-error", "x", "Dismiss", move |_, _, cx| {
+                    shared.edit(cx, |chat| chat.dismiss_error())
                 })
-                .child(
-                    icon_button("dismiss-error", "x", "Dismiss", move |_, _, cx| {
-                        shared.edit(cx, |chat| chat.dismiss_error())
-                    })
-                    .debug_selector(|| "Dismiss".into()),
-                )
-                .into_any_element(),
-        )
+                .debug_selector(|| "Dismiss".into()),
+            );
+        // Slides open to what the message needs, a few lines at most: the box around it grows
+        // from nothing, and holds what is below it back as it does.
+        let id = if closing {
+            "banner-closes"
+        } else {
+            "banner-opens"
+        };
+        let slide = div()
+            .id("error-slide")
+            .debug_selector(|| "Error banner".into())
+            .flex_none()
+            .overflow_hidden()
+            .child(bar)
+            .with_animation(
+                id,
+                Animation::new(animation::NORMAL).with_easing(animation::ease_out),
+                move |slide, delta| {
+                    let open = if closing { 1. - delta } else { delta };
+                    if open >= 1. {
+                        slide
+                    } else {
+                        slide.max_h(px(height * open))
+                    }
+                },
+            );
+        Some(slide.into_any_element())
     }
 
     fn chats(

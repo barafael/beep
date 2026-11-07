@@ -117,7 +117,7 @@ pub fn modal(
     content: impl IntoElement,
     dismiss: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui_kit::AnyElement {
-    div()
+    let modal = div()
         .id("modal")
         .absolute()
         .inset_0()
@@ -147,6 +147,7 @@ pub fn modal(
                 // A click on the card is not one on the scrim.
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .child(content),
-        )
-        .into_any_element()
+        );
+    // Fades in, as Slint's dialogs do (which also grow a little, which GPUI can't).
+    crate::animation::fade_in("modal-fade", crate::animation::NORMAL, modal).into_any_element()
 }

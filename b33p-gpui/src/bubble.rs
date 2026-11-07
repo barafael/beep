@@ -39,8 +39,25 @@ pub fn row(index: usize, shared: &Rc<Shared>, cx: &mut App) -> AnyElement {
     for id in to_fetch {
         attachments::fetch(shared, &id, cx);
     }
+    // A message that just came or was just sent fades in; others, as a chat opens or scrolls,
+    // are simply there. (Only a fade: moving the row would upset how the list measures it.)
+    if let Some((first, at)) = shared.arrived.get()
+        && index >= first
+        && shared.animates()
+        && cx.background_executor().now().duration_since(at) < ARRIVAL_IS_NEWS
+    {
+        return crate::animation::fade_in(
+            SharedString::from(format!("arrives-{index}")),
+            crate::animation::SLOW,
+            div().w_full().child(element),
+        )
+        .into_any_element();
+    }
     element
 }
+
+/// How long after it came a message is drawn fading in, if it is drawn then at all.
+const ARRIVAL_IS_NEWS: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn build(
     index: usize,

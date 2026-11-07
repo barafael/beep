@@ -744,7 +744,7 @@ impl ComposerView {
             .pt(px(theme::SPACE_S))
             .children(names.iter().enumerate().map(|(index, name)| {
                 let shared = self.shared.clone();
-                div()
+                let chip = div()
                     .id(("staged", index))
                     .h(px(28.))
                     .max_w(px(260.))
@@ -774,7 +774,9 @@ impl ComposerView {
                             .tooltip(format!("Remove {name}"))
                             .accessibility_label(format!("Remove {name}"))
                             .on_click(move |_, _, cx| shared.edit(cx, |chat| chat.unstage(index))),
-                    )
+                    );
+                // Fades in as it appears.
+                crate::animation::fade_in(("staged-fade", index), crate::animation::NORMAL, chip)
             }))
             .into_any_element()
     }

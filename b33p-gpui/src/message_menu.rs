@@ -479,61 +479,63 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
             }
         })
     };
-    Some(
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(theme::SPACE_XS))
-            .pl(px(theme::SPACE_L))
-            .pr(px(theme::SPACE_S))
-            .bg(t.surface_raised)
-            .border_t_1()
-            .border_color(t.divider)
-            // Over the composer: nothing under it answers the pointer.
-            .occlude()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(if count == 1 {
-                        "1 message selected".to_owned()
-                    } else {
-                        format!("{count} messages selected")
-                    }),
+    let bar = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACE_XS))
+        .pl(px(theme::SPACE_L))
+        .pr(px(theme::SPACE_S))
+        .bg(t.surface_raised)
+        .border_t_1()
+        .border_color(t.divider)
+        // Over the composer: nothing under it answers the pointer.
+        .occlude()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if count == 1 {
+                    "1 message selected".to_owned()
+                } else {
+                    format!("{count} messages selected")
+                }),
+        )
+        .child(button("selection-copy", "copy", "Copy selected").on_click({
+            let shared = shared.clone();
+            move |_, _, cx| {
+                let text = shared.chat.borrow().selected_text();
+                copy(text, cx);
+                shared.redraw(cx, |chat| chat.clear_selection());
+            }
+        }))
+        .when(can_forward, |bar| {
+            let shared = shared.clone();
+            bar.child(
+                button("selection-forward", "forward", "Forward selected").on_click(
+                    move |_, _, cx| {
+                        shared.edit(cx, |chat| {
+                            chat.start_forward_selection();
+                        })
+                    },
+                ),
             )
-            .child(button("selection-copy", "copy", "Copy selected").on_click({
-                let shared = shared.clone();
-                move |_, _, cx| {
-                    let text = shared.chat.borrow().selected_text();
-                    copy(text, cx);
-                    shared.redraw(cx, |chat| chat.clear_selection());
-                }
-            }))
-            .when(can_forward, |bar| {
-                let shared = shared.clone();
-                bar.child(
-                    button("selection-forward", "forward", "Forward selected").on_click(
-                        move |_, _, cx| {
-                            shared.edit(cx, |chat| {
-                                chat.start_forward_selection();
-                            })
-                        },
-                    ),
-                )
-            })
-            .child(delete)
-            .child(button("selection-clear", "x", "Clear selection").on_click({
-                let shared = shared.clone();
-                move |_, _, cx| shared.redraw(cx, |chat| chat.clear_selection())
-            }))
+        })
+        .child(delete)
+        .child(button("selection-clear", "x", "Clear selection").on_click({
+            let shared = shared.clone();
+            move |_, _, cx| shared.redraw(cx, |chat| chat.clear_selection())
+        }));
+    // Fades in over the composer.
+    Some(
+        crate::animation::fade_in("selection-bar-fade", crate::animation::FAST, bar)
             .into_any_element(),
     )
 }
