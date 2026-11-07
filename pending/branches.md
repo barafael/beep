@@ -37,7 +37,8 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`53fb55a`) | `a9891bc` (`881688c` with upstream main `aeaedf9` merged in: #459, #469 and its `left_groups` migration) plus, 2026-10-29, for beep's open issues: the group sync's storage key from the account entropy pool (#484), `identified_push_service` public (#485, beep #54), `session_lock()` public (on #473, beep #51), `Received::StickerPackInstalled` (`pr/sticker-pack-installed`, beep #53), `refresh_profile` (`pr/refresh-profile`, beep #52), a linked secondary starting with read receipts on (`pr/link-read-receipts` on lss #492, beep #50); and, from the wire comparison (pending/wire.md), `set_receive_stories` (#489), every story sealed (#490) and the group credentials shared between groups managers (#491); the client's user agent and languages, set by the application (#492, on lss #495); group changes applied from their messages, the log read for gaps, missed changes passed on, `update_group` (#493, on lss #496 and #497); group sends with a sender key, `renew_sender_key` (no PR yet); a fast-forward of `860ca72` | Pinned by `sender-keys` |
+| `langis/integration` (`c40361c`) | `53fb55a` (the fork's PRs on upstream main, rebuilt past #454) with upstream main `4b81740` merged in, 2026-11-06. The PR branches were rebased on the same base that morning; only rebase context differs from what the branch carries | Pinned by `forks-1106` |
+| `langis/integration-next` (`614e717`), `pr/thread-messages-index` (`2c29de5`), `pr/batch-save-messages` (`9dd1a3f`), pushed | The thread index (`thread_messages (thread_id, ts)`, migration re-dated 20261106100000) and `ContentsStore::save_messages`, written 2026-10-24, rebased 2026-11-06; store tests pass. No upstream PR yet (texts in beep-records/tidy-2026-11-06); not pinned by b33p, whose import doesn't use the batch yet | In progress; see [followups.md](followups.md) |
 | `pr/groups` (`1873f8b`) | #448 plus: asking to join (with approval) and cancelling tell the members and invitees we have stored, as Signal-Desktop's `modifyGroupV2` does, and keep them (a first-time request tells nobody, as on Desktop); a group asked to join without a picture drops the one cached from before (found by the tour); pins libsignal-service #473 as fixed (`421083d`) | whisperfish/presage#448 |
 | `pr/link-preview-setting` (`fa90b68`) | `Manager::set_automatic_link_previews`: since #359 every send without a preview fetches the page of its first link, bypassing b33p's `link_previews`; on stays upstream's default, b33p turns it off | whisperfish/presage#478 |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
@@ -47,7 +48,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`0f9454b`) | Upstream main `72a0987` with the fork's PRs, #442 and #489, #489's tests, #488's tokio `Mutex` (gferon's review: steps wait in order), #473's open-link join fix, #490 and #491 (`bdad8d9`), and #492 (`ProvisioningSecrets::read_receipts`, beep #50), and from the wire comparison #493 (stories sent with `?story=true`, and sealed, and no error logged for their transcript) and #494 (a keepalive every 30 s); #495 (`Accept-Language` on every request); #496 (a group change decrypted once its server signature shows it) and #497 (a group's changes read from the server's log); a group send with a sender key in one request (no PR yet); a fast-forward of `f53533a` | Pinned by `sender-keys` |
+| `langis/integration` (`470e2b0`) | `0f9454b` (upstream main with the fork's PRs) with upstream main `7a75267` merged in, 2026-11-06 | Pinned by `forks-1106` |
 | `pr/session-lock` (`d56c1ad`), `pr/session-lock-ack` (`586b5a2`) | #488 with the tokio `Mutex`; the same with #442 and #489 on top | whisperfish/libsignal-service-rs#488; pinned by presage #473 and #476 |
 | `groups-v2-changes` (`a725052`) | #473 rebased on upstream main `72a0987` (presage main needs its calling relays), plus: joining by an open invite link leaves `join_from_invite_link` to the server, which refused it ("Invalid field set on action"; found by the tour) | Pinned by presage `pr/groups` (`421083d`) |
 
@@ -55,7 +56,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`75d0cbd`) | Upstream master `49e6d1e` (2026-10-28, #13985 landed) with a merge of #14449 as reviewed (`8eb5365`); a fast-forward of `69f78e9`, which stays reachable | Pinned by `main` |
+| `langis/integration` (`f0c244a`) | `75d0cbd` with master `b3be5c2` (1.20) merged in, 2026-11-06. #13985 and #14449 have landed: **no difference from master**; the fork stays only until a release carries both | Pinned by `forks-1106` |
 | `pr/qt-color-bitmap-glyphs` (`930ceeb`), pushed | The emoji commit, master merged in, `CBDT` and `sbix` in the spell-check words, and the review's points: a stroke draws no emoji (it drew them twice: 713 of 2499 pixels differed), the font parsed only on a cache miss, why glyphs without a bitmap are skipped, straight alpha (measured), `tests/Cargo.lock` master's plus `swash`, "color". On Debian 12's Qt 6.4.2, b33p's mock under valgrind: 0 errors; 5 invalid writes in `QFontEngineFT::loadGlyph` without the fix | slint-ui/slint#14449 |
 
 ## Testbox runs
@@ -74,6 +75,7 @@ Each phase on a fresh box (`down --wipe`, `up`, `test`).
 | `reconcile-upstream` 280aa2f (#76: forks and PR branches reconciled with upstream) | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | `reconcile-upstream` 280aa2f, `--optimized` | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 | `forks-454` ac682da (#82: forks past presage#454, Slint #14449 as reviewed, no automatic link previews, join requests told, open-link joins) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| `forks-1106` (Slint 1.20, upstream merged into presage and libsignal-service) | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
 
 The run of ac682da also ran stress-interrupt, 1/1, beside an instance's `core` and the tour (#84).
 

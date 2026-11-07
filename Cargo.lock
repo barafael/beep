@@ -513,9 +513,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -958,7 +958,7 @@ dependencies = [
  "regex",
  "rustc-hash 2.1.3",
  "shlex 2.0.1",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1546,7 +1546,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1555,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2040,7 +2040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3443,8 +3443,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-linuxkms"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "calloop 0.14.5",
  "cfg_aliases",
@@ -3466,8 +3466,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-qt"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "const-field-offset",
  "cpp",
@@ -3485,8 +3485,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-selector"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "cfg_aliases",
  "i-slint-backend-linuxkms",
@@ -3500,8 +3500,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-testing"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -3511,8 +3511,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-backend-winit"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3527,6 +3527,7 @@ dependencies = [
  "i-slint-core-macros",
  "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
+ "itertools 0.15.0",
  "lyon_path",
  "muda",
  "objc2 0.6.5",
@@ -3552,8 +3553,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-common"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "derive_more",
  "euclid",
@@ -3570,13 +3571,14 @@ dependencies = [
 
 [[package]]
 name = "i-slint-compiler"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "annotate-snippets",
  "by_address",
  "data-url",
  "derive_more",
+ "either",
  "i-slint-common",
  "icu_normalizer",
  "icu_properties",
@@ -3586,6 +3588,7 @@ dependencies = [
  "lyon_extra",
  "lyon_path",
  "num_enum",
+ "once_cell",
  "proc-macro2",
  "quote",
  "rayon",
@@ -3606,8 +3609,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "accesskit",
  "async-channel",
@@ -3660,8 +3663,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-core-macros"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "quote",
  "serde_json",
@@ -3670,8 +3673,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-femtovg"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "const-field-offset",
  "femtovg",
@@ -3689,8 +3692,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-skia"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "bytemuck",
  "cfg_aliases",
@@ -3726,8 +3729,8 @@ dependencies = [
 
 [[package]]
 name = "i-slint-renderer-software"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "bytemuck",
  "clru",
@@ -4802,7 +4805,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=0f9454bf372b8b0566ac846a5d0424e8a34fc2e3#0f9454bf372b8b0566ac846a5d0424e8a34fc2e3"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=470e2b08712b8755fff752337e223d4b7cc92644#470e2b08712b8755fff752337e223d4b7cc92644"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",
@@ -6511,7 +6514,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=53fb55a226535983349c66e5eacb5a223d33045c#53fb55a226535983349c66e5eacb5a223d33045c"
+source = "git+https://github.com/barafael/presage?rev=c40361c699ceeb4f04e317ef7e1645d114cfb1ad#c40361c699ceeb4f04e317ef7e1645d114cfb1ad"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6538,7 +6541,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=53fb55a226535983349c66e5eacb5a223d33045c#53fb55a226535983349c66e5eacb5a223d33045c"
+source = "git+https://github.com/barafael/presage?rev=c40361c699ceeb4f04e317ef7e1645d114cfb1ad#c40361c699ceeb4f04e317ef7e1645d114cfb1ad"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6740,9 +6743,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -7876,9 +7879,9 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skia-bindings"
-version = "0.156.0"
+version = "0.157.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fdac65e59d2ee3d2307397cc0a6a5156e4364debf3db465af1a8fd8252781f1"
+checksum = "3930c7f5e8d813364d74c3b17b227f3bb3a84504f93bb1f8c222d8fd5a7d9c6f"
 dependencies = [
  "bindgen 0.73.2",
  "cc",
@@ -7893,9 +7896,9 @@ dependencies = [
 
 [[package]]
 name = "skia-safe"
-version = "0.156.0"
+version = "0.157.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38c60bc899f4b9e23eba0223187ff572b25d26155d0176b26e9b3a743f1e75b1"
+checksum = "dc1c946dbc1a10b6b1ace7e368ea71f96c81448bbf55effcad0a9a3a392358eb"
 dependencies = [
  "bitflags 2.13.2",
  "skia-bindings",
@@ -7920,8 +7923,8 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "slint"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-linuxkms",
@@ -7941,8 +7944,8 @@ dependencies = [
 
 [[package]]
 name = "slint-build"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "derive_more",
  "fontique",
@@ -7953,8 +7956,8 @@ dependencies = [
 
 [[package]]
 name = "slint-macros"
-version = "1.19.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "1.20.0"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -8769,7 +8772,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -9630,7 +9633,7 @@ dependencies = [
 [[package]]
 name = "vtable"
 version = "0.5.1"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -9640,8 +9643,8 @@ dependencies = [
 
 [[package]]
 name = "vtable-macro"
-version = "0.5.0"
-source = "git+https://github.com/barafael/slint?rev=75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36#75d0cbdbbb8c0cf6b608eebada9300ebf43cbf36"
+version = "0.5.1"
+source = "git+https://github.com/barafael/slint?rev=f0c244a22c1190707182e0d4eeba59521704c699#f0c244a22c1190707182e0d4eeba59521704c699"
 dependencies = [
  "proc-macro2",
  "quote",

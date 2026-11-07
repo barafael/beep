@@ -604,9 +604,11 @@ pub(crate) fn content(
             type_and_send(&mut b33p, text)?;
         }
         let received = peer.sync()?;
+        // presage-cli prints what comes inline; that a long text's attachment makes it whole
+        // again is for Signal's apps to say, in the desktop and android phases.
         let missing: Vec<String> = texts
             .iter()
-            .filter(|(_, text)| !received.contains(text.as_str()))
+            .filter(|(_, text)| !received.contains(inline_part(text)))
             .map(|(what, _)| (*what).to_owned())
             .collect();
         if missing.is_empty() {
@@ -1216,6 +1218,20 @@ fn awkward_texts() -> Vec<(&'static str, String)> {
             "*not bold* _not italic_ ~not struck~ `not code` ||no spoiler||".into(),
         ),
     ]
+}
+
+/// What of `text` b33p sends inline: as Signal's apps, up to 2000 bytes, and whole characters
+/// (b33p-core's `split_long`).
+fn inline_part(text: &str) -> &str {
+    const INLINE: usize = 2000;
+    if text.len() <= INLINE {
+        return text;
+    }
+    let cut = (0..=INLINE)
+        .rev()
+        .find(|&at| text.is_char_boundary(at))
+        .unwrap_or(0);
+    &text[..cut]
 }
 
 /// Fails, naming them, unless `shown` has each of [`awkward_texts`] as it is.

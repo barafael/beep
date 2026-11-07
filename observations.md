@@ -1036,3 +1036,213 @@ One oddity in the Android box's wire: a connection the decoder calls `unknown`, 
 the chat port from 127.0.0.1, 96 bytes out and 36 in, five empty frames, no request: a preface
 and settings and nothing else, closed within 18 ms. Not seen in the earlier runs today; worth
 a look if it recurs, as a client that opens the omnibus port and says nothing.
+
+## The sweep on the forks of 6 Nov (`forks-1106`)
+
+Slint at master (1.20, 261 commits newer, no difference from upstream any more), presage and
+libsignal-service with upstream merged in. Written as the runs go.
+
+### What the build itself turned up
+
+- **The Android image's panic was the check above it.** The build ended in a Go nil dereference in
+  buildah (`intermediateImageExists`, `s.builder.TopLayer`). Under `--jobs 0`, when one stage fails
+  buildah deletes the other stages' builders while their goroutines still run, so the panic says
+  nothing about what failed. What failed was printed just above it, among the interleaved stages:
+  `a revision moved`, emulator 37.2.12 against the pinned 37.2.13. Google serves 37.2.13 as
+  stable all along. `RUN sdkmanager emulator` doesn't say which revision it got, so a layer from
+  before the move matched the step as well as one from after, and the store held both. The
+  emulator now comes from the archive of its revision, checksum checked (7ea21a9). The "layer not
+  known" and nil dereference noted on 1 Nov under "a host-wide build lock" may have been this kind
+  of secondary crash too: read what is above a buildah panic before blaming concurrency.
+- **Slint made `WindowInner::active_popups` private**; the accessor replaces it in one window test.
+- **cargo-deny fails on `main` with today's advisory database** (pulldown-cmark's RUSTSEC-2026-0433,
+  async-executor yanked). CI only sees it on the next push. Both are one `cargo update` away.
+
+### Measurements that mislead
+
+- **The tour's step times include `--screenshots`.** `started`/`took` in `tour.rs` wrap
+  `checks.require`, which also shoots each display. Text went from 0.09 s to 1.26 s, typing from
+  0.10 s to 2.65 s between a run without and a run with screenshots; the sum of the 68 steps from
+  88 s to 148 s. No such change in b33p: `delivered_seconds`, taken inside the step, *improved*
+  (median 0.134 s to 0.120 s, p95 0.726 s to 0.277 s). Anyone comparing two `tour.json`s must know
+  whether both had screenshots.
+- **`link_seconds` isn't that, and isn't a regression.** 2.35 s on 29 Oct, 5.5 s here. It doesn't
+  wrap the screenshots. Over the 170 tours on disk it is bimodal on the same code, about 2.2 s or
+  about 5.5 s, the slow ones mostly with slow restarts and deliveries: the host's load, which nothing
+  records beside it (see "per-check host load", 1 Nov).
+- **The wire's empty connections aren't clients.** About a quarter of the "unknown" rows (38 of 151
+  on the linked box, 35 of 174 on the mesh) are TCP connections with no bytes at all, on the
+  `[::1]` side, closed at once: `offered` is empty, and `5558edc5` is the fingerprint of no hello.
+  They bury the real entries of "Not wholly decoded". A fingerprint for nothing shouldn't exist.
+- **`desktop` on a box without Desktop.** The mesh's compare.md counts two Desktop connections:
+  agent `WhatsApp/2` on the preview port. b33p asks for a page with that agent too
+  (b33p-core/src/preview.rs:53), so `xtask/src/wire/mod.rs:534` names the wrong client.
+
+### What the stress phases said, the first time since 1 Nov
+
+- **stress-content: 6 of 13 awkward texts "not as sent".** The check, not b33p: since 0f20710 a text
+  over 2000 bytes goes as Signal's apps send it, 2000 bytes inline and the whole as an attachment,
+  and the check still looked for the whole in what presage-cli prints. Exactly the six over 2000
+  bytes failed. Nothing runs the stress phases on a schedule, so the check sat broken for five days.
+- **stress-concurrency: "an edit, a reaction and a delete that wait for b33p".** `locator.hover`
+  timed out on "…, edited 3" after 120 s. Desktop's log shows two `sendEditedMessage` calls and no
+  third: the driver's third edit never left Desktop, and `edit_message` returned as if it had. Its
+  `typeAndSend` waits for the composer, which is there at once; the message's text arrives in it a
+  moment later. Presumably what was typed went, and Enter on the unchanged text sent nothing (the
+  order is inferred; the missing call is in the log). The host was at a load of 25 to 77 from the
+  Android image's build. `edit_message` now waits for the composer to hold the old text and for the
+  new text to show. Same family as `send_files` on 1 Nov: a driver call that returns before Desktop
+  has done it, and a failure two minutes later somewhere else.
+
+### What the wire says that the checks don't
+
+- **Every `FetchLatest` sync costs a linked device three requests, inside its receive loop.** In
+  `large-group`, b33p made 81 `GET /v1/storage/auth` in 68 s, each with a manifest and a one-record
+  read, up to four rounds in a quarter of a second: far faster than `follow_storage`'s 2 s settle, so
+  not that. It is presage (upstream #469, `sync_groups_from_storage_service`,
+  presage/src/manager/registered.rs:1024): on each `FetchLatest::StorageManifest` it reads the
+  manifest with no version to compare and awaits it before the next envelope. Android writes the
+  storage service for each new contact and tells its devices each time, so a burst of 40 is 120
+  requests in series. On the box's loopback that is 3 ms each and nobody notices; at 100 ms it would
+  be 12 s with nothing received. To propose upstream: keep the manifest's version
+  (`manifest_if_changed`, as b33p's own `storage::sync` does), and coalesce what is queued.
+- **A storage credential is fetched per operation.** `/v1/storage/auth` is 133 bytes and comes before
+  every storage call, in libsignal-service's `storage_service()`. Android does it too (92), Desktop
+  much less (8): a token that lasts a day could be kept.
+- **`/v2/groups/logs` is cheap**: 56 reads in the tour, 6 ms median. The details' log read costs
+  little, so the race below is the only thing against it.
+
+### A notice told twice, and read out of order (found in a screenshot)
+
+The tour's model leaves notices out, so this passed every check. An admin's group details read the
+group's log (`fetch_as_admin`, `Manager::update_group`); if that read comes just as a change's
+message does, both tell it. "Mesh 1 left the group." showed twice, seed 1794003665, step 46 on b33p
+2, for one envelope and one `a group change came`. On the wire: `logs/12` read 0.4 s after the
+message. Replaying the seed once reproduced it, on the same group and b33p.
+
+Changes read from the log also came after the message that made b33p read it, stamped with the time
+they were read: "accepted Mesh 0's request" above "Mesh 0 asked to join".
+
+Fixed on `group-notice-once`: the second to come isn't told, whichever it is, going by the signed
+changes stored lately for that revision (only signed, or a member could keep a real change from being
+told), and what the log brings is stamped before any later change told. The tour now fails on a
+membership notice told twice: without the fix it fails on the seed above, with it the seed passes and
+so do four new ones (1794006427, 1794006595, 1794006755, 1794007047).
+
+Broadening this asks for: the model leaving notices out is the gap. A model of notices would have
+caught the order too.
+
+### Slint 1.20, by the pixel
+
+`docs/screenshots/shoot.py` on the mock, Slint 1.19 (`main`) against 1.20, light and dark, 19 screens
+each (chats, details, media, calendar, search, selection, replying, group, request, settings, new
+group, join, forward, unlink, stories): every difference is confined to the mock's clock digits, the
+builds being a minute apart (three screens read by eye, the rest by where the difference lies). Open
+menus and tooltips aren't among them; the window tests cover those functionally only.
+
+### The soak: "2 lost", and neither was
+
+b33p held from 46 to 58 MiB and 47 open files over 30 minutes, and the soak's own check, that the
+peer ends with what b33p shows, passed. "No client lost a message" failed on two lines:
+`presage-cli (Peer): failed to decrypt … of 1794005612019: message with old counter 11 / 10`, and the
+same at 1794006841027. Neither time is in the peer's store. The first comes 1.1 s after a message the
+store shows as `Null message`: a delete. The second comes 10 s after `b33p 00295`, stored as
+"edited": an edit, by the soak's rhythm (not captured, so inferred from what the store holds). Both
+took effect. A delete is applied to its target and an edit stored at its original's time, so neither
+is at its own time, and the check, which asks the store, called a redelivery a loss. Two in about a
+hundred such messages over 30 minutes: presage-cli exits between storing and acknowledging.
+
+The check now remembers what presage-cli printed having received, per account. A message never seen
+remains a loss. This is the third time this check has needed correcting for a redelivery, and each
+was found by running longer: it is worth a mode that reads the counters, not the store.
+
+### The longer tour
+
+`TESTBOX_TOUR_REPEAT=5` could never pass: the tour capped groups at two, so "every kind of step came
+up" failed whatever b33p did. Nobody had run it, though 1 Nov's notes suggest it for the nightly. The
+cap goes with the repeat now. The run that found it, optimized and limited to 256 MiB, seed 1794007793:
+175 steps, every one passed, in 93 s. Restart median 0.53 s (debug 2.0 to 2.6 s), delivered median
+0.056 s (debug 0.12 to 0.13 s), peak 79 MiB, 58 open files. These are the first real numbers for an
+optimized b33p under a tour, and 256 MiB is comfortably more than it wants.
+
+### `actors-owner`, its first time in the box
+
+Ported to this main (it conflicted in six files; `main`'s `story_kept`, `take_preferences` and
+`command_failed` sit beside it, and it follows #116's rule on discarded results). All default phases
+and the tour: 256 of 256, as the branch below it. The fair comparison, the same seed 1794003665 with
+the same flags, against the branch without it:
+
+| | without | with |
+|---|---|---|
+| delivered, median / p95 / max (s) | 0.120 / 0.277 / 0.332 | 0.122 / 0.310 / 0.603 |
+| restart, median (s) | 2.62 | 2.09 |
+| peak memory (MiB) | 66.2 | 66.7 |
+| open files, most | 52 | 54 |
+| slowest harness answer (ms) | 1.8 | 1.6 |
+
+One run each, so the max means little; nothing here says the copy each ordered command takes costs
+anything. What it still doesn't exercise: a very large contact list, where `copy_for_command` clones
+every thread for each message sent.
+
+### Read from the screenshots (usability; none of them fails a check)
+
+- `mesh/tour/20`: on a non-admin, "accepted Mesh 0's request" above "Mesh 0 asked to join": fixed
+  with the notices above.
+- "Mesh 2 removed You." with a capital, and "You: You changed…" in the chat list's previews.
+- The scroll-to-latest button covers the last message's read pill, and touches "Save" (`tour/04`).
+- ❤ as a reaction draws black, and a ZWJ family emoji as a blurry dark blob in a light square.
+- "New messages" stays above "Today" for the whole session; "Saved to b33p" sits against "Save";
+  captions on attachments wrap early; CJK in bold titles stays regular weight.
+- A new contact's chat shows its UUID for a moment (`linked/setup/09`), as known.
+- Good news: CJK no longer draws as tofu, and no frame shows a layout problem from 1.20.
+
+### What to broaden, from this sweep
+
+Test cases:
+
+1. **A model of notices in the tour.** It is why a screenshot, not a check, found the double notice.
+   `told_twice` catches one symptom; the model could say exactly which notices each b33p should show,
+   in which order.
+2. **Two admins' details open across a burst of changes**, on purpose: the race the tour hit by luck
+   of the seed. Other paths may tell a change twice too (`Accepted`, a join by link).
+3. **A slow server.** The box's loopback hides per-request costs, such as `FetchLatest`'s three. Run
+   `large-group` with the `network` phase's netem at 100 ms: receiving should keep up.
+4. **A b33p with thousands of contacts**, for what `copy_for_command` and `FetchLatest` cost then.
+5. **Popups on 1.20**: `shoot.py` has no open menu, tooltip, emoji or sticker picker. Each is one
+   harness call away, and would have settled the one thing this sweep left open about Slint.
+6. **Long texts on the wire**: `stress-content` now checks only the inline part on presage-cli. A
+   check that the `LongText` attachment is there and whole belongs beside it.
+
+The box itself:
+
+1. **Run the stress phases on a schedule.** They were five days stale: two of the three failures here
+   were checks that had fallen behind b33p. The nightly runs the tour only.
+2. **A nightly with `--optimized --b33p-memory 256 TESTBOX_TOUR_REPEAT=5`**: 93 s, cheaper than the
+   debug tour. A new seed each night.
+3. **When a build fails, say which stage.** The message's tail was a buildah panic with the cause
+   above it among interleaved stages. Dropping Go's stack from the tail shows the real last lines.
+4. **Driver calls confirm what they did.** `send_files` (1 Nov) and `edit_message` (now) returned
+   before Desktop had acted. `send`, `react_to_message` and `delete_for_everyone` still do.
+5. **Host load beside each check** remains the one thing that would have saved time: `link_seconds`
+   and the timings of the day are hard to read without it.
+6. **Prune.** Stale instances' images and volumes pile up: images for `wire`, `full3`, `integ`,
+   `menu`, `actors`, `actorstm`, `dsk`, and 123 volumes before this sweep.
+
+### Where the sweep ended
+
+| run | revision | result |
+|---|---|---|
+| default phases and the tour, capture and screenshots | `forks-1106` | 256 of 256 |
+| stress-volume, -interrupt | `forks-1106` | 13 of 13, 15 of 15 |
+| stress-content, -concurrency, 2 rounds, after the fixes above | `forks-1106` | 16 of 16, 17 of 17, both rounds |
+| stress-soak, 30 minutes, after the fixes above | `forks-1106` | 12 of 12; 35 to 57 MiB, 48 open files |
+| tour, seed 1794003665 | check without the fix / with it | fails on the notice / 79 of 79 |
+| tour, 4 new seeds | `group-notice-once` | all passed |
+| tour, optimized, 256 MiB, each step 5 times | `group-notice-once` | 181 of 181; restart 0.74 s, peak 66.5 MiB |
+| default phases and the tour | `actors-owner`, before the notice fix | 256 of 256 |
+| tour, seed 1794003665 | `actors-owner` on the notice fix | 79 of 79 |
+| default phases and the tour, capture and screenshots | `actors-owner` on the notice fix, the whole stack | 256 of 256 |
+
+A harness snapshot goes from 4.5 ms to 40 ms over the soak as the open chat fills: harness only, but
+its cost is that of walking the shown messages, which the window does too. Worth a look with a chat of
+10,000 messages.
