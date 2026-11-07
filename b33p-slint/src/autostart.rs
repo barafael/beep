@@ -20,14 +20,19 @@ pub const HIDDEN: &str = "--hidden";
 pub enum AutostartError {
     #[error("could not determine where b33p is")]
     Executable(#[source] io::Error),
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("the path to b33p isn't valid UTF-8: {}", path.display())]
     NotUtf8 { path: PathBuf },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("could not determine a config directory")]
     NoConfigDir,
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to create {}", dir.display())]
     CreateDir { dir: PathBuf, source: io::Error },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to write {}", path.display())]
     Write { path: PathBuf, source: io::Error },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to remove {}", path.display())]
     Remove { path: PathBuf, source: io::Error },
     #[cfg(windows)]

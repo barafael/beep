@@ -19,6 +19,9 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    # Code only Windows compiles warns nowhere else.
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -34,7 +37,7 @@ jobs:
       # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
       - name: Test
         shell: pwsh
-        run: cargo test --locked -p b33p-core -p b33p-slint -p b33p-notify
+        run: cargo test --locked --no-fail-fast -p b33p-core -p b33p-slint -p b33p-notify
 
   # The release build on the mock, as a person would start it: does the window draw, with the
   # fonts Windows has (the mock's "Yuki 駅 鉄 国 · 김민지" chat shows whether ideographs and
@@ -64,6 +67,8 @@ jobs:
       - name: Start, look, measure
         shell: pwsh
         run: |
+          # The runner's screen is 1024x768: too short for the whole chat list.
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "resolution unchanged: $_" }
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           New-Item -ItemType Directory -Force smoke | Out-Null
           $failed = $false
@@ -86,6 +91,7 @@ jobs:
               $private = [math]::Round($app.PrivateMemorySize64 / 1MB, 1)
               $working = [math]::Round($app.WorkingSet64 / 1MB, 1)
               "| $renderer | $private MiB | $working MiB |" >> $env:GITHUB_STEP_SUMMARY
+              Write-Host "mem: $renderer private $private MiB, working set $working MiB"
               Stop-Process -Id $app.Id -Force
               $app.WaitForExit()
             }
