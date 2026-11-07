@@ -122,7 +122,11 @@ pub fn backlog_message(n: usize, chats: &[&str], now: u64) -> ChatMessage {
     let mut random = Random(0xdead_beef_cafe_f00d ^ n as u64);
     let chat = chats[n % chats.len()];
     let body = line(&mut random, 12);
-    let sender = if chat.starts_with("group-") { "Friend" } else { chat };
+    let sender = if chat.starts_with("group-") {
+        "Friend"
+    } else {
+        chat
+    };
     message(chat, sender, &body, now - (n as u64 % 3_600) * 1_000, false)
 }
 
