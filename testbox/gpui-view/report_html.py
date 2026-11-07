@@ -622,7 +622,7 @@ def caveats(data):
     for way in data.ways:
         if "qt" in way:
             continue
-        vram = data.get("static", "settled", "vram_mb", way)
+        vram = data.get("static", "after", "vram_mb", way)
         gpu = data.get("static", "after", "gpu_s", way)
         if vram is not None and vram["max"] == 0 and (gpu is None or gpu["max"] == 0):
             lines.append(f"{way} shows no GPU memory and no GPU time in any run: it may have fallen back to software rendering.")
@@ -778,6 +778,8 @@ td small{{display:block;color:var(--muted);font-weight:400;font-size:11px}}
 td.na{{color:var(--muted)}}
 .unit{{color:var(--muted);font-weight:400}}
 table.plain td,table.plain th{{text-align:left}}
+table.plain thead th{{min-width:0}}
+table.plain td:nth-child(3){{min-width:240px}}
 table.plain td:first-child{{white-space:nowrap}}
 .grid-panels{{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px 20px}}
 .panel{{margin:0;background:var(--surface);border:1px solid var(--hair);border-radius:10px;padding:10px 12px 8px;min-width:0}}
@@ -802,7 +804,7 @@ details summary{{cursor:pointer;font-weight:600;padding:8px 0}}
 .raw td:nth-child(2){{color:var(--ink2)}}
 nav.toc{{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;margin:6px 0 4px}}
 nav.toc a{{color:var(--accent);text-decoration:none}}
-@media (max-width:480px){{h1{{font-size:22px}}.grid-panels{{grid-template-columns:minmax(0,1fr)}}main{{padding:14px 16px 48px}}}}
+@media (max-width:480px){{dl.kv{{grid-template-columns:1fr;gap:0}}dl.kv dd{{margin:0 0 8px}}h1{{font-size:22px}}.grid-panels{{grid-template-columns:minmax(0,1fr)}}main{{padding:14px 16px 48px}}}}
 """
 
 
