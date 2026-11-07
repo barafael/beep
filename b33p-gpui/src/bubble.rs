@@ -11,7 +11,10 @@ use b33p_core::{
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, FontWeight, MouseButton, Role, SharedString, div, px};
+use gpui_kit::{
+    Animation, AnimationExt as _, AnyElement, App, FontWeight, MouseButton, Role, SharedString,
+    div, px,
+};
 
 use crate::attachments::{self, Env};
 use crate::message_menu::{self, Info};
@@ -298,6 +301,7 @@ fn message(
     let side = |tightened: bool| if tightened { tight } else { radius };
     let incoming = !outgoing;
     // A search result jumped to is lit.
+    let unlit = background;
     let background = if view.highlighted {
         background.blend(t.highlight.opacity(0.5))
     } else {
@@ -445,6 +449,20 @@ fn message(
         bubble = bubble.child(footer_row(&footer, shared, t, ink));
     }
 
+    // A message jumped to lights up at once, then settles into its highlight, so that the eye
+    // finds it. With motion off it is only the highlight.
+    let bubble = if view.highlighted && shared.animates() {
+        let highlight = t.highlight;
+        bubble
+            .with_animation(
+                SharedString::from(format!("flash-{index}")),
+                Animation::new(theme::FLASH).with_easing(gpui_kit::ease_out_quint()),
+                move |bubble, delta| bubble.bg(unlit.blend(highlight.opacity(1. - 0.5 * delta))),
+            )
+            .into_any_element()
+    } else {
+        bubble.into_any_element()
+    };
     // Picked: a check at the corner facing the middle.
     let bubble = div()
         .relative()
@@ -548,6 +566,12 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
         .gap(px(theme::SPACE_XS))
         .children(f.expires.as_ref().map(|left| {
             div()
+                .id(SharedString::from(format!("expires-{index}")))
+                .speaks_as(
+                    Role::Label,
+                    format!("Disappears in {left}"),
+                    format!("Disappears {index}"),
+                )
                 .flex()
                 .flex_row()
                 .items_center()
@@ -597,7 +621,7 @@ fn footer_row(f: &Footer, shared: &Rc<Shared>, t: &Tokens, ink: gpui_kit::Hsla) 
                     .items_center()
                     .justify_center()
                     .when(read, |pill| pill.bg(ink))
-                    .aria_label(label)
+                    .speaks_as(Role::Label, label, format!("Delivery {index}"))
                     .child(
                         icon(if f.delivery == Delivery::Sent {
                             "check"
@@ -709,7 +733,11 @@ fn link_preview(
         .bg(ink.opacity(0.1))
         .when(!selecting, |card| {
             card.cursor_pointer()
-                .aria_label(format!("Open link {}", preview.url))
+                .speaks_as(
+                    Role::Link,
+                    format!("Open link {}", preview.url),
+                    format!("Link preview {index}"),
+                )
                 .on_click(move |_, _, cx| open_url(&click_shared, &url, cx))
         })
         .children(image)
@@ -797,7 +825,7 @@ fn reaction_chips(
                     .bg(if mine { t.selected } else { t.surface_raised })
                     .text_size(px(theme::BODY * theme::BODY_SMALL))
                     .text_color(t.text)
-                    .aria_label(label)
+                    .speaks(Role::Button, label)
                     .when(!selecting, |chip| {
                         chip.cursor_pointer().on_click(move |_, _, cx| {
                             message_menu::react(&shared, index, &react, cx)

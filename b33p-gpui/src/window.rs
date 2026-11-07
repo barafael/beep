@@ -263,10 +263,5 @@ pub fn settings_changed(shared: &Shared, settings: &Settings, cx: &mut App) {
 /// [`App::reduce_motion`] before every transition. Once set here, the flag is ours, so the
 /// desktop's own preference reaches it only through [`Shared::system_reduces_motion`].
 pub fn apply_motion(shared: &Shared, cx: &mut App) {
-    let enabled = shared
-        .settings
-        .borrow()
-        .animations
-        .enabled(shared.system_reduces_motion.get());
-    cx.set_reduce_motion(!enabled);
+    cx.set_reduce_motion(!shared.animates());
 }

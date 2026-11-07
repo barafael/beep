@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use b33p_core::state::{Screen, Update};
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
@@ -51,6 +52,14 @@ impl AppView {
         })
         .detach();
         shared.ui.borrow_mut().window_active = window.is_window_active();
+        // "System" follows the desktop's light or dark scheme as it changes, not only as b33p
+        // starts (the component library's theme doesn't watch it on its own).
+        cx.observe_window_appearance(window, |this, window, cx| {
+            if this.shared.settings.borrow().theme == b33p_core::settings::Theme::System {
+                theme::apply(b33p_core::settings::Theme::System, Some(window), cx);
+            }
+        })
+        .detach();
         Self {
             shared,
             start,
@@ -155,6 +164,15 @@ impl Render for AppView {
             ui.window_active = window.is_window_active();
             ui.window_visible = true;
         }
+        // What had the focus may have left the window (the composer, when settings open in its
+        // place): the shortcuts and Esc start from here again, not from nowhere.
+        // Looked at once this frame is the one the window has (a click that closed or opened
+        // something has moved things since the last).
+        cx.defer_in(window, |this, window, cx| {
+            if !this.focus.contains_focused(window, cx) {
+                this.focus.focus(window, cx);
+            }
+        });
         let screen = shared.chat.borrow().screen().clone();
         let banner = self.banner(&t);
         let content = match screen {
@@ -220,6 +238,10 @@ impl AppView {
         let retry_shared = self.shared.clone();
         Some(
             div()
+                .id("error-banner")
+                // Said at once, whatever has the focus.
+                .role(Role::Alert)
+                .aria_label(message.clone())
                 .flex_none()
                 .flex()
                 .flex_row()

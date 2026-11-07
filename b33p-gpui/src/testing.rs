@@ -72,6 +72,7 @@ pub fn boot(cx: &mut TestAppContext, chat: ChatState, width: f32, height: f32) -
 
 /// The app as `main` runs it: the backend's events, the notifications' actions and the rest of
 /// what arrives from outside are pumped into the window, and the agent listens at `socket`.
+#[cfg(all(feature = "harness", target_family = "unix"))]
 pub fn boot_live(cx: &mut TestAppContext, socket: &std::path::Path) -> Booted {
     let (booted, _) = boot_with(cx, ChatState::default(), 1000., 680., Some(socket));
     booted
@@ -121,10 +122,10 @@ fn boot_with(
     cx.update(|cx| shared.refresh(crate::shared::everything(), cx));
     cx.run_until_parked();
     let window = cx.update(|cx| open(&shared, width, height, cx));
-    if let Some(socket) = live {
+    if let Some(_socket) = live {
         cx.update(|cx| {
             #[cfg(all(feature = "harness", target_family = "unix"))]
-            crate::agent::start_at(socket.to_owned(), &shared, cx);
+            crate::agent::start_at(_socket.to_owned(), &shared, cx);
             crate::spawn_pumps(&shared, events, notifier_actions, quit_asked, cx);
         });
     }
@@ -151,23 +152,6 @@ fn open(shared: &Rc<Shared>, width: f32, height: f32, cx: &mut App) -> WindowHan
         cx.new(|cx| AppView::new(shared.clone(), window, cx))
     })
     .expect("a test window opens")
-}
-
-/// Draws what the state says, as the window does after every turn of the event loop.
-pub fn show(booted: &Booted, cx: &mut TestAppContext, update: Update) {
-    cx.update(|cx| booted.shared.refresh(update, cx));
-    cx.run_until_parked();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[gpui::test]
-    async fn the_app_comes_up(cx: &mut TestAppContext) {
-        let booted = boot(cx, ChatState::default(), 900., 600.);
-        assert!(booted.shared.chat.borrow().error().is_none());
-    }
 }
 
 /// A chat state on the chats screen, with `chats` listed (all accepted contacts), the first of
@@ -288,6 +272,18 @@ impl Ui {
     /// How many boxes the last frame painted: more of them when something (a tooltip) is shown.
     pub fn painted(&mut self) -> usize {
         self.cx.update(|window, _| window.painted_quads().len())
+    }
+
+    /// The backgrounds of the boxes the last frame painted, in order.
+    pub fn backgrounds(&mut self) -> String {
+        self.cx.update(|window, _| {
+            window
+                .painted_quads()
+                .iter()
+                .map(|quad| format!("{:?}", quad.background))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
     }
 
     /// Presses the left button at `from`, moves to `to` and lets go, as a drag does.
@@ -417,4 +413,15 @@ pub fn error(kind: b33p_core::ErrorKind, message: &str) -> b33p_core::Error {
         message: message.to_owned(),
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    async fn the_app_comes_up(cx: &mut TestAppContext) {
+        let booted = boot(cx, ChatState::default(), 900., 600.);
+        assert!(booted.shared.chat.borrow().error().is_none());
+    }
 }

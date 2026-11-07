@@ -490,7 +490,11 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
                         .h(px(12.))
                         .w_full()
                         .cursor_pointer()
-                        .aria_label("Position")
+                        .speaks(Role::Slider, "Position")
+                        .aria_value(format!("{}%", (progress * 100.).round()))
+                        .aria_numeric_value(f64::from(progress * 100.))
+                        .aria_min_numeric_value(0.)
+                        .aria_max_numeric_value(100.)
                         .child(
                             canvas(
                                 {

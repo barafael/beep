@@ -272,8 +272,16 @@ impl Render for ChatListView {
                 let tab =
                     |id: usize, label: String, unread: u32, selected: bool, at: Option<usize>| {
                         let shared = shared.clone();
+                        // As a screen reader hears it: the unread count with the name.
+                        let said = match (label.as_str(), unread) {
+                            ("All", _) => "All chats".to_owned(),
+                            (name, 0) => name.to_owned(),
+                            (name, unread) => format!("{name}, {unread} unread"),
+                        };
                         let mut tab = div()
                             .id(("folder", id))
+                            .speaks(Role::Tab, said)
+                            .aria_selected(selected)
                             .flex()
                             .flex_row()
                             .items_center()
@@ -327,6 +335,14 @@ impl Render for ChatListView {
                 div().px(px(theme::SPACE_S)).child(
                     div()
                         .id("archived-chats")
+                        .speaks(
+                            Role::Button,
+                            if archived_unread > 0 {
+                                format!("Archived chats, {archived}, {archived_unread} unread")
+                            } else {
+                                format!("Archived chats, {archived}")
+                            },
+                        )
                         .h(px(40.))
                         .flex()
                         .flex_row()
@@ -517,6 +533,7 @@ fn row(
         .when(!selected, |row| row.hover(|s| s.bg(t.hover)))
         .when(pointed_at, |row| row.border_1().border_color(t.accent))
         .speaks(Role::ListItem, SharedString::from(label))
+        .aria_selected(selected)
         .on_click(move |_, _, cx| click_shared.select(cx, &click_id))
         .context_menu(move |menu, _window, _cx| {
             let shared = menu_shared.clone();

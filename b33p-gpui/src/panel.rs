@@ -148,6 +148,7 @@ pub fn pill(
         .cursor_pointer()
         .text_size(px(theme::BODY * theme::BODY_SMALL))
         .speaks(Role::Tab, label.clone())
+        .aria_selected(selected)
         .when(selected, |p| p.bg(tint).font_weight(FontWeight::SEMIBOLD))
         .when(!selected, |p| p.hover(|s| s.bg(hover)))
         .on_click(on_click)

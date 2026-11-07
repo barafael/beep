@@ -300,8 +300,22 @@ impl ConversationView {
                                                         .when(!subtitle.is_empty(), |row| {
                                                             row.child("·")
                                                         })
-                                                        .child(icon("timer").size(px(12.)))
-                                                        .child(label.clone()),
+                                                        .child(
+                                                            div()
+                                                                .id("timer")
+                                                                .speaks(
+                                                                    Role::Label,
+                                                                    format!(
+                                                                        "Disappearing messages: {label}"
+                                                                    ),
+                                                                )
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .gap(px(2.))
+                                                                .child(icon("timer").size(px(12.)))
+                                                                .child(label.clone()),
+                                                        ),
                                                     None => row,
                                                 }
                                             }),

@@ -538,6 +538,15 @@ impl Shared {
         }
     }
 
+    /// Whether the window animates what changes: the "Animations" setting says so, or leaves it
+    /// to the desktop's wish for reduced motion.
+    pub fn animates(&self) -> bool {
+        self.settings
+            .borrow()
+            .animations
+            .enabled(self.system_reduces_motion.get())
+    }
+
     /// Whether the window counts as focused: as the harness says, or as the window knows.
     pub fn focused(&self) -> bool {
         self.focus_override.get().unwrap_or_else(|| {

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use b33p_core::state::{ChatState, Screen, Update};
 use b33p_core::{Failure, HistoryTransfer, QrMatrix, SyncStage};
+use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -18,6 +19,7 @@ use gpui_kit::{
 
 use crate::shared::{Confirm, Shared};
 use crate::theme::{self, Tokens};
+use crate::widgets::Speaks as _;
 
 /// The start screen's line about what it waits for.
 pub fn sync_status(stage: SyncStage) -> String {
@@ -457,6 +459,8 @@ impl StartView {
             rgba: pixels,
         });
         let code = div()
+            .id("link-code")
+            .speaks(Role::Image, "The code to scan")
             .size(px(280.))
             .rounded(px(theme::RADIUS_L))
             .bg(gpui_kit::white())

@@ -11,6 +11,9 @@ pub const SECONDARY: f32 = 0.7;
 pub const TERTIARY: f32 = 0.55;
 pub const FAINT: f32 = 0.4;
 
+/// How long a message jumped to takes to settle from its first flash into its highlight.
+pub const FLASH: std::time::Duration = std::time::Duration::from_millis(900);
+
 pub const RADIUS_XS: f32 = 2.0;
 pub const RADIUS_S: f32 = 6.0;
 pub const RADIUS_M: f32 = 8.0;

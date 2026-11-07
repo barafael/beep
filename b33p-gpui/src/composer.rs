@@ -121,7 +121,7 @@ impl ComposerView {
     /// The field's text changed: the state keeps it as the chat's draft (and tells the others
     /// we are typing).
     fn draft_edited(&mut self, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value().to_string();
+        let text = self.text(cx);
         let command = self.shared.chat.borrow_mut().draft_changed(&text);
         if let Some(command) = command {
             self.shared.commands.send(command);
@@ -167,7 +167,7 @@ impl ComposerView {
     /// the chat's draft. The field is then empty, or after an edit holds what was being written
     /// before it.
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let text = self.input.read(cx).value().to_string();
+        let text = self.text(cx);
         let sent = self.shared.act(cx, |chat| chat.compose(&text));
         if sent {
             let draft = self.shared.chat.borrow().draft().to_owned();
@@ -277,7 +277,7 @@ impl ComposerView {
     }
 
     fn pick_mention(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input.read(cx).value().to_string();
+        let text = self.text(cx);
         let draft = self.shared.chat.borrow_mut().pick_mention(&text, index);
         if let Some(draft) = draft {
             self.set_text(&draft, window, cx);
@@ -941,6 +941,7 @@ fn banner(
         .bg(t.surface_raised)
         .border_t_1()
         .border_color(t.divider)
+        .role(Role::Group)
         .aria_label(text.clone())
         .child(icon(name).size(px(theme::ICON)))
         .child(div().flex_1().min_w_0().child(text))

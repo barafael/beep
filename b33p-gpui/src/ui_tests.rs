@@ -142,7 +142,7 @@ async fn a_text_story_can_be_clicked_through(tc: &mut TestAppContext) {
 #[gpui::test]
 async fn a_failed_message_offers_a_retry(tc: &mut TestAppContext) {
     let mut chat = open_with(ann(|_| {}));
-    let mut fail = |chat: &mut ChatState, text: &str, retryable: bool| {
+    let fail = |chat: &mut ChatState, text: &str, retryable: bool| {
         let Some(Command::Send { timestamp, .. }) = chat.compose(text).0 else {
             panic!("{text:?} is sent");
         };
@@ -748,7 +748,7 @@ async fn icon_buttons_have_tooltips(tc: &mut TestAppContext) {
 #[gpui::test]
 async fn an_emoji_goes_where_the_caret_is(tc: &mut TestAppContext) {
     let mut ui = Ui::new(tc, many(1, None));
-    let mut put = |ui: &mut Ui, text: &str, range: std::ops::Range<usize>| {
+    let put = |ui: &mut Ui, text: &str, range: std::ops::Range<usize>| {
         ui.type_in_composer(text);
         ui.insert_in_composer("👋", range);
         ui.composer_text()
@@ -764,7 +764,7 @@ async fn an_emoji_goes_where_the_caret_is(tc: &mut TestAppContext) {
 #[gpui::test]
 async fn ctrl_c_copies_the_text_selected_in_one_message(tc: &mut TestAppContext) {
     let mut ui = Ui::new(tc, many(3, None));
-    let mut drag_across = |ui: &mut Ui, label: &str| {
+    let drag_across = |ui: &mut Ui, label: &str| {
         let bubble = ui.bounds(label).expect("shown");
         let y = bubble.center().y;
         // Inside the bubble's padding, from the first letter to past the last.
@@ -781,4 +781,181 @@ async fn ctrl_c_copies_the_text_selected_in_one_message(tc: &mut TestAppContext)
     drag_across(&mut ui, "Message 2");
     ui.press("ctrl-c");
     assert_eq!(ui.clipboard().as_deref(), Some("Message 2"));
+}
+
+/// What a screen reader is told of things that are not words on a button: the code to scan,
+/// the timer of a chat and of a message, the folders, the archive.
+#[gpui::test]
+async fn things_say_what_they_are_to_screen_readers(tc: &mut TestAppContext) {
+    // The code to scan, where there is no chat yet.
+    let mut waiting = ChatState::default();
+    waiting.apply(Event::LinkQr(
+        b33p_core::QrMatrix::encode("sgnl://linkdevice?uuid=x").expect("a code"),
+    ));
+    let mut ui = Ui::new(tc, waiting);
+    assert!(ui.shown("The code to scan"));
+
+    // A chat with a timer and a message that disappears, a folder and an archived chat.
+    let mut chat = open_with(ann(|c| c.expire_timer = 3600));
+    chat.apply(Event::Folders(vec![b33p_core::ChatFolder {
+        name: "Work".into(),
+        all_individual: true,
+        ..Default::default()
+    }]));
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: ConversationId::contact("old"),
+        title: "Old".into(),
+        settings: ChatSettings {
+            accepted: true,
+            archived: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    let ann_id = ConversationId::contact("ann");
+    chat.apply(Event::History {
+        conversation: ann_id,
+        messages: vec![ChatMessage {
+            expires_at: Some(b33p_core::now_millis() + 3_600_000),
+            ..theirs("soon gone", 1)
+        }],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let mut ui = Ui::new(tc, chat);
+    assert!(
+        ui.shown("Disappearing messages: 1 hour"),
+        "the chat's timer"
+    );
+    assert!(ui.shown("All chats"), "the folder that has everything");
+    assert!(ui.shown("Work"), "the others by name");
+    assert!(ui.shown("Archived chats, 1"), "the archive");
+    assert!(ui.shown("Disappears 0"), "the message that disappears");
+}
+
+/// Jumping to a message lights it up and lets it settle, unless motion is off: then it is only
+/// highlighted.
+#[gpui::test]
+async fn a_message_jumped_to_flashes_unless_motion_is_off(tc: &mut TestAppContext) {
+    let jump = |ui: &mut Ui| {
+        ui.act(|chat| {
+            chat.open_chat_search();
+            chat.search_chat("Message 2");
+            chat.apply(Event::SearchResults {
+                conversation: ConversationId::contact("ann"),
+                query: "Message 2".into(),
+                messages: vec![theirs("Message 2", 2)],
+            });
+            chat.show_result(0)
+        });
+    };
+    let settles = |tc: &mut TestAppContext, animations: Option<b33p_core::settings::Animations>| {
+        let mut ui = Ui::new(tc, many(5, None));
+        if let Some(animations) = animations {
+            let mut settings = ui.booted.shared.settings.borrow().clone();
+            settings.animations = animations;
+            let shared = ui.booted.shared.clone();
+            ui.cx.update(|_, cx| shared.apply_settings(settings, cx));
+            ui.settle();
+        }
+        jump(&mut ui);
+        let at_first = ui.backgrounds();
+        ui.wait(std::time::Duration::from_secs(2));
+        at_first != ui.backgrounds()
+    };
+    use b33p_core::settings::Animations;
+    assert!(
+        settles(tc, Some(Animations::On)),
+        "it flashes, then settles"
+    );
+    assert!(
+        !settles(tc, Some(Animations::Off)),
+        "with motion off it is lit as it stays"
+    );
+}
+
+/// The "Animations" setting reaches everything that moves: GPUI and the component library ask
+/// the app's reduced-motion flag before they animate, and the setting (or the desktop's wish,
+/// for "As the desktop says") decides it.
+#[gpui::test]
+async fn the_animations_setting_decides_whether_things_move(tc: &mut TestAppContext) {
+    use b33p_core::settings::Animations;
+    let mut ui = Ui::new(tc, many(1, None));
+    let shared = ui.booted.shared.clone();
+    let reduced = |ui: &mut Ui, animations: Animations, desktop_reduces: bool| {
+        let mut settings = shared.settings.borrow().clone();
+        settings.animations = animations;
+        shared.system_reduces_motion.set(desktop_reduces);
+        ui.cx.update(|_, cx| {
+            shared.apply_settings(settings, cx);
+            cx.reduce_motion()
+        })
+    };
+    assert!(
+        !reduced(&mut ui, Animations::System, false),
+        "the desktop doesn't mind"
+    );
+    assert!(
+        reduced(&mut ui, Animations::System, true),
+        "the desktop asks for less"
+    );
+    assert!(
+        !reduced(&mut ui, Animations::On, true),
+        "on, whatever the desktop says"
+    );
+    assert!(
+        reduced(&mut ui, Animations::Off, false),
+        "off, whatever the desktop says"
+    );
+}
+
+/// Alt+↓ and Alt+↑ go through the chats, Alt+1 opens the first pinned one, Esc closes the
+/// innermost of what is open: the same keys as the Slint window's.
+#[gpui::test]
+async fn the_shortcuts_go_through_chats_and_close_what_is_open(tc: &mut TestAppContext) {
+    let mut chat = testing::chats(&["Ann", "Bob", "Cid"]);
+    for (name, number) in [("ann", 3), ("bob", 2), ("cid", 1)] {
+        chat.apply(Event::Latest(ChatMessage {
+            conversation: ConversationId::contact(name),
+            sender_id: name.into(),
+            ..theirs("hello", number)
+        }));
+    }
+    let mut ui = Ui::new(tc, chat);
+    let open = |ui: &Ui| {
+        ui.booted
+            .shared
+            .chat
+            .borrow()
+            .selected()
+            .map(|c| c.title.clone())
+    };
+    assert_eq!(open(&ui), None);
+    ui.press("alt-down");
+    assert_eq!(open(&ui).as_deref(), Some("Ann"));
+    ui.press("alt-down");
+    assert_eq!(open(&ui).as_deref(), Some("Bob"));
+    ui.press("alt-up");
+    assert_eq!(open(&ui).as_deref(), Some("Ann"));
+
+    // Esc closes what is in front, innermost first: here the settings, over the chat that had
+    // the focus (in its composer), which is no longer there to hear the key.
+    ui.booted.shared.ui.borrow_mut().settings_open = true;
+    ui.settle();
+    ui.press("escape");
+    assert!(
+        !ui.booted.shared.ui.borrow().settings_open,
+        "the settings close"
+    );
+    assert_eq!(open(&ui).as_deref(), Some("Ann"), "the chat stays");
+    ui.act(|chat| {
+        chat.open_chat_search();
+        Update::default()
+    });
+    assert!(ui.booted.shared.chat.borrow().chat_search().is_some());
+    ui.press("escape");
+    assert!(
+        ui.booted.shared.chat.borrow().chat_search().is_none(),
+        "the search closes"
+    );
 }
