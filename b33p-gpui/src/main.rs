@@ -51,6 +51,8 @@ mod stories;
 mod text;
 mod theme;
 mod tray;
+#[cfg(test)]
+mod testing;
 mod widgets;
 mod window;
 

@@ -58,7 +58,12 @@ pub fn start(shared: &Rc<Shared>, cx: &mut App) {
     let Some(path) = std::env::var_os("B33P_AGENT_SOCKET") else {
         return;
     };
-    let path = PathBuf::from(path);
+    start_at(PathBuf::from(path), shared, cx);
+}
+
+/// [`start`] at `path`, which the tests give their own (the environment is shared by every
+/// test in the process).
+pub fn start_at(path: PathBuf, shared: &Rc<Shared>, cx: &mut App) {
     let path_for_log = path.display().to_string();
     // A socket left over from a run that died would keep `bind` from working.
     remove_socket(&path);
