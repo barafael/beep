@@ -335,11 +335,11 @@ and download), D.6 (a signing account), the key for D.5, and C.
 | B.2 Notification settings per chat | `notify-per-chat` | `local.rs` table, `ChatSettings`, the notification decision in b33p-core, details panel | core tests per rule, ui test, harness action |
 | B.3 Image viewer overlay | `image-viewer` | a new `viewer.slint` with its own global, `src/ui/viewer.rs`, the picture click in `callbacks/chat.rs`; no `items.rs` | ui tests, harness `OpenViewer`/`ViewerNext`/`CloseViewer`, a screenshot |
 | B.4 fcitx5 Hangul check of #135 | done, no branch | a throwaway image on the testbox's b33p image: fcitx5 + fcitx5-hangul + the Qt 6 frontend on a private D-Bus, keys by `wtype` into the headless `cage`, harness screenshots | see below |
+| D.2 Per-user install | `windows-install`, on `windows-ci` | `install.rs` (HKCU Uninstall key, Start menu `.lnk` via `IShellLinkW`), `main.rs` | Windows CI build, unit tests on the decisions (version compare, paths) |
+| D.3 Unread counts | `unread-badge`, on `windows-ci` | `badge.rs` (`ITaskbarList3`), a window subclass, the tray icon with a count on every platform | Windows CI build, a ui or unit test of the count's words and "99+" |
+| D.4 IME Ctrl shortcuts | `ime-ctrl` (#143), on `windows-ci` | `keys.rs`: a filter through Slint's public winit hook, no fork patch (Slint's own fallback, `key_without_modifiers`, is `Process` too) | unit tests in the Windows CI job |
+| D.5 Self-update | `self-update`, on `windows-install` | `update.rs` (`minisign-verify`), the setting, `release.yml` signing | unit tests on signature and version checks with a test key |
 
 **B.4 result (2026-11-07):**
 - With a real fcitx5 Hangul input method, `@` followed by composing 가 closes the @mention list: b33p sees the composition while its committed draft is still `@`. Before #135 the list showed every name. #135 holds.
 - **New finding:** Enter in the middle of a syllable commits it *and sends* the message in one press (`@가` went out). Chromium, and so Signal-Desktop, spends that first Enter on finishing the syllable. Changing it needs to know that the commit and the Enter came from one key press: Qt's fcitx plugin commits the preedit before it delivers the Return, so `Composer.composing` is already empty when the composer sees Enter. Owner's call whether to match Desktop.
-| D.2 Per-user install | `windows-install`, on `windows-ci` | `install.rs` (HKCU Uninstall key, Start menu `.lnk` via `IShellLinkW`), `main.rs` | Windows CI build, unit tests on the decisions (version compare, paths) |
-| D.3 Unread counts | `unread-badge`, on `windows-ci` | `badge.rs` (`ITaskbarList3`), a window subclass, the tray icon with a count on every platform | Windows CI build, a ui or unit test of the count's words and "99+" |
-| D.4 IME Ctrl shortcuts | upstream draft | winit or Slint | a draft PR, credited to sigwin |
-| D.5 Self-update | `self-update`, on `windows-install` | `update.rs` (`minisign-verify`), the setting, `release.yml` signing | unit tests on signature and version checks with a test key |
