@@ -14,7 +14,7 @@ use b33p_core::state::{ChatState, Screen};
 use b33p_core::{Backend, Failure};
 use gpui_kit::{
     App, AppContext as _, AsyncApp, Bounds, TitlebarOptions, WindowBounds, WindowDecorations,
-    WindowOptions, px, size,
+    WindowOptions, WindowingRequest, px, size,
 };
 
 use crate::shared::Shared;
@@ -26,6 +26,10 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 /// A window is being closed to be opened anew (see [`activate`]): its closing is not the last
 /// window's. GPUI tells of a closed window at once, before the next one is opened.
 static REOPENING: AtomicBool = AtomicBool::new(false);
+
+/// The connection to the compositor is being made anew with an activation token, between a
+/// window closed and the next one opened (see [`reconnect_with`]); nothing else opens one.
+static SWITCHING: AtomicBool = AtomicBool::new(false);
 
 /// How long a start into the tray (`--hidden`) waits for the desktop to show tray icons, as it
 /// may not yet at login, before opening the window after all.
@@ -187,19 +191,51 @@ pub fn stop_hiding(shared: &Rc<Shared>, cx: &mut App) {
 }
 
 /// Shows the window and brings it to the front, from the tray, a second start, or a click on a
-/// notification. `token` is a Wayland activation token from whatever asked, which would let
-/// the compositor give b33p focus; GPUI only takes the one it is started with, so it is noted
-/// and the window asks the compositor for its own.
+/// notification. `token` is a Wayland activation token from whatever asked, which lets the
+/// compositor give b33p focus.
+///
+/// GPUI takes such a token only when its connection to the compositor is made, and uses it for
+/// the first window then (`GraphicalEnvironment::activation_token`, meant for exactly this:
+/// "the token of the process that asked for a window"). So with a token and a window to bring
+/// up, the connection is made anew (see [`reconnect_with`]); without one, a window that isn't
+/// the active one is closed and opened again, which KWin focuses by itself.
 pub fn activate(shared: &Rc<Shared>, token: Option<String>, cx: &mut App) {
-    let Some(window) = cx.windows().into_iter().next() else {
+    let window = cx.windows().into_iter().next();
+    let active = window
+        .and_then(|window| {
+            window
+                .update(cx, |_, window, _| window.is_window_active())
+                .ok()
+        })
+        .unwrap_or(false);
+    tracing::debug!(active, token = token.is_some(), "bringing the window up");
+    if SWITCHING.load(Ordering::Relaxed) {
+        tracing::debug!("the window is being brought up already");
+        return;
+    }
+    if active {
+        if let Some(window) = window
+            && let Err(error) = window.update(cx, |_, window, _| window.activate_window())
+        {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't raise the window");
+        }
+        cx.activate(true);
+        return;
+    }
+    let token = token.filter(|token| !token.is_empty());
+    if let Some(token) = token
+        && let Some(environment) = cx
+            .graphical_environment()
+            .filter(|environment| environment.wayland_display.is_some())
+    {
+        reconnect_with(shared, token, environment, cx);
+        return;
+    }
+    let Some(window) = window else {
         open_or_quit(shared, cx);
         return;
     };
-    let active = window
-        .update(cx, |_, window, _| window.is_window_active())
-        .unwrap_or(false);
-    tracing::debug!(active, token = token.is_some(), "bringing the window up");
-    if cfg!(all(unix, not(target_os = "macos"))) && !active {
+    if cfg!(all(unix, not(target_os = "macos"))) {
         // Without a token a compositor (KWin, like others) keeps an open window where it is,
         // but it does focus one that appears: so the window appears anew, where the compositor
         // places it. Everything shown is in `Shared`, so nothing is lost.
@@ -215,6 +251,53 @@ pub fn activate(shared: &Rc<Shared>, token: Option<String>, cx: &mut App) {
         tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't raise the window");
     }
     cx.activate(true);
+}
+
+/// Opens the window with `token`, which GPUI hands the compositor along with the first window of
+/// a connection: the window (if any) is closed, the connection to the compositor dropped
+/// (GPUI's headless mode) and made again with the token, and a window opened on it. Nothing
+/// shown is lost, as it is all in [`Shared`]; what is lost is a selection copied to the
+/// clipboard from b33p, which the compositor drops with the connection. If it fails, a window
+/// is opened on whatever connection there is, as without a token.
+fn reconnect_with(
+    shared: &Rc<Shared>,
+    token: String,
+    environment: gpui_kit::GraphicalEnvironment,
+    cx: &mut App,
+) {
+    SWITCHING.store(true, Ordering::Relaxed);
+    REOPENING.store(true, Ordering::Relaxed);
+    for window in cx.windows() {
+        if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
+            tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't close the window");
+        }
+    }
+    let shared = shared.clone();
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        let switched = async {
+            let headless = cx.update(|cx| cx.request_windowing(WindowingRequest::Headless));
+            headless.await?;
+            let windowed = cx.update(|cx| {
+                cx.request_windowing(WindowingRequest::Windowed(
+                    gpui_kit::GraphicalEnvironment {
+                        activation_token: Some(token),
+                        ..environment
+                    },
+                ))
+            });
+            windowed.await
+        }
+        .await;
+        if let Err(error) = switched {
+            tracing::warn!(error = %b33p_core::scrub::chain(&*error), "can't hand the compositor the activation token");
+        }
+        cx.update(|cx| {
+            open_or_quit(&shared, cx);
+            REOPENING.store(false, Ordering::Relaxed);
+            SWITCHING.store(false, Ordering::Relaxed);
+        });
+    })
+    .detach();
 }
 
 /// What follows from a flush of the shared state: the icon's unread count, and whether a start
