@@ -42,6 +42,8 @@ pub struct ComposerView {
     stickers: Entity<StickerPicker>,
     /// The chat whose draft the field shows, and whether it was an edit that it shows.
     showing: Option<(ConversationId, bool)>,
+    /// Whether the field was drawn the last time: it is not where a bar says why not.
+    field_shown: bool,
     /// The mention Tab and Enter pick, among the candidates.
     mention: usize,
     /// The popup as last drawn, to tell when one closed.
@@ -90,6 +92,7 @@ impl ComposerView {
             emoji,
             stickers,
             showing: None,
+            field_shown: true,
             mention: 0,
             popup_drawn: Popup::None,
             _subscriptions: subscriptions,
@@ -411,6 +414,12 @@ impl Render for ComposerView {
             }
             self.showing = now;
         }
+        // A field that comes back (a request accepted, a block lifted) has the caret again.
+        let shows_field = situation.shows_field();
+        if shows_field && !self.field_shown {
+            cx.defer_in(window, |this, window, cx| this.focus(window, cx));
+        }
+        self.field_shown = shows_field;
         let popup = self.shared.ui.borrow().composer_popup;
         // Esc or a click outside closed one: back to writing.
         if popup == Popup::None && self.popup_drawn != Popup::None && situation.shows_field() {
@@ -442,8 +451,22 @@ impl Render for ComposerView {
         for bar in self.banners(&situation, &t) {
             bottom = bottom.child(bar);
         }
-        if situation.shows_field() {
+        if shows_field {
             bottom = bottom.child(self.row(popup, can_send, focused, situation.editing, &t, cx));
+        } else if focused {
+            // The caret was in the field when a bar took its place. A field that is not in the
+            // frame can't be told it lost the focus, so its caret would go on blinking, and the
+            // window on being drawn again for it, with nobody to see: it stays one more frame,
+            // without a size, while the focus is taken from it.
+            bottom = bottom.child(div().h(px(0.)).overflow_hidden().child(self.row(
+                popup,
+                can_send,
+                focused,
+                situation.editing,
+                &t,
+                cx,
+            )));
+            cx.defer_in(window, |_, window, cx| window.blur(cx));
         }
         bottom.into_any_element()
     }
