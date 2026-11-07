@@ -93,6 +93,7 @@ pub(crate) fn render(
     });
     render_media(window, chat, images);
     render_pins(window, chat);
+    render_viewer(window, chat, images);
     render_stickers(window, chat);
     render_details(window, chat);
     render_stories(window, chat, images);

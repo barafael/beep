@@ -46,6 +46,9 @@ The release workflow takes a version's notes from here (the section headed with 
 - Pinned messages, as in Signal's apps: **Pin** in a message's menu, for 24 hours, 7 days,
   30 days or until unpinned; a bar above the chat shows them, newest first, and a click shows
   the message. Up to three per chat; in a group, if you may change its details.
+- Photos open in b33p's own viewer, over the window: the wheel zooms (stopping at 100% on the
+  way), dragging moves a zoomed photo, a double click switches between fitting and 100%, ← and
+  → go through the chat's photos, and **Save** and **Open with…** are at hand.
 
 ### Looks
 

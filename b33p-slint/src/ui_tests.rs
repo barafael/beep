@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::generated::{
     Account, AppWindow, ChatList, Composer, ConversationItem, DeliveryState, Groups, MessageItem,
-    OpenChat, Panels, Prefs, Screen, StoryItem,
+    OpenChat, Panels, Prefs, Screen, StoryItem, Viewer,
 };
 use crate::rows::Rows;
 
@@ -1129,4 +1129,291 @@ fn an_emoji_goes_where_the_caret_is() {
     assert_eq!(splice("é", "x", 1, 1), ("xé".into(), 1));
     assert_eq!(splice("ab", "x", 99, 99), ("abx".into(), 3));
     assert_eq!(splice("ab", "x", -5, 1), ("xb".into(), 1));
+}
+
+/// A chat with Ann holding two photos, their pictures downloaded, drawn into a window whose
+/// picture clicks and viewer callbacks do what `ui::viewer` wires them to; and the commands
+/// they sent.
+#[allow(clippy::type_complexity)]
+fn window_with_photos() -> (
+    AppWindow,
+    Rc<std::cell::RefCell<b33p_core::state::ChatState>>,
+    Rc<std::cell::RefCell<Vec<b33p_core::Command>>>,
+    Rc<Cell<std::time::Duration>>,
+) {
+    use b33p_core::state::{ChatState, Update};
+    use b33p_core::{
+        Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
+        Conversation, ConversationId, Event, Picture,
+    };
+    use std::cell::RefCell;
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 500.));
+    crate::ui::set_up_models(&window);
+    // The wheel's clock, which only the test moves: the tree walks of `settle` take long
+    // enough in a debug build to outlast the wheel's hold at 100%.
+    let clock = Rc::new(Cell::new(std::time::Duration::ZERO));
+    crate::ui::wire_zoom(&window, {
+        let clock = clock.clone();
+        move || clock.get()
+    });
+    let ann = ConversationId::contact("ann");
+    let mut chat = ChatState::default();
+    chat.apply(Event::Linked {
+        account: "me".into(),
+    });
+    chat.apply(Event::Synced);
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: ann.clone(),
+        title: "Ann".into(),
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    chat.select(&ann);
+    let now = b33p_core::now_millis();
+    let photo = |id: &str, timestamp| ChatMessage {
+        conversation: ann.clone(),
+        sender_id: "ann".into(),
+        sender: "Ann".into(),
+        timestamp,
+        attachments: vec![{
+            let mut photo =
+                Attachment::without_pointer(AttachmentId(id.into()), AttachmentKind::Image);
+            (photo.width, photo.height) = (2000, 1000);
+            photo
+        }],
+        ..ChatMessage::default()
+    };
+    chat.apply(Event::History {
+        conversation: ann.clone(),
+        messages: vec![photo("first", now - 2000), photo("second", now - 1000)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    for id in ["first", "second"] {
+        chat.apply(Event::Attachment {
+            id: AttachmentId(id.into()),
+            content: Ok(AttachmentContent::Picture(std::sync::Arc::new(Picture {
+                width: 20,
+                height: 10,
+                rgba: vec![128; 20 * 10 * 4],
+            }))),
+        });
+    }
+    let images = Rc::new(crate::Images::default());
+    crate::ui::render(
+        &window,
+        &chat,
+        &images,
+        Update {
+            screen: true,
+            ..Update::reset()
+        },
+        true,
+    );
+    let chat = Rc::new(RefCell::new(chat));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    // As `Shared::act` does: the command goes out, the window is drawn again.
+    let act = {
+        let window = window.as_weak();
+        let (chat, sent) = (chat.clone(), sent.clone());
+        move |action: &dyn Fn(&mut ChatState) -> Option<b33p_core::Command>| {
+            let command = action(&mut chat.borrow_mut());
+            sent.borrow_mut().extend(command);
+            if let Some(window) = window.upgrade() {
+                crate::ui::render(&window, &chat.borrow(), &images, Update::default(), false);
+            }
+        }
+    };
+    window.global::<OpenChat>().on_open_attachment({
+        let act = act.clone();
+        move |id| act(&|chat| crate::ui::open_picture(chat, &id))
+    });
+    window.global::<Viewer>().on_step({
+        let act = act.clone();
+        move |by| act(&|chat| chat.step_viewer(by))
+    });
+    window.global::<Viewer>().on_close(move || {
+        act(&|chat| {
+            chat.close_viewer();
+            None
+        })
+    });
+    window.show().unwrap();
+    settle(&window);
+    (window, chat, sent, clock)
+}
+
+/// A click on a photo in the chat opens it over the window, asks for it at full size and
+/// says whose it is; ←/→ go through the chat's photos, and Esc closes it.
+#[test]
+fn a_photo_opens_in_the_viewer_and_arrows_go_through_the_chat() {
+    use slint::platform::{Key, WindowEvent};
+    let (window, chat, sent, _clock) = window_with_photos();
+    let viewer = window.global::<Viewer>();
+    assert!(!viewer.get_open());
+    ElementHandle::find_by_accessible_label(&window, "Open picture")
+        .next()
+        .expect("the photo can be clicked")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert!(viewer.get_open());
+    assert!(matches!(
+        sent.borrow().as_slice(),
+        [b33p_core::Command::FetchFullPicture(a)] if a.id.0 == "first"
+    ));
+    assert_eq!((viewer.get_index(), viewer.get_count()), (0, 2));
+    let label = format!("Photo from Ann, {}", viewer.get_time());
+    assert!(
+        find(&window, &label).is_some(),
+        "the overlay says what it shows"
+    );
+    assert!(find(&window, "Save to Downloads").is_some());
+    assert!(find(&window, "Open with another app").is_some());
+    assert!(
+        find(&window, "Previous picture").is_none(),
+        "nothing before the first"
+    );
+
+    let key = |key: Key| {
+        let text = SharedString::from(char::from(key));
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+        settle(&window);
+    };
+    key(Key::RightArrow);
+    assert_eq!(viewer.get_index(), 1);
+    assert_eq!(viewer.get_key(), "second");
+    assert!(
+        find(&window, "Next picture").is_none(),
+        "nothing after the last"
+    );
+    key(Key::RightArrow);
+    assert_eq!(viewer.get_index(), 1, "the last stays");
+    key(Key::LeftArrow);
+    assert_eq!(viewer.get_index(), 0);
+
+    key(Key::Escape);
+    assert!(!viewer.get_open());
+    assert!(chat.borrow().viewer().is_none());
+}
+
+/// The wheel zooms in from fitting the window and catches at 100%: the notch right after
+/// stays there, as in a fast spin, and one a moment later goes on. A double click on the
+/// picture goes back to fitting it.
+#[test]
+fn the_wheel_catches_at_actual_size() {
+    use slint::platform::WindowEvent;
+    let (window, _chat, _sent, clock) = window_with_photos();
+    let viewer = window.global::<Viewer>();
+    find(&window, "Open picture")
+        .expect("the photo can be clicked")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    let backdrop = ElementHandle::find_by_element_id(&window, "PictureViewer::touch")
+        .next()
+        .expect("the viewer is open");
+    let fit = viewer.get_fit_zoom();
+    assert!(fit < 0.5, "a 2000 px picture fits 800 px at {fit}");
+    assert_eq!(viewer.get_zoom(), 0.0, "it opens fitted");
+    let notch = viewer.get_notch();
+    let mut zooms = Vec::new();
+    while viewer.get_zoom() < 1.0 {
+        // A notch a second, slower than a spin.
+        clock.set(clock.get() + std::time::Duration::from_secs(1));
+        backdrop.scroll(0., notch);
+        settle(&window);
+        zooms.push(viewer.get_zoom());
+        assert!(zooms.len() < 40, "never got to 100%: {zooms:?}");
+    }
+    assert_eq!(
+        viewer.get_zoom(),
+        1.0,
+        "caught at 100%, not past it: {zooms:?}"
+    );
+    assert!(zooms.windows(2).all(|w| w[0] < w[1]), "{zooms:?}");
+    assert!(find(&window, "100%").is_some() || viewer.get_shown_zoom() == 1.0);
+    // The rest of a fast spin.
+    clock.set(clock.get() + std::time::Duration::from_millis(50));
+    backdrop.scroll(0., notch);
+    settle(&window);
+    assert_eq!(viewer.get_zoom(), 1.0, "held for a moment");
+    clock.set(clock.get() + std::time::Duration::from_millis(100));
+    backdrop.scroll(0., notch);
+    settle(&window);
+    assert!(viewer.get_zoom() > 1.0, "and then goes on");
+
+    // Twice on the picture, in the middle of the window.
+    let middle = slint::LogicalPosition::new(400., 250.);
+    for _ in 0..2 {
+        window.window().dispatch_event(WindowEvent::PointerPressed {
+            position: middle,
+            button: PointerEventButton::Left,
+        });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position: middle,
+                button: PointerEventButton::Left,
+            });
+    }
+    settle(&window);
+    assert!(viewer.get_open(), "a click on the picture doesn't close it");
+    assert_eq!(
+        viewer.get_zoom(),
+        1.0,
+        "a double click from anything but 100% goes there"
+    );
+    for _ in 0..2 {
+        window.window().dispatch_event(WindowEvent::PointerPressed {
+            position: middle,
+            button: PointerEventButton::Left,
+        });
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position: middle,
+                button: PointerEventButton::Left,
+            });
+    }
+    settle(&window);
+    assert_eq!(viewer.get_zoom(), 0.0, "and from 100% back to fitting");
+}
+
+/// A click beside the picture closes the viewer.
+#[test]
+fn a_click_beside_the_picture_closes_the_viewer() {
+    let (window, _chat, _sent, _clock) = window_with_photos();
+    let viewer = window.global::<Viewer>();
+    find(&window, "Open picture")
+        .expect("the photo can be clicked")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert!(viewer.get_open());
+    let corner = slint::LogicalPosition::new(30., 480.);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: corner,
+            button: PointerEventButton::Left,
+        });
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: corner,
+            button: PointerEventButton::Left,
+        });
+    settle(&window);
+    assert!(!viewer.get_open());
 }

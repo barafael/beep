@@ -8,6 +8,7 @@ import { ConversationMenu, ConversationRow } from "conversation-row.slint";
 import { AttachmentView } from "attachment.slint";
 import { Bubble } from "bubble.slint";
 import { PinBar } from "pins.slint";
+import { PictureViewer, Viewer } from "viewer.slint";
 import { ActivityCalendar, ActivityStrip } from "activity.slint";
 import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens.slint";
 import { SettingsPage } from "settings.slint";
@@ -21,6 +22,7 @@ export { Motion } from "theme.slint";
 export { Playback } from "globals.slint";
 export { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels } from "state.slint";
 export { Emojis, EmojiGroup } from "emoji.slint";
+export { Viewer } from "viewer.slint";
 
 export component AppWindow inherits Window {
     // Rust says "MOCK" here when the mock backend runs, since it sends nothing.
@@ -2034,6 +2036,10 @@ export component AppWindow inherits Window {
     }
 
     if Panels.forwarding: ForwardDialog {
+    }
+
+    // A photo of the open chat, over everything.
+    if Viewer.open: PictureViewer {
     }
     }
 }
