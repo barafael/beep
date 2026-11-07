@@ -60,8 +60,12 @@ notarized, so macOS refuses to open it at first: right-click it in Applications 
 Open, or run `xattr -dr com.apple.quarantine /Applications/b33p.app`. There are no
 notifications on macOS yet.
 
-**Windows** (10 or newer): unpack the `.zip` and run `b33p.exe`. It isn't signed, so SmartScreen
-may stop it: More info → Run anyway. Its `README.txt` says how to remove it again.
+**Windows** (10 or newer): unpack the `.zip` and run `b33p.exe`. It installs itself for you
+alone, without admin rights: to `%LOCALAPPDATA%\b33p\b33p.exe`, with a Start menu entry and
+one in Installed apps, which also removes it (and your data, if you say so). A newer version
+installs over an older one; an older one never replaces a newer, it starts the installed one.
+`B33P_NO_INSTALL=1` runs it where it is. It isn't signed, so SmartScreen may stop it: More
+info → Run anyway.
 
 ### Where b33p keeps things
 
@@ -70,6 +74,7 @@ may stop it: More info → Run anyway. Its `README.txt` says how to remove it ag
 | Messages and keys | `~/.local/share/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\data` |
 | Log | `~/.local/share/b33p/logs` | the same, `logs` | `%LOCALAPPDATA%\barafael\b33p\data\logs` |
 | Settings | `~/.config/b33p` | `~/Library/Application Support/io.github.barafael.b33p` | `%APPDATA%\barafael\b33p\config` |
+| The program | where you installed it | `/Applications/b33p.app` | `%LOCALAPPDATA%\b33p\b33p.exe` |
 
 The database is encrypted with a key kept in the system keyring (or, without one, derived
 from a password you choose). Settings → About opens the log folder.

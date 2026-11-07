@@ -39,6 +39,7 @@ pub mod timeline;
 mod transfer;
 #[cfg(feature = "signal")]
 mod vault;
+pub mod version;
 #[cfg(feature = "signal")]
 mod wire;
 
@@ -1367,6 +1368,14 @@ impl Drop for Backend {
             tracing::error!("the backend thread panicked");
         }
     }
+}
+
+/// Removes the database key b33p keeps in the system keyring for its standard data directory:
+/// for uninstalling with the data, after which the key would open nothing. Done if there was
+/// none.
+#[cfg(feature = "signal")]
+pub fn forget_database_key() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Ok(vault::delete_keyring_key(vault::DEFAULT_ACCOUNT)?)
 }
 
 /// Current time in Signal's timestamp format.
