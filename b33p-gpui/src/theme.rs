@@ -11,6 +11,7 @@ pub const SECONDARY: f32 = 0.7;
 pub const TERTIARY: f32 = 0.55;
 pub const FAINT: f32 = 0.4;
 
+pub const RADIUS_XS: f32 = 2.0;
 pub const RADIUS_S: f32 = 6.0;
 pub const RADIUS_M: f32 = 8.0;
 pub const RADIUS_L: f32 = 12.0;
@@ -203,5 +204,106 @@ mod tests {
         let blink = caret_blink();
         assert!(blink.interval().is_some(), "it blinks at first");
         assert_eq!(blink.idle_timeout(), Some(CARET_BLINK_FOR));
+    }
+
+    /// What a line of a view may not say outside the files that own it, and what to use
+    /// instead. The look is the theme's: colours, text sizes and corners are named here, not
+    /// scattered through the views (`b33p-slint/tests/theme.rs` keeps the Slint window to the
+    /// same).
+    fn problems(line: &str) -> Vec<&'static str> {
+        // Comments may say anything.
+        let code = line.split("//").next().unwrap_or_default();
+        let mut found = Vec::new();
+        if ["rgb(", "rgba(", "hsla(", "hsl("]
+            .iter()
+            .any(|constructor| {
+                code.match_indices(constructor).any(|(at, _)| {
+                    // Not the tail of another name (`stage_rgb(`).
+                    !code[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+            })
+        {
+            found.push("a colour of its own: give it a name in theme.rs");
+        }
+        if literal_after(code, "text_size(px(") {
+            found.push("a text size of its own: use px(theme::BODY * theme::SMALL), …");
+        }
+        if [
+            "rounded(px(",
+            "rounded_t(px(",
+            "rounded_b(px(",
+            "rounded_l(px(",
+            "rounded_r(px(",
+        ]
+        .iter()
+        .any(|key| literal_after(code, key))
+        {
+            found.push("a corner of its own: use theme::RADIUS_…, or rounded_full() for a pill");
+        }
+        found
+    }
+
+    /// Whether `code` has `key` followed by a plain number.
+    fn literal_after(code: &str, key: &str) -> bool {
+        code.match_indices(key)
+            .any(|(at, _)| code[at + key.len()..].starts_with(|c: char| c.is_ascii_digit()))
+    }
+
+    /// Files that may name colours: the theme itself, the avatars' palette (one colour for each
+    /// person, from a fixed set), and the stories, whose colours come with them.
+    const MAY_NAME_COLOURS: [&str; 3] = ["theme.rs", "widgets.rs", "stories.rs"];
+
+    #[test]
+    fn the_look_comes_from_the_theme() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut wrong = Vec::new();
+        for entry in std::fs::read_dir(&src).expect("the src folder") {
+            let path = entry.expect("a file").path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            // The tests build what they need, and say what they like.
+            if !name.ends_with(".rs")
+                || matches!(name.as_str(), "ui_tests.rs" | "e2e_tests.rs" | "testing.rs")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("readable");
+            // What follows the first test module is tests.
+            let code = text
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .unwrap_or_default();
+            for (number, line) in code.lines().enumerate() {
+                for problem in problems(line) {
+                    if problem.starts_with("a colour") && MAY_NAME_COLOURS.contains(&name.as_str())
+                    {
+                        continue;
+                    }
+                    wrong.push(format!(
+                        "{name}:{}: {problem}\n    {}",
+                        number + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn the_check_finds_what_it_should() {
+        assert!(!problems("let c = rgb(0xc4314b);").is_empty());
+        assert!(!problems("x.bg(hsla(0.6, 0.9, 0.5, 1.))").is_empty());
+        assert!(problems("let stage_rgb(x) = 1;").is_empty());
+        assert!(problems("text: \"#general\"").is_empty());
+        assert!(!problems(".text_size(px(12.))").is_empty());
+        assert!(problems(".text_size(px(theme::BODY * theme::SMALL))").is_empty());
+        assert!(problems(".text_size(px(size * 0.4))").is_empty());
+        assert!(!problems(".rounded(px(6.))").is_empty());
+        assert!(problems(".rounded(px(theme::RADIUS_S))").is_empty());
+        assert!(problems(".rounded_full()").is_empty());
+        assert!(problems("// .rounded(px(6.)) in a comment").is_empty());
     }
 }

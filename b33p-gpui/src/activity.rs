@@ -319,7 +319,7 @@ fn bar(index: usize, item: &Item, in_view: bool, shared: &Rc<Shared>, t: &Tokens
                     .right(px(2.))
                     .top(relative(0.5))
                     .size(px(4.))
-                    .rounded(px(2.))
+                    .rounded(px(theme::RADIUS_XS))
                     .bg(t.text_tertiary),
             )
         })
@@ -516,7 +516,7 @@ fn year_block(
             .left(px(LABELS + f32::from(day.column) * step))
             .top(px(16. + f32::from(day.row) * step))
             .size(px(cell))
-            .rounded(px(2.))
+            .rounded(px(theme::RADIUS_XS))
             .bg(fill);
         if active {
             square = square
@@ -576,11 +576,14 @@ fn legend(t: &Tokens) -> gpui_kit::Div {
         .pt(px(theme::SPACE_S))
         .child(small("Less"))
         .children([0., 0.25, 0.5, 0.75, 1.].map(|level| {
-            div().size(px(11.)).rounded(px(2.)).bg(if level <= 0. {
-                t.hover
-            } else {
-                t.accent.opacity(0.3 + 0.7 * level)
-            })
+            div()
+                .size(px(11.))
+                .rounded(px(theme::RADIUS_XS))
+                .bg(if level <= 0. {
+                    t.hover
+                } else {
+                    t.accent.opacity(0.3 + 0.7 * level)
+                })
         }))
         .child(small("More"))
 }
