@@ -529,7 +529,9 @@ pub struct LinkPreview {
     pub url: String,
     pub title: String,
     pub description: String,
-    pub image: Option<Attachment>,
+    /// Boxed: a message that has a preview is rare, and a message is as large as everything it
+    /// may have, which every one of a long history pays for.
+    pub image: Option<Box<Attachment>>,
 }
 
 /// Identifies a message the way Signal does: its author and sent time.

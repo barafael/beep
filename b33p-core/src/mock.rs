@@ -249,7 +249,12 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             .collect();
         let now = now_millis();
         for n in 0..scale.backlog {
-            events.send(Event::Message(scale::backlog_message(n, &names, now)));
+            events.send(Event::Message(scale::backlog_message(
+                n,
+                scale.backlog,
+                &names,
+                now,
+            )));
         }
     }
     events.send(Event::Synced);
@@ -1080,13 +1085,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                     description:
                         "A language empowering everyone to build reliable and efficient software."
                             .into(),
-                    image: Some(attachment(
+                    image: Some(Box::new(attachment(
                         "preview",
                         AttachmentKind::Image,
                         "image/png",
                         None,
                         (1200, 630),
-                    )),
+                    ))),
                 }),
                 ..message(
                     "alice",
