@@ -10,6 +10,9 @@ use testbox_tools::drivers;
 /// Android's suggested folder of every 1:1 chat (strings.xml `ChatFoldersFragment__one_on_one_chats`).
 const FOLDER: &str = "1:1 chats";
 
+/// What Android names the peer, for b33p to take over.
+const NICKNAME: &str = "Nicky";
+
 /// Chat settings through the storage service, between b33p, Android (the primary: it writes
 /// there, presage-cli doesn't) and Desktop, linked to the peer.
 pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Result<(), Failure> {
@@ -57,6 +60,20 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     checks.record("a chat muted on Android shows muted in b33p", || {
         chat_menu(android, row, Mute)?;
         Ok(b33p_chat(b33p, conversation, "muted", |chat| chat.muted)?)
+    });
+    // A name only the phone gives (a nickname, as a name from its address book), which presage
+    // never learns: b33p titles the chat by it, as Signal-Desktop does.
+    checks.record("a nickname given on Android titles the chat in b33p", || {
+        android.call(drivers::Android::OpenConversation {
+            text: row.to_owned(),
+        })?;
+        android.call(drivers::Android::SetNickname {
+            given: NICKNAME.to_owned(),
+        })?;
+        android.call(drivers::Android::Back)?;
+        Ok(b33p_chat(b33p, conversation, "titled by the nickname", |chat| {
+            chat.title == NICKNAME
+        })?)
     });
     // Archiving unpins, on Android as in b33p. b33p lists archived chats with its archive open
     // (b33p-core/src/state.rs `listed`).
