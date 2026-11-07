@@ -1,5 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
+mod scale;
+
+use scale::Scale;
+
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
     Command, Conversation, ConversationId, ConversationKind, Delivery, Error, Event, Events,
@@ -211,10 +215,23 @@ fn session(commands: &Inbox, events: &Events) -> bool {
         }
         events.send(Event::HistoryTransfer(HistoryTransfer::Finished));
     }
-    let conversations = CONVERSATIONS
+    let scale = Scale::get();
+    let added = scale.conversations();
+    let mut conversations: Vec<Conversation> = CONVERSATIONS
         .iter()
         .map(|&(id, title, is_group)| conversation(id, title, is_group))
+        .chain(
+            added
+                .iter()
+                .map(|(id, title, is_group)| conversation(id, title, *is_group)),
+        )
         .collect();
+    if scale.members > 0
+        && let Some(crowd) = conversations.iter_mut().find(|c| c.title == "Big group")
+    {
+        crowd.members = scale::members(scale.members);
+        crowd.subtitle = format!("{} members", scale.members);
+    }
     events.send(Event::Conversations(conversations));
     events.send(Event::Avatar {
         conversation: chat_id("alice"),
@@ -285,16 +302,27 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();
     // Like the real backend: each conversation's newest message, for sorting and previews.
-    for &(id, _, _) in CONVERSATIONS {
+    let ids = CONVERSATIONS
+        .iter()
+        .map(|&(id, _, _)| id)
+        .chain(added.iter().map(|(id, _, _)| id.as_str()));
+    for id in ids {
         if let Some(latest) = history(&chat_id(id), started).pop() {
             events.send(Event::Latest(latest));
         }
     }
+    // With `incoming` set, the wait for a command is as long as the gap between two messages.
+    let gap = if scale.incoming > 0.0 {
+        Duration::from_secs_f32(1.0 / scale.incoming)
+    } else {
+        Duration::from_secs(20)
+    };
+    let mut arrived = 0u64;
 
     loop {
         let next = match queued.pop_front() {
             Some(command) => Ok(command),
-            None => commands.recv_timeout(Duration::from_secs(20)),
+            None => commands.recv_timeout(gap),
         };
         match next {
             // The state changes these settings itself; nothing to keep here.
@@ -381,7 +409,9 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                         Ok(AttachmentContent::Audio(tone_wav().into()))
                     }
-                    _ => Ok(AttachmentContent::Picture(Arc::new(gradient(320)))),
+                    _ => Ok(AttachmentContent::Picture(Arc::new(gradient(
+                        Scale::get().picture,
+                    )))),
                 };
                 events.send(Event::Attachment {
                     id: attachment.id,
@@ -857,10 +887,20 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 )));
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                arrived += 1;
+                let (chat, sender, body) = if scale.incoming > 0.0 {
+                    (
+                        scale.incoming_chat(),
+                        "Casey",
+                        format!("incoming message number {arrived}"),
+                    )
+                } else {
+                    ("bob", "Bob", "ping".to_owned())
+                };
                 events.send(Event::Message(message(
-                    "bob",
-                    "Bob",
-                    "ping",
+                    chat,
+                    sender,
+                    &body,
                     now_millis(),
                     false,
                 )));
@@ -935,6 +975,9 @@ fn message(
 
 /// The stored history of a mock conversation, relative to `started`.
 fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
+    if let Some(added) = scale::history(chat_name(id), started) {
+        return added;
+    }
     let ago = |minutes: u64| started - minutes * 60_000;
     match chat_name(id) {
         "alice" => vec![
