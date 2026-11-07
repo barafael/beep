@@ -334,6 +334,13 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
         }),
         Action::ReplyTo { index } => shared.act(|chat| (None, chat.reply_to(index as usize))),
         Action::OpenQuote { index } => shared.act(|chat| (None, chat.open_quote(index as usize))),
+        Action::PinMessage { index, seconds } => {
+            shared.act(|chat| (chat.pin_message(index as usize, seconds), Update::default()))
+        }
+        Action::UnpinMessage { index } => {
+            shared.act(|chat| (chat.unpin_message(index as usize), Update::default()))
+        }
+        Action::ShowPinned { index } => shared.act(|chat| (None, chat.show_pinned(index as usize))),
         Action::CancelReply => shared.act(|chat| {
             chat.cancel_reply();
             (None, Update::default())
@@ -927,6 +934,11 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
         conversations,
         selected: chat.selected().map(|c| c.id.0.clone()),
         messages,
+        pinned: chat
+            .pinned_messages()
+            .iter()
+            .map(|pin| pin.message.body.clone())
+            .collect(),
         draft: chat.draft().to_string(),
         replying_to: chat.replying().map(|quote| QuoteSnapshot {
             author: quote.author.clone(),

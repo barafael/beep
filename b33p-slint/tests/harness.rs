@@ -395,6 +395,34 @@ fn a_sent_message_is_edited() {
     assert!(!edited.editing);
 }
 
+/// Pinning, as the menu does it: the bar lists the pins, a click on one shows its message, and
+/// unpinning takes it away.
+#[test]
+fn messages_are_pinned_and_unpinned() {
+    let (_app, mut agent) = app("pins");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Alice"));
+    let question = "Hey! Did you try the new client?";
+    let shown = agent.wait_for("Alice's question", |s| message(s, question).is_some());
+    let index = message(&shown, question).unwrap().index;
+    assert!(agent.act(Action::PinMessage {
+        index,
+        seconds: Some(24 * 3600),
+    }));
+    agent.wait_for("the pin", |s| s.pinned == [question]);
+    // Pinned already: nothing more to do.
+    assert!(!agent.act(Action::PinMessage {
+        index,
+        seconds: None,
+    }));
+    agent.act(Action::ShowPinned { index: 0 });
+    agent.wait_for("the pinned message marked", |s| {
+        message(s, question).is_some_and(|m| m.highlighted)
+    });
+    assert!(agent.act(Action::UnpinMessage { index }));
+    agent.wait_for("no pins", |s| s.pinned.is_empty());
+}
+
 /// A picture fetched for display and a file saved, with their states in the snapshot.
 #[test]
 fn attachments_are_fetched_and_saved() {

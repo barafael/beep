@@ -1246,3 +1246,19 @@ The box itself:
 A harness snapshot goes from 4.5 ms to 40 ms over the soak as the open chat fills: harness only, but
 its cost is that of walking the shown messages, which the window does too. Worth a look with a chat of
 10,000 messages.
+
+## Pinned messages against Desktop (7 Nov)
+
+Four new desktop checks, each way a pin and an unpin: 32 of 32 on a fresh box. Two things about the
+box itself, found on the way:
+
+1. **The Desktop driver finds a message by text, and a reply that quotes it has the same text.**
+   `pin_message` on b33p's edited message pinned Desktop's own reply quoting it (the pin named
+   Desktop's account as the author, and the reply's time), so b33p showed another message pinned
+   than the check waited for. The pin checks now run after that reply is deleted. `hovered()` and
+   `message()` could leave quotes out (`.module-message__text`, not the whole bubble), which every
+   check that acts on a message that someone quoted would want.
+2. **Desktop's screenshots trail its state by about one step.** After Desktop pinned, its shot shows
+   neither the bar nor the notice; the next shot shows the notice, two steps later b33p's pin. The
+   driver's waits passed meanwhile, so it is the capture, not Desktop: the screenshot is taken before
+   Desktop has drawn. For reading a run's shots, a short wait (or a frame) before capturing Desktop.

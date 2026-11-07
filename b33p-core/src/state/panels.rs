@@ -462,7 +462,7 @@ impl ChatState {
     }
 
     /// Marks `target` and scrolls to it once it is loaded.
-    fn jump_to_message(&mut self, target: MessageRef) -> Update {
+    pub(super) fn jump_to_message(&mut self, target: MessageRef) -> Update {
         let unmarked = self.highlight.replace(target.clone());
         self.changed_rows
             .get_mut()

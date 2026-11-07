@@ -97,6 +97,25 @@ pub enum Desktop {
     DeleteForEveryone {
         text: String,
     },
+    /// Pins the newest message with `text` for `duration`, as Desktop's dialog names it:
+    /// "24 hours", "7 days", "30 days" or "Forever".
+    PinMessage {
+        text: String,
+        duration: String,
+    },
+    /// Unpins the newest message with `text`.
+    UnpinMessage {
+        text: String,
+    },
+    /// Waits for the open conversation's pinned bar to show `text`.
+    WaitForPinned {
+        text: String,
+        timeout_ms: u64,
+    },
+    /// Waits until the open conversation has no pinned bar: nothing pinned.
+    WaitForNoPins {
+        timeout_ms: u64,
+    },
     SetProfileAvatar,
     /// Records a voice message from the fake microphone and sends it in the open conversation.
     SendVoiceMessage,

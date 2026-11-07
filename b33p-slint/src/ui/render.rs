@@ -92,6 +92,7 @@ pub(crate) fn render(
         a == b
     });
     render_media(window, chat, images);
+    render_pins(window, chat);
     render_stickers(window, chat);
     render_details(window, chat);
     render_stories(window, chat, images);

@@ -165,6 +165,11 @@ function timeline(): Locator {
   return page().locator('.module-timeline__messages__container');
 }
 
+/** The open conversation's pinned bar (PinnedMessagesBar.dom.tsx), while something is pinned. */
+function pinnedBar(): Locator {
+  return page().getByRole('region', { name: /^Pinned messages?$/ });
+}
+
 /** The open conversation's messages with `text`. */
 function message(text: string): Locator {
   return timeline().locator('.module-message').filter({ hasText: text });
@@ -692,6 +697,30 @@ const methods = {
     await page().getByRole('button', { name: 'Delete for everyone' }).click();
     return null;
   },
+  /** Pins the message with `text` for `duration` ("24 hours", "7 days", "30 days", "Forever"):
+   * its "More actions" menu's "Pin" (MessageContextMenu.dom.tsx), then PinMessageDialog.dom.tsx's
+   * choice and its "Pin". */
+  pin_message: async ({ text, duration }: Text & { duration: string }) => {
+    const pinned = await hovered(text);
+    await pinned.getByRole('button', { name: 'More actions' }).click();
+    await page().getByRole('menuitem', { name: 'Pin', exact: true }).click();
+    await page().getByRole('radio', { name: duration, exact: true }).click();
+    await page().getByRole('button', { name: 'Pin', exact: true }).click();
+    return null;
+  },
+  /** Unpins the message with `text`: its "More actions" menu's "Unpin". */
+  unpin_message: async ({ text }: Text) => {
+    const pinned = await hovered(text);
+    await pinned.getByRole('button', { name: 'More actions' }).click();
+    await page().getByRole('menuitem', { name: 'Unpin', exact: true }).click();
+    return null;
+  },
+  /** Waits for the pinned bar (PinnedMessagesBar.dom.tsx, a `section` named "Pinned message" or
+   * "Pinned messages") to show `text`. */
+  wait_for_pinned: ({ text, timeout_ms }: Text & Timeout) =>
+    appears(pinnedBar().getByText(rendered(text, false)), timeout_ms),
+  /** Waits until the pinned bar is gone: nothing pinned. */
+  wait_for_no_pins: ({ timeout_ms }: Timeout) => gone(pinnedBar(), timeout_ms),
   /** Sets the account's profile picture to Desktop's first preset avatar (Settings, Edit photo,
    * AvatarEditor.dom.tsx `AvatarEditor__avatars`), which it uploads like a photo; then back to
    * the chats. */
