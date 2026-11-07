@@ -598,6 +598,7 @@ export component AppWindow inherits Window {
                                     open-attachment(id) => { OpenChat.open-attachment(id); }
                                     open-link(link) => { OpenChat.open-link(link); }
                                     react(emoji) => { OpenChat.react(item.key, emoji); }
+                                    open-quote => { OpenChat.open-quote(item.key); }
                                     retry => { OpenChat.retry-send(item.key); }
                                     edit => {
                                         OpenChat.edit(item.key);

@@ -439,6 +439,30 @@ impl ChatState {
             return Update::default();
         };
         self.chat_search = None;
+        self.jump_to_message(target)
+    }
+
+    /// Shows the message the `index`th message quotes, as Signal's apps do on a click on the
+    /// quote: marks it and scrolls to it, loading older history first if needed (through
+    /// [`ChatState::take_commands`]), or says it isn't here. Nothing if the quote doesn't say
+    /// which message it is.
+    pub fn open_quote(&mut self, index: usize) -> Update {
+        let target = self
+            .message_view(index)
+            .and_then(|view| view.message.quote.as_ref())
+            .filter(|quote| quote.timestamp != 0 && !quote.author_id.is_empty())
+            .map(|quote| MessageRef {
+                author_id: quote.author_id.clone(),
+                timestamp: quote.timestamp,
+            });
+        match target {
+            Some(target) => self.jump_to_message(target),
+            None => Update::default(),
+        }
+    }
+
+    /// Marks `target` and scrolls to it once it is loaded.
+    fn jump_to_message(&mut self, target: MessageRef) -> Update {
         let unmarked = self.highlight.replace(target.clone());
         self.changed_rows
             .get_mut()

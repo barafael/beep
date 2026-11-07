@@ -297,6 +297,10 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let shared = shared.clone();
         move |key| shared.redraw(|chat| at_row(chat, &key, ChatState::reply_to))
     });
+    window.global::<OpenChat>().on_open_quote({
+        let shared = shared.clone();
+        move |key| shared.redraw(|chat| at_row(chat, &key, ChatState::open_quote))
+    });
     window.global::<Composer>().on_cancel_reply({
         let shared = shared.clone();
         move || shared.edit(|chat| chat.cancel_reply())

@@ -143,6 +143,8 @@ export global OpenChat {
     callback open-link(string);
     // Messages are named by their `key`.
     callback reply(string);
+    // Shows the message the message with this key quotes.
+    callback open-quote(string);
     callback react(string, string);
     callback retry-send(string);
     callback fetch-attachment(string);

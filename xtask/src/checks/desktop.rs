@@ -164,6 +164,16 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         })?)
     });
 
+    // Desktop names the quoted message as it sends quotes: by its author and a sent time,
+    // here of a message edited since.
+    checks.record("a click on Desktop's quote shows b33p's message", || {
+        let index = incoming_index(b33p, reply_from_desktop)?;
+        b33p.act(Action::OpenQuote { index })?;
+        Ok(b33p_shows(b33p, "the quoted message marked", |message| {
+            message.outgoing && message.text == edited_text && message.highlighted
+        })?)
+    });
+
     checks.record("a delete for everyone from Desktop reaches b33p", || {
         let index = incoming_index(b33p, reply_from_desktop)?;
         let timestamp =

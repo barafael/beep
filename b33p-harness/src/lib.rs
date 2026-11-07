@@ -281,6 +281,10 @@ pub enum Action {
         index: u32,
     },
     CancelReply,
+    /// Clicks the quote in the `index`th message: shows the message it quotes.
+    OpenQuote {
+        index: u32,
+    },
     React {
         index: u32,
         emoji: String,
@@ -745,6 +749,10 @@ pub struct MessageSnapshot {
     pub day: Option<String>,
     pub first_unread: bool,
     pub selected: bool,
+    /// Marked as what a jump went to: a search result shown, a quoted message clicked. Absent
+    /// in a b33p built before it.
+    #[serde(default)]
+    pub highlighted: bool,
     pub reactions: Vec<ReactionSnapshot>,
     pub quote: Option<QuoteSnapshot>,
     pub attachments: Vec<AttachmentSnapshot>,
