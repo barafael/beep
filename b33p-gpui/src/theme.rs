@@ -142,6 +142,17 @@ const FAMILIES: [&str; 8] = [
     "Liberation Sans",
 ];
 
+/// How long the caret blinks after the last key or click before it stays on. GPUI draws the
+/// whole window again for every blink, so a caret that blinked for as long as a chat is open
+/// would keep the window drawing twice a second, and the processor and the GPU busy, with nobody
+/// typing; GTK stops its caret after ten seconds for the same reason.
+const CARET_BLINK_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The caret's blinking: the component library's pace, for [`CARET_BLINK_FOR`] after activity.
+fn caret_blink() -> gpui_kit::component::input::CursorBlink {
+    gpui_kit::component::input::CursorBlink::default().with_idle_timeout(CARET_BLINK_FOR)
+}
+
 /// Makes the component library's theme the one the settings choose, with b33p's accent and a
 /// font that is there.
 pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
@@ -162,6 +173,7 @@ pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
         } else {
             hsla(0.617, 0.86, 0.59, 1.)
         };
+        theme.cursor_blink = caret_blink();
         let colors = &mut theme.colors;
         colors.primary = accent;
         colors.primary_hover = hsla(accent.h, accent.s, accent.l * 0.92, 1.);
@@ -180,4 +192,16 @@ pub fn apply(setting: ThemeSetting, window: Option<&mut Window>, cx: &mut App) {
             theme.font_family = family;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_caret_blinks_for_a_while_and_then_rests() {
+        let blink = caret_blink();
+        assert!(blink.interval().is_some(), "it blinks at first");
+        assert_eq!(blink.idle_timeout(), Some(CARET_BLINK_FOR));
+    }
 }
