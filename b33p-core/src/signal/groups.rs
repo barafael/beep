@@ -16,7 +16,7 @@ use super::{
         Names, display_name, ensure_conversation, first_settings, members, own_id, register,
         sender_name,
     },
-    history::to_chat_message,
+    history::{data_of, stored_at, to_chat_message},
 };
 
 /// The id typing indicators and the like name a group by.
@@ -100,10 +100,28 @@ pub(super) async fn on_missed_changes(
     use presage::libsignal_service::push_service::DEFAULT_DEVICE_ID;
     let thread = Thread::Group(key);
     let conversation = super::conversations::conversation_id(&thread);
-    let now = crate::now_millis();
+    let told = told_changes(manager, key, |_| true).await;
+    // The message that carries one may have come while the log was read: told once.
+    let missed: Vec<_> = missed
+        .into_iter()
+        .filter(|missed| {
+            !told
+                .iter()
+                .any(|(revision, _)| *revision == missed.changes.version)
+        })
+        .collect();
+    // Before any later change already told, so that they read in the order they were made: a
+    // message tells of its own change, and the ones it skipped come after it.
+    let first = missed.first().map(|missed| missed.changes.version);
+    let later = told
+        .iter()
+        .filter(|(revision, _)| first.is_some_and(|first| *revision > first))
+        .map(|(_, at)| *at)
+        .min();
+    let base = later.unwrap_or_else(crate::now_millis);
     let count = missed.len() as u64;
     for (n, missed) in (0u64..).zip(missed) {
-        let at = now.saturating_sub(count - n);
+        let at = base.saturating_sub(count - n);
         let time = chrono::DateTime::from_timestamp_millis(at as i64).unwrap_or_default();
         let data = presage::proto::DataMessage {
             group_v2: Some(GroupContextV2 {
@@ -140,6 +158,44 @@ pub(super) async fn on_missed_changes(
     }
     refresh_group(manager, ctx, key).await;
     true
+}
+
+/// How far back [`told_changes`] looks: a change comes by the log and by its message within
+/// moments of each other.
+const RECENTLY_TOLD: u32 = 64;
+
+/// The group's changes stored lately whose revision is `wanted`, each with when it is stored:
+/// each is told as a notice. Only signed ones (see [`signed_group_change`]): a change a member
+/// makes up must not keep the real one from being told.
+pub(super) async fn told_changes(
+    manager: &Mgr,
+    key: [u8; 32],
+    wanted: impl Fn(u32) -> bool,
+) -> Vec<(u32, u64)> {
+    let stored = manager
+        .store()
+        .messages_before(&Thread::Group(key), None, RECENTLY_TOLD)
+        .await
+        .unwrap_or_else(|error| {
+            warn!(error = %crate::scrub::chain(&error), "failed to read a group's latest changes");
+            Vec::new()
+        });
+    let mut told = Vec::new();
+    for content in &stored {
+        let Some(context) = data_of(content)
+            .and_then(|(data, _)| data.group_v2.as_ref())
+            .filter(|context| context.group_change.is_some())
+        else {
+            continue;
+        };
+        let Some(revision) = context.revision.filter(|revision| wanted(*revision)) else {
+            continue;
+        };
+        if signed_group_change(manager, key, context).await.is_some() {
+            told.push((revision, stored_at(content)));
+        }
+    }
+    told
 }
 
 /// The group change a message carries, decrypted with the group's key, if the server signed
