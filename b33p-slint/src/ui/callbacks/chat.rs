@@ -61,6 +61,15 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             }
         }
     });
+    window.global::<Composer>().on_composing_edited({
+        let shared = shared.clone();
+        let window = window.as_weak();
+        move || {
+            if let Some(window) = window.upgrade() {
+                render_composer(&window, &shared.chat.borrow());
+            }
+        }
+    });
     window.global::<ChatList>().on_toggle_pin({
         let toggle = chat_action(shared, |chat, id, ()| chat.toggle_pin(id));
         move |id| toggle(id, ())
@@ -123,10 +132,11 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             let Some(window) = window.upgrade() else {
                 return;
             };
+            // The list was made from the draft as typed, so the pick is too.
             let draft = shared
                 .chat
                 .borrow_mut()
-                .pick_mention(&window.global::<Composer>().get_draft(), index as usize);
+                .pick_mention(&draft_as_typed(&window), index as usize);
             if let Some(draft) = draft {
                 window.global::<Composer>().set_draft(draft.into());
                 shared.refresh(Update::default());

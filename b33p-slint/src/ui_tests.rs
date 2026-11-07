@@ -452,6 +452,46 @@ fn clicking_a_mention_candidate_picks_it() {
 }
 
 #[test]
+fn a_composition_reaches_rust_before_it_is_committed() {
+    use i_slint_core::input::{InternalKeyEvent, KeyEventType};
+    use i_slint_core::platform::WindowEvent;
+    let (window, _messages) = window_with_messages(3);
+    let told = Rc::new(Cell::new(0));
+    window.global::<Composer>().on_composing_edited({
+        let told = told.clone();
+        move || told.set(told.get() + 1)
+    });
+    ElementHandle::find_by_element_id(&window, "AppWindow::composer")
+        .next()
+        .expect("composer")
+        .mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    window.global::<Composer>().set_draft("@".into());
+    // As the Qt backend hands on an input method's composition: "홍", not yet committed.
+    let compose = |preedit: &str| {
+        let event = InternalKeyEvent {
+            event_type: KeyEventType::UpdateComposition,
+            preedit_text: preedit.into(),
+            ..Default::default()
+        };
+        window.window().dispatch_event(WindowEvent::internal(event));
+        settle(&window);
+    };
+    compose("호");
+    compose("홍");
+    assert_eq!(window.global::<Composer>().get_composing(), "홍");
+    assert_eq!(
+        window.global::<Composer>().get_draft(),
+        "@",
+        "not in the draft yet"
+    );
+    assert_eq!(told.get(), 2, "told of each change");
+    compose("");
+    assert_eq!(window.global::<Composer>().get_composing(), "");
+    assert_eq!(told.get(), 3);
+}
+
+#[test]
 fn forwarding_goes_to_the_clicked_chat_once_confirmed() {
     let (window, _messages) = window_with_messages(3);
     let to = Rc::new(std::cell::RefCell::new(None));
