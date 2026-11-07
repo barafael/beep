@@ -727,6 +727,25 @@ impl ChatState {
                     update.conversations = true;
                 }
             }
+            Event::MessageInfo {
+                conversation,
+                target,
+                info,
+            } => {
+                if let Some((shown, message, shown_info)) = &mut self.message_info
+                    && *shown == conversation
+                    && *message == target
+                {
+                    *shown_info = Some(info);
+                }
+            }
+            Event::Readers {
+                conversation,
+                newest,
+            } => {
+                update.rows = self.selected.as_ref() == Some(&conversation);
+                self.readers.insert(conversation, newest);
+            }
             Event::Details {
                 conversation,
                 details,

@@ -421,6 +421,11 @@ pub enum Action {
         conversation: String,
     },
     OpenChatSearch,
+    /// Opens the info of the `index`th message (ours): who it went to, and what each said.
+    OpenMessageInfo {
+        index: u32,
+    },
+    CloseMessageInfo,
     CloseChatSearch,
     SearchChat {
         text: String,
@@ -565,6 +570,19 @@ pub struct Snapshot {
     pub details: Option<DetailsSnapshot>,
     /// The search in the open conversation, while open (`OpenChatSearch`).
     pub chat_search: Option<ChatSearchSnapshot>,
+    /// A message's info, while open (`OpenMessageInfo`); `None` inside while gathered. Absent
+    /// in a b33p built before it.
+    #[serde(default)]
+    pub message_info: Option<Option<Vec<ReceiptSnapshot>>>,
+}
+
+/// One recipient of a message of ours, and when they said it was delivered and read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReceiptSnapshot {
+    pub service_id: String,
+    pub name: String,
+    pub delivered_at: Option<u64>,
+    pub read_at: Option<u64>,
 }
 
 /// A search in the open conversation: what is looked for, and what was found, in the order

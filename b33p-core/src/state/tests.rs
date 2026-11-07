@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ConversationKind, Delivery};
+use crate::{ConversationKind, Delivery, Receipt};
 
 fn conversation(id: &str, is_group: bool) -> Conversation {
     Conversation {
@@ -3805,4 +3805,88 @@ fn a_sticker_pack_changed_elsewhere_gathers_the_packs_again() {
     state.apply(Event::StickerPacksChanged);
     assert_eq!(loads(&mut state), 1);
     assert_eq!(state.sticker_packs(), Some(Some(&[][..])));
+}
+
+/// A message's info: only ours once sent, and filled when the backend answers.
+#[test]
+fn a_message_s_info_is_gathered_for_ours() {
+    let mut state = state();
+    let a = id("a");
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![message("a", "Ann", 10, false), message("a", "Me", 20, true)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    assert!(state.open_message_info(0).is_none(), "not theirs");
+    let Some(Command::LoadMessageInfo { target, .. }) = state.open_message_info(1) else {
+        panic!("ours is asked about");
+    };
+    assert_eq!(target.timestamp, 20);
+    assert!(
+        state
+            .message_info()
+            .is_some_and(|(m, info)| m.timestamp == 20 && info.is_none())
+    );
+    let info = MessageInfo {
+        recipients: vec![Receipt {
+            person: Person {
+                service_id: "ann".into(),
+                name: "Ann".into(),
+            },
+            delivered_at: Some(30),
+            read_at: None,
+        }],
+    };
+    state.apply(Event::MessageInfo {
+        conversation: a,
+        target,
+        info: info.clone(),
+    });
+    assert_eq!(state.message_info().unwrap().1, Some(&info));
+    state.close_message_info();
+    assert!(state.message_info().is_none());
+}
+
+/// In a group, each member's picture goes under the newest of our messages they read.
+#[test]
+fn readers_show_under_the_newest_message_they_read() {
+    let mut state = state();
+    let g = id("g");
+    let mut group = conversation("g", true);
+    let person = |id: &str| Person {
+        service_id: id.into(),
+        name: id.into(),
+    };
+    group.members = vec![person("ann"), person("bob"), person("cid")];
+    state.apply(Event::Conversations(vec![group]));
+    state.select(&g);
+    state.apply(Event::History {
+        conversation: g.clone(),
+        messages: vec![
+            message("g", "Me", 10, true),
+            message("g", "Ann", 15, false),
+            message("g", "Me", 20, true),
+        ],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let update = state.apply(Event::Readers {
+        conversation: g,
+        newest: [("ann".to_owned(), 20), ("bob".to_owned(), 10)]
+            .into_iter()
+            .collect(),
+    });
+    assert!(update.rows);
+    let names = |state: &ChatState, index| -> Vec<String> {
+        state
+            .readers_of(index)
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
+    };
+    assert_eq!(names(&state, 0), ["bob"]);
+    assert!(names(&state, 1).is_empty(), "not ours");
+    assert_eq!(names(&state, 2), ["ann"]);
 }

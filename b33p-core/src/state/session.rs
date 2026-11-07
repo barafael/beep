@@ -254,6 +254,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::Block { .. }
         | Command::Respond { .. }
         | Command::LoadDetails(_)
+        | Command::LoadMessageInfo { .. }
         | Command::FindNumber { .. }
         | Command::SetVerified { .. }
         | Command::LoadMedia(_)
