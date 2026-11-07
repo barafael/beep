@@ -119,6 +119,8 @@ pub struct Shared {
     /// more to lay out than the rest of the row together. See `message_menu::toolbar`.
     pub hovered_row: Cell<Option<usize>>,
     pub pinned_row: Cell<Option<usize>>,
+    /// The quick reactions that come over a message once the pointer rests on it.
+    pub reaction_bar: crate::reaction_bar::State,
     /// The composer, which holds the text being written: the harness types into it.
     pub composer: RefCell<Option<gpui_kit::WeakEntity<crate::composer::ComposerView>>>,
     /// The icon in the system tray, if the platform has one (`window.rs`, `tray.rs`).
@@ -180,6 +182,7 @@ impl Shared {
             jump_serial: Cell::new(0),
             hovered_row: Cell::new(None),
             pinned_row: Cell::new(None),
+            reaction_bar: crate::reaction_bar::State::default(),
             composer: RefCell::default(),
             tray: RefCell::default(),
             start_hidden: Cell::new(false),
@@ -359,6 +362,7 @@ impl Shared {
         ) {
             self.hovered_row.set(None);
             self.pinned_row.set(None);
+            self.reaction_bar.reset();
         }
         self.scroller.update(cx, |scroller, cx| {
             match update.messages {

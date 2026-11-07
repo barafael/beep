@@ -222,7 +222,7 @@ pub fn menu(
 }
 
 /// Quick reactions, as in Signal's own apps.
-const QUICK: [&str; 6] = ["❤️", "👍", "👎", "😂", "😮", "😢"];
+pub const QUICK: [&str; 6] = ["❤️", "👍", "👎", "😂", "😮", "😢"];
 
 /// A message's buttons, which show while the pointer is on it: react, reply, more. The `group`
 /// is the name of the row they show with.
@@ -303,21 +303,23 @@ fn reaction_button(shared: &Rc<Shared>, index: usize) -> Popover {
                 .icon(icon("heart"))
                 .tooltip("React"),
         )
-        .content(move |_, window, cx| picker(&shared, index, window, cx))
+        .content(move |_, window, cx| picker(&shared, index, false, window, cx))
 }
 
-/// The picker's content: the quick row, or every emoji by group after "+".
-fn picker(
+/// The picker's content: the quick row, or every emoji by group after "+" (at once, if `full`:
+/// the quick row is on the bar over the message, which has its own "+").
+pub fn picker(
     shared: &Rc<Shared>,
     index: usize,
+    full: bool,
     window: &mut Window,
     cx: &mut Context<gpui_kit::component::popover::PopoverState>,
 ) -> AnyElement {
     let t = theme::tokens(cx);
     let all = window.use_keyed_state(
-        SharedString::from(format!("react-all-{index}")),
+        SharedString::from(format!("react-all-{index}-{full}")),
         cx,
-        |_, _| false,
+        move |_, _| full,
     );
     let group = window.use_keyed_state(
         SharedString::from(format!("react-group-{index}")),

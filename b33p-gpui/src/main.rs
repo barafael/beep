@@ -45,6 +45,7 @@ mod messages;
 mod overlays;
 mod panel;
 mod panels;
+mod reaction_bar;
 mod search;
 mod settings;
 mod shared;

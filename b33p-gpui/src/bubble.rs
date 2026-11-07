@@ -130,15 +130,19 @@ fn build(
         .w_full()
         // The buttons are drawn for this row only while the pointer is on it (or they were
         // pressed); see `message_menu::toolbar`.
+        .debug_selector(|| format!("Message row {index}"))
         .on_hover({
             let shared = shared.clone();
-            move |hovered, window, _| {
+            let can_react = !m.deleted && !m.notice && !selecting;
+            move |hovered, window, cx| {
                 let now = hovered.then_some(index);
                 if now != shared.hovered_row.get()
                     && (*hovered || shared.hovered_row.get() == Some(index))
                 {
                     shared.hovered_row.set(now);
                     window.refresh();
+                    // The quick reactions come after a dwell, and go with the pointer.
+                    crate::reaction_bar::hover(&shared, index, *hovered, can_react, window, cx);
                 }
             }
         })
@@ -505,6 +509,14 @@ fn message(
             )
         });
 
+    // The quick reactions, over the bubble's top edge once the pointer has rested on it.
+    let bubble = bubble.children(crate::reaction_bar::bar(
+        shared,
+        index,
+        outgoing,
+        !m.deleted && !m.notice && !selecting,
+        t,
+    ));
     let toolbar = (!selecting).then(|| message_menu::toolbar(shared, info, outgoing, group(index)));
     let reactions = reaction_chips(index, &m.reactions, outgoing, selecting, shared, t);
     let content = div()
