@@ -1246,3 +1246,23 @@ The box itself:
 A harness snapshot goes from 4.5 ms to 40 ms over the soak as the open chat fills: harness only, but
 its cost is that of walking the shown messages, which the window does too. Worth a look with a chat of
 10,000 messages.
+
+## Pinned messages against Desktop (7 Nov)
+
+Four new desktop checks, each way a pin and an unpin: 32 of 32 on a fresh box. Two things about the
+box itself, found on the way:
+
+1. **The Desktop driver found a message by text, and a reply that quotes it has the same text.**
+   `pin_message` on b33p's edited message pinned Desktop's own reply quoting it (the pin named
+   Desktop's account as the author, and the reply's time), so b33p showed another message pinned
+   than the check waited for. Moving the pin checks after that reply's delete wasn't enough: in 5
+   of 9 runs Desktop hadn't drawn the reply as deleted yet when the next call looked, so the menu
+   opened was the reply's, and went away with it ("element was detached from the DOM", a 120 s
+   timeout), or the reply was pinned. Proved from Desktop's own pin (its target, the reply's
+   author and time) and its log. `hovered()` now finds a message by its own text
+   (`.module-message__text`), not a quote of it; `pin_message` and `unpin_message` return once
+   the pinned bar shows the change, so a pin of another message fails there.
+2. **Desktop's screenshots trail its state by about one step.** After Desktop pinned, its shot shows
+   neither the bar nor the notice; the next shot shows the notice, two steps later b33p's pin. The
+   driver's waits passed meanwhile, so it is the capture, not Desktop: the screenshot is taken before
+   Desktop has drawn. For reading a run's shots, a short wait (or a frame) before capturing Desktop.

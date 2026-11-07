@@ -45,6 +45,7 @@ use super::{
         author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
         stored_at, stored_timers, to_chat_message, to_reaction,
     },
+    pins::{PinOutcome, on_pin_change, pin_change},
     stories::on_story,
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
 };
@@ -813,6 +814,17 @@ async fn handle_content(
             conversation: id,
             target,
         });
+    }
+    if let Some(change) = pin_change(data) {
+        match on_pin_change(manager, ctx, &id, content, change).await {
+            // Stays, and shows as "… pinned a message".
+            PinOutcome::Pinned => {}
+            // Nothing to show of it, now or in the history.
+            PinOutcome::Done | PinOutcome::Refused => {
+                forget_stored(manager, content).await;
+                return true;
+            }
+        }
     }
     // A change with nothing else to say that the group's log told already, as an admin's details
     // read it just before its message came: told once, here and in the history.

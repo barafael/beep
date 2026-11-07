@@ -39,6 +39,11 @@ The release workflow takes a version's notes from here (the section headed with 
   first, in the same dialog as unlinking.
 - Failures say whether trying again may help: the error offers **Try again** when it may;
   messages Signal refused and attachments gone from the server aren't offered again.
+- A click on a quote shows the message it quotes, loading older messages if need be; a quoted
+  message that isn't on this device says so instead.
+- Pinned messages, as in Signal's apps: **Pin** in a message's menu, for 24 hours, 7 days,
+  30 days or until unpinned; a bar above the chat shows them, newest first, and a click shows
+  the message. Up to three per chat; in a group, if you may change its details.
 
 ### Looks
 
@@ -52,6 +57,8 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- The names offered for an @mention follow a name typed through an input method (Hangul,
+  kana, pinyin) while it is composed, not a syllable behind.
 - Long messages reach phones: past 2000 characters the text goes out as Signal's apps send
   it, the first part inline and the whole as a text attachment. A phone dropped a message
   with more inline as invalid, and its sync of your own long message too.

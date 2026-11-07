@@ -1,0 +1,90 @@
+import { Motion, Theme } from "theme.slint";
+import { Icon, IconButton, Small } from "widgets.slint";
+import { PinItem } from "state.slint";
+
+// What is pinned in the open chat, as Signal's apps show it: one pin at a time, the newest
+// first; a click shows it in the chat and turns to the one pinned before it.
+export component PinBar inherits Rectangle {
+    in property <[PinItem]> pins;
+    in property <bool> can-unpin;
+    // Shows the pin at this index of `pins` in the chat.
+    callback show(int);
+    callback unpin(string);
+    // How many pins back from the newest the bar is.
+    property <int> back;
+    property <int> shown: max(0, root.pins.length - 1 - mod(root.back, max(1, root.pins.length)));
+    changed pins => {
+        root.back = 0;
+    }
+    height: Theme.panel-header;
+    background: touch.has-hover ? Theme.hover : Theme.surface;
+    accessible-role: button;
+    accessible-label: root.pins.length > 1
+        ? "Pinned message " + (root.shown + 1) + " of " + root.pins.length + ": " + root.pins[root.shown].author + ": " + root.pins[root.shown].text
+        : "Pinned message: " + root.pins[root.shown].author + ": " + root.pins[root.shown].text;
+    accessible-action-default => {
+        touch.clicked();
+    }
+    // Under the unpin button, which takes its own clicks.
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.show(root.shown);
+            root.back += 1;
+        }
+    }
+    HorizontalLayout {
+        padding-left: Theme.space-m;
+        padding-right: Theme.space-s;
+        spacing: Theme.space-s;
+        // A mark for each pin, the one shown in the accent colour, when there are several.
+        if root.pins.length > 1: VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            for pin[i] in root.pins: Rectangle {
+                width: 3px;
+                height: (Theme.panel-header - 2 * Theme.space-s - 2px * (root.pins.length - 1)) / root.pins.length;
+                border-radius: self.width / 2;
+                background: i == root.shown ? Theme.accent : Theme.divider;
+                animate background { duration: Motion.fast; }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                source: @image-url("@lucide/pin.svg");
+                tint: Theme.accent;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Small {
+                text: root.pins[root.shown].author;
+                font-weight: 600;
+                color: Theme.accent;
+                overflow: elide;
+            }
+            Text {
+                text: root.pins[root.shown].text;
+                color: Theme.text;
+                overflow: elide;
+            }
+        }
+        if root.can-unpin: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: @image-url("@lucide/pin-off.svg");
+                label: "Unpin";
+                clicked => {
+                    root.unpin(root.pins[root.shown].key);
+                }
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.divider;
+    }
+}

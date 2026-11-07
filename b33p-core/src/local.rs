@@ -279,6 +279,17 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (conversation, author, ts)
     )",
     "CREATE INDEX IF NOT EXISTS b33p_expiry_at ON b33p_expiry (expires_at)",
+    // Messages pinned in their chat, as Signal's apps keep them: presage stores the pin and
+    // unpin messages but no state. `pinned_at` is when the pin came, which orders them;
+    // `expires_at` is NULL for a pin until unpinned.
+    "CREATE TABLE IF NOT EXISTS b33p_pinned_message (
+        conversation TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        pinned_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        PRIMARY KEY (conversation, author, ts)
+    )",
     // What the storage service said last, per conversation; see `storage.rs`. `accepted` is
     // its "whitelisted".
     "CREATE TABLE IF NOT EXISTS b33p_remote (
@@ -1244,12 +1255,18 @@ impl LocalStore {
         .bind(ts)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?")
-            .bind(&conversation)
-            .bind(&author)
-            .bind(ts)
-            .execute(&mut *tx)
-            .await?;
+        // A deleted message is no longer pinned (Signal-Desktop pins none).
+        for statement in [
+            "DELETE FROM b33p_edit WHERE conversation = ? AND author = ? AND ts = ?",
+            "DELETE FROM b33p_pinned_message WHERE conversation = ? AND author = ? AND ts = ?",
+        ] {
+            sqlx::query(statement)
+                .bind(&conversation)
+                .bind(&author)
+                .bind(ts)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await
     }
 
@@ -1334,6 +1351,101 @@ impl LocalStore {
                 .await?
                 .get(0);
         Ok((due, next.map(|n| n as u64)))
+    }
+
+    /// Pins `message` in its chat from `pinned_at` until `expires_at` (`None`: until unpinned),
+    /// as Signal-Desktop does (`appendPinnedMessage`): a pin of a message pinned already
+    /// replaces it only if newer, and the chat keeps its `limit` newest pins. Whether `message`
+    /// is pinned now, as asked.
+    pub(crate) async fn pin_message(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+        pinned_at: u64,
+        expires_at: Option<u64>,
+        limit: usize,
+    ) -> Result<bool, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO b33p_pinned_message (conversation, author, ts, pinned_at, expires_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (conversation, author, ts) DO UPDATE
+             SET pinned_at = excluded.pinned_at, expires_at = excluded.expires_at
+             WHERE excluded.pinned_at > pinned_at",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .bind(pinned_at as i64)
+        .bind(expires_at.map(|at| at as i64))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM b33p_pinned_message WHERE conversation = ?1 AND rowid NOT IN (
+                SELECT rowid FROM b33p_pinned_message WHERE conversation = ?1
+                ORDER BY pinned_at DESC LIMIT ?2)",
+        )
+        .bind(&conversation)
+        .bind(limit as i64)
+        .execute(&mut *tx)
+        .await?;
+        let pinned: Option<i64> = sqlx::query_scalar(
+            "SELECT pinned_at FROM b33p_pinned_message
+             WHERE conversation = ? AND author = ? AND ts = ?",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(pinned == Some(pinned_at as i64))
+    }
+
+    /// Unpins `message`; whether it was pinned.
+    pub(crate) async fn unpin_message(
+        &self,
+        conversation: &ConversationId,
+        message: &MessageRef,
+    ) -> Result<bool, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, message);
+        let done = sqlx::query(
+            "DELETE FROM b33p_pinned_message WHERE conversation = ? AND author = ? AND ts = ?",
+        )
+        .bind(&conversation)
+        .bind(&author)
+        .bind(ts)
+        .execute(&self.db)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// The messages pinned in a conversation at `now`, oldest pin first, with when each pin
+    /// runs out. Those run out by `now` are dropped.
+    pub(crate) async fn pinned_messages(
+        &self,
+        conversation: &ConversationId,
+        now: u64,
+    ) -> Result<Vec<(MessageRef, Option<u64>)>, sqlx::Error> {
+        sqlx::query("DELETE FROM b33p_pinned_message WHERE expires_at <= ?")
+            .bind(now as i64)
+            .execute(&self.db)
+            .await?;
+        let rows = sqlx::query(
+            "SELECT author, ts, expires_at FROM b33p_pinned_message
+             WHERE conversation = ? ORDER BY pinned_at",
+        )
+        .bind(&conversation.0)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let expires_at: Option<i64> = row.get(2);
+                (message_at(row, 0), expires_at.map(|at| at as u64))
+            })
+            .collect())
     }
 
     /// Keeps `send` (a [`Command::Send`]; anything else is ignored) until [`Self::sent`]: if
@@ -1508,6 +1620,8 @@ impl LocalStore {
                 "DELETE FROM b33p_deleted WHERE conversation = ? AND author = ? AND ts = ?",
                 // Only ours have receipts, kept by time alone (`?2`, the author, unused).
                 "DELETE FROM b33p_receipt WHERE conversation = ?1 AND ts = ?3",
+                "DELETE FROM b33p_pinned_message
+                 WHERE conversation = ? AND author = ? AND ts = ?",
             ] {
                 sqlx::query(statement)
                     .bind(&conversation)
@@ -2337,6 +2451,101 @@ mod tests {
                 local.newest_read(&group).await.unwrap().get("ann"),
                 Some(&10)
             );
+        });
+    }
+
+    /// Pins as Signal-Desktop keeps them: the newest three, a newer pin of the same message
+    /// replacing the older, pins running out, and none of a deleted or forgotten message.
+    #[test]
+    fn pins_keep_the_newest_and_run_out() {
+        block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let local = open(&dir).await;
+            let chat = ConversationId("c:ann".into());
+            let other = ConversationId("c:bob".into());
+            let pinned = |at: u64| {
+                let local = &local;
+                let chat = &chat;
+                async move {
+                    local
+                        .pinned_messages(chat, at)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .map(|(message, _)| message.timestamp)
+                        .collect::<Vec<_>>()
+                }
+            };
+            for (ts, at) in [(1, 100), (2, 200), (3, 300)] {
+                assert!(
+                    local
+                        .pin_message(&chat, &reference("ann", ts), at, None, 3)
+                        .await
+                        .unwrap()
+                );
+            }
+            assert!(
+                local
+                    .pin_message(&other, &reference("bob", 9), 50, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [1, 2, 3]);
+            // A fourth pushes out the oldest pin.
+            assert!(
+                local
+                    .pin_message(&chat, &reference("ann", 4), 400, Some(1000), 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [2, 3, 4]);
+            // An older pin of a pinned message changes nothing; a newer one moves it last.
+            assert!(
+                !local
+                    .pin_message(&chat, &reference("ann", 2), 150, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [2, 3, 4]);
+            assert!(
+                local
+                    .pin_message(&chat, &reference("ann", 2), 500, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [3, 4, 2]);
+            // A pin older than the three kept is dropped at once.
+            assert!(
+                !local
+                    .pin_message(&chat, &reference("ann", 5), 10, None, 3)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(pinned(0).await, [3, 4, 2]);
+            // The pin until 1000 runs out.
+            assert_eq!(pinned(1000).await, [3, 2]);
+            assert!(
+                local
+                    .unpin_message(&chat, &reference("ann", 3))
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !local
+                    .unpin_message(&chat, &reference("ann", 3))
+                    .await
+                    .unwrap()
+            );
+            local
+                .record_deleted(&chat, &reference("ann", 2))
+                .await
+                .unwrap();
+            assert!(pinned(1000).await.is_empty());
+            local
+                .forget(&[(other.clone(), reference("bob", 9))])
+                .await
+                .unwrap();
+            assert!(local.pinned_messages(&other, 0).await.unwrap().is_empty());
         });
     }
 }

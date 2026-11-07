@@ -271,6 +271,8 @@ pub(super) fn outgoing(command: &Command) -> bool {
             // come back once it is sent and stored.
             | Command::Delete { .. }
             | Command::React { .. }
+            | Command::PinMessage { .. }
+            | Command::UnpinMessage { .. }
             | Command::Respond { .. }
             | Command::SetTimer { .. }
     )
@@ -443,8 +445,10 @@ async fn handle_command(
                 reactions,
                 older,
             });
-            // With a group's newest page, who has read how far.
+            // With the chat's newest page, what is pinned in it and, in a group, who has
+            // read how far.
             if before.is_none() {
+                super::pins::tell_pins(manager, ctx, &id).await;
                 super::receipts::tell_readers(ctx, &id).await;
             }
         }
@@ -478,6 +482,20 @@ async fn handle_command(
                 reaction,
                 remove,
             });
+        }
+        Command::PinMessage {
+            conversation,
+            target,
+            seconds,
+        } => {
+            super::pins::send_pin_change(manager, ctx, &conversation, &target, Some(seconds))
+                .await?;
+        }
+        Command::UnpinMessage {
+            conversation,
+            target,
+        } => {
+            super::pins::send_pin_change(manager, ctx, &conversation, &target, None).await?;
         }
         Command::OpenAttachment(attachment) => {
             tokio::task::spawn_local(attachments::open(

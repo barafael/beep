@@ -187,6 +187,16 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         })?)
     });
 
+    // Desktop names the quoted message as it sends quotes: by its author and a sent time,
+    // here of a message edited since.
+    checks.record("a click on Desktop's quote shows b33p's message", || {
+        let index = incoming_index(b33p, reply_from_desktop)?;
+        b33p.act(Action::OpenQuote { index })?;
+        Ok(b33p_shows(b33p, "the quoted message marked", |message| {
+            message.outgoing && message.text == edited_text && message.highlighted
+        })?)
+    });
+
     checks.record("a delete for everyone from Desktop reaches b33p", || {
         let index = incoming_index(b33p, reply_from_desktop)?;
         let timestamp =
@@ -196,6 +206,53 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         })?;
         Ok(b33p_shows(b33p, "Desktop's reply deleted", |message| {
             message.timestamp == timestamp && message.deleted
+        })?)
+    });
+
+    // Pins (Signal-Desktop's PinnedMessages): Desktop names b33p's message by its edit's time,
+    // and its pin says "… pinned a message" in the chat. After Desktop's reply is gone: it
+    // quotes the same text, and the driver finds a message by its text.
+    checks.record("a pin from Desktop shows in b33p, with its notice", || {
+        desktop.call(drivers::Desktop::PinMessage {
+            text: edited_text.to_owned(),
+            duration: "24 hours".to_owned(),
+        })?;
+        b33p.wait_for("Desktop's pin in b33p", PATIENCE, |snapshot| {
+            (snapshot.pinned == [edited_text]).then_some(())
+        })?;
+        Ok(b33p_shows(b33p, "the pin's notice", |message| {
+            message.notice && message.text.ends_with("pinned a message.")
+        })?)
+    });
+
+    checks.record("an unpin from Desktop shows in b33p", || {
+        desktop.call(drivers::Desktop::UnpinMessage {
+            text: edited_text.to_owned(),
+        })?;
+        Ok(
+            b33p.wait_for("Desktop's unpin in b33p", PATIENCE, |snapshot| {
+                snapshot.pinned.is_empty().then_some(())
+            })?,
+        )
+    });
+
+    checks.record("a pin from b33p shows on Desktop", || {
+        let index = outgoing_index(b33p, edited_text)?;
+        b33p.act(Action::PinMessage {
+            index,
+            seconds: Some(24 * 3600),
+        })?;
+        Ok(desktop.call(drivers::Desktop::WaitForPinned {
+            text: edited_text.to_owned(),
+            timeout_ms: PATIENCE_MS,
+        })?)
+    });
+
+    checks.record("an unpin from b33p shows on Desktop", || {
+        let index = outgoing_index(b33p, edited_text)?;
+        b33p.act(Action::UnpinMessage { index })?;
+        Ok(desktop.call(drivers::Desktop::WaitForNoPins {
+            timeout_ms: PATIENCE_MS,
         })?)
     });
 
