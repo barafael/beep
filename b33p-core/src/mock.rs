@@ -39,6 +39,9 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
     ("dana", "Dana", false),
+    // Ideographs some fonts lack (Japanese, Chinese-only) and Hangul: a font fallback that
+    // picks one font per script shows blanks here (sigwin `de6f512`).
+    ("yuki", "Yuki 駅 鉄 国 · 김민지", false),
     // A group we're invited to, not in yet.
     ("club", "Book club", true),
     ("me", "Note to Self", false),
