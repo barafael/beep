@@ -297,6 +297,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
 
     // What is pinned in each chat, as the real backend keeps it: the newest three.
     let mut pins: HashMap<ConversationId, Vec<PinnedMessage>> = HashMap::new();
+    // Messages sent while nothing else happens.
+    let mut pings = 0u32;
     loop {
         let next = match queued.pop_front() {
             Some(command) => Ok(command),
@@ -924,11 +926,19 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     false,
                 )));
             }
+            // Taking turns: Bob is muted, so Alice's are what the unread count on the tray
+            // and the taskbar shows (Windows CI's screenshot looks for it).
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                pings += 1;
+                let (chat, sender, body) = if pings % 2 == 1 {
+                    ("alice", "Alice", "Are you there?")
+                } else {
+                    ("bob", "Bob", "ping")
+                };
                 events.send(Event::Message(message(
-                    "bob",
-                    "Bob",
-                    "ping",
+                    chat,
+                    sender,
+                    body,
                     now_millis(),
                     false,
                 )));
