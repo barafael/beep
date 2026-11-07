@@ -533,7 +533,8 @@ def report(directory):
             ratio = ""
             if cells["slint"] and cells["gpui"] and cells["slint"][0] > 0:
                 ratio = f"{cells['gpui'][0] / cells['slint'][0]:.2f}x"
-            print(f"| {scenario} | {metric} | {fmt(cells['slint'])} | {fmt(cells['gpui'])} | {ratio} |")
+            label = f"{scenario} (logged)" if mode == "frames" else scenario
+            print(f"| {label} | {metric} | {fmt(cells['slint'])} | {fmt(cells['gpui'])} | {ratio} |")
 
 
 def main():
