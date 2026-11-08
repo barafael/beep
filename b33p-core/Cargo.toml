@@ -33,7 +33,7 @@ tracing = "0.1"
 
 presage = { workspace = true, optional = true }
 presage-store-sqlite = { workspace = true, optional = true }
-tokio = { version = "1.53", features = ["rt", "macros", "time", "net", "fs", "sync"], optional = true }
+tokio = { version = "1.54", features = ["rt", "macros", "time", "net", "fs", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 directories = "6"
 # The computer's name, for the default device name.
@@ -87,8 +87,8 @@ async-channel = "2"
 # Property tests of the chat state (`state.rs`).
 proptest = "1"
 # Signing in minisign's format, with keys made in the test, for the update tests (`update.rs`).
-ed25519-dalek = "2"
-blake2 = "0.10"
+ed25519-dalek = "3"
+blake2 = "0.11"
 
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.

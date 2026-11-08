@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       label: ${{ steps.version.outputs.label }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: version
@@ -66,7 +66,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install build dependencies
@@ -94,7 +94,7 @@ jobs:
           cp b33p-slint/assets/b33p.svg "$NAME/io.github.barafael.B33p.svg"
           # xz, as the .deb uses: 12.1 MB instead of gzip's 17.2 MB for this binary.
           tar -I "xz -9 -T0" -cf "$NAME.tar.xz" "$NAME"
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deb
       - name: Package .deb
@@ -140,7 +140,7 @@ jobs:
             --plugin qt \
             --output appimage
           test -f "$LDAI_OUTPUT"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: b33p-linux-${{ matrix.arch }}
           path: |
@@ -164,7 +164,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install build dependencies
@@ -200,7 +200,7 @@ jobs:
           codesign --force --deep --sign - "$app"
           ln -s /Applications dmg/Applications
           hdiutil create -volname b33p -srcfolder dmg -ov -format UDZO "$DMG"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: b33p-macos-${{ matrix.arch }}
           path: b33p-*.dmg
@@ -222,7 +222,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # BoringSSL (contact discovery) assembles GNU-style .S files on arm64, which MSVC can't, and
@@ -262,7 +262,7 @@ jobs:
           # Windows line ends, for Notepad.
           sed 's/$/\r/' packaging/windows/README.txt > b33p/README.txt
           7z a "$ZIP" b33p
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: b33p-windows-${{ matrix.arch }}
           path: b33p-*.zip
@@ -276,10 +276,10 @@ jobs:
       contents: write
     steps:
       # For the release notes in CHANGELOG.md.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: b33p-*
