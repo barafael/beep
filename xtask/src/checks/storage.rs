@@ -63,18 +63,24 @@ pub(super) fn storage(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     });
     // A name only the phone gives (a nickname, as a name from its address book), which presage
     // never learns: b33p titles the chat by it, as Signal-Desktop does.
-    checks.record("a nickname given on Android titles the chat in b33p", || {
-        android.call(drivers::Android::OpenConversation {
-            text: row.to_owned(),
-        })?;
-        android.call(drivers::Android::SetNickname {
-            given: NICKNAME.to_owned(),
-        })?;
-        android.call(drivers::Android::Back)?;
-        Ok(b33p_chat(b33p, conversation, "titled by the nickname", |chat| {
-            chat.title == NICKNAME
-        })?)
-    });
+    checks.record(
+        "a nickname given on Android titles the chat in b33p",
+        || {
+            android.call(drivers::Android::OpenConversation {
+                text: row.to_owned(),
+            })?;
+            android.call(drivers::Android::SetNickname {
+                given: NICKNAME.to_owned(),
+            })?;
+            android.call(drivers::Android::Back)?;
+            Ok(b33p_chat(
+                b33p,
+                conversation,
+                "titled by the nickname",
+                |chat| chat.title == NICKNAME,
+            )?)
+        },
+    );
     // Archiving unpins, on Android as in b33p. b33p lists archived chats with its archive open
     // (b33p-core/src/state.rs `listed`).
     checks.record("a chat archived on Android shows archived in b33p", || {
