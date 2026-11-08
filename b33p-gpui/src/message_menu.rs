@@ -24,17 +24,62 @@ use crate::widgets::{Speaks as _, icon};
 /// What a menu entry does with the message it is for.
 type Run = Rc<dyn Fn(&Rc<Shared>, &Info, &mut Window, &mut App)>;
 
+/// A message of the open chat, as a menu or popup that outlives the frame it was drawn in knows
+/// it: by its row, which names it in this frame, and by who wrote it and when, which names it
+/// for as long as it is there. Rows shift while a menu is open (older messages load in above,
+/// disappearing ones expire), and an action must reach the message the menu was opened on, not
+/// the one that has its row number now.
+#[derive(Clone)]
+pub struct Row {
+    pub index: usize,
+    target: Rc<b33p_core::MessageRef>,
+}
+
+impl Row {
+    pub fn new(index: usize, message: &b33p_core::ChatMessage) -> Self {
+        Self {
+            index,
+            target: Rc::new(message.reference()),
+        }
+    }
+
+    /// The row `index` of the open chat, if there is one.
+    pub fn of(chat: &b33p_core::state::ChatState, index: usize) -> Option<Self> {
+        chat.message_view(index)
+            .map(|view| Self::new(index, view.message))
+    }
+
+    /// Where the message is now; `None` if it is gone (expired, or its chat was closed).
+    pub fn now(&self, shared: &Shared) -> Option<usize> {
+        shared.chat.borrow().row_of(&self.target)
+    }
+
+    /// What the message was sent as, to keep a dialog about it.
+    pub fn target(&self) -> b33p_core::MessageRef {
+        (*self.target).clone()
+    }
+}
+
+/// Runs `action` on the row `row` is at now, and does nothing if the message is gone.
+fn at(shared: &Shared, row: &Row, action: impl FnOnce(usize)) {
+    if let Some(index) = row.now(shared) {
+        action(index);
+    }
+}
+
 /// What the menu of a message offers, as the message was when it was drawn.
 #[derive(Clone)]
 pub struct Info {
     pub index: usize,
+    pub row: Row,
     /// The message's identity, for whose text is selected.
     pub key: SharedString,
     pub notice: bool,
     pub deleted: bool,
     pub selected: bool,
-    /// Its text, to copy (empty for a deleted message).
-    pub text: String,
+    /// It has text to copy (a deleted message has none). The text itself is taken from the state
+    /// when it is copied: copying it before is a copy of every message drawn, at every draw.
+    pub has_text: bool,
     pub can_forward: bool,
     pub can_edit: bool,
     /// An attachment that can be saved, with its id.
@@ -101,15 +146,10 @@ pub fn edit(shared: &Shared, index: usize, window: &mut Window, cx: &mut App) {
 }
 
 /// Deletes the message here; for everyone can't be undone, so that is asked first.
-pub fn delete(shared: &Shared, index: usize, everyone: bool, cx: &mut App) {
+pub fn delete(shared: &Shared, row: &Row, everyone: bool, cx: &mut App) {
     if everyone {
-        {
-            let mut ui = shared.ui.borrow_mut();
-            ui.confirm_message = index.to_string();
-            ui.confirm = Confirm::DeleteForEveryone;
-        }
-        cx.refresh_windows();
-    } else {
+        shared.confirm(Confirm::DeleteForEveryone, Some(row.target()), cx);
+    } else if let Some(index) = row.now(shared) {
         shared.act(cx, |chat| chat.delete(index, false));
     }
 }
@@ -177,25 +217,24 @@ pub fn menu(
     if !info.notice {
         menu = menu.item(item(
             if info.selected { "Unselect" } else { "Select" },
-            Rc::new(|s, i, _, cx| toggle_select(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| at(s, &i.row, |ix| toggle_select(s, ix, cx))),
         ));
     }
     if reacts {
         menu = menu.item(item(
             "Reply",
-            Rc::new(|s, i, window, cx| reply(s, i.index, window, cx)),
+            Rc::new(|s, i, window, cx| at(s, &i.row, |ix| reply(s, ix, window, cx))),
         ));
     }
     if reacts {
         // The quick reactions; the buttons beside the message have every emoji.
-        let (shared, index) = (shared.clone(), info.index);
+        let (shared, row) = (shared.clone(), info.row.clone());
         menu = menu.submenu("React…", window, cx, move |mut sub, _, _| {
             for emoji in QUICK {
-                let shared = shared.clone();
-                sub = sub.item(
-                    PopupMenuItem::new(emoji)
-                        .on_click(move |_, _, cx| react(&shared, index, emoji, cx)),
-                );
+                let (shared, row) = (shared.clone(), row.clone());
+                sub = sub.item(PopupMenuItem::new(emoji).on_click(move |_, _, cx| {
+                    at(&shared, &row, |ix| react(&shared, ix, emoji, cx));
+                }));
             }
             sub
         });
@@ -208,11 +247,53 @@ pub fn menu(
             }),
         ));
     }
-    if !info.text.is_empty() {
+    if info.has_text {
         menu = menu.item(item(
             "Copy text",
-            Rc::new(|_, i, _, cx| copy(i.text.clone(), cx)),
+            Rc::new(|s, i, _, cx| {
+                let text = i.row.now(s).and_then(|ix| {
+                    s.chat
+                        .borrow()
+                        .message_view(ix)
+                        .map(|view| view.body.to_owned())
+                });
+                if let Some(text) = text {
+                    copy(text, cx);
+                }
+            }),
         ));
+    }
+    // What the text offers to a click: addresses and hidden text. Here too, for whoever has no
+    // pointer, or can't hit a link in a line of text.
+    let offered = info.row.now(shared).and_then(|ix| {
+        let chat = shared.chat.borrow();
+        let view = chat.message_view(ix)?;
+        let hidden = !view.revealed
+            && view
+                .styles
+                .iter()
+                .any(|s| s.style == b33p_core::Style::Spoiler);
+        Some((crate::text::links(view.body, 3), hidden))
+    });
+    if let Some((links, hidden)) = offered {
+        let many = links.len() > 1;
+        for link in links {
+            let label = if many {
+                format!("Open {}", shorten(&crate::web::spelled_out(&link)))
+            } else {
+                "Open link".to_owned()
+            };
+            let shared = shared.clone();
+            menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                crate::web::open_link(&shared, &link, cx);
+            }));
+        }
+        if hidden {
+            menu = menu.item(item(
+                "Show hidden text",
+                Rc::new(|s, i, _, cx| at(s, &i.row, |ix| reveal(s, ix, cx))),
+            ));
+        }
     }
     if info.save.is_some() {
         menu = menu.item(item(
@@ -227,24 +308,24 @@ pub fn menu(
     if info.can_forward {
         menu = menu.item(item(
             "Forward…",
-            Rc::new(|s, i, _, cx| forward(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| at(s, &i.row, |ix| forward(s, ix, cx))),
         ));
     }
     if info.can_edit {
         menu = menu.item(item(
             "Edit",
-            Rc::new(|s, i, window, cx| edit(s, i.index, window, cx)),
+            Rc::new(|s, i, window, cx| at(s, &i.row, |ix| edit(s, ix, window, cx))),
         ));
     }
     if info.can_send_again {
         menu = menu.item(item(
             "Send again",
-            Rc::new(|s, i, _, cx| retry(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| at(s, &i.row, |ix| retry(s, ix, cx))),
         ));
     }
     // As Signal-Desktop's "Pin message for…", in a submenu instead of a dialog.
     if info.pin == PinOffer::Pin {
-        let (shared, index) = (shared.clone(), info.index);
+        let (shared, row) = (shared.clone(), info.row.clone());
         let label = if info.pins_full {
             "Pin, replacing the oldest pin"
         } else {
@@ -252,38 +333,55 @@ pub fn menu(
         };
         menu = menu.submenu(label, window, cx, move |mut sub, _, _| {
             for (label, seconds) in PIN_CHOICES {
-                let shared = shared.clone();
-                sub = sub.item(
-                    PopupMenuItem::new(label)
-                        .on_click(move |_, _, cx| pin(&shared, index, seconds, cx)),
-                );
+                let (shared, row) = (shared.clone(), row.clone());
+                sub = sub.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    at(&shared, &row, |ix| pin(&shared, ix, seconds, cx));
+                }));
             }
             sub
         });
     }
     if info.pin == PinOffer::Unpin {
-        menu = menu.item(item("Unpin", Rc::new(|s, i, _, cx| unpin(s, i.index, cx))));
+        menu = menu.item(item(
+            "Unpin",
+            Rc::new(|s, i, _, cx| at(s, &i.row, |ix| unpin(s, ix, cx))),
+        ));
     }
     if info.can_info {
         menu = menu.item(item(
             "Info",
-            Rc::new(|s, i, _, cx| open_info(s, i.index, cx)),
+            Rc::new(|s, i, _, cx| at(s, &i.row, |ix| open_info(s, ix, cx))),
         ));
     }
     if !info.notice {
         menu = menu.separator();
         menu = menu.item(item(
             "Delete for me",
-            Rc::new(|s, i, _, cx| delete(s, i.index, false, cx)),
+            Rc::new(|s, i, _, cx| delete(s, &i.row, false, cx)),
         ));
     }
     if info.can_edit {
         menu = menu.item(item(
             "Delete for everyone",
-            Rc::new(|s, i, _, cx| delete(s, i.index, true, cx)),
+            Rc::new(|s, i, _, cx| delete(s, &i.row, true, cx)),
         ));
     }
     menu
+}
+
+/// An address cut to what fits a menu entry.
+fn shorten(link: &str) -> String {
+    const MOST: usize = 40;
+    let link = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))
+        .unwrap_or(link);
+    if link.chars().count() <= MOST {
+        link.to_owned()
+    } else {
+        let head: String = link.chars().take(MOST).collect();
+        format!("{head}…")
+    }
 }
 
 /// Quick reactions, as in Signal's own apps.
@@ -322,15 +420,15 @@ pub fn toolbar(
             .dropdown_menu(move |menu, window, cx| self::menu(menu, &shared, &info, window, cx))
     };
     let reply = reacts.then(|| {
-        let shared = shared.clone();
+        let (shared, row) = (shared.clone(), info.row.clone());
         Button::new(SharedString::from(format!("reply-{id}")))
             .ghost()
             .small()
             .icon(icon("reply"))
             .tooltip("Reply")
-            .on_click(move |_, window, cx| reply(&shared, id, window, cx))
+            .on_click(move |_, window, cx| at(&shared, &row, |ix| reply(&shared, ix, window, cx)))
     });
-    let react = reacts.then(|| reaction_button(shared, id));
+    let react = reacts.then(|| reaction_button(shared, &info.row));
     let buttons = div()
         .flex_none()
         .self_center()
@@ -357,8 +455,9 @@ pub fn toolbar(
 }
 
 /// "React", which opens the picker: the quick reactions, and "+" for any other emoji.
-fn reaction_button(shared: &Rc<Shared>, index: usize) -> Popover {
-    let shared = shared.clone();
+fn reaction_button(shared: &Rc<Shared>, row: &Row) -> Popover {
+    let (shared, row) = (shared.clone(), row.clone());
+    let index = row.index;
     Popover::new(SharedString::from(format!("react-{index}")))
         .anchor(Anchor::TopLeft)
         .trigger(
@@ -368,19 +467,20 @@ fn reaction_button(shared: &Rc<Shared>, index: usize) -> Popover {
                 .icon(icon("heart"))
                 .tooltip("React"),
         )
-        .content(move |_, window, cx| picker(&shared, index, false, window, cx))
+        .content(move |_, window, cx| picker(&shared, &row, false, window, cx))
 }
 
 /// The picker's content: the quick row, or every emoji by group after "+" (at once, if `full`:
 /// the quick row is on the bar over the message, which has its own "+").
 pub fn picker(
     shared: &Rc<Shared>,
-    index: usize,
+    row: &Row,
     full: bool,
     window: &mut Window,
     cx: &mut Context<gpui_kit::component::popover::PopoverState>,
 ) -> AnyElement {
     let t = theme::tokens(cx);
+    let index = row.index;
     let all = window.use_keyed_state(
         SharedString::from(format!("react-all-{index}-{full}")),
         cx,
@@ -392,12 +492,13 @@ pub fn picker(
         |_, _| 0usize,
     );
     let pick = |emoji: String, shared: Rc<Shared>| {
+        let row = row.clone();
         cx.listener(
             move |state: &mut gpui_kit::component::popover::PopoverState,
                   _: &gpui_kit::ClickEvent,
                   window,
                   cx| {
-                react(&shared, index, &emoji, cx);
+                at(&shared, &row, |ix| react(&shared, ix, &emoji, cx));
                 state.dismiss(window, cx);
             },
         )
@@ -535,8 +636,7 @@ pub fn selection_bar(shared: &Rc<Shared>, t: &Tokens) -> Option<AnyElement> {
                 let everyone = shared.clone();
                 menu.item(
                     PopupMenuItem::new("Delete for everyone…").on_click(move |_, _, cx| {
-                        everyone.ui.borrow_mut().confirm = Confirm::DeleteSelectionForEveryone;
-                        cx.refresh_windows();
+                        everyone.confirm(Confirm::DeleteSelectionForEveryone, None, cx);
                     }),
                 )
             } else {

@@ -109,6 +109,8 @@ pub struct EmojiPicker {
     search: Entity<InputState>,
     /// The tab: `None` for the ones used lately, else the index of a group.
     group: Option<usize>,
+    /// What the search found for the query it was last asked.
+    found: std::cell::RefCell<Option<(String, Vec<SharedString>)>>,
     scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -121,6 +123,7 @@ impl EmojiPicker {
             shared,
             search,
             group: None,
+            found: std::cell::RefCell::default(),
             scroll: UniformListScrollHandle::new(),
             _subscriptions: vec![subscription],
         }
@@ -168,7 +171,16 @@ impl EmojiPicker {
     /// What the grid shows for the tab and the search.
     fn shown(&self, query: &str) -> Vec<SharedString> {
         if !query.trim().is_empty() {
-            return search(query).into_iter().map(SharedString::from).collect();
+            // Searching the whole catalogue is for a new query, not for every draw of the same.
+            let mut found = self.found.borrow_mut();
+            if found.as_ref().is_none_or(|(asked, _)| asked != query) {
+                let results = search(query).into_iter().map(SharedString::from).collect();
+                *found = Some((query.to_owned(), results));
+            }
+            return found
+                .as_ref()
+                .map(|(_, results)| results.clone())
+                .unwrap_or_default();
         }
         match self.group {
             None => self

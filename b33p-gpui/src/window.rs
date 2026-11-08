@@ -6,7 +6,7 @@
 //! running", and showing b33p again is opening a window.
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use b33p_core::settings::Settings;
@@ -32,6 +32,15 @@ static REOPENING: AtomicBool = AtomicBool::new(false);
 /// window closed and the next one opened (see [`reconnect_with`]); nothing else opens one.
 static SWITCHING: AtomicBool = AtomicBool::new(false);
 
+/// Which switch of the connection is under way, so that a late answer to one that was given up
+/// on (see [`SWITCH_PATIENCE`]) does not open a second window.
+static SWITCH: AtomicU64 = AtomicU64::new(0);
+
+/// How long the compositor gets to answer a switch of the connection before it is given up on
+/// and the window opened on whatever connection there is. Without this, a compositor that never
+/// answers leaves b33p with no window and every later "Open" ignored as "under way already".
+const SWITCH_PATIENCE: Duration = Duration::from_secs(5);
+
 /// How long a start into the tray (`--hidden`) waits for the desktop to show tray icons, as it
 /// may not yet at login, before opening the window after all.
 const TRAY_WAIT: Duration = Duration::from_secs(10);
@@ -44,11 +53,9 @@ pub fn open(shared: &Rc<Shared>, cx: &mut App) -> Result<()> {
         "b33p"
     };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(1000.), px(680.)),
-            cx,
-        ))),
+        window_bounds: Some(shared.window_bounds.get().unwrap_or_else(|| {
+            WindowBounds::Windowed(Bounds::centered(None, size(px(1000.), px(680.)), cx))
+        })),
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
             ..TitlebarOptions::default()
@@ -279,12 +286,37 @@ fn reconnect_with(
 ) {
     SWITCHING.store(true, Ordering::Relaxed);
     REOPENING.store(true, Ordering::Relaxed);
+    let switch = SWITCH.fetch_add(1, Ordering::Relaxed) + 1;
     for window in cx.windows() {
         if let Err(error) = window.update(cx, |_, window, _| window.remove_window()) {
             tracing::warn!(error = %b33p_core::scrub::scrubbed(&error), "can't close the window");
         }
     }
-    let shared = shared.clone();
+    // Ends the switch, once: by whichever of the answer and the patience's end comes first.
+    let finish = {
+        let shared = shared.clone();
+        move |cx: &mut App| {
+            if SWITCH.load(Ordering::Relaxed) != switch || !SWITCHING.load(Ordering::Relaxed) {
+                return;
+            }
+            open_or_quit(&shared, cx);
+            REOPENING.store(false, Ordering::Relaxed);
+            SWITCHING.store(false, Ordering::Relaxed);
+        }
+    };
+    cx.spawn({
+        let finish = finish.clone();
+        async move |cx: &mut AsyncApp| {
+            cx.background_executor().timer(SWITCH_PATIENCE).await;
+            cx.update(|cx| {
+                if SWITCH.load(Ordering::Relaxed) == switch && SWITCHING.load(Ordering::Relaxed) {
+                    tracing::warn!("the compositor did not answer; opening the window as it is");
+                    finish(cx);
+                }
+            });
+        }
+    })
+    .detach();
     cx.spawn(async move |cx: &mut AsyncApp| {
         let switched = async {
             let headless = cx.update(|cx| cx.request_windowing(WindowingRequest::Headless));
@@ -303,11 +335,7 @@ fn reconnect_with(
         if let Err(error) = switched {
             tracing::warn!(error = %b33p_core::scrub::chain(&*error), "can't hand the compositor the activation token");
         }
-        cx.update(|cx| {
-            open_or_quit(&shared, cx);
-            REOPENING.store(false, Ordering::Relaxed);
-            SWITCHING.store(false, Ordering::Relaxed);
-        });
+        cx.update(|cx| finish(cx));
     })
     .detach();
 }

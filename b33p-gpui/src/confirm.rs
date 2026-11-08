@@ -19,13 +19,38 @@ use crate::widgets::modal;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Texts {
     pub title: String,
-    pub text: &'static str,
+    pub text: String,
     pub action: &'static str,
 }
 
 /// The texts of `confirm`, for the open chat's `title` and the number of messages picked.
 pub fn texts(confirm: Confirm, title: &str, picked: usize) -> Texts {
+    if confirm == Confirm::OpenLink {
+        // `title` is what the address really is (see `web::spelled_out`).
+        return Texts {
+            title: "Open this link?".to_owned(),
+            text: format!(
+                "{title}\n\nThe address can look like another site's. Open it only if you trust who sent it."
+            ),
+            action: "Open link",
+        };
+    }
     let (heading, text, action) = match confirm {
+        Confirm::ResetInviteLink => (
+            "Reset the invite link?".to_owned(),
+            "The link people have stops working, and the group gets a new one. Those who only have the old link can't join with it.",
+            "Reset link",
+        ),
+        Confirm::RemoveMember => (
+            format!("Remove {title} from the group?"),
+            "They can't see new messages in it, unless someone adds them again.",
+            "Remove",
+        ),
+        Confirm::BlockChat => (
+            format!("Block {title}?"),
+            "They won't be able to message or call you.",
+            "Block",
+        ),
         Confirm::Unlink => (
             "Unlink this device?".to_owned(),
             "This computer is removed from your Signal account, and the messages stored here are deleted. Your phone keeps its messages. To use b33p again, link it anew.",
@@ -56,7 +81,10 @@ pub fn texts(confirm: Confirm, title: &str, picked: usize) -> Texts {
             "Everyone in this chat sees that it was deleted.",
             "Delete for everyone",
         ),
-        Confirm::DeleteForEveryone | Confirm::DeleteSelectionForEveryone | Confirm::None => (
+        Confirm::DeleteForEveryone
+        | Confirm::DeleteSelectionForEveryone
+        | Confirm::OpenLink
+        | Confirm::None => (
             "Delete for everyone?".to_owned(),
             "Everyone in this chat sees that it was deleted.",
             "Delete for everyone",
@@ -64,18 +92,27 @@ pub fn texts(confirm: Confirm, title: &str, picked: usize) -> Texts {
     };
     Texts {
         title: heading,
-        text,
+        text: text.to_owned(),
         action,
     }
 }
 
 /// Does what the confirmation was for, and closes it.
 pub fn confirmed(shared: &Rc<Shared>, cx: &mut App) {
-    let (confirm, message) = {
+    let (confirm, message, asked_in) = {
         let ui = shared.ui.borrow();
-        (ui.confirm, ui.confirm_message.clone())
+        (
+            ui.confirm,
+            ui.confirm_message.clone(),
+            ui.confirm_chat.clone(),
+        )
     };
-    let selected = || shared.chat.borrow().selected().map(|c| c.id.clone());
+    let open = shared.chat.borrow().selected().map(|c| c.id.clone());
+    // What the dialog named, not what happens to be open now: a chat can be switched while it
+    // is up (a notification, a shortcut). Without a name (asked from outside), the open one.
+    let selected = || asked_in.clone().or_else(|| open.clone());
+    // About the open chat's messages: only if it is still the one the dialog was about.
+    let still_there = asked_in.is_none() || asked_in == open;
     match confirm {
         Confirm::None => {}
         Confirm::Unlink => {
@@ -123,13 +160,47 @@ pub fn confirmed(shared: &Rc<Shared>, cx: &mut App) {
             });
         }
         Confirm::DeleteForEveryone => {
-            // The row, as a decimal number; nothing if what was kept isn't one.
-            if let Ok(index) = message.parse::<usize>() {
-                shared.act(cx, |chat| chat.delete(index, true));
+            // Where the message is now, if it still is.
+            if still_there {
+                shared.act(cx, |chat| {
+                    match message.as_ref().and_then(|target| chat.row_of(target)) {
+                        Some(index) => chat.delete(index, true),
+                        None => (None, Update::default()),
+                    }
+                });
+            }
+        }
+        Confirm::OpenLink => {
+            let link = shared.ui.borrow().confirm_link.clone();
+            if let Some(link) = link {
+                crate::web::open_confirmed(&link);
+            }
+        }
+        Confirm::BlockChat => {
+            let id = selected();
+            shared.chat_action_if(cx, id, |chat, id| chat.block(id, true));
+        }
+        Confirm::RemoveMember => {
+            let member = shared.ui.borrow().confirm_member.clone();
+            let id = selected();
+            if let (Some((service_id, _)), true) = (member, still_there) {
+                shared.command(cx, |chat| {
+                    id.and_then(|id| chat.edit_group(&id, GroupEdit::RemoveMember(service_id)))
+                });
+            }
+        }
+        Confirm::ResetInviteLink => {
+            let id = selected();
+            if still_there {
+                shared.command(cx, |chat| {
+                    id.and_then(|id| chat.edit_group(&id, GroupEdit::ResetInviteLink))
+                });
             }
         }
         Confirm::DeleteSelectionForEveryone => {
-            shared.act(cx, |chat| chat.delete_selection(true));
+            if still_there {
+                shared.act(cx, |chat| chat.delete_selection(true));
+            }
         }
     }
     dismissed(shared, cx);
@@ -140,7 +211,10 @@ pub fn dismissed(shared: &Rc<Shared>, cx: &mut App) {
     {
         let mut ui = shared.ui.borrow_mut();
         ui.confirm = Confirm::None;
-        ui.confirm_message.clear();
+        ui.confirm_message = None;
+        ui.confirm_chat = None;
+        ui.confirm_link = None;
+        ui.confirm_member = None;
     }
     shared.refresh(Update::default(), cx);
 }
@@ -169,11 +243,17 @@ impl Render for ConfirmView {
         let t = theme::tokens(cx);
         let (confirm, title, picked) = {
             let chat = self.shared.chat.borrow();
-            (
-                self.shared.ui.borrow().confirm,
-                chat.selected().map(|c| c.title.clone()).unwrap_or_default(),
-                chat.selection_len(),
-            )
+            let ui = self.shared.ui.borrow();
+            let about = match &ui.confirm_chat {
+                Some(id) => chat.conversation(id),
+                None => chat.selected(),
+            };
+            let title = match (&ui.confirm, &ui.confirm_link, &ui.confirm_member) {
+                (Confirm::OpenLink, Some(link), _) => crate::web::spelled_out(link),
+                (Confirm::RemoveMember, _, Some((_, name))) => name.clone(),
+                _ => about.map(|c| c.title.clone()).unwrap_or_default(),
+            };
+            (ui.confirm, title, chat.selection_len())
         };
         let texts = texts(confirm, &title, picked);
         let shared = self.shared.clone();

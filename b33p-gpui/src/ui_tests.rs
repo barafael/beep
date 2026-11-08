@@ -961,3 +961,175 @@ async fn the_shortcuts_go_through_chats_and_close_what_is_open(tc: &mut TestAppC
         "the search closes"
     );
 }
+
+/// A menu stays open while older messages load in above: what it does, it does to the message
+/// it was opened on, not to the one that has that row number now.
+#[gpui::test]
+async fn a_menu_acts_on_its_message_after_rows_shift(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(5, Some(1_699_999_990_000)));
+    let shared = ui.booted.shared.clone();
+    let row = crate::message_menu::Row::of(&shared.chat.borrow(), 2).expect("row 2");
+    ui.act(|chat| {
+        chat.apply(Event::History {
+            conversation: ConversationId::contact("ann"),
+            messages: (0..10)
+                .map(|n| ChatMessage {
+                    timestamp: 1_699_999_990_000 + n * 100,
+                    ..theirs(&format!("Older {n}"), 0)
+                })
+                .collect(),
+            reactions: Vec::new(),
+            older: None,
+        })
+    });
+    ui.sent();
+    ui.cx
+        .update(|_, cx| crate::message_menu::delete(&shared, &row, false, cx));
+    let deleted: Vec<_> = ui
+        .sent()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Delete { target, .. } => Some(target.timestamp),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deleted, [theirs("", 2).timestamp]);
+    // And a message that is gone is not replaced by another.
+    ui.cx
+        .update(|_, cx| crate::message_menu::delete(&shared, &row, false, cx));
+    assert!(ui.sent().is_empty());
+}
+
+/// "Leave Rust?" leaves Rust, also if another chat was opened while it was asked.
+#[gpui::test]
+async fn a_confirmation_is_about_the_chat_it_was_asked_in(tc: &mut TestAppContext) {
+    let club = Conversation {
+        id: ConversationId("club".into()),
+        title: "Book club".into(),
+        kind: ConversationKind::Group,
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    };
+    let mut chat = testing::chats(&["Ann"]);
+    chat.apply(Event::Conversations(vec![ann(|_| {}), club.clone()]));
+    chat.select(&club.id);
+    let mut ui = Ui::new(tc, chat);
+    let shared = ui.booted.shared.clone();
+    ui.cx
+        .update(|_, cx| shared.confirm(crate::shared::Confirm::LeaveGroup, None, cx));
+    ui.settle();
+    // A notification, or a shortcut, opens Ann's chat behind the dialog.
+    ui.act(|chat| {
+        chat.select(&ConversationId::contact("ann"));
+        Update::reset()
+    });
+    ui.sent();
+    ui.cx.update(|_, cx| crate::confirm::confirmed(&shared, cx));
+    let left: Vec<_> = ui
+        .sent()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::EditGroup { conversation, .. } => Some(conversation),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left, [club.id]);
+}
+
+/// A row asking again for what it already asked for (a picture in a message request, which
+/// isn't downloaded) must not start another draw, or the window draws without end.
+#[gpui::test]
+async fn asking_for_nothing_draws_nothing(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(3, None));
+    let shared = ui.booted.shared.clone();
+    ui.settle();
+    ui.cx.update(|_, cx| {
+        assert!(!shared.ask(cx, |_| None));
+    });
+    assert!(!shared.has_pending(), "a draw was scheduled for nothing");
+}
+
+/// A dialog is answered before what is behind it: the chat shortcuts wait.
+#[gpui::test]
+async fn shortcuts_wait_while_a_dialog_is_open(tc: &mut TestAppContext) {
+    let mut chat = testing::chats(&["Ann", "Bob"]);
+    chat.select(&ConversationId::contact("ann"));
+    let mut ui = Ui::new(tc, chat);
+    let shared = ui.booted.shared.clone();
+    ui.cx
+        .update(|_, cx| shared.confirm(crate::shared::Confirm::StartOver, None, cx));
+    ui.settle();
+    ui.press("alt-down");
+    let open = shared.chat.borrow().selected().map(|c| c.id.clone());
+    assert_eq!(
+        open,
+        Some(ConversationId::contact("ann")),
+        "a chat was switched behind the dialog"
+    );
+}
+
+/// An address that reads as one site and goes to another is asked about; an ordinary one isn't.
+#[gpui::test]
+async fn a_lookalike_link_is_asked_about_before_it_opens(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, many(1, None));
+    let shared = ui.booted.shared.clone();
+    crate::web::OPENED.with(|opened| opened.borrow_mut().clear());
+    ui.cx
+        .update(|_, cx| crate::web::open_link(&shared, "https://example.org/a", cx));
+    let opened = crate::web::OPENED.with(|opened| opened.borrow().clone());
+    assert_eq!(opened, ["https://example.org/a"]);
+    ui.cx
+        .update(|_, cx| crate::web::open_link(&shared, "https://\u{430}pple.com/", cx));
+    ui.settle();
+    assert!(ui.shown("Confirm"), "no question was asked");
+    let opened = crate::web::OPENED.with(|opened| opened.borrow().len());
+    assert_eq!(opened, 1, "opened before it was answered");
+    ui.click("Confirm");
+    let opened = crate::web::OPENED.with(|opened| opened.borrow().clone());
+    assert_eq!(
+        opened.last().map(String::as_str),
+        Some("https://\u{430}pple.com/")
+    );
+    // Other schemes are never opened.
+    ui.cx
+        .update(|_, cx| crate::web::open_link(&shared, "file:///etc/passwd", cx));
+    assert_eq!(crate::web::OPENED.with(|opened| opened.borrow().len()), 2);
+}
+
+/// Once the field says another link than the one looked up, Join is not offered for the first.
+#[gpui::test]
+async fn editing_the_link_takes_the_preview_away(tc: &mut TestAppContext) {
+    let mut ui = Ui::new(tc, testing::chats(&["Ann"]));
+    ui.act(|chat| {
+        let _command = chat.open_join(Some("https://signal.group/#AAAAAAAA"));
+        chat.apply(Event::GroupPreview(b33p_core::GroupPreview {
+            link: "https://signal.group/#AAAAAAAA".into(),
+            title: "Rust".into(),
+            members: 3,
+            approval: false,
+            requested: false,
+        }));
+        Update::default()
+    });
+    ui.settle();
+    assert!(ui.shown("Cancel"), "the dialog is not open");
+    // Disabled buttons are not clicked: the one for the looked-up link works.
+    ui.click("Join");
+    let joins = |ui: &Ui| {
+        ui.sent()
+            .iter()
+            .filter(|command| matches!(command, Command::JoinGroup { .. }))
+            .count()
+    };
+    assert_eq!(joins(&ui), 1, "joining the looked-up link");
+    ui.type_keys("B");
+    ui.click("Join");
+    assert_eq!(
+        joins(&ui),
+        0,
+        "the old preview still joins after the field changed"
+    );
+}

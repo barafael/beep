@@ -191,6 +191,15 @@ tests find an element by its name, not its role.
 
 In GPUI and not in Slint: the "Send again" and "Save attachment" entries of the message menu, and the message info and readers (core has them; Slint has no window for them yet).
 
+In GPUI and not in Slint, from the review of the GPUI window (a fresh implementation, read for security, speed, use and looks):
+
+* **Links.** One opener for every link (`web::open_link`): invite links join, web addresses open, nothing else does. An address that reads as one site and goes to another (a user name before the host, letters of another alphabet in it, `xn--`, control or direction characters) is asked about first, with its odd characters spelled out. The message menu lists a message's links and its hidden text, for those who can't click them in the line.
+* **Dialogs.** A dialog about a message, a chat or a person keeps who it is about (not a row number or "the open chat"), so it still does the right thing if rows shift or another chat is opened meanwhile (tests `a_menu_acts_on_its_message_after_rows_shift`, `a_confirmation_is_about_the_chat_it_was_asked_in`). Chat shortcuts wait while a dialog is open. A click on the dimmed part does not close a dialog where something is typed (new group, join link, forward); a press that began in the card never does.
+* **Asking first** before "Reset" of an invite link, "Remove from group" and "Block" (Slint does these at once).
+* **The window** comes back at the size it had when it is shown again from the tray or by a notification; a switch of the connection that the compositor never answers is given up after five seconds.
+* **Pictures** are kept at the size they are drawn at (1280 px in a message, 384 in the media overview, 4096 in the viewer), not at a camera's.
+* **The harness socket** is made private from the first moment (made in a directory of its own and moved), refuses to delete a path that is not a socket, bounds what a client can queue or send.
+
 ## Tests
 
 Slint's tests and where GPUI has the same:

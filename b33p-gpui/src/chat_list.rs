@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState, ConversationView, PreviewKind, Update};
-use b33p_core::{AttachmentKind, ConversationId, now_millis};
+use b33p_core::{AttachmentKind, ConversationId};
 use gpui_kit::Role;
 use gpui_kit::component::Selectable as _;
 use gpui_kit::component::Sizable as _;
@@ -34,6 +34,15 @@ pub const MUTE_CHOICES: [(&str, i64); 4] = [
     ("For 1 week", 604800),
     ("Always", -1),
 ];
+
+/// Until when (in milliseconds since the epoch) a chat muted for `seconds` stays muted; for good
+/// when `seconds` is below 0.
+pub fn mute_until(seconds: i64) -> u64 {
+    match u64::try_from(seconds) {
+        Ok(seconds) => b33p_core::now_millis().saturating_add(seconds.saturating_mul(1000)),
+        Err(_) => u64::MAX,
+    }
+}
 
 pub struct ChatListView {
     shared: Rc<Shared>,
@@ -584,12 +593,7 @@ fn row(
                         label,
                         Rc::new(move |s, id, cx| {
                             s.chat_action(cx, id, |chat, id| {
-                                let until = if seconds < 0 {
-                                    u64::MAX
-                                } else {
-                                    now_millis() + seconds as u64 * 1000
-                                };
-                                chat.mute(id, Some(until))
+                                chat.mute(id, Some(mute_until(seconds)))
                             })
                         }),
                     ));
@@ -599,7 +603,11 @@ fn row(
             menu = menu.item(item(
                 if blocked { "Unblock" } else { "Block" },
                 Rc::new(move |s, id, cx| {
-                    s.chat_action(cx, id, |chat, id| chat.block(id, !blocked))
+                    if blocked {
+                        s.chat_action(cx, id, |chat, id| chat.block(id, false));
+                    } else {
+                        s.confirm_block(id, cx);
+                    }
                 }),
             ));
             menu.item(item(

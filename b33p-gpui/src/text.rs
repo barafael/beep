@@ -20,6 +20,20 @@ use gpui_kit::{
     StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, px, transparent_black,
 };
 
+/// The web addresses in `body`, as they would be opened, at most `most`: what a message's menu
+/// offers for those who can't click them in the text.
+pub fn links(body: &str, most: usize) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while found.len() < most
+        && let Some((start, end)) = find_url(&body[at..])
+    {
+        found.push(link_target(&body[at + start..at + end]));
+        at += end;
+    }
+    found
+}
+
 /// What a piece of text leads to when it is clicked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -66,6 +80,8 @@ pub struct Rich {
     pub text: String,
     /// In order and without gaps or overlaps, but only where something differs from plain.
     pub pieces: Vec<Piece>,
+    /// `text` as the shared string drawing takes, made once.
+    pub shown: SharedString,
 }
 
 const STYLES: [Style; 5] = [
@@ -189,6 +205,7 @@ pub fn build(body: &str, styles: &[StyleRange], mentions: &[Mention], revealed: 
             },
         );
     }
+    out.shown = SharedString::from(out.text.clone());
     out
 }
 
@@ -323,7 +340,7 @@ type OnTarget = Rc<dyn Fn(&Target, &mut Window, &mut App)>;
 /// links and spoilers; without it (while messages are being picked) it only draws.
 pub struct RichText {
     key: SharedString,
-    rich: Rich,
+    rich: Rc<Rich>,
     look: Look,
     interactive: bool,
     selectable: bool,
@@ -335,7 +352,7 @@ impl RichText {
     /// `key` is the message's identity, for who holds the selection.
     pub fn new(
         key: impl Into<SharedString>,
-        rich: Rich,
+        rich: Rc<Rich>,
         look: Look,
         on_target: impl Fn(&Target, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -445,7 +462,7 @@ impl Element for RichText {
             .filter(|piece| piece.monospace)
             .map(|piece| (piece.range.clone(), mono.clone()))
             .collect();
-        let mut styled = StyledText::new(self.rich.text.clone())
+        let mut styled = StyledText::new(self.rich.shown.clone())
             .with_highlights(self.highlights())
             .with_font_family_overrides(overrides);
         let (layout, ()) = styled.request_layout(id, inspector_id, window, cx);
@@ -492,13 +509,12 @@ impl Element for RichText {
         if !self.interactive {
             return;
         }
-        let pieces: Rc<Vec<Piece>> = Rc::new(self.rich.pieces.clone());
-        let text: Rc<str> = Rc::from(self.rich.text.as_str());
+        let rich = self.rich.clone();
         if hitbox.is_hovered(window) {
             let over = layout
                 .index_for_position(window.mouse_position())
                 .ok()
-                .and_then(|at| Self::target_at(&pieces, at));
+                .and_then(|at| Self::target_at(&rich.pieces, at));
             let style = match (over.is_some(), self.selectable) {
                 (true, _) => CursorStyle::PointingHand,
                 (false, true) => CursorStyle::IBeam,
@@ -511,13 +527,8 @@ impl Element for RichText {
         // The pointer goes down on the text: on a link it may become a click, anywhere else a
         // selection starts (a double click takes the word, a triple click all of it).
         window.on_mouse_event({
-            let (pieces, text, key, hitbox, layout) = (
-                pieces.clone(),
-                text.clone(),
-                key.clone(),
-                hitbox.clone(),
-                layout.clone(),
-            );
+            let (rich, key, hitbox, layout) =
+                (rich.clone(), key.clone(), hitbox.clone(), layout.clone());
             move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || event.button != MouseButton::Left
@@ -527,7 +538,7 @@ impl Element for RichText {
                     return;
                 }
                 let at = layout.index_for_position(event.position);
-                let pressed = at.ok().and_then(|at| Self::target_at(&pieces, at));
+                let pressed = at.ok().and_then(|at| Self::target_at(&rich.pieces, at));
                 let at = at.unwrap_or_else(|nearest| nearest);
                 let focus = {
                     let state = cx.default_global::<TextSelection>();
@@ -537,8 +548,8 @@ impl Element for RichText {
                     let range = match event.click_count {
                         _ if !selectable => 0..0,
                         1 => 0..0,
-                        2 => word_at(&text, at),
-                        _ => 0..text.len(),
+                        2 => word_at(&rich.text, at),
+                        _ => 0..rich.text.len(),
                     };
                     if range.is_empty() {
                         state.owner = Some(key.clone());
@@ -546,7 +557,7 @@ impl Element for RichText {
                         state.text.clear();
                     } else {
                         state.pressed = None;
-                        state.set(&key, range, &text);
+                        state.set(&key, range, &rich.text);
                     }
                     state.focus.clone()
                 };
@@ -558,7 +569,7 @@ impl Element for RichText {
             }
         });
         window.on_mouse_event({
-            let (text, key, layout) = (text.clone(), key.clone(), layout.clone());
+            let (rich, key, layout) = (rich.clone(), key.clone(), layout.clone());
             move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Capture
                     || event.pressed_button != Some(MouseButton::Left)
@@ -582,13 +593,13 @@ impl Element for RichText {
                         // It moved: not a click any more.
                         state.pressed = None;
                     }
-                    state.set(&key, range, &text);
+                    state.set(&key, range, &rich.text);
                     window.refresh();
                 }
             }
         });
         window.on_mouse_event({
-            let (key, layout, pieces) = (key, layout, pieces);
+            let (key, layout, rich) = (key, layout, rich);
             let on_target = self.on_target.clone();
             let clicked = Rc::new(Cell::new(false));
             move |event: &MouseUpEvent, phase, window, cx| {
@@ -617,7 +628,7 @@ impl Element for RichText {
                 let over = layout
                     .index_for_position(event.position)
                     .ok()
-                    .and_then(|at| Self::target_at(&pieces, at));
+                    .and_then(|at| Self::target_at(&rich.pieces, at));
                 if let (Some(pressed), Some(over)) = (pressed, over)
                     && pressed == over
                     && !clicked.replace(true)
@@ -690,6 +701,16 @@ mod tests {
     use b33p_core::Style;
 
     use super::*;
+
+    #[test]
+    fn the_links_of_a_text_are_found_as_they_would_open() {
+        assert_eq!(
+            links("see https://a.org/x and www.b.org, or c.io!", 5),
+            ["https://a.org/x", "https://www.b.org", "https://c.io"]
+        );
+        assert_eq!(links("https://a.org https://b.org", 1), ["https://a.org"]);
+        assert!(links("nothing here", 3).is_empty());
+    }
 
     fn range(start: usize, end: usize, style: Style) -> StyleRange {
         StyleRange { start, end, style }

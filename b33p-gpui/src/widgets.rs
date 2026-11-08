@@ -110,12 +110,31 @@ pub fn divider(tokens: &Tokens) -> Div {
 }
 
 /// A dialog over the window: a scrim, and a card of `width` in the middle holding `content`.
-/// A click on the scrim, or Esc (`CloseFront`), is `dismiss`'s to answer.
+/// A click on the scrim, or Esc (`CloseFront`), is `dismiss`'s to answer. A press that starts in
+/// the card and ends on the scrim (selecting text in a field, and letting go too far) is not a
+/// click on the scrim.
 pub fn modal(
     t: &Tokens,
     width: f32,
     content: impl IntoElement,
     dismiss: impl Fn(&mut Window, &mut App) + 'static,
+) -> gpui_kit::AnyElement {
+    modal_with(t, width, content, Some(Box::new(dismiss)))
+}
+
+/// A dialog where something is typed or chosen, which a click beside it must not throw away:
+/// only its own buttons and Esc close it.
+pub fn modal_holding(t: &Tokens, width: f32, content: impl IntoElement) -> gpui_kit::AnyElement {
+    modal_with(t, width, content, None)
+}
+
+type Dismiss = Box<dyn Fn(&mut Window, &mut App)>;
+
+fn modal_with(
+    t: &Tokens,
+    width: f32,
+    content: impl IntoElement,
+    dismiss: Option<Dismiss>,
 ) -> gpui_kit::AnyElement {
     let modal = div()
         .id("modal")
@@ -127,7 +146,11 @@ pub fn modal(
         .bg(t.scrim)
         // Nothing under the scrim answers the pointer.
         .occlude()
-        .on_click(move |_, window, cx| dismiss(window, cx))
+        .on_click(move |_, window, cx| {
+            if let Some(dismiss) = &dismiss {
+                dismiss(window, cx);
+            }
+        })
         .child(
             div()
                 .id("modal-card")
@@ -144,7 +167,10 @@ pub fn modal(
                 .rounded(px(crate::theme::RADIUS_L))
                 .shadow_lg()
                 .overflow_hidden()
-                // A click on the card is not one on the scrim.
+                // A click on the card is not one on the scrim, nor is a press that began in it.
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .child(content),
         );

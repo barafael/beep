@@ -369,6 +369,17 @@ struct Situation {
 }
 
 impl Situation {
+    /// Whether the chat has a field to write in, and so takes files to attach: no bar stands in
+    /// for it.
+    fn can_write(&self) -> bool {
+        !(self.request
+            || self.invited
+            || self.requested
+            || self.left
+            || self.safety_changed
+            || self.blocked)
+    }
+
     fn of(chat: &b33p_core::state::ChatState) -> Option<Self> {
         let c = chat.selected()?;
         Some(Self {
@@ -511,12 +522,10 @@ impl ComposerView {
                         });
                     }
                     RequestResponse::Block => {
-                        shared.ui.borrow_mut().confirm = Confirm::BlockRequest;
-                        cx.refresh_windows();
+                        shared.confirm(Confirm::BlockRequest, None, cx);
                     }
                     RequestResponse::Delete => {
-                        shared.ui.borrow_mut().confirm = Confirm::DeleteRequest;
-                        cx.refresh_windows();
+                        shared.confirm(Confirm::DeleteRequest, None, cx);
                     }
                 }
             };
@@ -911,15 +920,24 @@ impl ComposerView {
             .into_any_element()
     }
 
-    /// Covers the window, to catch the click that closes a popup.
+    /// Covers the window, to catch the click that closes a popup. It sits in a box inside the
+    /// window, so it reaches a whole window's size either way from there.
     fn backdrop(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let window = self
+            .shared
+            .window_bounds
+            .get()
+            .map_or(gpui_kit::size(px(4000.), px(4000.)), |bounds| {
+                bounds.get_bounds().size
+            });
+        let (width, height) = (window.width.max(px(1.)), window.height.max(px(1.)));
         div()
             .id((id, 1usize))
             .absolute()
-            .top(px(-4000.))
-            .left(px(-4000.))
-            .w(px(8000.))
-            .h(px(8000.))
+            .top(-height)
+            .left(-width)
+            .w(width * 2.)
+            .h(height * 2.)
             .occlude()
             .on_mouse_down(
                 MouseButton::Left,
@@ -998,14 +1016,26 @@ fn quote_bar(
         .into_any_element()
 }
 
+/// Whether the open chat has a field to write in.
+fn writable(shared: &Shared) -> bool {
+    Situation::of(&shared.chat.borrow()).is_some_and(|situation| situation.can_write())
+}
+
 /// Makes `root` take files dragged onto it from elsewhere as files to attach, and show that
 /// it will (an outline and "Drop to attach") while they are over it. `root` needs the group
 /// name "conversation".
 pub fn accepting_files(root: Stateful<Div>, shared: &Rc<Shared>, t: &Tokens) -> Stateful<Div> {
+    // Not where the composer is replaced by a bar (a request, a blocked chat, a group left):
+    // there is nothing to send them from, and they would wait to go out with a later message.
+    if !writable(shared) {
+        return root;
+    }
     let shared = shared.clone();
     root.on_drop::<ExternalPaths>(move |paths, _, cx| {
         let files = paths.paths().to_vec();
-        shared.edit(cx, |chat| chat.stage_files(files));
+        if writable(&shared) {
+            shared.edit(cx, |chat| chat.stage_files(files));
+        }
     })
     .child(
         div()

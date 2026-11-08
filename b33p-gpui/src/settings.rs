@@ -56,8 +56,9 @@ impl SettingsView {
         let name = shared.settings.borrow().device_name();
         let device_name = cx.new(|cx| InputState::new(window, cx).default_value(name));
         let subscription = cx.subscribe(&device_name, |this, input, event: &InputEvent, cx| {
-            // "Press Enter to keep a new one".
-            if let InputEvent::PressEnter { .. } = event {
+            // Kept with Enter, and also when the caret leaves the field: a name typed and then
+            // clicked away from is a name the user meant, not one to take back.
+            if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
                 let name = input.read(cx).value().to_string();
                 this.shared.rename_device(&name, cx);
             }

@@ -27,8 +27,18 @@ pub struct UiState {
     pub calendar_open: bool,
     pub stories_open: bool,
     pub confirm: Confirm,
-    /// A dialog's text, e.g. the message a confirmation is about.
-    pub confirm_message: String,
+    /// The message a confirmation is about, by who wrote it and when, not by its row: rows shift
+    /// while the dialog is open (older messages load, disappearing ones expire).
+    pub confirm_message: Option<b33p_core::MessageRef>,
+    /// The person a confirmation asks about taking out of a group: their service id, and the
+    /// name the dialog calls them by.
+    pub confirm_member: Option<(String, String)>,
+    /// The address a confirmation asks about opening.
+    pub confirm_link: Option<String>,
+    /// The chat a confirmation is about: the one that was open when it was asked, whichever is
+    /// open when it is answered. `None` for those asked from outside (the harness's
+    /// `ShowPart`), which are about the open one.
+    pub confirm_chat: Option<b33p_core::ConversationId>,
     /// The window is narrower than a list and a chat side by side: one pane at a time.
     pub narrow: bool,
     pub sidebar_width: f32,
@@ -74,6 +84,14 @@ pub enum Confirm {
     DeleteRequest,
     DeleteForEveryone,
     DeleteSelectionForEveryone,
+    /// An address that looks like it means to deceive, in `UiState::confirm_link`.
+    OpenLink,
+    /// Blocking the chat named in `UiState::confirm_chat`.
+    BlockChat,
+    /// Taking the person named in `UiState::confirm_member` out of the open group.
+    RemoveMember,
+    /// Making the open group's invite link another, so that the old one stops working.
+    ResetInviteLink,
 }
 
 pub struct Shared {
@@ -138,6 +156,13 @@ pub struct Shared {
     pub tray: RefCell<Option<crate::tray::Tray>>,
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed.
     pub start_hidden: Cell<bool>,
+    /// What [`crate::text::build`] made of messages' texts, by what it was made from: building
+    /// takes a scan for addresses and a handful of allocations, and every message on screen
+    /// would do it again at every draw.
+    pub rich: RefCell<std::collections::HashMap<u64, Rc<crate::text::Rich>>>,
+    /// Where and how large the window was last drawn, for the next one: a window closed to the
+    /// tray, or closed to be opened with focus, comes back as it was.
+    pub window_bounds: Cell<Option<gpui_kit::WindowBounds>>,
     /// For tasks that outlive a call.
     pub me: Weak<Shared>,
     /// Answers the agent harness's socket (`--features harness`).
@@ -201,10 +226,56 @@ impl Shared {
             composer: RefCell::default(),
             tray: RefCell::default(),
             start_hidden: Cell::new(false),
+            rich: RefCell::default(),
+            window_bounds: Cell::new(None),
             me: me.clone(),
             #[cfg(all(feature = "harness", target_family = "unix"))]
             agent: crate::agent::Handle::default(),
         })
+    }
+
+    /// Whether a dialog is over the window: what is behind it is not to be acted on, by a
+    /// shortcut or otherwise, until it is answered.
+    pub fn modal_open(&self) -> bool {
+        let chat = self.chat.borrow();
+        let ui = self.ui.borrow();
+        ui.confirm != Confirm::None
+            || ui.stories_open
+            || chat.group_draft().is_some()
+            || chat.join().is_some()
+            || chat.forwarding()
+            || chat.message_info().is_some()
+    }
+
+    /// Asks before blocking the chat `id`, which a menu of the chat list may name without it being
+    /// the open one.
+    pub fn confirm_block(&self, id: &b33p_core::ConversationId, cx: &mut App) {
+        self.confirm(Confirm::BlockChat, None, cx);
+        self.ui.borrow_mut().confirm_chat = Some(id.clone());
+    }
+
+    /// Asks before taking `service_id`, called `name`, out of the open group.
+    pub fn confirm_removing(&self, service_id: &str, name: &str, cx: &mut App) {
+        self.confirm(Confirm::RemoveMember, None, cx);
+        self.ui.borrow_mut().confirm_member = Some((service_id.to_owned(), name.to_owned()));
+    }
+
+    /// Asks before opening `link`, an address that looks like it means to deceive.
+    pub fn confirm_link(&self, link: &str, cx: &mut App) {
+        self.confirm(Confirm::OpenLink, None, cx);
+        self.ui.borrow_mut().confirm_link = Some(link.to_owned());
+    }
+
+    /// Asks before `what`, about the open chat and, for a message, `message`.
+    pub fn confirm(&self, what: Confirm, message: Option<b33p_core::MessageRef>, cx: &mut App) {
+        let chat = self.chat.borrow().selected().map(|c| c.id.clone());
+        {
+            let mut ui = self.ui.borrow_mut();
+            ui.confirm = what;
+            ui.confirm_message = message;
+            ui.confirm_chat = chat;
+        }
+        self.refresh(Update::default(), cx);
     }
 
     /// Runs a UI action against the chat state, sends the command it produces and draws what
@@ -221,6 +292,24 @@ impl Shared {
         }
         self.refresh(update, cx);
         sent
+    }
+
+    /// Asks the state for a command and, only if it gives one, sends it and redraws the rows.
+    /// Nothing is scheduled when it gives none: a row asking again for what it already has, on
+    /// every draw, must not start another draw.
+    pub fn ask(&self, cx: &mut App, ask: impl FnOnce(&mut ChatState) -> Option<Command>) -> bool {
+        let Some(command) = ask(&mut self.chat.borrow_mut()) else {
+            return false;
+        };
+        self.act(cx, |_| {
+            (
+                Some(command),
+                Update {
+                    rows: true,
+                    ..Update::default()
+                },
+            )
+        })
     }
 
     /// Changes the state; what shows follows on its own.
@@ -265,6 +354,12 @@ impl Shared {
                 }
             });
         }
+    }
+
+    /// Whether a draw is waiting for the next turn of the event loop.
+    #[cfg(test)]
+    pub fn has_pending(&self) -> bool {
+        self.pending.borrow().is_some()
     }
 
     /// Draws now what is pending.
@@ -762,6 +857,18 @@ impl Shared {
     /// A change to the conversation `id` from the chat list's menu (pin, mute, archive, …): it
     /// changes the chat list, and the messages only when the open chat closed with it
     /// (archiving or marking it unread does).
+    /// [`Shared::chat_action`] for a chat that may be gone.
+    pub fn chat_action_if(
+        &self,
+        cx: &mut App,
+        id: Option<ConversationId>,
+        action: impl FnOnce(&mut ChatState, &ConversationId) -> Option<Command>,
+    ) {
+        if let Some(id) = id {
+            self.chat_action(cx, &id, action);
+        }
+    }
+
     pub fn chat_action(
         &self,
         cx: &mut App,

@@ -324,12 +324,7 @@ fn chat_menu(
                 label,
                 Rc::new(move |s, id, cx| {
                     s.chat_action(cx, id, |chat, id| {
-                        let until = if seconds < 0 {
-                            u64::MAX
-                        } else {
-                            b33p_core::now_millis() + seconds as u64 * 1000
-                        };
-                        chat.mute(id, Some(until))
+                        chat.mute(id, Some(crate::chat_list::mute_until(seconds)))
                     })
                 }),
             ));
@@ -346,7 +341,13 @@ fn chat_menu(
     menu = menu.separator();
     menu = menu.item(item(
         if blocked { "Unblock" } else { "Block" },
-        Rc::new(move |s, id, cx| s.chat_action(cx, id, |chat, id| chat.block(id, !blocked))),
+        Rc::new(move |s, id, cx| {
+            if blocked {
+                s.chat_action(cx, id, |chat, id| chat.block(id, false));
+            } else {
+                s.confirm_block(id, cx);
+            }
+        }),
     ));
     menu.item(item(
         if archived { "Unarchive" } else { "Archive" },

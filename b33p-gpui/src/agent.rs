@@ -67,18 +67,13 @@ pub fn start_at(path: PathBuf, shared: &Rc<Shared>, cx: &mut App) {
     let path_for_log = path.display().to_string();
     // A socket left over from a run that died would keep `bind` from working.
     remove_socket(&path);
-    let listener = match UnixListener::bind(&path) {
+    let listener = match bind_private(&path) {
         Ok(listener) => listener,
         Err(error) => {
             tracing::warn!(error = %b33p_core::scrub::chain(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't open the agent socket");
             return;
         }
     };
-    // Connect needs write permission on the file; nobody but the owner gets any, or no harness.
-    if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(error = %b33p_core::scrub::chain(&error), path = %b33p_core::scrub::scrubbed(&path.display()), "can't make the agent socket the owner's only");
-        return;
-    }
 
     // Requests are carried to the UI thread, which alone may touch the state; answers and
     // pushed updates go back through the connection's own channel (`Job::reply`).
@@ -101,8 +96,52 @@ pub fn start_at(path: PathBuf, shared: &Rc<Shared>, cx: &mut App) {
     tracing::info!(path = %b33p_core::scrub::scrubbed(&path_for_log), "{}", b33p_harness::LISTENING);
 }
 
-/// Removes the socket at `path`, if it is there.
+/// Binds a socket that is the owner's alone from the first moment: made in a directory only the
+/// owner can enter, given its mode there, and moved to `path` (a bound socket keeps working
+/// where it is moved to). Binding at `path` and changing the mode after would leave a moment in
+/// which another user could connect, with a permissive umask, and the harness can read every
+/// message and act as the user.
+fn bind_private(path: &std::path::Path) -> std::io::Result<UnixListener> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    };
+    // Its own for every call: tests (and a restart) bind several in one process, side by side.
+    static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staging = parent.join(format!(
+        ".b33p-agent-{}-{}",
+        std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::DirBuilder::new().mode(0o700).create(&staging)?;
+    let made = (|| {
+        let socket = staging.join("socket");
+        let listener = UnixListener::bind(&socket)?;
+        // Connect needs write permission on the file; nobody but the owner gets any.
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&socket, path)?;
+        Ok(listener)
+    })();
+    std::fs::remove_dir_all(&staging).ok();
+    made
+}
+
+/// Removes the socket at `path`, if it is there. Only a socket: the path comes from the
+/// environment, and a file that is something else is not the harness's to delete.
 fn remove_socket(path: &std::path::Path) {
+    use std::os::unix::fs::FileTypeExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.file_type().is_socket() => {
+            tracing::warn!(
+                path = %b33p_core::scrub::scrubbed(&path.display()),
+                "the agent socket's path is not a socket; left alone"
+            );
+            return;
+        }
+        Err(_) => return,
+        Ok(_) => {}
+    }
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => tracing::warn!(
             error = %b33p_core::scrub::chain(&error),
@@ -126,6 +165,12 @@ struct Job {
 /// slow reader can't stall the window.
 type Outbound = async_channel::Sender<String>;
 
+/// How many lines wait for a connection's writer before the connection counts as stuck.
+const OUTBOUND_LINES: usize = 256;
+
+/// The longest request line read; a client that sends more without a newline is cut off.
+const MAX_REQUEST_BYTES: u64 = 1 << 20;
+
 fn accept(listener: UnixListener, jobs: async_channel::Sender<Job>) {
     for (connection, stream) in listener.incoming().enumerate() {
         let Ok(stream) = stream else { break };
@@ -133,7 +178,9 @@ fn accept(listener: UnixListener, jobs: async_channel::Sender<Job>) {
             continue;
         };
         let jobs = jobs.clone();
-        let (out, for_writer) = async_channel::unbounded();
+        // A reader that doesn't read is dropped (see `send` and `Agent::publish`) once this many
+        // lines wait for it, instead of piling up in memory without end.
+        let (out, for_writer) = async_channel::bounded(OUTBOUND_LINES);
         let spawned = std::thread::Builder::new()
             .name(format!("b33p-agent-out-{connection}"))
             .spawn(move || write_out(stream, for_writer))
@@ -159,8 +206,10 @@ fn read_requests(
     let mut line = String::new();
     loop {
         line.clear();
-        match lines.read_line(&mut line) {
+        match std::io::Read::take(&mut lines, MAX_REQUEST_BYTES).read_line(&mut line) {
             Ok(0) | Err(_) => break,
+            // As long as the limit and still no end of line: not a request.
+            Ok(read) if read as u64 >= MAX_REQUEST_BYTES && !line.ends_with('\n') => break,
             Ok(_) => {}
         }
         if line.trim().is_empty() {
@@ -295,7 +344,8 @@ fn send<T: Serialize>(reply: &Outbound, id: u64, result: Result<T, AgentError>) 
     };
     let line = serde_json::to_string(&reply_line).expect("replies always serialize");
     // Nobody to tell if the connection is gone.
-    reply.send_blocking(line).ok();
+    // Not waited for: this is the UI thread. A connection whose queue is full is not reading.
+    reply.try_send(line).ok();
 }
 
 /// Carries `action` out the way the window's own handler does, and reports whether it sent a
@@ -395,11 +445,8 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             conversation,
             minutes,
         } => conversation_action(shared, cx, conversation, Update::reset(), |chat, id| {
-            let until = match minutes {
-                0 => None,
-                ..0 => Some(u64::MAX),
-                minutes => Some(b33p_core::now_millis() + minutes as u64 * 60_000),
-            };
+            let until = (minutes != 0)
+                .then(|| crate::chat_list::mute_until(i64::from(minutes).saturating_mul(60)));
             chat.mute(id, until)
         }),
         Action::Archive {

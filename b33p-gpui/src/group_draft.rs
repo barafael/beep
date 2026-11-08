@@ -15,7 +15,7 @@ use gpui_kit::{
 use crate::dialog::{self, Person};
 use crate::shared::Shared;
 use crate::theme;
-use crate::widgets::modal;
+use crate::widgets::modal_holding;
 
 pub struct GroupDraftView {
     shared: Rc<Shared>,
@@ -168,8 +168,6 @@ impl Render for GroupDraftView {
                         .on_click(cx.listener(|this, _, _, cx| this.finish(cx))),
                 ),
         );
-        modal(&t, 420., content, move |_, cx| {
-            shared.edit(cx, |chat| chat.close_group_draft())
-        })
+        modal_holding(&t, 420., content)
     }
 }

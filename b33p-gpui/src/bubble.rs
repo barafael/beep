@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use b33p_core::state::{self, ChatState, MessageView, Update};
 use b33p_core::{
-    AttachmentId, ConversationId, Delivery, LinkPreview, Reaction, Unsent, now_millis,
+    AttachmentId, ConversationId, Delivery, LinkPreview, Reaction, StyleRange, Unsent, now_millis,
 };
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
@@ -78,15 +78,12 @@ fn build(
     let selecting = chat.has_selection();
     let info = Info {
         index,
+        row: message_menu::Row::new(index, m),
         key: key(view),
         notice: m.notice,
         deleted: m.deleted,
         selected: view.selected,
-        text: if m.deleted {
-            String::new()
-        } else {
-            view.body.to_owned()
-        },
+        has_text: !m.deleted && !view.body.is_empty(),
         can_forward: ChatState::can_forward(m),
         can_edit: chat.can_edit(m),
         save: m
@@ -220,6 +217,63 @@ fn group(index: usize) -> SharedString {
     SharedString::from(format!("message-{index}"))
 }
 
+/// How much of a folded message is laid out: ten lines of a window's width are well within.
+const FOLDED_BYTES: usize = 3000;
+
+/// How many built texts are kept; more than a screen of messages shows.
+const KEPT_RICH: usize = 512;
+
+/// The message's text built for drawing: from the memory of what was built from the same text,
+/// formatting, mentions and spoiler state, or built and kept.
+fn rich_of(shared: &Shared, view: &MessageView, folded: bool) -> Rc<text::Rich> {
+    use std::hash::{Hash as _, Hasher as _};
+    let m = view.message;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (&m.sender_id, m.timestamp, view.revealed, folded).hash(&mut hasher);
+    view.body.hash(&mut hasher);
+    for style in view.styles {
+        (style.start, style.end, style.style as u8).hash(&mut hasher);
+    }
+    for mention in view.mentions {
+        (mention.start, mention.end, &mention.service_id).hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    if let Some(rich) = shared.rich.borrow().get(&key) {
+        return rich.clone();
+    }
+    let rich = Rc::new(if folded {
+        // Ten lines show, however long the rest: only what could be in them is laid out.
+        let mut cut = FOLDED_BYTES.min(view.body.len());
+        while !view.body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let styles: Vec<_> = view
+            .styles
+            .iter()
+            .filter(|s| s.start < cut)
+            .map(|s| StyleRange {
+                end: s.end.min(cut),
+                ..s.clone()
+            })
+            .collect();
+        let mentions: Vec<_> = view
+            .mentions
+            .iter()
+            .filter(|m| m.end <= cut)
+            .cloned()
+            .collect();
+        text::build(&view.body[..cut], &styles, &mentions, view.revealed)
+    } else {
+        text::build(view.body, view.styles, view.mentions, view.revealed)
+    });
+    let mut kept = shared.rich.borrow_mut();
+    if kept.len() >= KEPT_RICH {
+        kept.clear();
+    }
+    kept.insert(key, rich.clone());
+    rich
+}
+
 /// The message's identity, which tells its text from another's among those that can be selected.
 fn key(view: &MessageView) -> SharedString {
     SharedString::from(format!(
@@ -273,13 +327,7 @@ pub fn open_link(shared: &Shared, target: &Target, cx: &mut App) {
 
 /// See [`open_link`].
 pub fn open_url(shared: &Shared, link: &str, cx: &mut App) {
-    if link.starts_with("https://signal.group/#") || link.starts_with("sgnl://signal.group/#") {
-        shared.command(cx, |chat| chat.open_join(Some(link)));
-    } else if (link.starts_with("https://") || link.starts_with("http://"))
-        && let Err(error) = open::that_detached(link)
-    {
-        tracing::warn!(error = %b33p_core::scrub::chain(&error), "couldn't open a link");
-    }
+    crate::web::open_link(shared, link, cx);
 }
 
 /// What a screen reader says for a message: its text, then who, when and how far it got.
@@ -482,7 +530,14 @@ fn message(
     }
 
     if !view.body.is_empty() {
-        let rich = text::build(view.body, view.styles, view.mentions, view.revealed);
+        // Past 800 characters a message shows its first ten lines and "Read more", as Signal's
+        // apps fold them: not a screenful of one message to scroll past. (The bytes are counted
+        // first: characters are never more of them, and counting is for the long ones only.)
+        let long = !m.deleted
+            && view.body.len() > FOLD_CHARACTERS
+            && view.body.chars().count() > FOLD_CHARACTERS;
+        let folded = long && !shared.expanded.borrow().contains(key(view).as_ref());
+        let rich = rich_of(shared, view, folded);
         let look = Look {
             link: if outgoing { ink } else { t.accent },
             ink,
@@ -498,11 +553,7 @@ fn message(
         let body = RichText::new(key(view), rich, look, on_target)
             .interactive(!selecting)
             .selectable(!m.deleted);
-        // Past 800 characters a message shows its first ten lines and "Read more", as Signal's
-        // apps fold them: not a screenful of one message to scroll past.
         let key = key(view);
-        let long = !m.deleted && view.body.chars().count() > FOLD_CHARACTERS;
-        let folded = long && !shared.expanded.borrow().contains(key.as_ref());
         let line: f32 = (theme::body(shared.settings.borrow().text_size.scale())
             * FOLD_LINE_HEIGHT)
             .round()

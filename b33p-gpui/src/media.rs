@@ -4,7 +4,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use b33p_core::state::{self, AttachmentState, SaveState};
+use b33p_core::state::{self, AttachmentState};
 use b33p_core::{Attachment, AttachmentKind};
 use gpui_kit::Role;
 use gpui_kit::component::Sizable as _;
@@ -286,9 +286,10 @@ fn tile(
     t: &Tokens,
     _cx: &mut App,
 ) -> AnyElement {
-    let picture = shared
-        .images
-        .downloaded(&shared.chat.borrow(), &attachment.id);
+    let picture =
+        shared
+            .images
+            .downloaded_within(&shared.chat.borrow(), &attachment.id, crate::images::TILE);
     let placeholder = match (&picture, &attachment.blurhash) {
         (None, Some(hash)) => shared
             .images
@@ -369,28 +370,14 @@ fn file_row(
     shared: &Rc<Shared>,
     t: &Tokens,
 ) -> AnyElement {
-    let size = state::format_size(attachment.size);
     let kind = attachment.kind;
-    let label = match (kind, &attachment.file_name) {
-        (AttachmentKind::ViewOnce, _) => "View-once media: open it on your phone".to_owned(),
-        (AttachmentKind::File, Some(name)) => format!("{name} · {size}"),
-        _ => format!("{} · {size}", state::describe_kind(kind)),
-    };
+    // What the messages say of it, in the same words.
+    let label = crate::attachments::label(kind, attachment.file_name.as_deref(), attachment.size);
     let audio = matches!(kind, AttachmentKind::Audio | AttachmentKind::VoiceNote);
-    let can_save = !matches!(
-        kind,
-        AttachmentKind::ViewOnce | AttachmentKind::LongText | AttachmentKind::Sticker
-    );
+    let can_save = crate::attachments::can_save(kind);
     let status = match (chat.saved(&attachment.id), chat.attachment(&attachment.id)) {
-        (Some(SaveState::Saving), _) => "Saving…".to_owned(),
-        (Some(SaveState::Saved(path)), _) => format!(
-            "Saved to {}",
-            path.parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("disk")
-        ),
-        (Some(SaveState::Failed(error)), _) => format!("Couldn't save: {error}"),
+        (Some(save), _) => crate::attachments::status(None, Some(save)),
+        // No "Click to retry": a row here doesn't retry on a click.
         (None, Some(AttachmentState::Failed(error))) => error.to_string(),
         _ => String::new(),
     };
@@ -528,7 +515,7 @@ fn link_row(
         .hover(|s| s.bg(t.hover))
         .active(|s| s.bg(t.pressed))
         .speaks(Role::Link, format!("Open link {url}"))
-        .on_click(move |_, _, cx| open_link(&shared, &open, cx))
+        .on_click(move |_, _, cx| crate::web::open_link(&shared, &open, cx))
         .child(icon("link").size(px(theme::ICON)))
         .child(
             div()
@@ -551,17 +538,4 @@ fn link_row(
                 ),
         )
         .into_any_element()
-}
-
-/// Opens a link from a message: a group's invite link is for joining here; anything else
-/// goes to the browser, but only web addresses, as links come from message text and nothing
-/// else (files, other apps' schemes) should be opened by one.
-fn open_link(shared: &Rc<Shared>, link: &str, cx: &mut App) {
-    if link.starts_with("https://signal.group/#") || link.starts_with("sgnl://signal.group/#") {
-        shared.command(cx, |chat| chat.open_join(Some(link)));
-    } else if (link.starts_with("https://") || link.starts_with("http://"))
-        && let Err(error) = open::that_detached(link)
-    {
-        tracing::warn!(error = %b33p_core::scrub::chain(&error), "couldn't open a link");
-    }
 }
