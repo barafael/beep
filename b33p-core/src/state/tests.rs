@@ -30,6 +30,7 @@ fn state() -> ChatState {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     state.apply(Event::Synced);
     state.apply(Event::Conversations(vec![
@@ -54,6 +55,7 @@ fn shown(notices: &[Notice]) -> Vec<(Option<&str>, &str, &str)> {
                 conversation,
                 title,
                 body,
+                ..
             } => Some((
                 conversation.as_ref().map(|c| c.0.as_str()),
                 title.as_str(),
@@ -141,6 +143,183 @@ fn content_setting_controls_what_is_revealed() {
     assert_eq!(
         shown(&state.take_notices()),
         [(Some("a"), "b33p", "New message")]
+    );
+}
+
+/// A state that notifies, with chat "a" set to notify as `notify`.
+fn notifying_as(notify: ChatNotify) -> ChatState {
+    let mut state = notifying();
+    let a = ConversationId("a".into());
+    let command = state.set_chat_notify(&a, notify);
+    assert!(
+        matches!(command, Some(Command::SetChatNotify { conversation, notify: set }) if conversation == a && set == notify)
+    );
+    state
+}
+
+const MENTIONS_ONLY: ChatNotify = ChatNotify {
+    mentions_only: true,
+    hide_text: false,
+    silent: false,
+};
+
+#[test]
+fn mentions_only_skips_a_plain_message() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert!(shown(&state.take_notices()).is_empty());
+    // Others notify as before.
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(shown(&state.take_notices()).len(), 1);
+}
+
+#[test]
+fn mentions_only_keeps_a_mention_of_me() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let mention = |service_id: &str, timestamp| ChatMessage {
+        mentions: vec![Mention {
+            start: 0,
+            end: 3,
+            service_id: service_id.into(),
+        }],
+        ..message("a", "Alice", timestamp, false)
+    };
+    state.apply(Event::Message(mention("bob", 1)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "someone else mentioned"
+    );
+    state.apply(Event::Message(mention("me", 2)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "Alice", "Alice at 2\nsecond line")]
+    );
+}
+
+#[test]
+fn mentions_only_keeps_a_reply_to_me() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let reply = |author_id: &str, quoted, timestamp| ChatMessage {
+        quote: Some(Quote {
+            author: String::new(),
+            text: "quoted".into(),
+            author_id: author_id.into(),
+            timestamp: quoted,
+        }),
+        ..message("a", "Alice", timestamp, false)
+    };
+    state.apply(Event::Message(message("a", "You", 1, true)));
+    state.apply(Event::Message(reply("bob", 1, 2)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "a reply to someone else"
+    );
+    state.apply(Event::Message(reply("me", 1, 3)));
+    assert_eq!(shown(&state.take_notices()).len(), 1, "a reply to ours");
+    // A quote that doesn't name its author: ours, as the history says.
+    state.apply(Event::Message(reply("", 1, 4)));
+    assert_eq!(
+        shown(&state.take_notices()).len(),
+        1,
+        "found in the history"
+    );
+    state.apply(Event::Message(reply("", 2, 5)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "the quoted message is Alice's"
+    );
+}
+
+#[test]
+fn a_chat_can_hide_the_text_but_never_show_more() {
+    let mut state = notifying_as(ChatNotify {
+        hide_text: true,
+        ..ChatNotify::default()
+    });
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "Alice", "New message")]
+    );
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("g"), "Carol in g", "Carol at 2\nsecond line")],
+        "other chats show it"
+    );
+    // The app's setting hides more: it wins.
+    state.set_notifications(true, NotificationContent::Nothing);
+    state.apply(Event::Message(message("a", "Alice", 3, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "b33p", "New message")]
+    );
+}
+
+#[test]
+fn a_silent_chat_notifies_without_a_sound() {
+    let mut state = notifying_as(ChatNotify {
+        silent: true,
+        ..ChatNotify::default()
+    });
+    let silent = |notices: Vec<Notice>| -> Vec<bool> {
+        notices
+            .into_iter()
+            .filter_map(|n| match n {
+                Notice::Show { silent, .. } => Some(silent),
+                Notice::Withdraw(_) => None,
+            })
+            .collect()
+    };
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert_eq!(silent(state.take_notices()), [true]);
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(silent(state.take_notices()), [false]);
+
+    // A summary of what came while catching up is quiet only if all of it is.
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 3, false)));
+    state.apply(Event::Synced);
+    assert_eq!(silent(state.take_notices()), [true]);
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 4, false)));
+    state.apply(Event::Message(message("g", "Carol", 5, false)));
+    state.apply(Event::Synced);
+    assert_eq!(silent(state.take_notices()), [false]);
+}
+
+#[test]
+fn mentions_only_leaves_plain_messages_out_of_the_summary() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    state.apply(Event::Synced);
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(None, "b33p", "1 new message")]
+    );
+}
+
+#[test]
+fn mute_wins_over_a_chats_notification_settings() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let a = ConversationId("a".into());
+    state.mute(&a, Some(u64::MAX));
+    state.apply(Event::Message(ChatMessage {
+        mentions: vec![Mention {
+            start: 0,
+            end: 3,
+            service_id: "me".into(),
+        }],
+        ..message("a", "Alice", 1, false)
+    }));
+    assert!(shown(&state.take_notices()).is_empty(), "muted");
+    state.mute(&a, None);
+    state.apply(Event::Message(message("a", "Alice", 2, false)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "unmuted, still mentions only"
     );
 }
 
@@ -1185,6 +1364,7 @@ fn the_start_screen_shows_until_caught_up() {
     assert_eq!(stage(&state), SyncStage::Starting);
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert_eq!(stage(&state), SyncStage::Connecting);
     // Freshly linked: the phone's history comes first.
@@ -1254,6 +1434,7 @@ fn the_chats_can_be_started_while_catching_up() {
     assert_eq!(state.start(), Update::default());
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert!(!state.can_start(), "not before connecting");
     state.apply(Event::Connected);
@@ -1275,6 +1456,7 @@ fn an_unreachable_signal_still_shows_the_chats() {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     let update = state.apply(Event::Reconnecting);
     assert!(update.screen);
@@ -1706,6 +1888,7 @@ fn the_connection_is_followed() {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert_eq!(state.connection(), Connection::Offline);
     state.apply(Event::Connected);
@@ -1744,6 +1927,7 @@ fn unlinking_forgets_the_account() {
     state.set_notifications(true, NotificationContent::default());
     state.apply(Event::Linked {
         account: "+1 555".into(),
+        service_id: "me".into(),
     });
     state.apply(Event::Synced);
     let a = conversation("a", false);

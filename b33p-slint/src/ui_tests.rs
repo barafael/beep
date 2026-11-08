@@ -10,8 +10,8 @@ use slint::platform::PointerEventButton;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::generated::{
-    Account, AppWindow, ChatList, Composer, ConversationItem, DeliveryState, Groups, MessageItem,
-    OpenChat, Panels, Prefs, Screen, StoryItem,
+    Account, AppWindow, ChatList, ChatNotify, Composer, ConversationItem, DeliveryState, Groups,
+    MessageItem, OpenChat, Panels, Prefs, Screen, StoryItem,
 };
 use crate::rows::Rows;
 
@@ -275,6 +275,68 @@ fn the_safety_number_can_be_marked_verified() {
         .expect("offered once verified")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(asked.get(), Some(false));
+}
+
+/// The control labelled `label` that has `role`: a setting's label is a text of the same name.
+fn control(
+    window: &AppWindow,
+    label: &str,
+    role: i_slint_backend_testing::AccessibleRole,
+) -> Option<ElementHandle> {
+    ElementHandle::find_by_accessible_label(window, label)
+        .find(|e| e.accessible_role() == Some(role))
+}
+
+/// The details page has the chat's own notification settings beside muting it: they show
+/// what Rust set, report a change, and keep following Rust after one (another chat opened).
+/// "Show message text" can't be turned on while the app's setting hides the text anyway.
+#[test]
+fn a_chats_notifications_are_set_on_its_details_page() {
+    use i_slint_backend_testing::AccessibleRole;
+
+    let (window, _messages) = window_with_messages(1);
+    let changes = Rc::new(Cell::new(0));
+    window.global::<ChatNotify>().on_changed({
+        let changes = changes.clone();
+        move || changes.set(changes.get() + 1)
+    });
+    // Tall enough for the whole details page: the panel makes only what shows.
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 1200.));
+    window.global::<Groups>().set_details_open(true);
+    settle(&window);
+    let notify = window.global::<ChatNotify>();
+    let combo = control(&window, "Notify for", AccessibleRole::Combobox).expect("offered");
+    assert_eq!(combo.accessible_value().as_deref(), Some("All messages"));
+    notify.set_notify_for(1);
+    settle(&window);
+    assert_eq!(
+        combo.accessible_value().as_deref(),
+        Some("Mentions and replies")
+    );
+
+    let sound = || control(&window, "Notification sound", AccessibleRole::Switch).expect("offered");
+    assert_eq!(sound().accessible_checked(), Some(true));
+    sound().mock_single_click(PointerEventButton::Left);
+    assert_eq!(changes.get(), 1);
+    assert!(!notify.get_sound(), "turned off");
+    notify.set_sound(true);
+    settle(&window);
+    assert_eq!(
+        sound().accessible_checked(),
+        Some(true),
+        "follows what Rust sets after a click"
+    );
+
+    let text = || control(&window, "Show message text", AccessibleRole::Switch).expect("offered");
+    text().mock_single_click(PointerEventButton::Left);
+    assert_eq!(changes.get(), 2);
+    assert!(!notify.get_show_text(), "hidden");
+    window.global::<Prefs>().set_notification_content(1);
+    settle(&window);
+    assert_eq!(text().accessible_enabled(), Some(false));
+    assert!(find(&window, "Hidden for every chat in Settings").is_some());
 }
 
 /// A chat whose verified safety number changed says so where the composer was, and offers to
@@ -830,6 +892,7 @@ fn the_window_shows_the_chat_state() {
     let mut chat = ChatState::default();
     chat.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     chat.apply(Event::Synced);
     chat.apply(Event::Conversations(vec![Conversation {
@@ -910,6 +973,7 @@ fn the_chat_list_follows_events() {
     let mut chat = ChatState::default();
     chat.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     chat.apply(Event::Synced);
     let person = |name: &str| Conversation {

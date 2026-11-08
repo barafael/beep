@@ -33,8 +33,9 @@ read, answered and reacted to:
 - Attachments: pictures, voice messages and audio playback, files, stickers, link previews,
   paste and drag-and-drop
 - Search in a chat and in the chat list, media overview, forwarding, stories
-- Desktop notifications with click-to-open and inline reply, tray icon, single instance,
-  keyboard shortcuts, screen-reader labels, reduced-motion support
+- Desktop notifications with click-to-open and inline reply; per chat, only for mentions and
+  replies, without the text, or without a sound (on Linux, if the desktop honours that)
+- Tray icon, single instance, keyboard shortcuts, screen-reader labels, reduced-motion support
 - A screen for what goes wrong at the start, with ways out: try again, start over, unlink
 
 Payments and calls are out of scope. b33p is young: see [PLAN.md](PLAN.md) for where it stands,

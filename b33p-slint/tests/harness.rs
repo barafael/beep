@@ -14,8 +14,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use b33p_harness::{
-    Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
-    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme, Trust,
+    Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, NotifySnapshot,
+    Outcome, Pong, Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize,
+    Theme, Trust,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -421,6 +422,36 @@ fn messages_are_pinned_and_unpinned() {
     });
     assert!(agent.act(Action::UnpinMessage { index }));
     agent.wait_for("no pins", |s| s.pinned.is_empty());
+}
+
+/// A chat's own notification settings, set as its details page does, show in the snapshot;
+/// the other chats keep notifying as before.
+#[test]
+fn a_chat_notifies_only_for_mentions() {
+    let (_app, mut agent) = app("notify");
+    let chats = wait_for_chats(&mut agent);
+    assert_eq!(
+        conversation(&chats, "Alice").notify,
+        NotifySnapshot::default()
+    );
+    let quiet = NotifySnapshot {
+        mentions_only: true,
+        hide_text: true,
+        silent: true,
+    };
+    assert!(agent.act(Action::SetChatNotify {
+        conversation: id_of(&chats, "Alice"),
+        notify: quiet,
+    }));
+    let set = agent.wait_for("Alice's settings", |s| {
+        conversation(s, "Alice").notify == quiet
+    });
+    assert!(
+        set.conversations
+            .iter()
+            .filter(|c| c.title != "Alice")
+            .all(|c| c.notify == NotifySnapshot::default())
+    );
 }
 
 /// A picture fetched for display and a file saved, with their states in the snapshot.

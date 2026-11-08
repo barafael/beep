@@ -37,10 +37,10 @@ use std::rc::{Rc, Weak};
 use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
-    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent,
-    QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved, ScreenSnapshot,
-    SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot,
-    StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
+    PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
+    ScreenSnapshot, SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
+    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -392,6 +392,19 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
             archived,
         } => conversation_action(shared, conversation, Update::reset(), |chat, id| {
             chat.archive(id, archived)
+        }),
+        Action::SetChatNotify {
+            conversation,
+            notify,
+        } => conversation_action(shared, conversation, Update::reset(), |chat, id| {
+            chat.set_chat_notify(
+                id,
+                b33p_core::ChatNotify {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                },
+            )
         }),
         Action::Block {
             conversation,
@@ -835,6 +848,14 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             typing: view.typing.iter().map(|name| name.to_string()).collect(),
             avatar: view.avatar.is_some(),
             trust: view.conversation.trust.into(),
+            notify: {
+                let notify = view.conversation.settings.notify;
+                NotifySnapshot {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                }
+            },
         })
         .collect();
     let messages = (0u32..)

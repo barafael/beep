@@ -265,6 +265,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::SetPins(_)
         | Command::Mute { .. }
         | Command::Archive { .. }
+        | Command::SetChatNotify { .. }
         | Command::SetTimer { .. }
         | Command::PinMessage { .. }
         | Command::UnpinMessage { .. }

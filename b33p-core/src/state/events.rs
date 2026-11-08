@@ -79,8 +79,12 @@ impl ChatState {
                 self.screen = Screen::Link(qr);
                 update.screen = true;
             }
-            Event::Linked { account } => {
+            Event::Linked {
+                account,
+                service_id,
+            } => {
                 self.account = account;
+                self.service_id = service_id;
                 // A sticker load cut off by relinking never answers; ask again next time.
                 if matches!(self.sticker_packs, Some(None)) {
                     self.sticker_packs = None;
@@ -413,7 +417,14 @@ impl ChatState {
                     self.selected.as_ref() == Some(&id) && self.notifications.window_focused;
                 let notice = history[pos].notice;
                 let sent_at = history[pos].timestamp;
-                if !outgoing && !notice && self.wants_notice(&id) {
+                let for_me = !outgoing
+                    && !notice
+                    && super::reading::addresses(
+                        &self.history[&id][pos],
+                        &self.service_id,
+                        &self.history[&id],
+                    );
+                if !outgoing && !notice && self.wants_notice(&id, for_me) {
                     let message = &self.history[&id][pos];
                     // A photo or sticker alone says what it is.
                     let body = match (message.body.is_empty(), message.attachments.first()) {

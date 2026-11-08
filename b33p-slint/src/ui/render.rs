@@ -95,6 +95,7 @@ pub(crate) fn render(
     render_pins(window, chat);
     render_stickers(window, chat);
     render_details(window, chat);
+    render_notify(window, chat);
     render_stories(window, chat, images);
     let search = chat.chat_search();
     window
