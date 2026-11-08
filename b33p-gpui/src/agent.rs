@@ -238,6 +238,8 @@ enum AgentError {
     Screenshot,
     #[error("there is nothing called {what:?} to show or hide")]
     NothingToShow { what: String },
+    #[error("the GPUI window has no picture viewer: a photo opens in the system's viewer")]
+    NoViewer,
 }
 
 /// GPUI draws to the GPU and doesn't hand the frame back, so the window can't write itself to
@@ -730,6 +732,11 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
                 Update::default(),
             )
         }),
+        Action::OpenViewer { .. }
+        | Action::ViewerNext
+        | Action::ViewerPrevious
+        | Action::ZoomViewer { .. }
+        | Action::CloseViewer => return Err(AgentError::NoViewer),
         Action::SetWindowFocused { focused } => shared.act(cx, |chat| {
             shared.focus_override.set(Some(focused));
             chat.set_window_focused(focused);
@@ -1122,6 +1129,8 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&UiState>) -> 
             sync_to_phone: settings.preferences.sync_to_phone,
             device_name: settings.device_name(),
         },
+        // No picture viewer in this window (`Action::OpenViewer` is refused).
+        viewer: None,
     }
 }
 

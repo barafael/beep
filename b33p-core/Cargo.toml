@@ -26,6 +26,8 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 qrcode.workspace = true
 zeroize = "1"
+# Scaling pictures down for the picture viewer; see `resample.rs`.
+fast_image_resize = "6"
 tracing = "0.1"
 
 presage = { workspace = true, optional = true }

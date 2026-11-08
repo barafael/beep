@@ -852,6 +852,8 @@ pub struct Images {
     texts: RefCell<HashMap<u64, slint::StyledText>>,
     /// [`ChatState::downloads_forgotten`] when `attachments` last let go of what it forgot.
     forgotten: Cell<u64>,
+    /// The picture the viewer shows at full size: only that one, let go of once it closes.
+    viewed: RefCell<Option<(Arc<Picture>, Image)>>,
 }
 
 impl Images {
@@ -879,6 +881,23 @@ impl Images {
             .borrow_mut()
             .insert(hash.to_owned(), image.clone());
         image
+    }
+
+    /// The viewer's picture, converted once.
+    fn viewed(&self, picture: &Arc<Picture>) -> Image {
+        let mut viewed = self.viewed.borrow_mut();
+        if let Some((kept, image)) = &*viewed
+            && Arc::ptr_eq(kept, picture)
+        {
+            return image.clone();
+        }
+        let image = picture_image(picture);
+        *viewed = Some((picture.clone(), image.clone()));
+        image
+    }
+
+    fn forget_viewed(&self) {
+        self.viewed.replace(None);
     }
 
     /// Lets go of the pictures the state let go of (to keep memory in bounds), which would

@@ -487,6 +487,45 @@ fn attachments_are_fetched_and_saved() {
     assert!(path.ends_with("route-notes.pdf"));
 }
 
+/// A photo opens in the picture viewer, which downloads it whole and zooms; only photos do.
+#[test]
+fn photos_open_in_the_viewer() {
+    let (_app, mut agent) = app("viewer");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Alice"));
+    agent.wait_for("Alice's photo", |s| {
+        s.messages
+            .iter()
+            .flat_map(|m| &m.attachments)
+            .any(|a| a.id == "photo")
+    });
+    assert!(!agent.act(Action::OpenViewer {
+        id: "notes".to_owned(),
+    }));
+    assert!(agent.act(Action::OpenViewer {
+        id: "photo".to_owned(),
+    }));
+    let shown = agent.wait_for("the photo at full size", |s| {
+        s.viewer
+            .as_ref()
+            .is_some_and(|v| v.download == Download::Ready)
+    });
+    let viewer = shown.viewer.unwrap();
+    assert_eq!(
+        (viewer.sender.as_str(), viewer.index, viewer.count),
+        ("Alice", 0, 1)
+    );
+    // The only photo: nowhere to go.
+    assert!(!agent.act(Action::ViewerNext));
+    assert!(!agent.act(Action::ViewerPrevious));
+    // The window says how far it zooms, and catches at 100% on the way in.
+    agent.act(Action::ZoomViewer { notches: 30.0 });
+    let zoomed = agent.snapshot().viewer.unwrap();
+    assert_eq!((zoomed.zoom, zoomed.fitted), (Some(1.0), Some(false)));
+    agent.act(Action::CloseViewer);
+    agent.wait_for("the viewer closed", |s| s.viewer.is_none());
+}
+
 /// What fails for a reason that may pass can be tried again; what Signal refused can't. The
 /// mock fails `/fail` as if offline and `/refuse` as if the recipient left Signal, and looks a
 /// link ending in "offline" up as if Signal were out of reach.

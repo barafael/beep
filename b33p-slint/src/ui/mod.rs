@@ -28,6 +28,7 @@ mod items;
 mod notify;
 mod pins;
 mod render;
+mod viewer;
 
 pub(crate) use items::set_up_models;
 use items::*;
@@ -35,6 +36,9 @@ use notify::*;
 use pins::*;
 pub(crate) use render::render;
 use render::*;
+use viewer::*;
+#[cfg(test)]
+pub(crate) use viewer::{open_picture, wire_zoom};
 
 /// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 /// What the agent harness asked of the window that it couldn't do.
@@ -207,6 +211,35 @@ impl Window {
                 source,
             })?;
         Ok((width, height))
+    }
+
+    /// The viewer's zoom (its picture's pixels per physical pixel), and whether that is
+    /// because the picture fits the window.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn viewer_zoom(&self) -> (f32, bool) {
+        let viewer = self.0.global::<Viewer>();
+        // The zoom chosen as it was set, not as the viewer passed it on: that waits for its
+        // change handler.
+        match viewer.get_zoom() {
+            zoom if zoom > 0.0 => (zoom, false),
+            _ => (viewer.get_fit_zoom(), true),
+        }
+    }
+
+    /// Zooms the viewer as `notches` of the wheel would, at the window's centre.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn zoom_viewer(&self, notches: f32) {
+        let viewer = self.0.global::<Viewer>();
+        let (shown, _) = self.viewer_zoom();
+        let fit = viewer.get_fit_zoom();
+        let zoom = state::wheel_zoom(shown, notches, fit);
+        viewer.set_zoom(if zoom == fit { 0.0 } else { zoom });
+    }
+
+    /// The viewer's close button, for the harness.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn close_viewer(&self, shared: &Shared) {
+        close_viewer(shared, &self.0);
     }
 
     /// Gives the window a size, in logical pixels.
@@ -468,7 +501,9 @@ fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         return true;
     }
     let mut chat = shared.chat.borrow_mut();
-    if chat.join().is_some() {
+    if chat.viewer().is_some() {
+        chat.close_viewer();
+    } else if chat.join().is_some() {
         chat.close_join();
     } else if window.global::<Panels>().get_stories_open() {
         if chat.current_story().is_some() {

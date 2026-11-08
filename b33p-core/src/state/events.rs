@@ -167,6 +167,9 @@ impl ChatState {
                 update.rows = !shown.is_empty();
                 self.changed_rows.get_mut().note(shown);
             }
+            Event::FullPicture { id, picture } => {
+                self.full_picture_arrived(&id, picture);
+            }
             Event::AttachmentSaved { id, path } => {
                 let state = match path {
                     Ok(path) => SaveState::Saved(path),

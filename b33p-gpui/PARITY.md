@@ -150,6 +150,7 @@ What moves in Slint, and in GPUI:
 | A message jumped to flashes, then settles into its highlight | yes | yes | carries meaning (it is how the eye finds it): added |
 | Spinners, tooltips, caret blink | yes | yes | the component library's, which obeys the flag |
 | Hover and press colour changes | fades | at once | cosmetic |
+| A photo opens in b33p's own viewer, over the window: next and previous, zoom, the download's state | yes | no | GPUI opens it in the system's viewer, as before; the agent refuses the viewer's actions and reports no viewer. The viewer's state is `b33p-core`'s (`state/viewer.rs`), so only the drawing is missing |
 | A new message fades in | yes | no | the row's fresh state is not in the view model GPUI reads; cosmetic |
 | Error banner slides open and closed | yes | yes | `app.rs`; the closing one is kept for the length of the slide, with no alert role |
 | Dialogs and panels fade in | yes (dialogs also grow from 97%) | fade only | `widgets::modal`, `panels.rs`; GPUI has no element transform, so no growing |
