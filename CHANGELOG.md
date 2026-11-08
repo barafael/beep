@@ -65,6 +65,8 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- Windows: Ctrl shortcuts (copy, paste, select all, b33p's own) work while a Korean input
+  method is on; before, it swallowed them.
 - The names offered for an @mention follow a name typed through an input method (Hangul,
   kana, pinyin) while it is composed, not a syllable behind.
 - Long messages reach phones: past 2000 characters the text goes out as Signal's apps send
