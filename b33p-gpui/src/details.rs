@@ -159,7 +159,9 @@ impl Render for DetailsPanel {
                 shared.edit(cx, |chat| chat.close_details());
             }
         };
-        let details = page.details.clone().unwrap_or_default();
+        // The page is a copy already; its members and requests are not copied again.
+        let no_details = Default::default();
+        let details = page.details.as_ref().unwrap_or(&no_details);
         let about = details.about.clone().unwrap_or_default();
         let phone = details.phone.clone().filter(|p| !p.is_empty());
         let has_picture = page.picture.is_some();
@@ -237,13 +239,13 @@ impl Render for DetailsPanel {
         let in_group = page.group && !page.left;
         if in_group {
             column = column.child(self.group_section(has_picture, &t, cx));
-            column = column.child(self.invite_section(&page, &details, &t));
+            column = column.child(self.invite_section(&page, details, &t));
             if page.admin && !details.requests.is_empty() {
                 column = column.child(self.requests_section(&details.requests, &t));
             }
         }
         if !details.members.is_empty() {
-            column = column.child(self.members_section(&page, &details, &t));
+            column = column.child(self.members_section(&page, details, &t));
         }
         panel::sheet("details-panel", &t)
             .child(panel::header(
@@ -333,12 +335,7 @@ impl DetailsPanel {
                         };
                         menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                             shared.chat_action(cx, &id, |chat, id| {
-                                let until = if seconds < 0 {
-                                    u64::MAX
-                                } else {
-                                    b33p_core::now_millis() + seconds as u64 * 1000
-                                };
-                                chat.mute(id, Some(until))
+                                chat.mute(id, Some(crate::chat_list::mute_until(seconds)))
                             })
                         }));
                     }
@@ -588,10 +585,7 @@ impl DetailsPanel {
                             .debug_selector(|| "Leave group…".into())
                             .on_click({
                                 let shared = shared.clone();
-                                move |_, _, cx| {
-                                    shared.ui.borrow_mut().confirm = Confirm::LeaveGroup;
-                                    shared.refresh(Update::default(), cx);
-                                }
+                                move |_, _, cx| shared.confirm(Confirm::LeaveGroup, None, cx)
                             }),
                     ),
             )
@@ -666,7 +660,7 @@ impl DetailsPanel {
                                 .label("Reset")
                                 .debug_selector(|| "Reset".into())
                                 .on_click(move |_, _, cx| {
-                                    edit_group(&shared, cx, GroupEdit::ResetInviteLink)
+                                    shared.confirm(Confirm::ResetInviteLink, None, cx)
                                 }),
                         )
                     })
@@ -740,6 +734,7 @@ impl DetailsPanel {
                         let manage = (person.name != "You" && !left).then(|| {
                             let shared = shared.clone();
                             let member = person.service_id.clone();
+                            let name = person.name.clone();
                             Button::new(("member-manage", index))
                                 .ghost()
                                 .small()
@@ -749,6 +744,7 @@ impl DetailsPanel {
                                     let (toggle_shared, remove_shared) =
                                         (shared.clone(), shared.clone());
                                     let (toggle_id, remove_id) = (member.clone(), member.clone());
+                                    let remove_name = name.clone();
                                     menu.item(
                                         PopupMenuItem::new(if admin {
                                             "Take admin rights"
@@ -768,10 +764,10 @@ impl DetailsPanel {
                                     .item(
                                         PopupMenuItem::new("Remove from group").on_click(
                                             move |_, _, cx| {
-                                                edit_group(
-                                                    &remove_shared,
+                                                remove_shared.confirm_removing(
+                                                    &remove_id,
+                                                    &remove_name,
                                                     cx,
-                                                    GroupEdit::RemoveMember(remove_id.clone()),
                                                 )
                                             },
                                         ),

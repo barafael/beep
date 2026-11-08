@@ -137,6 +137,7 @@ pub fn bar(
     if !can_react || !shared.reaction_bar.shown_for(index) {
         return None;
     }
+    let row = message_menu::Row::of(&shared.chat.borrow(), index)?;
     let cell = |emoji: &'static str| {
         let shared = shared.clone();
         div()
@@ -186,7 +187,7 @@ pub fn bar(
             })
             .content({
                 let shared = shared.clone();
-                move |_, window, cx| message_menu::picker(&shared, index, true, window, cx)
+                move |_, window, cx| message_menu::picker(&shared, &row, true, window, cx)
             })
     };
     let over = shared.clone();

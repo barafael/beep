@@ -183,6 +183,7 @@ impl Render for AppView {
         let shared = self.shared.clone();
         let narrow = window.viewport_size().width < px(640.);
         shared.ui.borrow_mut().narrow = narrow;
+        shared.window_bounds.set(Some(window.window_bounds()));
         {
             let mut ui = shared.ui.borrow_mut();
             ui.window_active = window.is_window_active();
@@ -216,31 +217,46 @@ impl Render for AppView {
             .font_family(gpui_kit::component::Theme::global(cx).font_family.clone())
             .text_size(theme::body(shared.settings.borrow().text_size.scale()))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                if this.shared.modal_open() {
+                    return;
+                }
                 this.shared.ui.borrow_mut().settings_open = false;
                 this.list
                     .update(cx, |list, cx| list.focus_search(window, cx));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &SearchInChat, _, cx| {
-                if this.shared.chat.borrow().selected().is_some() {
+                if !this.shared.modal_open() && this.shared.chat.borrow().selected().is_some() {
                     this.shared.edit(cx, |chat| chat.open_chat_search());
                 }
             }))
             .on_action(cx.listener(|this, _: &NextChat, _, cx| {
+                if this.shared.modal_open() {
+                    return;
+                }
                 if !this.list.update(cx, |list, cx| list.move_cursor(1, cx)) {
                     this.open(cx, |chat| chat.select_relative(1));
                 }
             }))
             .on_action(cx.listener(|this, _: &PreviousChat, _, cx| {
+                if this.shared.modal_open() {
+                    return;
+                }
                 if !this.list.update(cx, |list, cx| list.move_cursor(-1, cx)) {
                     this.open(cx, |chat| chat.select_relative(-1));
                 }
             }))
             .on_action(cx.listener(|this, _: &NextUnreadChat, _, cx| {
+                if this.shared.modal_open() {
+                    return;
+                }
                 this.open(cx, |chat| chat.select_next_unread());
             }))
             .on_action(cx.listener(|this, action: &Pinned, _, cx| {
                 let n = action.0;
+                if this.shared.modal_open() {
+                    return;
+                }
                 this.open(cx, |chat| chat.select_pinned(n));
             }))
             .on_action(cx.listener(|this, _: &CloseFront, window, cx| {
@@ -452,7 +468,6 @@ impl AppView {
             .when(show_list, |row| row.child(list))
             .when(show_list && !narrow, |row| row.child(divider))
             .when(!(narrow && show_list), |row| row.child(main))
-            .when(false, |row| row.w(px(sidebar)))
     }
 }
 

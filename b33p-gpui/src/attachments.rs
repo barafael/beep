@@ -12,8 +12,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Bounds, ElementId, FontWeight, Hsla, MouseButton, ObjectFit, SharedString, canvas,
-    div, img, px,
+    AnyElement, Bounds, DispatchPhase, ElementId, FontWeight, Hsla, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, SharedString, canvas, div, img, px,
 };
 
 use crate::images::{Drawn, Images};
@@ -397,20 +397,10 @@ pub fn view(
     Some(column.into_any_element())
 }
 
-/// Asks for the download of attachment `id`, and redraws when one starts.
+/// Asks for the download of attachment `id`, and redraws when one starts. A row on screen
+/// asks on every draw; once the answer is no, that costs nothing and draws nothing.
 pub fn fetch(shared: &Shared, id: &AttachmentId, cx: &mut gpui_kit::App) {
-    shared.act(cx, |chat| {
-        // Nothing to redraw unless a download starts (a row coming into view asks).
-        let command = chat.fetch_attachment(id);
-        let rows = command.is_some();
-        (
-            command,
-            state::Update {
-                rows,
-                ..state::Update::default()
-            },
-        )
-    });
+    shared.ask(cx, |chat| chat.fetch_attachment(id));
 }
 
 /// Saves attachment `id` to disk.
@@ -448,6 +438,9 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
         })
     };
     let scope = env.scope;
+    // The press began on the bar: only then does moving the pointer seek. A pointer moved over it
+    // with the button down from elsewhere (selecting text, say) is not a seek.
+    let dragging = Rc::new(Cell::new(false));
     div()
         .flex()
         .flex_row()
@@ -491,6 +484,30 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
                         .w_full()
                         .cursor_pointer()
                         .speaks(Role::Slider, "Position")
+                        .focusable()
+                        .tab_index(0)
+                        .focus_visible(|s| s.border_1().border_color(ink))
+                        .on_key_down({
+                            let (shared, id) = (shared.clone(), item.id.clone());
+                            move |event, _, cx| {
+                                // Five percent of the way, as a slider does; the audio's length
+                                // is the player's to know, so this is by fractions.
+                                let step = match event.keystroke.key.as_str() {
+                                    "left" | "down" => -0.05,
+                                    "right" | "up" => 0.05,
+                                    "home" => -1.,
+                                    "end" => 1.,
+                                    _ => return,
+                                };
+                                let to = match event.keystroke.key.as_str() {
+                                    "home" => 0.,
+                                    "end" => 1.,
+                                    _ => (progress + step).clamp(0., 1.),
+                                };
+                                shared.seek_playback(id.clone(), to, cx);
+                                cx.stop_propagation();
+                            }
+                        })
                         .aria_value(format!("{}%", (progress * 100.).round()))
                         .aria_numeric_value(f64::from(progress * 100.))
                         .aria_min_numeric_value(0.)
@@ -501,7 +518,36 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
                                     let bounds = bounds.clone();
                                     move |track, _, _| bounds.set(track)
                                 },
-                                |_, _, _, _| {},
+                                {
+                                    let (dragging, seek) = (dragging.clone(), seek.clone());
+                                    // Seeks while the button is down, also where the pointer has
+                                    // left the thin bar; stops where it is let go.
+                                    move |_, _, window, _| {
+                                        window.on_mouse_event({
+                                            let (dragging, seek) = (dragging.clone(), seek.clone());
+                                            move |event: &MouseMoveEvent, phase, _, cx| {
+                                                if phase != DispatchPhase::Capture
+                                                    || !dragging.get()
+                                                {
+                                                    return;
+                                                }
+                                                if event.pressed_button == Some(MouseButton::Left) {
+                                                    seek(event.position.x, cx);
+                                                } else {
+                                                    dragging.set(false);
+                                                }
+                                            }
+                                        });
+                                        window.on_mouse_event({
+                                            let dragging = dragging.clone();
+                                            move |event: &MouseUpEvent, _, _, _| {
+                                                if event.button == MouseButton::Left {
+                                                    dragging.set(false);
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
                             )
                             .absolute()
                             .size_full(),
@@ -540,15 +586,11 @@ fn player(item: &AttachmentItem, env: &Env) -> AnyElement {
                             )
                         })
                         .on_mouse_down(MouseButton::Left, {
-                            let seek = seek.clone();
+                            let dragging = dragging.clone();
                             move |event, _, cx| {
+                                dragging.set(true);
                                 seek(event.position.x, cx);
                                 cx.stop_propagation();
-                            }
-                        })
-                        .on_mouse_move(move |event, _, cx| {
-                            if event.pressed_button == Some(MouseButton::Left) {
-                                seek(event.position.x, cx);
                             }
                         }),
                 )

@@ -15,7 +15,7 @@ use gpui_kit::{Context, Entity, FontWeight, IntoElement, Render, Subscription, W
 use crate::dialog;
 use crate::shared::Shared;
 use crate::theme;
-use crate::widgets::{icon, modal};
+use crate::widgets::{icon, modal_holding};
 
 pub struct JoinView {
     shared: Rc<Shared>,
@@ -124,6 +124,10 @@ impl Render for JoinView {
             self.known = state_link;
         }
         let blank = self.link.read(cx).value().trim().is_empty();
+        // The preview is of the link that was looked up; once the field says another, it is
+        // not what Join would do, and says nothing until that one is looked up.
+        let stale = self.link.read(cx).value().trim() != self.known;
+        let preview = preview.filter(|_| !stale);
         let can_join = preview.is_some() && !busy && preview.as_ref().is_some_and(|p| !p.requested);
         let approval = preview.as_ref().is_some_and(|p| p.approval);
         let content = dialog::layout("Join a group")
@@ -211,6 +215,7 @@ impl Render for JoinView {
                         Button::new("join")
                             .primary()
                             .label(if approval { "Ask to join" } else { "Join" })
+                            .debug_selector(|| "Join".into())
                             .disabled(!can_join)
                             .on_click({
                                 let shared = shared.clone();
@@ -218,9 +223,7 @@ impl Render for JoinView {
                             }),
                     ),
             );
-        modal(&t, 440., content, move |_, cx| {
-            shared.edit(cx, |chat| chat.close_join())
-        })
+        modal_holding(&t, 440., content)
     }
 }
 

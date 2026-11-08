@@ -53,6 +53,12 @@ pub struct StartView {
     could_start_since: Option<Instant>,
     /// The password field has been given the focus for the screen it is on.
     focused_password: bool,
+    /// The code on the link screen, drawn once for as long as it is the same: it is on screen
+    /// for minutes, drawn many times a second while something on it moves, and every picture
+    /// made is kept by the graphics until let go of.
+    code: Option<(QrMatrix, crate::images::Drawn)>,
+    /// A timer to redraw once "Start" may be offered is running.
+    waking: Rc<std::cell::Cell<bool>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,7 +101,8 @@ impl StartView {
                 &device_name,
                 window,
                 |this, input, event: &InputEvent, _, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
+                    // Kept with Enter, and when the caret leaves the field.
+                    if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
                         let name = input.read(cx).value().to_string();
                         this.shared.rename_device(&name, cx);
                     }
@@ -109,6 +116,8 @@ impl StartView {
             device_name,
             could_start_since: None,
             focused_password: false,
+            code: None,
+            waking: Rc::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -123,7 +132,7 @@ impl StartView {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let password = self.password.read(cx).value().to_string();
         let confirmation = self.confirmation.read(cx).value().to_string();
-        self.shared.act(cx, |chat| {
+        let attempted = self.shared.act(cx, |chat| {
             (
                 chat.unlock(&password, &confirmation),
                 Update {
@@ -132,11 +141,19 @@ impl StartView {
                 },
             )
         });
-        for input in [&self.password, &self.confirmation] {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
+        if attempted {
+            // Out of the fields once tried, whatever comes of it.
+            for input in [&self.password, &self.confirmation] {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            }
+            self.password
+                .update(cx, |input, cx| input.focus(window, cx));
+        } else if self.is_new_password() {
+            // Turned down before it was tried (too short, or the two differ): what was typed
+            // stays to be mended, with the caret where the mistake most likely is.
+            self.confirmation
+                .update(cx, |input, cx| input.focus(window, cx));
         }
-        self.password
-            .update(cx, |input, cx| input.focus(window, cx));
     }
 
     /// Ready to type into.
@@ -203,6 +220,11 @@ impl Render for StartView {
         } else if !on_password {
             self.focused_password = false;
         }
+        if !matches!(chat.screen(), Screen::Link(_))
+            && let Some((_, drawn)) = self.code.take()
+        {
+            cx.drop_image(drawn, None);
+        }
         match chat.screen().clone() {
             Screen::Syncing(stage) => {
                 self.could_start_since = None;
@@ -229,12 +251,15 @@ impl StartView {
         let since = *self.could_start_since.get_or_insert_with(Instant::now);
         // After a short wait, once the chats could be shown.
         let waited = can_start && since.elapsed() >= Duration::from_millis(1500);
-        if can_start && !waited {
+        // One timer, however often this is drawn meanwhile (the spinner moves).
+        if can_start && !waited && !self.waking.replace(true) {
             let wake = Duration::from_millis(1500).saturating_sub(since.elapsed());
+            let waking = self.waking.clone();
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(wake + Duration::from_millis(20))
                     .await;
+                waking.set(false);
                 this.update(cx, |_, cx| cx.notify()).ok();
             })
             .detach();
@@ -450,14 +475,29 @@ impl StartView {
         page_with(t, Some("b33p can't go on"), true, children).into_any_element()
     }
 
-    fn link(&mut self, qr: &QrMatrix, t: &Tokens, _cx: &mut Context<Self>) -> AnyElement {
-        let modules = qr.to_rgba(1);
-        let (side, pixels) = modules;
-        let drawn = crate::images::draw(&b33p_core::Picture {
-            width: side as u32,
-            height: side as u32,
-            rgba: pixels,
-        });
+    fn link(&mut self, qr: &QrMatrix, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        if self
+            .code
+            .as_ref()
+            .is_none_or(|(drawn_for, _)| drawn_for != qr)
+        {
+            // Eight pixels to a module, so that scaled to the box its edges stay sharp (one
+            // pixel to a module is smeared by the sampler, and the code is harder to scan).
+            let (side, pixels) = qr.to_rgba(8);
+            let drawn = crate::images::draw(&b33p_core::Picture {
+                width: side as u32,
+                height: side as u32,
+                rgba: pixels,
+            });
+            let replaced = match drawn {
+                Some(drawn) => self.code.replace((qr.clone(), drawn)),
+                None => self.code.take(),
+            };
+            if let Some((_, old)) = replaced {
+                cx.drop_image(old, None);
+            }
+        }
+        let drawn = self.code.as_ref().map(|(_, drawn)| drawn.clone());
         let code = div()
             .id("link-code")
             .speaks(Role::Image, "The code to scan")

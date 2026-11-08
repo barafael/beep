@@ -14,16 +14,35 @@ use smallvec::smallvec;
 /// What the window draws a picture from.
 pub type Drawn = Arc<RenderImage>;
 
+/// A picture as the state has it, with what it was drawn as.
+type Kept = (Arc<Picture>, Drawn);
+
+/// The longest side, in pixels, a picture is kept at when it is drawn in a message: a bubble
+/// shows one at most 280 points wide, so this is plenty even on a screen of three times.
+pub const IN_MESSAGE: u32 = 1280;
+/// The same for a tile of the media overview, 110 points wide.
+pub const TILE: u32 = 384;
+/// The most a picture is ever kept at, for the viewer: what a phone makes, but not the 100
+/// megapixels a sender can claim, which would be 400 MB of video memory for one.
+pub const FULL: u32 = 4096;
+
+/// How many people's and chats' pictures are kept; those of the ones scrolled past are drawn
+/// again when they show again.
+const KEPT_PEOPLE: usize = 512;
+
 /// How many blurred stand-ins are kept (a few kilobytes each, and as many on the GPU): one for
 /// every picture of the thread that was drawn, however long it is.
 const KEPT_BLURS: usize = 256;
 
 #[derive(Default)]
 pub struct Images {
-    attachments: RefCell<HashMap<AttachmentId, (Arc<Picture>, Drawn)>>,
+    /// By attachment and the longest side it was drawn at, so that the overview's small ones and
+    /// the message's are not one another's.
+    attachments: RefCell<HashMap<(AttachmentId, u32), Kept>>,
     people: RefCell<HashMap<String, (Arc<Picture>, Drawn)>>,
-    /// Decoded BlurHashes, by hash and size.
-    blurs: RefCell<HashMap<(String, u32, u32), Option<Drawn>>>,
+    /// Decoded BlurHashes, by (a hash of) the hash and the size: looked up for every picture
+    /// drawn, so the key is one that costs no allocation.
+    blurs: RefCell<HashMap<(u64, u32, u32), Option<Drawn>>>,
     /// The "Profile pictures" setting.
     pub avatars_enabled: Cell<bool>,
     /// [`ChatState::downloads_forgotten`] when `attachments` last let go of what it forgot.
@@ -33,13 +52,40 @@ pub struct Images {
     discarded: RefCell<Vec<Drawn>>,
 }
 
+fn hash_of(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// A picture's pixels (RGBA) as the BGRA GPUI draws.
 pub fn draw(picture: &Picture) -> Option<Drawn> {
-    let mut pixels = picture.rgba.to_vec();
+    draw_within(picture, FULL)
+}
+
+/// [`draw`], made smaller if its longer side is longer than `side`: what is drawn small is not
+/// kept (nor copied, nor sent to the graphics) at the size of a camera's picture.
+pub fn draw_within(picture: &Picture, side: u32) -> Option<Drawn> {
+    let (mut width, mut height) = (picture.width, picture.height);
+    let mut pixels = if width.max(height) > side && width > 0 && height > 0 {
+        let source = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
+            width,
+            height,
+            picture.rgba.as_slice(),
+        )?;
+        let scale = f64::from(side) / f64::from(width.max(height));
+        width = ((f64::from(width) * scale).round() as u32).max(1);
+        height = ((f64::from(height) * scale).round() as u32).max(1);
+        // Averages the pixels each new one stands for, which is what a small picture needs.
+        image::imageops::thumbnail(&source, width, height).into_raw()
+    } else {
+        picture.rgba.to_vec()
+    };
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let image = RgbaImage::from_raw(picture.width, picture.height, pixels)?;
+    let image = RgbaImage::from_raw(width, height, pixels)?;
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(image)])))
 }
 
@@ -57,7 +103,12 @@ impl Images {
         {
             return Some(drawn.clone());
         }
-        let drawn = draw(picture)?;
+        let drawn = draw_within(picture, TILE)?;
+        // Contacts who left stay otherwise, with their place on the GPU, until b33p ends.
+        if people.len() >= KEPT_PEOPLE {
+            let mut discarded = self.discarded.borrow_mut();
+            discarded.extend(people.drain().map(|(_, (_, drawn))| drawn));
+        }
         if let Some((_, replaced)) = people.insert(key.to_owned(), (picture.clone(), drawn.clone()))
         {
             self.discarded.borrow_mut().push(replaced);
@@ -65,28 +116,42 @@ impl Images {
         Some(drawn)
     }
 
-    /// A downloaded picture, drawn.
+    /// A downloaded picture, drawn for a message.
     pub fn attachment(&self, id: &AttachmentId, picture: &Arc<Picture>) -> Option<Drawn> {
+        self.scaled(id, picture, IN_MESSAGE)
+    }
+
+    /// A downloaded picture, drawn with its longer side at most `side`.
+    fn scaled(&self, id: &AttachmentId, picture: &Arc<Picture>, side: u32) -> Option<Drawn> {
         let mut attachments = self.attachments.borrow_mut();
-        if let Some((kept, drawn)) = attachments.get(id)
+        let key = (id.clone(), side);
+        if let Some((kept, drawn)) = attachments.get(&key)
             && Arc::ptr_eq(kept, picture)
         {
             return Some(drawn.clone());
         }
-        let drawn = draw(picture)?;
-        if let Some((_, replaced)) =
-            attachments.insert(id.clone(), (picture.clone(), drawn.clone()))
-        {
+        let drawn = draw_within(picture, side)?;
+        if let Some((_, replaced)) = attachments.insert(key, (picture.clone(), drawn.clone())) {
             self.discarded.borrow_mut().push(replaced);
         }
         Some(drawn)
     }
 
-    /// The downloaded picture of attachment `id`, if there is one.
+    /// The downloaded picture of attachment `id`, if there is one, as large as it is kept.
     pub fn downloaded(&self, chat: &ChatState, id: &AttachmentId) -> Option<Drawn> {
+        self.downloaded_within(chat, id, FULL)
+    }
+
+    /// The downloaded picture of attachment `id`, if there is one, kept no larger than `side`.
+    pub fn downloaded_within(
+        &self,
+        chat: &ChatState,
+        id: &AttachmentId,
+        side: u32,
+    ) -> Option<Drawn> {
         match chat.attachment(id) {
             Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => {
-                self.attachment(id, picture)
+                self.scaled(id, picture, side)
             }
             _ => None,
         }
@@ -103,7 +168,7 @@ impl Images {
         } else {
             ((32 * width / height.max(1)).clamp(4, 32) as u32, 32)
         };
-        let key = (hash.to_owned(), w, h);
+        let key = (hash_of(hash), w, h);
         if let Some(drawn) = self.blurs.borrow().get(&key) {
             return drawn.clone();
         }
@@ -133,7 +198,7 @@ impl Images {
             return;
         }
         let mut discarded = self.discarded.borrow_mut();
-        self.attachments.borrow_mut().retain(|id, (picture, drawn)| {
+        self.attachments.borrow_mut().retain(|(id, _), (picture, drawn)| {
             let stays = matches!(
                 chat.attachment(id),
                 Some(AttachmentState::Ready(AttachmentContent::Picture(kept))) if Arc::ptr_eq(kept, picture)
@@ -157,6 +222,26 @@ impl Images {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_picture_is_kept_smaller_and_a_small_one_as_it_is() {
+        let big = Picture {
+            width: 4000,
+            height: 2000,
+            rgba: vec![0x80; 4000 * 2000 * 4],
+        };
+        let drawn = draw_within(&big, 1000).expect("drawn");
+        let size = drawn.size(0);
+        assert_eq!((size.width.0, size.height.0), (1000, 500));
+        let small = Picture {
+            width: 300,
+            height: 200,
+            rgba: vec![0x80; 300 * 200 * 4],
+        };
+        let drawn = draw_within(&small, 1000).expect("drawn");
+        let size = drawn.size(0);
+        assert_eq!((size.width.0, size.height.0), (300, 200));
+    }
 
     fn picture(shade: u8) -> Arc<Picture> {
         Arc::new(Picture {

@@ -15,7 +15,7 @@ use gpui_kit::{
 use crate::dialog::{self, Person};
 use crate::shared::Shared;
 use crate::theme;
-use crate::widgets::modal;
+use crate::widgets::modal_holding;
 
 pub struct ForwardView {
     shared: Rc<Shared>,
@@ -196,7 +196,7 @@ impl Render for ForwardView {
                     .into_any_element()
             }
         };
-        modal(&t, 420., content, cancel)
+        modal_holding(&t, 420., content)
     }
 }
 

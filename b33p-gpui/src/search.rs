@@ -115,30 +115,17 @@ impl Render for SearchPanel {
                 .update(cx, |input, cx| input.set_value(text, window, cx));
         }
 
-        let (busy, found): (bool, Vec<Found>) = {
+        // How many there are, not what they say: that is made for the rows on screen, below.
+        let (busy, count): (bool, usize) = {
             let chat = shared.chat.borrow();
             match chat.chat_search() {
-                None => (false, Vec::new()),
+                None => (false, 0),
                 Some((query, results)) => (
                     !query.is_empty() && results.is_none(),
-                    results
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|m| {
-                            let (text, marked) = state::snippet(&m.body, query);
-                            Found {
-                                sender: m.sender.clone().into(),
-                                when: state::format_time(m.timestamp).into(),
-                                snippet: text.clone().into(),
-                                marked,
-                                text,
-                            }
-                        })
-                        .collect(),
+                    results.map_or(0, <[_]>::len),
                 ),
             }
         };
-        let count = found.len();
         let close = {
             let shared = shared.clone();
             move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
@@ -153,14 +140,28 @@ impl Render for SearchPanel {
         } else if count == 0 {
             panel::empty_state(&t, "search", "No messages found.").into_any_element()
         } else {
-            let found = Rc::new(found);
             uniform_list(
                 "search-results",
                 count,
                 cx.processor(move |_, range: Range<usize>, _, cx| {
                     let t = theme::tokens(cx);
+                    let chat = shared.chat.borrow();
+                    let Some((query, Some(results))) = chat.chat_search() else {
+                        return Vec::new();
+                    };
                     range
-                        .map(|index| result(index, &found[index], &shared, &t))
+                        .filter_map(|index| {
+                            let m = results.get(index)?;
+                            let (text, marked) = state::snippet(&m.body, query);
+                            let found = Found {
+                                sender: m.sender.clone().into(),
+                                when: state::format_time(m.timestamp).into(),
+                                snippet: text.clone().into(),
+                                marked,
+                                text,
+                            };
+                            Some(result(index, &found, &shared, &t))
+                        })
                         .collect::<Vec<_>>()
                 }),
             )
