@@ -29,6 +29,8 @@ compile_error!("the `harness` feature is for test builds: build without `--relea
 mod capture;
 mod desktop;
 mod emoji;
+#[cfg(windows)]
+mod keys;
 mod markdown;
 mod memory;
 mod rows;
