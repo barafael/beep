@@ -1,3 +1,13 @@
 [alias]
 # The test box's commands, as an xtask: nothing to install beyond cargo.
 testbox = "run --quiet -p xtask --"
+
+# Android: the one shared library an app of ours has (`libmain.so`) carries its own C++ runtime.
+# `boring-sys` links `libc++` as "c++", which the NDK resolves to `libc++_shared.so`; that has to
+# be shipped in the APK, and without it the app fails to load ("library libc++_shared.so not
+# found"). The NDK's advice for a single library is `c++_static`.
+[env]
+BORING_BSSL_RUST_CPPLIB_aarch64_linux_android = "c++_static"
+BORING_BSSL_RUST_CPPLIB_armv7_linux_androideabi = "c++_static"
+BORING_BSSL_RUST_CPPLIB_x86_64_linux_android = "c++_static"
+BORING_BSSL_RUST_CPPLIB_i686_linux_android = "c++_static"

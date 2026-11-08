@@ -145,3 +145,23 @@ By how much they matter, most first:
 - A screen-reader pass with Orca through the main tasks.
 - Done: logs for bug reports without message content in them (scrubbed, in a file; Settings →
   About opens the folder).
+
+## 5. Android
+
+`b33p-dioxus` is b33p for Android: Dioxus in the system's WebView over `b33p-core`. It runs on the
+emulator against the mock and against Signal as far as the code to link with (b33p-dioxus/README.md
+has the details and what is different on Android). In order:
+
+1. **A phone.** Run the arm64 build on a real device, link it to an account made for testing, and
+   go through TESTPLAN.md §1 as far as the screens go. Until then nothing past the link code has
+   been seen on Android.
+2. **What the platform needs.** The database key in the Android Keystore, not a password;
+   notifications and the app being stopped and started by Android (the backend dies with the
+   process now); a release build that is signed. `dx`'s APK is debug-signed and `debuggable`
+   (anyone with `adb` can read the app's files), so a build to hand out needs its own signing
+   and a non-debuggable variant. Size is fine: 17 MB release against 288 MB debug.
+3. **The screens the desktop clients have:** attachments and the file picker, groups and their
+   details, search, forwarding, stories, stickers, settings; text styling, links, mentions; older
+   messages as one scrolls.
+4. **Shared code.** The desktop's log (`b33p-platform`, with its desktop-only crates) and
+   `b33p-notify` for Android; a CI job, which needs the NDK.
