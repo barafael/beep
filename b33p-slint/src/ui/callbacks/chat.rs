@@ -315,9 +315,10 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
         let shared = shared.clone();
         move || shared.edit(|chat| chat.cancel_reply())
     });
+    // A click on a picture, or "Open" under a file: photos open in the viewer.
     window.global::<OpenChat>().on_open_attachment({
         let shared = shared.clone();
-        move |id| shared.command(|chat| chat.open_attachment(&AttachmentId(id.into())))
+        move |id| shared.command(|chat| open_picture(chat, &id))
     });
     window.global::<OpenChat>().on_open_calendar({
         let shared = shared.clone();

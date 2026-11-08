@@ -37,7 +37,9 @@ use super::{
     Ctx, Mgr, Ports,
     avatars::Avatars,
     commands::{handle, send_interrupted},
-    conversations::{display_number, send_conversations, send_latest_messages, send_unread},
+    conversations::{
+        display_number, own_id, send_conversations, send_latest_messages, send_unread,
+    },
     send::request_sync,
     session::{Ended, Session},
     storage_sync::follow_storage,
@@ -784,7 +786,10 @@ async fn session(
             None => {
                 test_servers_unless_production(&manager.registration_data().signal_servers)?;
                 let account = display_number(&manager.registration_data().phone_number);
-                events.send(Event::Linked { account });
+                events.send(Event::Linked {
+                    account,
+                    service_id: own_id(&manager).service_id_string(),
+                });
                 Some((manager, Vec::new()))
             }
             Some(marker) => {
@@ -1016,7 +1021,10 @@ async fn link_with_history(
             }
         };
         let account = display_number(&manager.registration_data().phone_number);
-        events.send(Event::Linked { account });
+        events.send(Event::Linked {
+            account,
+            service_id: own_id(&manager).service_id_string(),
+        });
         let Some(key) = key else {
             return Ok(Some((manager, Vec::new())));
         };

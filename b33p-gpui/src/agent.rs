@@ -39,10 +39,10 @@ use gpui_kit::{App, AsyncApp};
 use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
-    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent,
-    QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved, ScreenSnapshot,
-    SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot,
-    StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
+    PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
+    ScreenSnapshot, SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
+    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -238,6 +238,8 @@ enum AgentError {
     Screenshot,
     #[error("there is nothing called {what:?} to show or hide")]
     NothingToShow { what: String },
+    #[error("the GPUI window has no picture viewer: a photo opens in the system's viewer")]
+    NoViewer,
 }
 
 /// GPUI draws to the GPU and doesn't hand the frame back, so the window can't write itself to
@@ -405,6 +407,19 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             archived,
         } => conversation_action(shared, cx, conversation, Update::reset(), |chat, id| {
             chat.archive(id, archived)
+        }),
+        Action::SetChatNotify {
+            conversation,
+            notify,
+        } => conversation_action(shared, cx, conversation, Update::reset(), |chat, id| {
+            chat.set_chat_notify(
+                id,
+                b33p_core::ChatNotify {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                },
+            )
         }),
         Action::Block {
             conversation,
@@ -717,6 +732,11 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
                 Update::default(),
             )
         }),
+        Action::OpenViewer { .. }
+        | Action::ViewerNext
+        | Action::ViewerPrevious
+        | Action::ZoomViewer { .. }
+        | Action::CloseViewer => return Err(AgentError::NoViewer),
         Action::SetWindowFocused { focused } => shared.act(cx, |chat| {
             shared.focus_override.set(Some(focused));
             chat.set_window_focused(focused);
@@ -856,6 +876,14 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&UiState>) -> 
             typing: view.typing.iter().map(|name| name.to_string()).collect(),
             avatar: view.avatar.is_some(),
             trust: view.conversation.trust.into(),
+            notify: {
+                let notify = view.conversation.settings.notify;
+                NotifySnapshot {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                }
+            },
         })
         .collect();
     let messages = (0u32..)
@@ -1101,6 +1129,8 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&UiState>) -> 
             sync_to_phone: settings.preferences.sync_to_phone,
             device_name: settings.device_name(),
         },
+        // No picture viewer in this window (`Action::OpenViewer` is refused).
+        viewer: None,
     }
 }
 

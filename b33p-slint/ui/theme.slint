@@ -67,6 +67,11 @@ export global Theme {
     out property <color> on-stage-secondary: white.with-alpha(self.secondary);
     out property <color> on-stage-faint: white.with-alpha(self.faint);
     out property <color> stage-hover: white.with-alpha(self.fill);
+    out property <color> stage-pressed: white.with-alpha(self.fill-strong);
+    // The picture viewer's backdrop: the stage, the window faintly through it.
+    out property <color> stage-scrim: #101418f7;
+    // The viewer's buttons and labels over the picture.
+    out property <color> stage-control: #000000a0;
 
     // Something went wrong: banners and the "Not sent" pill (white text on it), and error text.
     out property <color> danger: #c4314b;

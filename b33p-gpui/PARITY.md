@@ -44,6 +44,7 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | `--hidden` starts in the tray, and opens the window if no tray host appears in 10 s or the user is needed | yes | yes | code `window.rs` |
 | One copy of b33p; starting it again shows the first | yes | yes | code. A Wayland activation token handed over by a second start or a notification is given to the compositor: GPUI takes one only when it connects, so with a token and no active window the window closes, GPUI goes headless and windowed again with the token (`GraphicalEnvironment::activation_token`, public API made for this) and a window opens (`window.rs` `reconnect_with`). Without a token the window is closed and opened anew, as before. Display: the window comes back, draws and the agent answers; the private display's compositor (cage) has no `xdg_activation_v1`, so that the compositor took the token is not seen. The new connection drops a selection copied to the clipboard from b33p |
 | Notifications: setting, content (name and message, name only, nothing), click opens the chat, inline reply, withdrawn once read | yes | yes | the same `b33p-notify` and `ChatState` notices |
+| A chat's own notification settings: mentions only, no text, no sound | yes | applied, not offered | the notices follow them (`shared.rs`, `b33p-core` `reading.rs`) and the agent sets and reports them (`SetChatNotify`); the chat's details have no place to change them yet |
 | Starting with the system | yes | yes | `b33p-platform` |
 | Quitting cleanly on SIGTERM, SIGINT, SIGHUP | yes | yes | code `shutdown.rs` |
 | Quitting cleanly at Windows' session end (`WM_ENDSESSION`) | yes | yes, not run | Windows only: `shutdown.rs` (`windows_session`) is Slint's window procedure on a thread of its own, telling the app to quit and waiting up to 4 s for the backend. Compile-checked (the module alone, `cargo check --target x86_64-pc-windows-msvc`: the whole crate can't be checked here, its C dependencies need the Windows SDK); never run on Windows |
@@ -149,6 +150,7 @@ What moves in Slint, and in GPUI:
 | A message jumped to flashes, then settles into its highlight | yes | yes | carries meaning (it is how the eye finds it): added |
 | Spinners, tooltips, caret blink | yes | yes | the component library's, which obeys the flag |
 | Hover and press colour changes | fades | at once | cosmetic |
+| A photo opens in b33p's own viewer, over the window: next and previous, zoom, the download's state | yes | no | GPUI opens it in the system's viewer, as before; the agent refuses the viewer's actions and reports no viewer. The viewer's state is `b33p-core`'s (`state/viewer.rs`), so only the drawing is missing |
 | A new message fades in | yes | no | the row's fresh state is not in the view model GPUI reads; cosmetic |
 | Error banner slides open and closed | yes | yes | `app.rs`; the closing one is kept for the length of the slide, with no alert role |
 | Dialogs and panels fade in | yes (dialogs also grow from 97%) | fade only | `widgets::modal`, `panels.rs`; GPUI has no element transform, so no growing |

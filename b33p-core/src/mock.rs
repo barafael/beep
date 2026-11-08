@@ -43,6 +43,9 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
     ("dana", "Dana", false),
+    // Ideographs some fonts lack (Japanese, Chinese-only) and Hangul: a font fallback that
+    // picks one font per script shows blanks here (sigwin `de6f512`).
+    ("yuki", "Yuki 駅 鉄 国 · 김민지", false),
     // A group we're invited to, not in yet.
     ("club", "Book club", true),
     ("me", "Note to Self", false),
@@ -184,6 +187,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
     std::thread::sleep(Duration::from_secs(2));
     events.send(Event::Linked {
         account: "+49 151 0000000 (mock)".into(),
+        // What `message` makes of "You", the sender of our own messages.
+        service_id: "you".into(),
     });
     // `B33P_MOCK_TRANSFER=1` walks through a message history transfer; the wait for the
     // phone takes 6 seconds and can be skipped.
@@ -362,6 +367,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 | Command::SetPins(_)
                 | Command::Mute { .. }
                 | Command::Archive { .. }
+                | Command::SetChatNotify { .. }
                 | Command::SetTimer { .. }
                 | Command::DropUnsent { .. }
                 | Command::Preferences(_),
@@ -473,6 +479,22 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                 events.send(Event::Attachment {
                     id: attachment.id,
                     content,
+                });
+            }
+            // Twice the size the sender gave, so the viewer has something to zoom into.
+            Ok(Command::FetchFullPicture(attachment)) => {
+                std::thread::sleep(Duration::from_millis(300));
+                let (width, height) = match (attachment.width, attachment.height) {
+                    (0, _) | (_, 0) => (1600, 1200),
+                    (width, height) => (width * 2, height * 2),
+                };
+                events.send(Event::FullPicture {
+                    id: attachment.id,
+                    picture: Ok(crate::FullPicture {
+                        pixels: Arc::new(scene(width, height)),
+                        width,
+                        height,
+                    }),
                 });
             }
             Ok(Command::SaveAttachment(attachment)) => {
@@ -995,6 +1017,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     false,
                 )));
             }
+            // Taking turns: Bob is muted, so Alice's are what the unread count on the tray
+            // and the taskbar shows (Windows CI's screenshot looks for it).
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 arrived += 1;
                 let (chat, sender, body) = if scale.incoming > 0.0 {
@@ -1003,6 +1027,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         "Casey",
                         format!("incoming message number {arrived}"),
                     )
+                } else if arrived % 2 == 1 {
+                    ("alice", "Alice", "Are you there?".to_owned())
                 } else {
                     ("bob", "Bob", "ping".to_owned())
                 };
@@ -1060,6 +1086,50 @@ fn gradient(side: u32) -> Picture {
     Picture {
         width: side,
         height: side,
+        rgba,
+    }
+}
+
+/// A view from a hut, standing in for a photo: sky, sun, two ridges and a meadow of fine
+/// stripes that only show near 100%.
+fn scene(width: u32, height: u32) -> Picture {
+    let (w, h) = (width as f32, height as f32);
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let (u, v) = (x as f32 / w, y as f32 / h);
+            let far = 0.55 + 0.08 * (u * 9.0).sin() + 0.04 * (u * 23.0).cos();
+            let near = 0.72 + 0.06 * (u * 5.0 + 1.0).sin();
+            let sun = ((u - 0.7).powi(2) + ((v - 0.3) * h / w).powi(2)).sqrt() < 0.06;
+            let mix = |a: [f32; 3], b: [f32; 3], t: f32| {
+                [0, 1, 2].map(|i| (a[i] + (b[i] - a[i]) * t.clamp(0.0, 1.0)) as u8)
+            };
+            let [r, g, b] = if v > near {
+                // Stripes a pixel or two wide: grass, as a photo's detail.
+                let blade = if (x + y / 3) % 4 < 2 { 0.0 } else { 18.0 };
+                mix(
+                    [70.0, 140.0, 60.0],
+                    [40.0, 100.0, 40.0],
+                    (v - near) / (1.0 - near),
+                )
+                .map(|c| c.saturating_add(blade as u8))
+            } else if v > far {
+                mix(
+                    [90.0, 105.0, 140.0],
+                    [60.0, 80.0, 110.0],
+                    (v - far) / (near - far),
+                )
+            } else if sun {
+                [255, 236, 170]
+            } else {
+                mix([255.0, 170.0, 110.0], [90.0, 140.0, 210.0], 1.0 - v / far)
+            };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    Picture {
+        width,
+        height,
         rgba,
     }
 }
@@ -1251,6 +1321,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             "Dana",
             "Old news",
             ago(60 * 24 * 40),
+            false,
+        )],
+        "yuki" => vec![message(
+            "yuki",
+            "Yuki",
+            "駅で会おう、鉄道の国へ。민지도 같이 가요",
+            ago(4),
             false,
         )],
         "rust" => vec![

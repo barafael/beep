@@ -20,33 +20,38 @@ pub const HIDDEN: &str = "--hidden";
 pub enum AutostartError {
     #[error("could not determine where b33p is")]
     Executable(#[source] io::Error),
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("the path to b33p isn't valid UTF-8: {}", path.display())]
     NotUtf8 { path: PathBuf },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("could not determine a config directory")]
     NoConfigDir,
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to create {}", dir.display())]
     CreateDir { dir: PathBuf, source: io::Error },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to write {}", path.display())]
     Write { path: PathBuf, source: io::Error },
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[error("failed to remove {}", path.display())]
     Remove { path: PathBuf, source: io::Error },
     #[cfg(windows)]
     #[error("failed to open the registry key {key}")]
     OpenKey {
         key: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(windows)]
     #[error("failed to set the registry value {value}")]
     SetValue {
         value: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(windows)]
     #[error("failed to remove the registry value {value}")]
     RemoveValue {
         value: &'static str,
-        source: windows_registry::Error,
+        source: windows::core::Error,
     },
     #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     #[error("starting with the system isn't supported here")]
@@ -180,7 +185,15 @@ mod platform {
                 }),
             };
         }
-        let executable = super::executable()?;
+        point_at(&super::executable()?)
+    }
+
+    /// Starts `executable` with the system from now on: the installed copy, once there is
+    /// one (`install.rs`), not wherever the zip was unpacked.
+    pub fn point_at(executable: &std::path::Path) -> Result<(), AutostartError> {
+        let run = CURRENT_USER
+            .create(RUN)
+            .map_err(|source| AutostartError::OpenKey { key: RUN, source })?;
         let command = format!("\"{}\" {}", executable.display(), super::HIDDEN);
         run.set_string(VALUE, command)
             .map_err(|source| AutostartError::SetValue {
@@ -205,4 +218,6 @@ mod platform {
     }
 }
 
+#[cfg(windows)]
+pub use platform::point_at;
 pub use platform::{SUPPORTED, enabled, set};

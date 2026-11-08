@@ -37,10 +37,11 @@ use std::rc::{Rc, Weak};
 use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
-    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Outcome, Pong, Pushed, PushedEvent,
-    QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved, ScreenSnapshot,
-    SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot, StickerSnapshot,
-    StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
+    PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
+    ScreenSnapshot, SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
+    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, ViewerSnapshot,
+    WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -393,6 +394,19 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
         } => conversation_action(shared, conversation, Update::reset(), |chat, id| {
             chat.archive(id, archived)
         }),
+        Action::SetChatNotify {
+            conversation,
+            notify,
+        } => conversation_action(shared, conversation, Update::reset(), |chat, id| {
+            chat.set_chat_notify(
+                id,
+                b33p_core::ChatNotify {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                },
+            )
+        }),
         Action::Block {
             conversation,
             blocked,
@@ -698,6 +712,23 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
                 Update::default(),
             )
         }),
+        Action::OpenViewer { id } => shared.act(|chat| {
+            (
+                chat.open_viewer(&b33p_core::AttachmentId(id)),
+                Update::default(),
+            )
+        }),
+        Action::ViewerNext => shared.act(|chat| (chat.step_viewer(1), Update::default())),
+        Action::ViewerPrevious => shared.act(|chat| (chat.step_viewer(-1), Update::default())),
+        Action::ZoomViewer { notches } => {
+            window(shared)?.zoom_viewer(notches);
+            shared.refresh(Update::default());
+            false
+        }
+        Action::CloseViewer => {
+            window(shared)?.close_viewer(shared);
+            false
+        }
         Action::SetWindowFocused { focused } => shared.act(|chat| {
             shared.focus_override.set(Some(focused));
             chat.set_window_focused(focused);
@@ -835,6 +866,14 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
             typing: view.typing.iter().map(|name| name.to_string()).collect(),
             avatar: view.avatar.is_some(),
             trust: view.conversation.trust.into(),
+            notify: {
+                let notify = view.conversation.settings.notify;
+                NotifySnapshot {
+                    mentions_only: notify.mentions_only,
+                    hide_text: notify.hide_text,
+                    silent: notify.silent,
+                }
+            },
         })
         .collect();
     let messages = (0u32..)
@@ -1029,6 +1068,23 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                         .collect()
                 }),
             }),
+        viewer: chat.viewer().map(|view| {
+            let zoom = window.map(ui::Window::viewer_zoom);
+            ViewerSnapshot {
+                id: view.attachment.id.0.clone(),
+                sender: view.message.sender.clone(),
+                timestamp: view.message.timestamp,
+                index: view.index,
+                count: view.count,
+                download: match view.full {
+                    None => Download::Loading,
+                    Some(Ok(_)) => Download::Ready,
+                    Some(Err(error)) => Download::Failed(error.to_string()),
+                },
+                zoom: zoom.map(|(zoom, _)| zoom),
+                fitted: zoom.map(|(_, fitted)| fitted),
+            }
+        }),
         message_info: chat.message_info().map(|(_, info)| {
             info.map(|info| {
                 info.recipients

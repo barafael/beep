@@ -1,0 +1,390 @@
+// The picture viewer: a photo of the open chat over the whole window, to look at closely and
+// go through the chat's others. Ported in idea from Othereum/sigwin's image viewer, which is a
+// window of its own; this is part of the main window, so it works alike on every platform.
+
+import { Spinner } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { Icon } from "widgets.slint";
+
+export global Viewer {
+    in property <bool> open;
+    // The picture at full size, or the chat's smaller one (or its blurred stand-in) until then.
+    in property <image> picture;
+    // The size the picture really has, in pixels: 100% draws one of them per physical pixel.
+    in property <int> picture-width;
+    in property <int> picture-height;
+    // The picture resampled to the very size it is drawn at, when that is smaller than its own,
+    // and the zoom it was made for: drawn smaller by the window, a photo gets stairs and moiré.
+    in property <image> sharp;
+    in property <float> sharp-zoom;
+    // Changes with the picture shown, which then starts fitted to the window.
+    in property <string> key;
+    // The full picture is on its way, or couldn't be had (why).
+    in property <bool> loading;
+    in property <string> error;
+    // Who sent it and when, e.g. "Alice" and "14:05".
+    in property <string> sender;
+    in property <string> time;
+    // Its place among the chat's pictures, from 0, and how many there are.
+    in property <int> index;
+    in property <int> count;
+    // How saving it went, as under the picture in the chat ("Saved to Downloads"), or empty.
+    in property <string> status;
+    // The zoom chosen: the picture's pixels per physical pixel, 1 for 100%; 0 while it fits
+    // the window (and follows its size).
+    in-out property <float> zoom;
+    // What the viewer shows, for Rust (the harness): the zoom drawn, and the one that fits.
+    in-out property <float> shown-zoom: 1;
+    in-out property <float> fit-zoom: 1;
+    // The zoom drawn changed: Rust makes `sharp` for it once it settles.
+    callback zoomed(float);
+    // Goes this many pictures on (back if negative).
+    callback step(int);
+    callback close();
+    callback save();
+    // Opens it in the desktop's app for pictures.
+    callback open-outside();
+    // The zoom after this many wheel notches (positive zooms in), given the zoom that fits;
+    // see b33p-core's `wheel_zoom`.
+    callback wheel-zoom(float, float, float) -> float;
+    // What a double click makes of the zoom, given the one that fits.
+    pure callback toggle-zoom(float, float) -> float;
+    // How far one notch of the wheel moves, in the backend's units.
+    in property <length> notch: 60px;
+}
+
+// A button on the viewer's bar: an icon, and a word unless it is clear without.
+component BarButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <string> label: root.text;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    height: Theme.button;
+    width: row.preferred-width;
+    border-radius: self.height / 2;
+    background: touch.pressed ? Theme.stage-pressed : touch.has-hover ? Theme.stage-hover : Theme.stage-control;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    row := HorizontalLayout {
+        padding-left: root.text == "" ? (Theme.button - Theme.icon) / 2 : Theme.space-m;
+        padding-right: root.text == "" ? (Theme.button - Theme.icon) / 2 : Theme.space-m;
+        spacing: Theme.space-s;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                source: root.icon;
+                tint: Theme.on-stage;
+            }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: Theme.on-stage;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Previous or next, at the window's side.
+component SideButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    width: 44px;
+    height: 44px;
+    border-radius: self.height / 2;
+    background: touch.pressed ? Theme.stage-pressed : touch.has-hover ? Theme.stage-hover : Theme.stage-control;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        source: root.icon;
+        tint: Theme.on-stage;
+        width: 24px;
+    }
+}
+
+// Over the whole window while `Viewer.open`.
+export component PictureViewer inherits Rectangle {
+    // Room kept around a fitted picture: for the bar above it and the buttons beside it.
+    property <length> margin-x: 72px;
+    property <length> margin-y: 64px;
+    // Too narrow for the buttons' words beside who sent it.
+    property <bool> compact: root.width < 560px;
+    property <float> fit: max(0.0001, min(1,
+        min((root.width - 2 * root.margin-x) / max(1phx, Viewer.picture-width * 1phx),
+            (root.height - 2 * root.margin-y) / max(1phx, Viewer.picture-height * 1phx))));
+    property <float> scale: Viewer.zoom > 0 ? Viewer.zoom : root.fit;
+    changed fit => { Viewer.fit-zoom = self.fit; }
+    changed scale => {
+        Viewer.shown-zoom = self.scale;
+        Viewer.zoomed(self.scale);
+    }
+    property <bool> sharp: Viewer.sharp-zoom == root.scale && Viewer.sharp.width > 0;
+    property <length> shown-width: Viewer.picture-width * root.scale * 1phx;
+    property <length> shown-height: Viewer.picture-height * root.scale * 1phx;
+    // How far the picture reaches past the window on each side, and where it is moved to
+    // from the centre: within that, so it never leaves the window more than it has to.
+    property <length> over-x: max(0px, (root.shown-width - root.width) / 2);
+    property <length> over-y: max(0px, (root.shown-height - root.height) / 2);
+    property <bool> overflows: root.over-x > 0px || root.over-y > 0px;
+    property <length> pan-x;
+    property <length> pan-y;
+    property <length> moved-x: clamp(root.pan-x, -root.over-x, root.over-x);
+    property <length> moved-y: clamp(root.pan-y, -root.over-y, root.over-y);
+    // On whole physical pixels, so a picture drawn at its size (100%, or `sharp`) stays sharp.
+    property <length> picture-x: round(((root.width - root.shown-width) / 2 + root.moved-x) / 1phx) * 1phx;
+    property <length> picture-y: round(((root.height - root.shown-height) / 2 + root.moved-y) / 1phx) * 1phx;
+    changed key => {
+        self.pan-x = 0;
+        self.pan-y = 0;
+    }
+    property <string> key: Viewer.key;
+
+    // Zooms to `zoom` keeping the picture's point under (x, y) where it is.
+    function zoom-to(zoom: float, x: length, y: length) {
+        let from-centre-x = x - root.width / 2;
+        let from-centre-y = y - root.height / 2;
+        let ratio = zoom / root.scale;
+        root.pan-x = from-centre-x - (from-centre-x - root.moved-x) * ratio;
+        root.pan-y = from-centre-y - (from-centre-y - root.moved-y) * ratio;
+        Viewer.zoom = zoom == root.fit ? 0 : zoom;
+    }
+    function on-picture(x: length, y: length) -> bool {
+        x >= root.picture-x && x < root.picture-x + root.shown-width
+            && y >= root.picture-y && y < root.picture-y + root.shown-height
+    }
+
+    // Comes up rather than appears, unless motion is reduced.
+    opacity: 0;
+    init => {
+        self.opacity = 1;
+        Viewer.fit-zoom = self.fit;
+        Viewer.shown-zoom = self.scale;
+        Viewer.zoomed(self.scale);
+        keys.focus();
+    }
+    animate opacity { duration: Motion.normal; easing: ease-out; }
+    background: Theme.stage-scrim;
+    clip: true;
+    accessible-role: region;
+    accessible-label: "Photo from " + Viewer.sender + ", " + Viewer.time;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                Viewer.step(-1);
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                Viewer.step(1);
+                return accept;
+            }
+            // Esc reaches Rust first, as a shortcut; this is for when it doesn't.
+            if event.text == Key.Escape {
+                Viewer.close();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // Under the picture and the buttons: clicks beside the picture close it, the wheel zooms,
+    // dragging moves a picture larger than the window.
+    property <bool> dragged;
+    property <length> drag-from-x;
+    property <length> drag-from-y;
+    touch := TouchArea {
+        mouse-cursor: !root.overflows ? MouseCursor.default : self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.dragged = false;
+                root.drag-from-x = root.moved-x;
+                root.drag-from-y = root.moved-y;
+            }
+        }
+        moved => {
+            if !root.dragged && (abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px) {
+                root.dragged = true;
+            }
+            if root.dragged && root.overflows {
+                root.pan-x = root.drag-from-x + self.mouse-x - self.pressed-x;
+                root.pan-y = root.drag-from-y + self.mouse-y - self.pressed-y;
+            }
+        }
+        clicked => {
+            if !root.dragged && !root.on-picture(self.mouse-x, self.mouse-y) {
+                Viewer.close();
+            }
+        }
+        double-clicked => {
+            if root.on-picture(self.mouse-x, self.mouse-y) && Viewer.toggle-zoom(root.scale, root.fit) > 0 {
+                root.zoom-to(Viewer.toggle-zoom(root.scale, root.fit), self.mouse-x, self.mouse-y);
+            }
+        }
+        scroll-event(event) => {
+            let zoom = Viewer.wheel-zoom(root.scale, event.delta-y / Viewer.notch, root.fit);
+            if zoom > 0 && zoom != root.scale {
+                root.zoom-to(zoom, self.mouse-x, self.mouse-y);
+            }
+            return accept;
+        }
+    }
+
+    picture := Image {
+        source: root.sharp ? Viewer.sharp : Viewer.picture;
+        x: root.picture-x;
+        y: root.picture-y;
+        width: root.sharp ? Viewer.sharp.width * 1phx : root.shown-width;
+        height: root.sharp ? Viewer.sharp.height * 1phx : root.shown-height;
+        image-fit: fill;
+        accessible-role: none;
+        // Grows into place as it comes up.
+        property <float> grown: 0;
+        init => { self.grown = 1; }
+        animate grown { duration: Motion.normal; easing: ease-out; }
+        transform-scale: 0.97 + 0.03 * self.grown;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+    }
+
+    if Viewer.loading: Spinner {
+        indeterminate: true;
+        width: 32px;
+        height: 32px;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+    if Viewer.error != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(root.width - 2 * root.margin-x, error-row.preferred-width);
+        height: error-row.preferred-height;
+        border-radius: Theme.radius-m;
+        background: Theme.stage-control;
+        error-row := HorizontalLayout {
+            padding: Theme.space-m;
+            spacing: Theme.space-s;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    source: @image-url("@lucide/image-off.svg");
+                    tint: Theme.on-stage;
+                }
+            }
+            Text {
+                text: "Couldn't load the picture: " + Viewer.error;
+                color: Theme.on-stage;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Who sent it and when, and what can be done with it.
+    HorizontalLayout {
+        y: 0;
+        height: root.margin-y;
+        padding-left: Theme.space-l;
+        padding-right: Theme.space-l;
+        spacing: Theme.space-s;
+        // Readable over the picture too, once it fills the window.
+        HorizontalLayout {
+            alignment: start;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    border-radius: Theme.radius-m;
+                    background: Theme.stage-control;
+                    caption := VerticalLayout {
+                        padding-left: Theme.space-m;
+                        padding-right: Theme.space-m;
+                        padding-top: Theme.space-xs;
+                        padding-bottom: Theme.space-xs;
+                        Text {
+                            text: Viewer.sender;
+                            color: Theme.on-stage;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: Viewer.time + (Viewer.count > 1 ? " · " + (Viewer.index + 1) + " of " + Viewer.count : "")
+                                + (Viewer.status != "" ? " · " + Viewer.status : "");
+                            color: Theme.on-stage-secondary;
+                            font-size: 1rem * Theme.small;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            BarButton {
+                icon: @image-url("@lucide/download.svg");
+                text: root.compact ? "" : "Save";
+                label: "Save to Downloads";
+                clicked => { Viewer.save(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            BarButton {
+                icon: @image-url("@lucide/external-link.svg");
+                text: root.compact ? "" : "Open with…";
+                label: "Open with another app";
+                clicked => { Viewer.open-outside(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            BarButton {
+                icon: @image-url("@lucide/x.svg");
+                label: "Close";
+                clicked => { Viewer.close(); }
+            }
+        }
+    }
+
+    if Viewer.index > 0: SideButton {
+        x: Theme.space-l;
+        y: (root.height - self.height) / 2;
+        icon: @image-url("@lucide/chevron-left.svg");
+        label: "Previous picture";
+        clicked => { Viewer.step(-1); }
+    }
+    if Viewer.index < Viewer.count - 1: SideButton {
+        x: root.width - self.width - Theme.space-l;
+        y: (root.height - self.height) / 2;
+        icon: @image-url("@lucide/chevron-right.svg");
+        label: "Next picture";
+        clicked => { Viewer.step(1); }
+    }
+
+    // How large it shows, once zoomed.
+    if Viewer.zoom > 0: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.space-l;
+        width: zoom-text.preferred-width + 2 * Theme.space-m;
+        height: Theme.button;
+        border-radius: self.height / 2;
+        background: Theme.stage-control;
+        zoom-text := Text {
+            text: round(root.scale * 100) + "%";
+            color: Theme.on-stage;
+            font-weight: 600;
+            accessible-role: none;
+        }
+    }
+}

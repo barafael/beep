@@ -1,11 +1,11 @@
 //! Desktop notifications: show one per conversation, open the conversation on click and,
 //! where the desktop supports it, answer it straight from the popup.
 //!
-//! | Platform | Service | Inline reply |
-//! |---|---|---|
-//! | Linux, BSD | `org.freedesktop.Notifications` over D-Bus | KDE Plasma (`inline-reply` capability) |
-//! | Windows 10/11 | Toast notifications | yes |
-//! | macOS, others | none yet | – |
+//! | Platform | Service | Inline reply | Silent |
+//! |---|---|---|---|
+//! | Linux, BSD | `org.freedesktop.Notifications` over D-Bus | KDE Plasma (`inline-reply` capability) | asked for (`suppress-sound` hint); the server may ignore it |
+//! | Windows 10/11 | Toast notifications | yes | yes (`<audio silent="true"/>`) |
+//! | macOS, others | none yet | – | – |
 //!
 //! Without a notification service, [`Notifier`] silently does nothing.
 
@@ -48,6 +48,8 @@ pub struct Notification {
     pub key: Option<String>,
     pub title: String,
     pub body: String,
+    /// Without a sound, where the platform allows (see the table above).
+    pub silent: bool,
 }
 
 /// What the user did with a notification.

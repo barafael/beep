@@ -30,6 +30,7 @@ fn state() -> ChatState {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     state.apply(Event::Synced);
     state.apply(Event::Conversations(vec![
@@ -54,6 +55,7 @@ fn shown(notices: &[Notice]) -> Vec<(Option<&str>, &str, &str)> {
                 conversation,
                 title,
                 body,
+                ..
             } => Some((
                 conversation.as_ref().map(|c| c.0.as_str()),
                 title.as_str(),
@@ -141,6 +143,183 @@ fn content_setting_controls_what_is_revealed() {
     assert_eq!(
         shown(&state.take_notices()),
         [(Some("a"), "b33p", "New message")]
+    );
+}
+
+/// A state that notifies, with chat "a" set to notify as `notify`.
+fn notifying_as(notify: ChatNotify) -> ChatState {
+    let mut state = notifying();
+    let a = ConversationId("a".into());
+    let command = state.set_chat_notify(&a, notify);
+    assert!(
+        matches!(command, Some(Command::SetChatNotify { conversation, notify: set }) if conversation == a && set == notify)
+    );
+    state
+}
+
+const MENTIONS_ONLY: ChatNotify = ChatNotify {
+    mentions_only: true,
+    hide_text: false,
+    silent: false,
+};
+
+#[test]
+fn mentions_only_skips_a_plain_message() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert!(shown(&state.take_notices()).is_empty());
+    // Others notify as before.
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(shown(&state.take_notices()).len(), 1);
+}
+
+#[test]
+fn mentions_only_keeps_a_mention_of_me() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let mention = |service_id: &str, timestamp| ChatMessage {
+        mentions: vec![Mention {
+            start: 0,
+            end: 3,
+            service_id: service_id.into(),
+        }],
+        ..message("a", "Alice", timestamp, false)
+    };
+    state.apply(Event::Message(mention("bob", 1)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "someone else mentioned"
+    );
+    state.apply(Event::Message(mention("me", 2)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "Alice", "Alice at 2\nsecond line")]
+    );
+}
+
+#[test]
+fn mentions_only_keeps_a_reply_to_me() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let reply = |author_id: &str, quoted, timestamp| ChatMessage {
+        quote: Some(Quote {
+            author: String::new(),
+            text: "quoted".into(),
+            author_id: author_id.into(),
+            timestamp: quoted,
+        }),
+        ..message("a", "Alice", timestamp, false)
+    };
+    state.apply(Event::Message(message("a", "You", 1, true)));
+    state.apply(Event::Message(reply("bob", 1, 2)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "a reply to someone else"
+    );
+    state.apply(Event::Message(reply("me", 1, 3)));
+    assert_eq!(shown(&state.take_notices()).len(), 1, "a reply to ours");
+    // A quote that doesn't name its author: ours, as the history says.
+    state.apply(Event::Message(reply("", 1, 4)));
+    assert_eq!(
+        shown(&state.take_notices()).len(),
+        1,
+        "found in the history"
+    );
+    state.apply(Event::Message(reply("", 2, 5)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "the quoted message is Alice's"
+    );
+}
+
+#[test]
+fn a_chat_can_hide_the_text_but_never_show_more() {
+    let mut state = notifying_as(ChatNotify {
+        hide_text: true,
+        ..ChatNotify::default()
+    });
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "Alice", "New message")]
+    );
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("g"), "Carol in g", "Carol at 2\nsecond line")],
+        "other chats show it"
+    );
+    // The app's setting hides more: it wins.
+    state.set_notifications(true, NotificationContent::Nothing);
+    state.apply(Event::Message(message("a", "Alice", 3, false)));
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(Some("a"), "b33p", "New message")]
+    );
+}
+
+#[test]
+fn a_silent_chat_notifies_without_a_sound() {
+    let mut state = notifying_as(ChatNotify {
+        silent: true,
+        ..ChatNotify::default()
+    });
+    let silent = |notices: Vec<Notice>| -> Vec<bool> {
+        notices
+            .into_iter()
+            .filter_map(|n| match n {
+                Notice::Show { silent, .. } => Some(silent),
+                Notice::Withdraw(_) => None,
+            })
+            .collect()
+    };
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    assert_eq!(silent(state.take_notices()), [true]);
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    assert_eq!(silent(state.take_notices()), [false]);
+
+    // A summary of what came while catching up is quiet only if all of it is.
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 3, false)));
+    state.apply(Event::Synced);
+    assert_eq!(silent(state.take_notices()), [true]);
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 4, false)));
+    state.apply(Event::Message(message("g", "Carol", 5, false)));
+    state.apply(Event::Synced);
+    assert_eq!(silent(state.take_notices()), [false]);
+}
+
+#[test]
+fn mentions_only_leaves_plain_messages_out_of_the_summary() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    state.apply(Event::Reconnecting);
+    state.apply(Event::Message(message("a", "Alice", 1, false)));
+    state.apply(Event::Message(message("g", "Carol", 2, false)));
+    state.apply(Event::Synced);
+    assert_eq!(
+        shown(&state.take_notices()),
+        [(None, "b33p", "1 new message")]
+    );
+}
+
+#[test]
+fn mute_wins_over_a_chats_notification_settings() {
+    let mut state = notifying_as(MENTIONS_ONLY);
+    let a = ConversationId("a".into());
+    state.mute(&a, Some(u64::MAX));
+    state.apply(Event::Message(ChatMessage {
+        mentions: vec![Mention {
+            start: 0,
+            end: 3,
+            service_id: "me".into(),
+        }],
+        ..message("a", "Alice", 1, false)
+    }));
+    assert!(shown(&state.take_notices()).is_empty(), "muted");
+    state.mute(&a, None);
+    state.apply(Event::Message(message("a", "Alice", 2, false)));
+    assert!(
+        shown(&state.take_notices()).is_empty(),
+        "unmuted, still mentions only"
     );
 }
 
@@ -1185,6 +1364,7 @@ fn the_start_screen_shows_until_caught_up() {
     assert_eq!(stage(&state), SyncStage::Starting);
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert_eq!(stage(&state), SyncStage::Connecting);
     // Freshly linked: the phone's history comes first.
@@ -1254,6 +1434,7 @@ fn the_chats_can_be_started_while_catching_up() {
     assert_eq!(state.start(), Update::default());
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert!(!state.can_start(), "not before connecting");
     state.apply(Event::Connected);
@@ -1275,6 +1456,7 @@ fn an_unreachable_signal_still_shows_the_chats() {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     let update = state.apply(Event::Reconnecting);
     assert!(update.screen);
@@ -1706,6 +1888,7 @@ fn the_connection_is_followed() {
     let mut state = ChatState::default();
     state.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     assert_eq!(state.connection(), Connection::Offline);
     state.apply(Event::Connected);
@@ -1744,6 +1927,7 @@ fn unlinking_forgets_the_account() {
     state.set_notifications(true, NotificationContent::default());
     state.apply(Event::Linked {
         account: "+1 555".into(),
+        service_id: "me".into(),
     });
     state.apply(Event::Synced);
     let a = conversation("a", false);
@@ -4175,4 +4359,203 @@ fn readers_show_under_the_newest_message_they_read() {
     assert_eq!(names(&state, 0), ["bob"]);
     assert!(names(&state, 1).is_empty(), "not ours");
     assert_eq!(names(&state, 2), ["ann"]);
+}
+
+fn full_picture(side: u32) -> FullPicture {
+    FullPicture {
+        pixels: Arc::new(Picture {
+            width: side,
+            height: side,
+            rgba: vec![0; (side * side * 4) as usize],
+        }),
+        width: side,
+        height: side,
+    }
+}
+
+/// A chat with photos, a sticker, a video and a file between them.
+fn chat_with_pictures() -> ChatState {
+    let mut state = state();
+    for (timestamp, id, kind) in [
+        (1, "one", AttachmentKind::Image),
+        (2, "sticker", AttachmentKind::Sticker),
+        (3, "two", AttachmentKind::Image),
+        (4, "video", AttachmentKind::Video),
+        (5, "file", AttachmentKind::File),
+        (6, "three", AttachmentKind::Image),
+    ] {
+        state.apply(Event::Message(with_attachment("a", timestamp, id, kind)));
+    }
+    state.select(&ConversationId("a".into()));
+    state
+}
+
+fn viewed(state: &ChatState) -> Option<(&str, usize, usize)> {
+    state
+        .viewer()
+        .map(|view| (view.attachment.id.0.as_str(), view.index, view.count))
+}
+
+/// A photo opens in the viewer, which asks for it at full size; anything else still opens in
+/// the desktop's app.
+#[test]
+fn photos_open_in_the_viewer_and_the_rest_outside() {
+    let mut state = chat_with_pictures();
+    let id = |id: &str| AttachmentId(id.into());
+    assert!(matches!(
+        state.open_picture(&id("two")),
+        Some(Command::FetchFullPicture(a)) if a.id == id("two")
+    ));
+    assert_eq!(viewed(&state), Some(("two", 1, 3)));
+    state.close_viewer();
+    for other in ["sticker", "video", "file"] {
+        assert!(matches!(
+            state.open_picture(&id(other)),
+            Some(Command::OpenAttachment(a)) if a.id == id(other)
+        ));
+        assert!(state.viewer().is_none(), "{other} doesn't open the viewer");
+    }
+    assert!(state.open_viewer(&id("video")).is_none());
+}
+
+/// ←/→ go through the chat's photos only, stopping at the ends; each asks for its picture, and
+/// only the one shown is kept at full size.
+#[test]
+fn the_viewer_steps_through_the_chats_photos() {
+    let mut state = chat_with_pictures();
+    let id = |id: &str| AttachmentId(id.into());
+    state.open_viewer(&id("one"));
+    assert!(state.step_viewer(-1).is_none(), "the first stays");
+    assert_eq!(viewed(&state), Some(("one", 0, 3)));
+    state.apply(Event::FullPicture {
+        id: id("one"),
+        picture: Ok(full_picture(4)),
+    });
+    assert!(matches!(state.viewer().unwrap().full, Some(Ok(_))));
+    assert!(matches!(
+        state.step_viewer(1),
+        Some(Command::FetchFullPicture(a)) if a.id == id("two")
+    ));
+    assert_eq!(viewed(&state), Some(("two", 1, 3)));
+    assert!(state.viewer().unwrap().full.is_none(), "the next downloads");
+    // The one before arrives late: not kept.
+    state.apply(Event::FullPicture {
+        id: id("one"),
+        picture: Ok(full_picture(4)),
+    });
+    assert!(state.viewer().unwrap().full.is_none());
+    state.step_viewer(5);
+    assert_eq!(viewed(&state), Some(("three", 2, 3)));
+    assert!(state.step_viewer(1).is_none(), "the last stays");
+    state.apply(Event::FullPicture {
+        id: id("three"),
+        picture: Err(crate::Error::unreachable("offline")),
+    });
+    assert!(matches!(state.viewer().unwrap().full, Some(Err(_))));
+}
+
+/// The chat's thumbnail stands in while the full picture downloads.
+#[test]
+fn the_viewer_shows_the_thumbnail_until_the_picture_is_there() {
+    let mut state = chat_with_pictures();
+    let one = AttachmentId("one".into());
+    state.open_viewer(&one);
+    assert!(state.viewer().unwrap().thumbnail.is_none());
+    state.fetch_attachment(&one);
+    state.apply(Event::Attachment {
+        id: one.clone(),
+        content: Ok(AttachmentContent::Picture(full_picture(2).pixels)),
+    });
+    assert_eq!(state.viewer().unwrap().thumbnail.unwrap().width, 2);
+}
+
+/// The viewer closes with its chat, and when its picture goes.
+#[test]
+fn the_viewer_closes_with_its_chat_and_its_picture() {
+    let mut state = chat_with_pictures();
+    state.open_viewer(&AttachmentId("two".into()));
+    state.select(&ConversationId("g".into()));
+    assert!(state.viewer().is_none());
+    state.select(&ConversationId("a".into()));
+    assert!(state.viewer().is_none(), "not again on coming back");
+
+    state.open_viewer(&AttachmentId("two".into()));
+    assert!(state.viewer().is_some());
+    state.apply(Event::Deleted {
+        conversation: ConversationId("a".into()),
+        target: MessageRef {
+            author_id: "alice".into(),
+            timestamp: 3,
+        },
+    });
+    assert!(state.viewer().is_none());
+}
+
+/// Pictures opened from the media overview go on through its pictures, which reach further
+/// back than the loaded history.
+#[test]
+fn the_viewer_goes_through_the_media_overview_it_was_opened_from() {
+    let mut state = chat_with_pictures();
+    state.open_media();
+    state.apply(Event::Media {
+        conversation: ConversationId("a".into()),
+        messages: vec![
+            with_attachment("a", 0, "older", AttachmentKind::Image),
+            with_attachment("a", 1, "one", AttachmentKind::Image),
+        ],
+    });
+    assert!(state.open_picture(&AttachmentId("older".into())).is_some());
+    assert_eq!(viewed(&state), Some(("older", 0, 2)));
+    state.step_viewer(1);
+    assert_eq!(viewed(&state), Some(("one", 1, 2)));
+}
+
+/// The wheel catches at 100% on the way there, from either side and even from a burst of
+/// notches, and leaves it with the next notch; it stays between what fits and 800%.
+#[test]
+fn the_wheel_catches_at_actual_size() {
+    assert_eq!(wheel_zoom(0.95, 1.0, 0.5), 1.0);
+    assert_eq!(wheel_zoom(1.05, -1.0, 0.5), 1.0);
+    assert_eq!(wheel_zoom(0.5, 10.0, 0.5), 1.0, "a fast spin catches too");
+    assert_eq!(wheel_zoom(4.0, -20.0, 0.5), 1.0);
+    assert_eq!(wheel_zoom(1.0, 1.0, 0.5), ZOOM_STEP);
+    assert_eq!(wheel_zoom(1.0, -1.0, 0.5), 1.0 / ZOOM_STEP);
+    // Near enough goes all the way; not near enough doesn't.
+    assert_eq!(wheel_zoom(0.9, 1.0, 0.5), 1.0);
+    assert_eq!(wheel_zoom(0.6, 1.0, 0.5), 0.6 * ZOOM_STEP);
+    // Small touchpad steps can leave 100%, and don't fall back while leaving.
+    let out = wheel_zoom(1.0, 0.1, 0.5);
+    assert!(out > 1.0 && out < 1.0 + 0.05);
+    assert!(wheel_zoom(out, 0.1, 0.5) > out);
+    // Bounds: not below what fits (or 100% for a small picture), not above 800%.
+    assert_eq!(wheel_zoom(0.5, -3.0, 0.5), 0.5);
+    assert_eq!(wheel_zoom(1.0, -3.0, 1.0), 1.0);
+    assert_eq!(wheel_zoom(ZOOM_MAX, 3.0, 0.5), ZOOM_MAX);
+}
+
+#[test]
+fn a_double_click_toggles_between_fitting_and_actual_size() {
+    assert_eq!(toggle_zoom(0.4, 0.4), 1.0);
+    assert_eq!(toggle_zoom(1.0, 0.4), 0.4);
+    assert_eq!(toggle_zoom(3.0, 0.4), 1.0);
+}
+
+/// Once the wheel lands on 100% it holds there for a moment, so the rest of a fast spin
+/// doesn't carry on past it; a notch after that moment goes on.
+#[test]
+fn the_wheel_holds_at_actual_size_for_a_moment() {
+    let ms = std::time::Duration::from_millis;
+    let mut wheel = Wheel::default();
+    assert_eq!(wheel.turn(0.5, 1.0, 0.5, ms(0)), 0.5 * ZOOM_STEP);
+    assert_eq!(wheel.turn(0.95, 1.0, 0.5, ms(10)), 1.0);
+    assert_eq!(
+        wheel.turn(1.0, 1.0, 0.5, ms(60)),
+        1.0,
+        "the spin goes on: held"
+    );
+    assert_eq!(wheel.turn(1.0, -1.0, 0.5, ms(129)), 1.0, "either way");
+    assert_eq!(wheel.turn(1.0, 1.0, 0.5, ms(130)), ZOOM_STEP, "then on");
+    // Leaving 100% doesn't hold; coming back does again.
+    assert_eq!(wheel.turn(ZOOM_STEP, -1.0, 0.5, ms(131)), 1.0);
+    assert_eq!(wheel.turn(1.0, -1.0, 0.5, ms(140)), 1.0);
 }

@@ -19,9 +19,17 @@ export component SettingsPage inherits Rectangle {
     in-out property <bool> show-activity;
     in-out property <bool> show-calendar;
     in-out property <bool> close-to-tray;
+    in property <bool> update-supported;
+    in-out property <bool> check-updates;
+    in property <string> update-offer;
+    in property <string> update-status;
+    in property <bool> updating;
+    callback update-now;
     // Whether the desktop shows tray icons; without, closing the window quits.
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
+    in-out property <bool> screen-security;
+    in property <bool> screen-security-supported;
     // Whether this system shows b33p's notifications at all.
     in property <bool> notifications-supported: true;
     // Shortcut labels in the Mac's own signs.
@@ -192,6 +200,32 @@ export component SettingsPage inherits Rectangle {
                         hint: root.close-to-tray && root.tray-available ? "Starts in the tray when you log in." : "Opens b33p when you log in.";
                         checked <=> root.start-with-system;
                         toggled => { root.changed-start-with-system(self.checked); }
+                    }
+
+                    if root.screen-security-supported: Rectangle { height: Theme.space-s; }
+                    if root.screen-security-supported: SectionTitle { text: "Privacy"; }
+                    if root.screen-security-supported: SwitchRow {
+                        label: "Screen security";
+                        hint: "Keeps b33p's window out of screenshots, screen sharing and Windows Recall.";
+                        checked <=> root.screen-security;
+                        toggled => { root.changed-settings(); }
+                    }
+                    if root.update-supported: Rectangle { height: Theme.space-s; }
+                    if root.update-supported: SectionTitle { text: "Updates"; }
+                    if root.update-supported: SwitchRow {
+                        label: "Check for updates";
+                        hint: "Asks GitHub (api.github.com) once a day whether a newer b33p is out, and offers it. GitHub sees your IP address. Off: b33p never contacts GitHub.";
+                        checked <=> root.check-updates;
+                        toggled => { root.changed-settings(); }
+                    }
+                    if root.update-supported && root.update-offer != "": SettingRow {
+                        label: "b33p " + root.update-offer + " is available";
+                        hint: root.update-status != "" ? root.update-status : "Downloaded from GitHub and checked against its signature first.";
+                        Button {
+                            text: "Update and restart";
+                            enabled: !root.updating;
+                            clicked => { root.update-now(); }
+                        }
                     }
 
                     Rectangle { height: Theme.space-s; }

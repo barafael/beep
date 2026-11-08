@@ -178,13 +178,7 @@ async fn serve(
                 if replies && notification.key.is_some() {
                     buttons.extend(["inline-reply", "Reply"]);
                 }
-                let mut hints = HashMap::from([
-                    ("desktop-entry", Value::from(app_id)),
-                    ("category", Value::from("im.received")),
-                ]);
-                if replies {
-                    hints.insert("x-kde-reply-placeholder-text", Value::from("Reply…"));
-                }
+                let hints = hints(app_id, replies, notification.silent);
                 let body = if markup {
                     escape_markup(&notification.body)
                 } else {
@@ -244,12 +238,37 @@ async fn serve(
     Ok(())
 }
 
+/// What a notification tells the server besides its text: which app it is from, that it is
+/// a message, the reply field's placeholder (`replies`: the server offers one), and that it
+/// should make no sound (`silent`): the spec's `suppress-sound` hint, which a server is free
+/// to ignore.
+fn hints(app_id: &str, replies: bool, silent: bool) -> HashMap<&'static str, Value<'_>> {
+    let mut hints = HashMap::from([
+        ("desktop-entry", Value::from(app_id)),
+        ("category", Value::from("im.received")),
+    ]);
+    if replies {
+        hints.insert("x-kde-reply-placeholder-text", Value::from("Reply…"));
+    }
+    if silent {
+        hints.insert("suppress-sound", Value::from(true));
+    }
+    hints
+}
+
 /// Servers with `body-markup` interpret a subset of HTML in the body.
 use crate::escape_xml as escape_markup;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_notification_asks_for_no_sound() {
+        let quiet = hints("b33p", false, true);
+        assert_eq!(quiet.get("suppress-sound"), Some(&Value::from(true)));
+        assert!(!hints("b33p", false, false).contains_key("suppress-sound"));
+    }
 
     #[test]
     fn markup_is_escaped() {

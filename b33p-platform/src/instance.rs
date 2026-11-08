@@ -4,7 +4,7 @@
 //! | Platform | Lock and message |
 //! |---|---|
 //! | Linux, BSD | the D-Bus name `io.github.barafael.B33p`, called through `org.freedesktop.Application` |
-//! | Windows | a named pipe; connecting to it is the message |
+//! | Windows | a named pipe; connecting to it is the message, and a `q` written to it asks b33p to quit (`install.rs`) |
 //! | macOS | the system already starts an app only once |
 //!
 //! The mock backend has a lock of its own (`io.github.barafael.B33p.Mock`): it touches no account, so
@@ -20,19 +20,42 @@ pub enum Claim {
     Unchecked,
 }
 
+/// What a later start asks of the running b33p.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Request {
+    /// Show the window; with the Wayland activation token the start had, if any.
+    Show(Option<String>),
+    /// Quit: a newer b33p is being installed, or b33p uninstalled (Windows only).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Quit,
+}
+
 pub struct Primary {
-    /// One message per later start, with its Wayland activation token if it had one.
-    pub activations: async_channel::Receiver<Option<String>>,
+    /// One message per later start.
+    pub activations: async_channel::Receiver<Request>,
     /// Holds the lock until b33p ends.
     _lock: platform::Lock,
 }
+
+/// Asks a running b33p (the real one, not the mock) to quit, and waits until it has: its
+/// database closed and its exe free. `true` once none runs. Windows only, for installing and
+/// uninstalling (`install.rs`); elsewhere nothing installs, and this says none runs.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn quit_running() -> bool {
+    #[cfg(windows)]
+    return platform::quit_running(ID, std::time::Duration::from_secs(20));
+    #[cfg(not(windows))]
+    true
+}
+
+const ID: &str = "io.github.barafael.B33p";
 
 /// Claims b33p for this process, or asks the one that already has it to show itself.
 pub fn claim(mock: bool) -> Claim {
     let id = if mock {
         "io.github.barafael.B33p.Mock"
     } else {
-        "io.github.barafael.B33p"
+        ID
     };
     let (sender, activations) = async_channel::unbounded();
     match platform::claim(id, sender) {
@@ -59,8 +82,10 @@ mod platform {
     /// The connection owning the name; the bus releases it when b33p ends, however it ends.
     pub type Lock = zbus::blocking::Connection;
 
+    use super::Request;
+
     /// The part of `org.freedesktop.Application` b33p needs: launchers call `Activate`.
-    struct Application(async_channel::Sender<Option<String>>);
+    struct Application(async_channel::Sender<Request>);
 
     #[zbus::interface(name = "org.freedesktop.Application")]
     impl Application {
@@ -84,7 +109,9 @@ mod platform {
     impl Application {
         fn show(&self, platform_data: &HashMap<String, OwnedValue>) {
             // Unbounded, so it fails only once b33p is ending, when there is nothing to show.
-            self.0.try_send(activation_token(platform_data)).ok();
+            self.0
+                .try_send(Request::Show(activation_token(platform_data)))
+                .ok();
         }
     }
 
@@ -108,7 +135,7 @@ mod platform {
     /// `None` if another b33p has the name `id`; it was asked to show itself.
     pub fn claim(
         id: &str,
-        activations: async_channel::Sender<Option<String>>,
+        activations: async_channel::Sender<Request>,
     ) -> zbus::Result<Option<Lock>> {
         let connection = zbus::blocking::connection::Builder::session()?
             .serve_at(PATH, Application(activations))?
@@ -151,9 +178,12 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError, HANDLE,
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+        GetLastError, HANDLE,
     };
-    use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile,
+    };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_REJECT_REMOTE_CLIENTS,
         PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
@@ -161,8 +191,52 @@ mod platform {
     use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
     use windows::core::HSTRING;
 
+    use super::Request;
+
     /// The pipe lives as long as the thread serving it, which is as long as b33p.
     pub type Lock = ();
+
+    /// Written to the pipe: quit.
+    const QUIT: u8 = b'q';
+
+    /// Asks the b33p that has `id` to quit and waits, up to `patience`, until its process has
+    /// ended (the pipe goes with it). `true` once none runs.
+    pub fn quit_running(id: &str, patience: std::time::Duration) -> bool {
+        use std::io::Write;
+        let name = pipe_name(id);
+        let gone = || {
+            // Doesn't connect, so it asks nothing of b33p.
+            let waited = unsafe { WaitNamedPipeW(&HSTRING::from(&name), 1) };
+            !waited.as_bool() && unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND
+        };
+        if gone() {
+            return true;
+        }
+        tracing::info!("asking the running b33p to quit");
+        for _ in 0..10 {
+            match std::fs::OpenOptions::new().write(true).open(&name) {
+                Ok(mut pipe) => {
+                    if let Err(error) = pipe.write_all(&[QUIT]) {
+                        tracing::warn!(%error, "the running b33p wasn't asked to quit");
+                    }
+                    break;
+                }
+                Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND.0 as i32) => {
+                    return true;
+                }
+                // Between two connections.
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        }
+        let started = std::time::Instant::now();
+        while started.elapsed() < patience {
+            if gone() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
 
     /// Pipe names are machine-wide, so each user gets their own.
     fn pipe_name(id: &str) -> String {
@@ -173,7 +247,7 @@ mod platform {
     /// `None` if another b33p has the pipe for `id`; it was asked to show itself.
     pub fn claim(
         id: &str,
-        activations: async_channel::Sender<Option<String>>,
+        activations: async_channel::Sender<Request>,
     ) -> windows::core::Result<Option<Lock>> {
         let name = pipe_name(id);
         // Only the first instance of a pipe may be created with this flag, which makes the
@@ -210,8 +284,9 @@ mod platform {
         Ok(Some(()))
     }
 
-    /// Each connection is one later start asking b33p to show itself.
-    fn serve(pipe: HANDLE, activations: async_channel::Sender<Option<String>>) {
+    /// Each connection is one later start asking b33p to show itself, or, with a `q`
+    /// written, to quit.
+    fn serve(pipe: HANDLE, activations: async_channel::Sender<Request>) {
         loop {
             match unsafe { ConnectNamedPipe(pipe, None) } {
                 Ok(()) => {}
@@ -222,7 +297,16 @@ mod platform {
                     return;
                 }
             }
-            if activations.try_send(None).is_err() {
+            // Nothing written (the client closed at once, as `activate_running` and every
+            // earlier b33p do) is a request to show.
+            let mut byte = [0u8];
+            let mut read = 0;
+            let request =
+                match unsafe { ReadFile(pipe, Some(&mut byte), Some(&raw mut read), None) } {
+                    Ok(()) if read == 1 && byte[0] == QUIT => Request::Quit,
+                    _ => Request::Show(None),
+                };
+            if activations.try_send(request).is_err() {
                 return;
             }
             // Still connected, the pipe would take no one else.
@@ -265,7 +349,7 @@ mod platform {
 
     pub fn claim(
         _: &str,
-        _: async_channel::Sender<Option<String>>,
+        _: async_channel::Sender<super::Request>,
     ) -> Result<Option<Lock>, std::convert::Infallible> {
         Ok(Some(()))
     }

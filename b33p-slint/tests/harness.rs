@@ -21,8 +21,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use b33p_harness::{
-    Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
-    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme, Trust,
+    Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, NotifySnapshot,
+    Outcome, Pong, Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize,
+    Theme, Trust,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -430,6 +431,36 @@ fn messages_are_pinned_and_unpinned() {
     agent.wait_for("no pins", |s| s.pinned.is_empty());
 }
 
+/// A chat's own notification settings, set as its details page does, show in the snapshot;
+/// the other chats keep notifying as before.
+#[test]
+fn a_chat_notifies_only_for_mentions() {
+    let (_app, mut agent) = app("notify");
+    let chats = wait_for_chats(&mut agent);
+    assert_eq!(
+        conversation(&chats, "Alice").notify,
+        NotifySnapshot::default()
+    );
+    let quiet = NotifySnapshot {
+        mentions_only: true,
+        hide_text: true,
+        silent: true,
+    };
+    assert!(agent.act(Action::SetChatNotify {
+        conversation: id_of(&chats, "Alice"),
+        notify: quiet,
+    }));
+    let set = agent.wait_for("Alice's settings", |s| {
+        conversation(s, "Alice").notify == quiet
+    });
+    assert!(
+        set.conversations
+            .iter()
+            .filter(|c| c.title != "Alice")
+            .all(|c| c.notify == NotifySnapshot::default())
+    );
+}
+
 /// A picture fetched for display and a file saved, with their states in the snapshot.
 #[test]
 fn attachments_are_fetched_and_saved() {
@@ -461,6 +492,45 @@ fn attachments_are_fetched_and_saved() {
         unreachable!("waited for it")
     };
     assert!(path.ends_with("route-notes.pdf"));
+}
+
+/// A photo opens in the picture viewer, which downloads it whole and zooms; only photos do.
+#[test]
+fn photos_open_in_the_viewer() {
+    let (_app, mut agent) = app("viewer");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Alice"));
+    agent.wait_for("Alice's photo", |s| {
+        s.messages
+            .iter()
+            .flat_map(|m| &m.attachments)
+            .any(|a| a.id == "photo")
+    });
+    assert!(!agent.act(Action::OpenViewer {
+        id: "notes".to_owned(),
+    }));
+    assert!(agent.act(Action::OpenViewer {
+        id: "photo".to_owned(),
+    }));
+    let shown = agent.wait_for("the photo at full size", |s| {
+        s.viewer
+            .as_ref()
+            .is_some_and(|v| v.download == Download::Ready)
+    });
+    let viewer = shown.viewer.unwrap();
+    assert_eq!(
+        (viewer.sender.as_str(), viewer.index, viewer.count),
+        ("Alice", 0, 1)
+    );
+    // The only photo: nowhere to go.
+    assert!(!agent.act(Action::ViewerNext));
+    assert!(!agent.act(Action::ViewerPrevious));
+    // The window says how far it zooms, and catches at 100% on the way in.
+    agent.act(Action::ZoomViewer { notches: 30.0 });
+    let zoomed = agent.snapshot().viewer.unwrap();
+    assert_eq!((zoomed.zoom, zoomed.fitted), (Some(1.0), Some(false)));
+    agent.act(Action::CloseViewer);
+    agent.wait_for("the viewer closed", |s| s.viewer.is_none());
 }
 
 /// What fails for a reason that may pass can be tried again; what Signal refused can't. The
