@@ -26,6 +26,7 @@ mod agent;
 // The harness drives the whole app over a socket: test builds only, never a release.
 #[cfg(all(feature = "harness", not(debug_assertions)))]
 compile_error!("the `harness` feature is for test builds: build without `--release`");
+mod badge;
 mod capture;
 mod desktop;
 mod emoji;
@@ -215,9 +216,12 @@ impl Shared {
                 self.start_hidden.set(false);
             }
         }
+        // One count for the tray and the taskbar, the one the chat list's folders add up.
+        let unread = chat.unread_total();
         if let Some(tray) = &*self.tray.borrow() {
-            tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
+            tray::show_unread(tray, unread);
         }
+        badge::taskbar::set_count(unread);
         deliver_notices(&self.notifier, &mut chat);
         for command in chat.take_commands() {
             self.commands.send(command);

@@ -47,7 +47,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.1 Read state and receipts
 
 1. Have someone send you a message while b33p is open but another chat is selected.
-   - The chat shows an unread badge; the tray icon gets its red dot.
+   - The chat shows an unread badge; the tray icon shows the count (9+ above nine), and its
+     tooltip the count in words. On Windows the taskbar button shows it too, up to 99+.
 2. Open the chat.
    - The badge goes away. On **their** phone the message shows as read (two filled ticks),
      if read receipts are on for both of you. *(box: storage)*

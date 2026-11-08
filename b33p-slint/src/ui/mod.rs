@@ -112,6 +112,7 @@ impl Window {
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         self.0.show()?;
         crate::capture::apply(&self.0);
+        crate::badge::taskbar::attach(&self.0);
         Ok(())
     }
 
@@ -129,7 +130,10 @@ impl Window {
     pub fn raise(&self) {
         self.0.window().set_minimized(false);
         match self.0.show() {
-            Ok(()) => crate::capture::apply(&self.0),
+            Ok(()) => {
+                crate::capture::apply(&self.0);
+                crate::badge::taskbar::attach(&self.0);
+            }
             Err(error) => tracing::warn!(%error, "failed to show the window"),
         }
         // Not in Slint's public API. On Qt this raises and activates the window, which on

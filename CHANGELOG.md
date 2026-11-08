@@ -25,6 +25,7 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### New
 
+- The tray icon shows how many messages are unread, and so does the taskbar button on Windows.
 - **Start** on the start-up screen while catching up: the chats show at once, and the rest
   comes in as they do.
 - A chat with many unread messages opens at the first of them; a ↓ button goes back to the
