@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Measures b33p-slint and b33p-gpui against each other, on the mock, in a display of their own
+"""Measures b33p's clients against each other, on the mock, in a display of their own
 (testbox/tools `with-display`, in a container) that draws on the host's GPU through its render
 node. Nothing of the host's desktop is ever captured or shown to the clients: what is measured
 comes from /proc, from the drm fdinfo of the client's own file descriptors, and from the
 Wayland requests the client sends.
 
   bench.py run [--rounds 5] [--soak 120] [--frames-rounds 1] [--scale SPEC] [--out DIR]
-  bench.py report DIR
+               [--uis slint,gpui | --ways LABEL=PATH,... | --ways-dir DIR] [--max-load 6] [--dry-run]
+  bench.py report DIR [--baseline slint-qt] [--json]
+  report_html.py DIR OUT.html          (beside this file: one self-contained HTML page)
 
-`run` builds nothing: it needs both binaries built as the `testbox` profile (a release build
+A "way" is one client binary in one graphics stack. The two-way default is `slint` and `gpui`
+(BENCH_SLINT, BENCH_GPUI, `--uis`); a multi-way run names its ways, `--ways
+slint-qt=PATH,slint-femtovg=PATH,gpui=PATH`, or takes every known name that exists in a
+directory (`--ways-dir`: slint-qt, slint-qt-patched, slint-femtovg, slint-femtovg-patched,
+slint-skia, slint-skia-patched, gpui). The kind of a way, slint or gpui, is the prefix of its
+label. Every way is mounted as `b33p` in a container of its own, so everything below is
+the same for all of them.
+
+`run` builds nothing: it needs the binaries built as the `testbox` profile (a release build
 that keeps the debug assertions the mock needs), with the harness:
 
   cargo build --profile testbox -p b33p-slint -p b33p-gpui \\
@@ -18,14 +28,21 @@ and the image of Containerfile.bench beside this script (`podman build -t b33p-b
 testbox/gpui-view/Containerfile.bench testbox/gpui-view`), and the tools of view.sh's header
 (`with-display`, built with WITH_DISPLAY_RENDERER support).
 
-Each round runs both clients, in alternating order, in a container of their own each:
+Each round runs every way, in a container of their own each; the order rotates from round to
+round (round 1: a b c, round 2: b c a, ...) so that a machine that drifts is spread over all of
+them. A finished run is a json file in the output directory and is skipped when the same command
+is started again with the same --out (resume). Before every run the 1-minute load average is
+read; above --max-load the run waits (at most ten minutes) and records the wait. The scenarios:
   static  startup, idle at the list, idle in a long chat, scrolling by the mouse wheel, switching
           between chats, resizing, typing with the keyboard, and the details and media panels
   live    messages arriving in the open chat, then a soak of that, for memory growth
   sync    catching up with a backlog of messages the mock sends in one burst
   frames  the scrolling again, with the Wayland requests logged, for the gaps
           between frames (the logging costs processor time: those runs are not the others')
-Every number is a /proc or drm counter read before and after, over the whole phase.
+Every number is a /proc or drm counter read before and after, over the whole phase. The
+scenario names are the keys of the json: "static" and "live" runs hold phases named as above
+(idle_list_15s, idle_chat_first_10s, idle_chat_after_20s, scroll_up_8s, scroll_down_8s,
+switch_100_chats, resize_sweep, type_80_keys, panels_details_media, incoming_5_per_s_30s, soak).
 """
 
 import argparse
@@ -33,7 +50,9 @@ import collections
 import json
 import math
 import os
+import datetime
 import re
+import shlex
 import socket
 import statistics
 import struct
@@ -53,8 +72,94 @@ BINARIES = {
     "slint": os.environ.get("BENCH_SLINT", os.path.join(ROOT, "target/testbox/b33p")),
     "gpui": os.environ.get("BENCH_GPUI", os.path.join(ROOT, "target/testbox/b33p-gpui")),
 }
+# BENCH_WITH_DISPLAY: the tool of view.sh's header, when it was built in another checkout.
+WITH_DISPLAY = os.environ.get("BENCH_WITH_DISPLAY", f"{ROOT}/target/testbox-workspaces/debug/with-display")
 WIDTH, HEIGHT = 1280, 900
 GEOMETRY = f"{WIDTH}x{HEIGHT}"
+# The names a multi-way run knows, in the order they are listed in reports and charts.
+KNOWN_WAYS = ["slint-qt", "slint-qt-patched", "slint-femtovg", "slint-femtovg-patched",
+              "slint-skia", "slint-skia-patched", "gpui"]
+KINDS = ("slint", "gpui")
+# Seconds a run of each mode takes, roughly, for the plan of --dry-run (a soak is added to live).
+ESTIMATE_S = {"static": 120, "live": 50, "sync": 15, "frames": 45}
+
+
+def way_kind(label):
+    """The kind of client, slint or gpui, from the prefix of a way's label."""
+    for kind in KINDS:
+        if label == kind or label.startswith(kind + "-"):
+            return kind
+    raise ValueError(f"way {label!r}: the label must start with slint or gpui (that is its kind)")
+
+
+class Way:
+    """One client binary in one graphics stack: a label, the binary, its kind, and what the
+    container needs on top (environment variables, podman arguments)."""
+
+    def __init__(self, label, path, env=None, args=None):
+        self.label, self.path = label, path
+        self.kind = way_kind(label)
+        self.env, self.args = dict(env or {}), list(args or [])
+
+    def __repr__(self):
+        return f"Way({self.label!r}, {self.path!r})"
+
+
+def way_order(label):
+    """Known names in KNOWN_WAYS' order (the 2-way names first), other Slint ones after those,
+    GPUI-kind ones last."""
+    legacy = ["slint"] + KNOWN_WAYS
+    rank = legacy.index(label) if label in legacy else len(legacy)
+    return (label == "gpui" or label.startswith("gpui-"), rank, label)
+
+
+def parse_ways(spec):
+    """`label=path,label=path` into [(label, path)]; the path may not contain a comma."""
+    out = []
+    for item in filter(None, (x.strip() for x in spec.split(","))):
+        label, sep, path = item.partition("=")
+        if not sep or not label or not path:
+            raise ValueError(f"--ways: {item!r} is not LABEL=PATH")
+        way_kind(label)
+        out.append((label, os.path.abspath(path)))
+    return out
+
+
+def resolve_ways(ways=None, ways_dir=None, uis="slint,gpui", extra_env=(), extra_args=()):
+    """The ways to run and the notes on those that cannot: ([Way], [(label, reason)]).
+    --ways and --ways-dir are merged (an explicit path wins over the directory's); with neither,
+    `uis` names the two-way ones whose binaries are BENCH_SLINT / BENCH_GPUI. A way whose binary
+    is missing is skipped with a note."""
+    wanted = {}
+    if ways_dir:
+        for label in KNOWN_WAYS:
+            wanted[label] = os.path.join(os.path.abspath(ways_dir), label)
+    for label, path in parse_ways(ways) if ways else []:
+        wanted[label] = path
+    if not wanted:
+        for ui in filter(None, uis.split(",")):
+            if ui not in BINARIES:
+                raise ValueError(f"--uis: {ui!r} is not one of {', '.join(BINARIES)}; use --ways for others")
+            wanted[ui] = BINARIES[ui]
+    env, args = {}, {}
+    for what, items, into in (("--env", extra_env, env), ("--podman-arg", extra_args, args)):
+        for item in items:
+            label, sep, value = item.partition(":")
+            if not sep or not value:
+                raise ValueError(f"{what}: {item!r} is not LABEL:VALUE")
+            into.setdefault(label, []).append(value)
+    for label in list(env) + list(args):
+        if label not in wanted:
+            raise ValueError(f"--env/--podman-arg name the way {label!r}, which is not among the ways")
+    result, skipped = [], []
+    for label in sorted(wanted, key=way_order):
+        path = wanted[label]
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            skipped.append((label, f"binary missing or not executable: {path}"))
+            continue
+        pairs = [e.partition("=")[::2] for e in env.get(label, [])]
+        result.append(Way(label, path, dict(pairs), args.get(label, [])))
+    return result, skipped
 
 
 def sh(*args, **kw):
@@ -185,41 +290,47 @@ def delta(before, after, probe):
 
 
 class Run:
-    def __init__(self, ui, label, out, scale, frames=False):
-        self.ui, self.label, self.out, self.scale, self.frames = ui, label, out, scale, frames
+    def __init__(self, way, mode, round_, out, scale, frames=False):
+        self.way, self.label, self.out, self.scale, self.frames = way, f"{way.label}-{mode}-{round_}", out, scale, frames
         # BENCH_PREFIX: another worktree measuring at the same time needs container names of its own.
-        self.name = f"{os.environ.get('BENCH_PREFIX', 'b33p-bench')}-{label}"
-        self.dir = os.path.join(out, label)
+        # The name holds the way, the scenario and the round: unique within a run.
+        self.name = f"{os.environ.get('BENCH_PREFIX', 'b33p-bench')}-{self.label}"
+        self.dir = os.path.join(out, self.label)
         self.view, self.run, self.data = (os.path.join(self.dir, d) for d in ("view", "run", "data"))
         self.n = 0
+
+    def command(self):
+        """The `podman run` that starts this client in its display. A frames run logs the
+        client's Wayland requests only (the compositor's would be in the same log)."""
+        program = ["b33p"]
+        if self.frames:
+            program = ["sh", "-c", "WAYLAND_DEBUG=client exec b33p"]
+        env = {"HOME": "/tmp/home", "B33P_MOCK": "1", "B33P_MOCK_SCALE": self.scale,
+               "B33P_AGENT_SOCKET": "/run/b33p/agent.sock", "RUST_LOG": "warn",
+               "WITH_DISPLAY_RENDERER": "gles2", "WLR_RENDER_DRM_DEVICE": RENDER_NODE, **self.way.env}
+        # BENCH_ENV: more environment for every client, "NAME=value NAME=value" (e.g. RUST_LOG=info).
+        env.update(pair.split("=", 1) for pair in os.environ.get("BENCH_ENV", "").split() if "=" in pair)
+        return ["podman", "run", "-d", "--rm", "--name", self.name, "--userns=keep-id",
+                "--security-opt", "label=disable", "--device", RENDER_NODE, *self.way.args,
+                "-v", f"{self.way.path}:/usr/local/bin/b33p:ro",
+                "-v", f"{WITH_DISPLAY}:/usr/local/bin/with-display:ro",
+                "-v", f"{self.view}:/run/view", "-v", f"{self.run}:/run/b33p", "-v", f"{self.data}:/tmp/home",
+                *(x for k, v in env.items() for x in ("-e", f"{k}={v}")),
+                IMAGE, "with-display", "/run/view", GEOMETRY, "--", *program]
 
     def start(self):
         subprocess.run(["podman", "rm", "-f", self.name], capture_output=True)
         subprocess.run(["rm", "-rf", self.dir])
         for d in (self.view, self.run, self.data):
             os.makedirs(d)
-        program = ["b33p"]
-        if self.frames:
-            # Only the client's requests: the compositor's would be in the same log.
-            program = ["sh", "-c", "WAYLAND_DEBUG=client exec b33p"]
         t0 = time.time()
-        subprocess.run(
-            ["podman", "run", "-d", "--rm", "--name", self.name, "--userns=keep-id",
-             "--security-opt", "label=disable", "--device", RENDER_NODE,
-             "-v", f"{BINARIES[self.ui]}:/usr/local/bin/b33p:ro",
-             "-v", f"{ROOT}/target/testbox-workspaces/debug/with-display:/usr/local/bin/with-display:ro",
-             "-v", f"{self.view}:/run/view", "-v", f"{self.run}:/run/b33p", "-v", f"{self.data}:/tmp/home",
-             "-e", "HOME=/tmp/home", "-e", "B33P_MOCK=1", "-e", f"B33P_MOCK_SCALE={self.scale}",
-             "-e", "B33P_AGENT_SOCKET=/run/b33p/agent.sock", "-e", "RUST_LOG=warn",
-             "-e", "WITH_DISPLAY_RENDERER=gles2", "-e", f"WLR_RENDER_DRM_DEVICE={RENDER_NODE}",
-             IMAGE, "with-display", "/run/view", GEOMETRY, "--", *program],
-            check=True, capture_output=True, text=True)
+        subprocess.run(self.command(), check=True, capture_output=True, text=True)
         while not os.path.exists(os.path.join(self.view, "interact")):
             time.sleep(0.05)
         self.vnc = Vnc(os.path.join(self.view, "interact"))
         # A keyboard in the compositor's seat, before the window: without one no window is
         # ever active (GPUI takes a keyboard's focus for it), and a window that isn't, isn't
-        # a window as a desktop has it.
+        # a window as a desktop has it. Slint (any backend) does not mind it, so every kind gets it.
         self.vnc.tap(0xFFE1)
         time.sleep(0.5)
         sock = os.path.join(self.run, "agent.sock")
@@ -484,49 +595,164 @@ def percentile(sorted_values, p):
 # ---------------------------------------------------------------------------------------
 
 
-def environment():
-    def read(path):
-        try:
-            return open(path).read().strip()
-        except OSError:
-            return None
+
+
+def read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def read_file(path):
+    try:
+        return open(path).read().strip()
+    except OSError:
+        return None
+
+
+def environment(ways):
     return {
         "kernel": os.uname().release,
-        "governor": read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
+        "governor": read_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
         "power_profile": sh("powerprofilesctl", "get").strip() or None,
-        "loadavg": read("/proc/loadavg"),
+        "loadavg": read_file("/proc/loadavg"),
         "cpus": os.cpu_count(),
-        "gpu": read("/sys/class/drm/card1/device/product_name") or read("/sys/class/drm/card1/device/device"),
+        "gpu": read_file("/sys/class/drm/card1/device/product_name") or read_file("/sys/class/drm/card1/device/device"),
         "git": sh("git", "-C", ROOT, "rev-parse", "--short", "HEAD").strip(),
-        "binaries": {ui: os.path.getsize(p) for ui, p in BINARIES.items()},
+        "binaries": {w.label: os.path.getsize(w.path) for w in ways},
     }
 
 
-def run_all(args):
-    args.out = os.path.abspath(args.out)
-    os.makedirs(args.out, exist_ok=True)
-    meta = environment()
-    json.dump(meta, open(os.path.join(args.out, "environment.json"), "w"), indent=1)
-    print("environment:", json.dumps(meta), flush=True)
-    order = [ui for ui in ("slint", "gpui") if ui in args.uis.split(",")]
+def machine_state():
+    """What is recorded in every run's json, to see a disturbed one afterwards."""
+    return {
+        "time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "loadavg": read_file("/proc/loadavg"),
+        "uptime": sh("uptime").strip(),
+        "governor": read_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
+    }
+
+
+def load1():
+    return float(read_file("/proc/loadavg").split()[0])
+
+
+def wait_for_load(max_load, limit=600, poll=10, read=load1, sleep=time.sleep, clock=time.time, say=print):
+    """Waits until the 1-minute load average is at most `max_load`, for `limit` seconds at most
+    (0 or less: do not check). Returns what is recorded with the run: the load when asked, the
+    seconds waited, and whether the load was still too high when the wait gave up."""
+    first = read()
+    if max_load <= 0 or first <= max_load:
+        return {"load_first": first, "waited_s": 0, "exceeded": False, "max_load": max_load}
+    start = clock()
+    say(f"  load {first} is above {max_load}: waiting up to {limit} s", flush=True)
+    while read() > max_load and clock() - start < limit:
+        sleep(poll)
+    waited, now = round(clock() - start), read()
+    say(f"  waited {waited} s, load now {now}" + (" (still above: going on anyway)" if now > max_load else ""), flush=True)
+    return {"load_first": first, "waited_s": waited, "exceeded": now > max_load, "max_load": max_load}
+
+
+def rotate(items, k):
+    """`items` started at the k-th (mod length): round 1 is the given order, round 2 starts one
+    later, so each way is first, last and in between equally often over a multiple of rounds."""
+    items = list(items)
+    if not items:
+        return items
+    k %= len(items)
+    return items[k:] + items[:k]
+
+
+def plan_jobs(ways, rounds, sync_rounds, frames_rounds):
+    """[(way, mode, round)] in the order they run."""
     jobs = []
-    for round_ in range(1, args.rounds + 1):
-        for ui in (order if round_ % 2 else order[::-1]):
-            jobs.append((ui, "static", round_))
-            jobs.append((ui, "live", round_))
-    for round_ in range(1, args.sync_rounds + 1):
-        for ui in (order if round_ % 2 else order[::-1]):
-            jobs.append((ui, "sync", round_))
-    for round_ in range(1, args.frames_rounds + 1):
-        for ui in (order if round_ % 2 else order[::-1]):
-            jobs.append((ui, "frames", round_))
-    for ui, mode, round_ in jobs:
-        label = f"{ui}-{mode}-{round_}"
+    for round_ in range(1, rounds + 1):
+        for way in rotate(ways, round_ - 1):
+            jobs += [(way, "static", round_), (way, "live", round_)]
+    for count, mode in ((sync_rounds, "sync"), (frames_rounds, "frames")):
+        for round_ in range(1, count + 1):
+            jobs += [(way, mode, round_) for way in rotate(ways, round_ - 1)]
+    return jobs
+
+
+def finished(out, label):
+    """Whether a complete json of this run is in `out` (a run that was cut off left none: the
+    json is written when the run is over, and atomically)."""
+    try:
+        record = read_json(os.path.join(out, f"{label}.json"))
+    except (OSError, ValueError):
+        return False
+    return bool(record.get("result"))
+
+
+def job_scale(args, mode):
+    # The live runs have messages arriving, five a second, in the long thread.
+    scale = args.scale + (",incoming=5" if mode == "live" else "")
+    return scale + (f",backlog={args.backlog}" if mode == "sync" else "")
+
+
+def write_json(path, value):
+    tmp = path + ".part"
+    with open(tmp, "w") as f:
+        json.dump(value, f, indent=1)
+    os.replace(tmp, path)
+
+
+def print_plan(args, ways, skipped, jobs):
+    estimate = 0
+    for way, mode, round_ in jobs:
+        run = Run(way, mode, round_, args.out, job_scale(args, mode), frames=(mode == "frames"))
+        done = finished(args.out, run.label) and not args.force
+        seconds = ESTIMATE_S[mode] + (args.soak if mode == "live" else 0)
+        estimate += 0 if done else seconds
+        print(f"== {run.label} ({way.kind}, ~{seconds} s)" + (" already done: skipped (resume)" if done else ""))
+        if not done:
+            print("  " + shlex.join(run.command()))
+    print(f"\n{len(ways)} ways: {', '.join(w.label for w in ways)}")
+    for label, reason in skipped:
+        print(f"skipped {label}: {reason}")
+    print(f"{len(jobs)} runs, about {estimate / 60:.0f} minutes still to do (a rough estimate, plus waits for load)")
+
+
+def run_all(args):
+    try:
+        ways, skipped = resolve_ways(args.ways, args.ways_dir, args.uis, args.env, args.podman_arg)
+    except ValueError as error:
+        sys.exit(f"bench.py: {error}")
+    for label, reason in skipped:
+        print(f"note: way {label} skipped: {reason}", flush=True)
+    if not ways:
+        sys.exit("bench.py: no way to run (no binary found)")
+    args.out = os.path.abspath(args.out)
+    jobs = plan_jobs(ways, args.rounds, args.sync_rounds, args.frames_rounds)
+    if args.dry_run:
+        print_plan(args, ways, skipped, jobs)
+        return
+    os.makedirs(args.out, exist_ok=True)
+    path = os.path.join(args.out, "environment.json")
+    try:
+        meta = read_json(path)
+    except (OSError, ValueError):
+        meta = {}
+    now = environment(ways)
+    session = {"started": machine_state()["time"], "uptime": machine_state()["uptime"], "ways": {w.label: w.path for w in ways},
+               "skipped": [{"way": l, "reason": r} for l, r in skipped], "max_load": args.max_load,
+               "rounds": args.rounds, "sync_rounds": args.sync_rounds, "frames_rounds": args.frames_rounds,
+               "soak": args.soak, "backlog": args.backlog, "scale": args.scale,
+               "extra": {w.label: {"env": w.env, "podman_args": w.args} for w in ways if w.env or w.args}}
+    meta = {**meta, **now, "binaries": {**meta.get("binaries", {}), **now["binaries"]},
+            "sessions": meta.get("sessions", []) + [session]}
+    write_json(path, meta)
+    print("environment:", json.dumps({k: v for k, v in meta.items() if k != "sessions"}), flush=True)
+    failures = []
+    for way, mode, round_ in jobs:
+        label = f"{way.label}-{mode}-{round_}"
+        if finished(args.out, label) and not args.force:
+            print(f"== {label}: done in an earlier run, skipped", flush=True)
+            continue
         print(f"== {label}", flush=True)
-        # The live runs have messages arriving, five a second, in the long thread.
-        scale = args.scale + (",incoming=5" if mode == "live" else "")
-        scale += f",backlog={args.backlog}" if mode == "sync" else ""
-        r = Run(ui, label, args.out, scale, frames=(mode == "frames"))
+        wait = wait_for_load(args.max_load)
+        state = machine_state()
+        r = Run(way, mode, round_, args.out, job_scale(args, mode), frames=(mode == "frames"))
         try:
             r.start()
             if mode == "static":
@@ -537,78 +763,202 @@ def run_all(args):
                 result = scenario_sync(r)
             else:
                 result = scenario_frames(r)
+        except Exception as error:  # one broken run must not end an hour of others
+            failures.append(label)
+            print(f"  FAILED {label}: {error!r}", file=sys.stderr, flush=True)
+            with open(os.path.join(args.out, "failures.log"), "a") as f:
+                f.write(f"{state['time']} {label}: {error!r}\n{r.logs()[-2000:]}\n")
+            continue
         finally:
             r.stop()
-        record = {"ui": ui, "mode": mode, "round": round_, "scale": args.scale, "result": result}
-        json.dump(record, open(os.path.join(args.out, f"{label}.json"), "w"), indent=1)
-    print("done:", args.out)
+        record = {"ui": way.label, "way": way.label, "kind": way.kind, "mode": mode, "round": round_,
+                  "scale": args.scale, "result": result,
+                  "env": {**state, "load_wait": wait, "loadavg_after": read_file("/proc/loadavg")}}
+        write_json(os.path.join(args.out, f"{label}.json"), record)
+    print("done:", args.out, f"({len(failures)} failed: {', '.join(failures)})" if failures else "")
+    if failures:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------------------
+# Aggregation: what `report` and report_html.py both print. Medians over the rounds of each
+# (way, scenario, metric); nothing else is computed from the data than what is here.
+
+
+def derive(mode, result):
+    """Numbers that are sums or means of the run's own, added to a copy of its result: the GPU
+    memory (video plus shared), and the scrolling as one number (the mean of both directions)."""
+    result = {k: dict(v) for k, v in result.items()}
+    for metrics in result.values():
+        if "vram_mb" in metrics and "gtt_mb" in metrics:
+            metrics["gpu_mem_mb"] = round(metrics["vram_mb"] + metrics["gtt_mb"], 1)
+    up, down = result.get("scroll_up_8s"), result.get("scroll_down_8s")
+    if mode == "static" and up and down:
+        result["scroll_both_8s_mean"] = {
+            key: round((up[key] + down[key]) / 2, 2) for key in ("cpu_pct", "cpu_s", "gpu_s", "wakeups_per_s")
+            if key in up and key in down}
+    return result
+
+
+def load_records(directory):
+    records = []
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".json") or name == "environment.json":
+            continue
+        try:
+            rec = read_json(os.path.join(directory, name))
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and "mode" in rec and "result" in rec:
+            rec["way"] = rec.get("way") or rec["ui"]
+            rec["file"] = name
+            records.append(rec)
+    return records
+
+
+def stats(values):
+    return {"median": statistics.median(values), "min": min(values), "max": max(values),
+            "values": values, "n": len(values)}
+
+
+def aggregate(directory):
+    """{"ways": [...], "kinds": {way: kind}, "environment": {...}, "rounds": {way: {mode: n}},
+    "runs": [{way, mode, round, env}], "scenarios": [{"mode", "scenario", "metrics": {metric:
+    {way: stats}}}]}. Numbers that are not numbers (None) are left out; records are read in the
+    order of their round so that `values` is by round."""
+    modes = list(ESTIMATE_S)
+    records = sorted(load_records(directory), key=lambda r: (
+        modes.index(r["mode"]) if r["mode"] in modes else len(modes), r["mode"], r["way"], r["round"]))
+    table = collections.OrderedDict()
+    rounds = collections.defaultdict(lambda: collections.defaultdict(int))
+    runs = []
+    for rec in records:
+        rounds[rec["way"]][rec["mode"]] += 1
+        runs.append({"way": rec["way"], "mode": rec["mode"], "round": rec["round"], "env": rec.get("env")})
+        for scenario, metrics in derive(rec["mode"], rec["result"]).items():
+            for metric, value in metrics.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    table.setdefault((rec["mode"], scenario), collections.OrderedDict()) \
+                        .setdefault(metric, collections.defaultdict(list))[rec["way"]].append(value)
+    ways = sorted({r["way"] for r in records}, key=way_order)
+    env_path = os.path.join(directory, "environment.json")
+    env = read_json(env_path) if os.path.exists(env_path) else {}
+    return {
+        "ways": ways,
+        "kinds": {w: way_kind(w) for w in ways},
+        "environment": env,
+        "rounds": {w: dict(rounds[w]) for w in ways},
+        "runs": runs,
+        "scenarios": [
+            {"mode": mode, "scenario": scenario,
+             "metrics": {m: {w: stats(v) for w, v in by_way.items()} for m, by_way in metrics.items()}}
+            for (mode, scenario), metrics in table.items()],
+    }
+
+
+def pick_baseline(ways, wanted):
+    """The way the ratios are against: `wanted` if it is among `ways`, else slint-qt (the
+    shipped one), else the two-way run's slint, else the first way."""
+    for candidate in (wanted, "slint-qt", "slint"):
+        if candidate in ways:
+            return candidate
+    return ways[0] if ways else None
 
 
 # ---------------------------------------------------------------------------------------
 
 
-def report(directory):
-    records = []
-    for name in sorted(os.listdir(directory)):
-        if name.endswith(".json") and name != "environment.json":
-            records.append(json.load(open(os.path.join(directory, name))))
-    table = collections.defaultdict(lambda: collections.defaultdict(lambda: collections.defaultdict(list)))
-    for rec in records:
-        for scenario, metrics in rec["result"].items():
-            for metric, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    table[(rec["mode"], scenario)][metric][rec["ui"]].append(value)
-    env = os.path.join(directory, "environment.json")
-    if os.path.exists(env):
-        meta = json.load(open(env))
-        print("Measured at", meta.get("git"), "on", meta.get("kernel"), "| governor", meta.get("governor"),
-              "| load at start", meta.get("loadavg"))
-        print("Binaries:", {k: f"{v / 1e6:.1f} MB" for k, v in meta.get("binaries", {}).items()})
-        print()
-    show = ("cpu_pct", "gpu_s", "wakeups_per_s", "frames_per_s", "gap_ms_p95", "gap_ms_p99", "gap_ms_max",
-            "gaps_over_33ms", "rss_mb", "pss_mb", "anon_mb", "vram_mb", "gtt_mb", "threads",
-            "harness_ready_s", "chat_list_s", "synced_flag_s", "caught_up_s", "snapshot_ms_p95", "snapshot_ms_max",
-            "cpu_s", "unread_total", "rss_slope_mb_per_min", "anon_slope_mb_per_min")
-    print("| phase | metric | slint | gpui | gpui / slint |")
-    print("|---|---|---|---|---|")
-    for (mode, scenario), metrics in table.items():
-        for metric in show:
-            if metric not in metrics:
+def fmt_cell(c):
+    if c is None:
+        return "-"
+    return f"{c['median']:g}" if c["min"] == c["max"] else f"{c['median']:g} ({c['min']:g}-{c['max']:g})"
+
+
+SHOW = ("cpu_pct", "gpu_s", "wakeups_per_s", "frames_per_s", "gap_ms_p95", "gap_ms_p99", "gap_ms_max",
+        "gaps_over_33ms", "rss_mb", "pss_mb", "anon_mb", "vram_mb", "gtt_mb", "gpu_mem_mb", "threads",
+        "harness_ready_s", "chat_list_s", "synced_flag_s", "caught_up_s", "snapshot_ms_p95", "snapshot_ms_max",
+        "cpu_s", "unread_total", "rss_slope_mb_per_min", "anon_slope_mb_per_min")
+
+
+def report(directory, baseline=None, as_json=False, out=sys.stdout):
+    agg = aggregate(directory)
+    if as_json:
+        json.dump(agg, out, indent=1)
+        out.write("\n")
+        return
+    ways = agg["ways"]
+    base = pick_baseline(ways, baseline)
+    if baseline and baseline != base:
+        print(f"note: baseline {baseline} has no data here; ratios are against {base}", file=out)
+    env = agg["environment"]
+    if env:
+        print("Measured at", env.get("git"), "on", env.get("kernel"), "| governor", env.get("governor"),
+              "| load at start", env.get("loadavg"), file=out)
+        print("Binaries:", {k: f"{v / 1e6:.1f} MB" for k, v in env.get("binaries", {}).items()}, file=out)
+    print("Rounds:", {w: agg["rounds"][w] for w in ways}, file=out)
+    disturbed = [r for r in agg["runs"] if r["env"] and r["env"].get("load_wait", {}).get("waited_s")]
+    for r in disturbed:
+        w = r["env"]["load_wait"]
+        print(f"note: {r['way']}-{r['mode']}-{r['round']} waited {w['waited_s']} s for load "
+              f"{w['load_first']} (max {w['max_load']})" + ("; still above" if w.get("exceeded") else ""), file=out)
+    print(file=out)
+    others = [w for w in ways if w != base]
+    print("| phase | metric | " + " | ".join(ways) + " | " + " | ".join(f"{w} / {base}" for w in others) + " |", file=out)
+    print("|---|---|" + "---|" * (len(ways) + len(others)), file=out)
+    for sc in agg["scenarios"]:
+        for metric in SHOW:
+            by_way = sc["metrics"].get(metric)
+            if not by_way:
                 continue
-            cells = {}
-            for ui in ("slint", "gpui"):
-                values = metrics[metric].get(ui)
-                cells[ui] = (statistics.median(values), min(values), max(values), len(values)) if values else None
-            def fmt(c):
-                if c is None:
-                    return "-"
-                return f"{c[0]:g}" if c[1] == c[2] else f"{c[0]:g} ({c[1]:g}-{c[2]:g})"
-            ratio = ""
-            if cells["slint"] and cells["gpui"] and cells["slint"][0] > 0:
-                ratio = f"{cells['gpui'][0] / cells['slint'][0]:.2f}x"
-            label = f"{scenario} (logged)" if mode == "frames" else scenario
-            print(f"| {label} | {metric} | {fmt(cells['slint'])} | {fmt(cells['gpui'])} | {ratio} |")
+            ratios = []
+            for w in others:
+                b, c = by_way.get(base), by_way.get(w)
+                ratios.append(f"{c['median'] / b['median']:.2f}x" if b and c and b["median"] > 0 else "")
+            label = f"{sc['scenario']} (logged)" if sc["mode"] == "frames" else sc["scenario"]
+            print(f"| {label} | {metric} | " + " | ".join(fmt_cell(by_way.get(w)) for w in ways) + " | "
+                  + " | ".join(ratios) + " |", file=out)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("run")
+    run = sub.add_parser("run", help="run the scenarios for every way and write a json per run")
     run.add_argument("--rounds", type=int, default=5)
     run.add_argument("--frames-rounds", type=int, default=1)
-    run.add_argument("--uis", default="slint,gpui", help="which clients to run")
+    run.add_argument("--uis", default="slint,gpui",
+                     help="the two-way names (slint, gpui; binaries BENCH_SLINT, BENCH_GPUI); ignored with --ways or --ways-dir")
+    run.add_argument("--ways", help="LABEL=PATH,LABEL=PATH,...: the ways to run, e.g. "
+                     "slint-qt=/b/slint-qt,slint-femtovg=/b/slint-femtovg,gpui=/b/gpui. The label starts with "
+                     "slint or gpui, which is the kind. Overrides a --ways-dir entry of the same label")
+    run.add_argument("--ways-dir", help="DIR: every known name that exists in it is a way (" + ", ".join(KNOWN_WAYS)
+                     + "); the missing ones are skipped with a note")
+    run.add_argument("--env", action="append", default=[], metavar="LABEL:KEY=VALUE",
+                     help="an extra container environment variable for one way (repeatable), e.g. slint-skia:SLINT_BACKEND=winit-skia")
+    run.add_argument("--podman-arg", action="append", default=[], metavar="LABEL:ARG",
+                     help="an extra argument of `podman run` for one way (repeatable; one word each)")
     run.add_argument("--sync-rounds", type=int, default=3, help="runs of catching up with a backlog")
     run.add_argument("--backlog", type=int, default=20000, help="messages the mock sends before it has synced")
     run.add_argument("--soak", type=int, default=120, help="seconds of arriving messages for the memory slope")
     run.add_argument("--scale", default=SCALE, help="B33P_MOCK_SCALE; incoming= is added to the live runs")
-    run.add_argument("--out", default=os.path.join(ROOT, "target/bench"))
-    rep = sub.add_parser("report")
+    run.add_argument("--out", default=os.path.join(ROOT, "target/bench"),
+                     help="output directory; runs already finished in it are skipped, so a cut-off run is continued by starting it again")
+    run.add_argument("--max-load", type=float, default=6,
+                     help="before a run, wait (at most 10 minutes) while the 1-minute load average is above this; 0 turns it off. "
+                     "The wait is recorded in the run's json")
+    run.add_argument("--force", action="store_true", help="run again what --out already holds a finished json of (overwrites it)")
+    run.add_argument("--dry-run", action="store_true", help="print the runs and the podman commands, start nothing, write nothing")
+    rep = sub.add_parser("report", help="print a markdown table of an output directory")
     rep.add_argument("directory")
+    rep.add_argument("--baseline", default="slint-qt",
+                     help="the way the ratio columns divide by (default slint-qt, the shipped one; the 2-way "
+                     "slint if there is no slint-qt; else the first way)")
+    rep.add_argument("--json", action="store_true", dest="as_json",
+                     help="print the aggregated numbers (per scenario, per metric, per way: median, min, max, values, n) as json")
     args = parser.parse_args()
     if args.command == "run":
         run_all(args)
     else:
-        report(args.directory)
+        report(args.directory, args.baseline, args.as_json)
 
 
 if __name__ == "__main__":

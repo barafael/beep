@@ -3,7 +3,14 @@
 //! on Qt's offscreen platform, since a test has no desktop, and every file it writes goes to
 //! a scratch home, so a test leaves nothing behind.
 
-#![cfg(all(feature = "harness", target_family = "unix"))]
+// Not in a Linux build without Qt: its winit window has no offscreen platform, so these tests
+// would open windows on the desktop they run on. Such a build is driven in a display of its own
+// instead (`testbox/gpui-view/view.sh`).
+#![cfg(all(
+    feature = "harness",
+    target_family = "unix",
+    any(not(target_os = "linux"), feature = "qt")
+))]
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 

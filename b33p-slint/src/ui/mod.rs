@@ -40,6 +40,12 @@ use viewer::*;
 #[cfg(test)]
 pub(crate) use viewer::{open_picture, wire_zoom};
 
+/// Whether Qt draws the window, as build.rs chose the widget style: only on Linux, and only in a
+/// build with the `qt` feature. The settings page then offers Qt's style and leaves the colours
+/// to the desktop; without Qt (Slint's own winit window), there is no such style to choose, but
+/// a theme.
+pub(crate) const QT: bool = cfg!(all(target_os = "linux", feature = "qt"));
+
 /// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 /// What the agent harness asked of the window that it couldn't do.
 #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -303,8 +309,7 @@ impl Window {
 
 /// The settings page shows choices by index, in the order of these enums.
 fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
-    // As build.rs chooses: Qt on Linux.
-    window.global::<Prefs>().set_qt(cfg!(target_os = "linux"));
+    window.global::<Prefs>().set_qt(QT);
     window
         .global::<Prefs>()
         .set_theme(index_of(&Theme::ALL, settings.theme));
