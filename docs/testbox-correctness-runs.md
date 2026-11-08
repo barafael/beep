@@ -89,9 +89,10 @@ in b33p or Signal-Android.
   read. The agent's own message (`no focused field as wanted: …` with the screen) was dropped,
   because the driver answers with `error.to_string()` (`android.rs:2076`) where it logs the
   whole report (`android.rs:2061`).
-- Fix, not yet made: clear the cache before `findFocus`, look again at least every 500 ms
-  even when no event comes, and send the agent's whole message back
-  (`testbox_tools::Report`).
+- Fix (`android-agent-settext`): clear the cache before `findFocus`, look again at least
+  every 500 ms even when no event comes, and send the agent's whole message back
+  (`testbox_tools::Report`). With it, the storage phase passed 3 of 3 rounds (14/0 each), with
+  the nickname check taking 6.7 s each time, against 16 s in the GPUI run that passed without it.
 
 Record: `target/testbox-correct-record/run/1794147788/1/android/` (`logcat.txt`) in the same
 worktree.
