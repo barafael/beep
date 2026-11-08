@@ -2073,7 +2073,8 @@ fn answer_calls(driver: &mut Driver, stream: UnixStream) -> Result<(), Connectio
                 Ok(result) => Answer::Done { id, result },
                 Err(error) => Answer::Failed {
                     id: Some(id),
-                    error: error.to_string(),
+                    // With its causes: the agent's own message (what the screen showed) is one.
+                    error: testbox_tools::Report(&*error).to_string(),
                 },
             },
             Err(error) => Answer::Failed {
