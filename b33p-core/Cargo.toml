@@ -16,6 +16,7 @@ signal = [
     "dep:keyring-core", "dep:zbus-secret-service-keyring-store", "dep:zbus",
     "dep:windows-native-keyring-store", "dep:apple-native-keyring-store", "dep:xattr",
     "dep:libsignal-message-backup", "dep:libsignal-account-keys", "dep:reqwest", "dep:image", "dep:protobuf", "dep:chrono", "dep:sha2", "dep:tempfile", "dep:mime_guess", "dep:open", "dep:rustls", "dep:aes-gcm", "dep:hmac", "dep:hkdf", "dep:base64", "dep:rand", "dep:serde", "dep:prost",
+    "dep:serde_json", "dep:minisign-verify", "dep:zip",
 ]
 # Links to other servers than Signal's, named by `B33P_SIGNAL_SERVERS` (`link_servers`): for the
 # test box. Debug builds only (`compile_error!` in src/signal.rs).
@@ -72,6 +73,10 @@ aes-gcm = { version = "0.11", optional = true }
 hmac = { version = "0.13", optional = true }
 hkdf = { version = "0.13", optional = true }
 base64 = { version = "0.23", optional = true }
+# Updates (`update.rs`): checking a release's minisign signature, and taking b33p.exe out of
+# its zip (deflated, as 7-Zip writes it). GitHub's answer is read with `serde_json`.
+minisign-verify = { version = "0.3", optional = true }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 rand = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 jiff = "0.2"
@@ -81,6 +86,9 @@ async-channel = "2"
 [dev-dependencies]
 # Property tests of the chat state (`state.rs`).
 proptest = "1"
+# Signing in minisign's format, with keys made in the test, for the update tests (`update.rs`).
+ed25519-dalek = "2"
+blake2 = "0.10"
 
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.

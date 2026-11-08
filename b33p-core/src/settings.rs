@@ -170,6 +170,9 @@ pub struct Settings {
     /// Keep the window out of screenshots, screen sharing and Windows Recall (Windows only),
     /// as Signal Desktop's Screen security. On unless turned off.
     pub screen_security: bool,
+    /// Asks GitHub once a day whether a newer b33p is out, and offers it (Windows builds
+    /// with an update key; see `update.rs`). Off unless chosen: it is traffic of its own.
+    pub check_updates: bool,
     /// How this computer appears under Linked devices on the phone, if chosen; otherwise
     /// [`default_device_name`].
     pub device_name: Option<String>,
@@ -195,6 +198,7 @@ impl Default for Settings {
             show_calendar: false,
             close_to_tray: true,
             screen_security: true,
+            check_updates: false,
             device_name: None,
             preferences: crate::Preferences::default(),
             recent_emoji: Vec::new(),
@@ -330,6 +334,8 @@ impl Settings {
                 ("close_to_tray", "false") => settings.close_to_tray = false,
                 ("screen_security", "true") => settings.screen_security = true,
                 ("screen_security", "false") => settings.screen_security = false,
+                ("check_updates", "true") => settings.check_updates = true,
+                ("check_updates", "false") => settings.check_updates = false,
                 ("read_receipts", "true") => settings.preferences.read_receipts = true,
                 ("read_receipts", "false") => settings.preferences.read_receipts = false,
                 ("typing_indicators", "true") => settings.preferences.typing_indicators = true,
@@ -359,7 +365,7 @@ impl Settings {
         format!(
             "theme = {}\nstyle = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {}\nshow_activity = {}\nshow_calendar = {}\n\
-             close_to_tray = {}\nscreen_security = {}\n\
+             close_to_tray = {}\nscreen_security = {}\ncheck_updates = {}\n\
              read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
             self.theme.key(),
             self.style.key(),
@@ -372,6 +378,7 @@ impl Settings {
             self.show_calendar,
             self.close_to_tray,
             self.screen_security,
+            self.check_updates,
             self.preferences.read_receipts,
             self.preferences.typing_indicators,
             self.preferences.link_previews,
@@ -470,6 +477,7 @@ mod tests {
                 show_calendar: true,
                 close_to_tray: false,
                 screen_security: false,
+                check_updates: true,
                 device_name: Some("Work = laptop".into()),
                 preferences: crate::Preferences {
                     read_receipts: false,

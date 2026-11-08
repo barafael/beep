@@ -97,6 +97,28 @@ export component ChatListPane inherits Rectangle {
                 accessible-label: self.text;
             }
         }
+        // A newer b33p, found by "Check for updates".
+        if Prefs.update-supported && Prefs.update-offer != "": HorizontalLayout {
+            padding-left: Theme.space-m;
+            padding-right: Theme.space-m;
+            padding-bottom: Theme.space-s;
+            spacing: Theme.space-s;
+            Text {
+                text: Prefs.update-status != "" ? Prefs.update-status : "b33p " + Prefs.update-offer + " is available.";
+                font-size: 1rem * Theme.body-small;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            Button {
+                text: "Update and restart";
+                enabled: !Prefs.updating;
+                clicked => { Prefs.update-now(); }
+            }
+        }
         HorizontalLayout {
             padding-left: Theme.space-m;
             padding-right: Theme.space-m;
