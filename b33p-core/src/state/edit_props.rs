@@ -6,6 +6,7 @@ fn group_state() -> ChatState {
     let mut chat = ChatState::default();
     chat.apply(Event::Linked {
         account: "me".into(),
+        service_id: "me".into(),
     });
     chat.apply(Event::Synced);
     chat.apply(Event::Conversations(vec![Conversation {

@@ -47,7 +47,8 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 ### 1.1 Read state and receipts
 
 1. Have someone send you a message while b33p is open but another chat is selected.
-   - The chat shows an unread badge; the tray icon gets its red dot.
+   - The chat shows an unread badge; the tray icon shows the count (9+ above nine), and its
+     tooltip the count in words. On Windows the taskbar button shows it too, up to 99+.
 2. Open the chat.
    - The badge goes away. On **their** phone the message shows as read (two filled ticks),
      if read receipts are on for both of you. *(box: storage)*
@@ -158,6 +159,13 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 4. **Archive**: the chat moves to "Archived chats". A new message in it brings it back, unless
    it is muted.
 5. Restart: pins, mutes and archive are kept.
+6. A group's details → **Notify for: Mentions and replies**, with b33p in the background: a
+   plain message doesn't notify; one that @mentions you does, and so does a reply to one of
+   your messages. Muted, neither does.
+7. **Show message text** off: its notifications say "New message". With Settings → **Show:
+   Name only** or **Nothing**, the switch is greyed out. **Notification sound** off: its
+   notifications make no sound (Windows; on Linux if the desktop honours it), other chats'
+   still do. Restart: all three are kept; the phone doesn't show them.
 
 ### 1.9 History
 

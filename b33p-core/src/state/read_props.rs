@@ -11,7 +11,7 @@ proptest! {
         let base = now_millis() - 3_600_000;
         let id = ConversationId("a".into());
         let mut chat = ChatState::default();
-        chat.apply(Event::Linked { account: "me".into() });
+        chat.apply(Event::Linked { account: "me".into(), service_id: "me".into() });
         chat.apply(Event::Synced);
         chat.apply(Event::Conversations(vec![Conversation {
             id: id.clone(),
@@ -57,7 +57,7 @@ proptest! {
         let base = now_millis() - 3_600_000;
         let id = ConversationId("a".into());
         let mut chat = ChatState::default();
-        chat.apply(Event::Linked { account: "me".into() });
+        chat.apply(Event::Linked { account: "me".into(), service_id: "me".into() });
         chat.apply(Event::Synced);
         chat.apply(Event::Conversations(vec![Conversation {
             id: id.clone(),

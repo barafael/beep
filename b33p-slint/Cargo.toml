@@ -70,19 +70,34 @@ signal-hook = "0.4"
 # The window that hears the session end (`shutdown.rs`), and the window kept out of screen
 # capture (`capture.rs`).
 [target.'cfg(windows)'.dependencies]
-slint = { workspace = true, features = ["raw-window-handle-06"] }
+# The winit hook for Ctrl shortcuts during IME composition (`keys.rs`).
+slint = { workspace = true, features = ["raw-window-handle-06", "unstable-winit-030"] }
 # The version Slint's `raw-window-handle-06` hands out.
 raw-window-handle = "0.6"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    # The Start menu shortcut (`install.rs`).
+    "Win32_System_Com",
+    "Win32_UI_Shell",
     "Win32_System_LibraryLoader",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    # The memory log (`memory.rs`).
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    # The unread count on the taskbar button (`badge.rs`).
+    "Win32_System_Com",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
 ] }
+# The autostart entry (`autostart.rs`) and the "Installed apps" entry (`install.rs`).
+windows-registry = "0.6"
+# Uninstalling deletes the running exe once it has ended (`install.rs`).
+self-replace = "1.5"
 
 [dev-dependencies]
 # Slint's headless backend for the UI tests in `src/ui_tests.rs`; the same revision as slint.
@@ -91,6 +106,8 @@ i-slint-backend-testing.workspace = true
 # `src/markdown.rs` check the links and text it makes of message text.
 i-slint-common = { workspace = true, features = ["markdown"] }
 proptest = "1"
+# The folders the install tests lay out and remove (`install.rs`).
+tempfile = "3"
 
 # The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
 # Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs

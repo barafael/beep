@@ -26,15 +26,21 @@ mod agent;
 // The harness drives the whole app over a socket: test builds only, never a release.
 #[cfg(all(feature = "harness", not(debug_assertions)))]
 compile_error!("the `harness` feature is for test builds: build without `--release`");
+mod badge;
 mod capture;
 mod desktop;
 mod emoji;
+mod install;
+#[cfg(windows)]
+mod keys;
 mod markdown;
+mod memory;
 mod rows;
 mod shutdown;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod updates;
 
 use markdown::{highlighted, rich_text};
 
@@ -103,6 +109,8 @@ pub struct Shared {
     me: std::rc::Weak<Shared>,
     /// The file dialogs and the clipboard; see `desktop.rs`.
     desktop: desktop::Requests,
+    /// "Check for updates"; see `updates.rs`.
+    updates: updates::Updates,
     /// Answers the agent harness's socket (`--features harness`).
     #[cfg(all(feature = "harness", target_family = "unix"))]
     agent: agent::Handle,
@@ -212,9 +220,15 @@ impl Shared {
                 self.start_hidden.set(false);
             }
         }
-        if let Some(tray) = &*self.tray.borrow() {
-            tray.set_unread(chat.unread_total().try_into().unwrap_or(i32::MAX));
+        if matches!(chat.screen(), Screen::Chats) {
+            self.chats_shown();
         }
+        // One count for the tray and the taskbar, the one the chat list's folders add up.
+        let unread = chat.unread_total();
+        if let Some(tray) = &*self.tray.borrow() {
+            tray::show_unread(tray, unread);
+        }
+        badge::taskbar::set_count(unread);
         deliver_notices(&self.notifier, &mut chat);
         for command in chat.take_commands() {
             self.commands.send(command);
@@ -509,6 +523,10 @@ impl Shared {
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_shown(settings.close_to_tray);
         }
+        match self.ui() {
+            Some(ui) => ui.set_screen_security(settings.screen_security),
+            None => capture::set(settings.screen_security, None),
+        }
         let rebuild =
             self.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars;
         self.act(|chat| {
@@ -521,6 +539,8 @@ impl Shared {
                 },
             )
         });
+        // Turned on, it checks now; off, it offers nothing more.
+        self.check_for_update();
     }
 }
 
@@ -561,7 +581,9 @@ fn command_line_answer() -> Option<String> {
              \x20 --hidden      start in the tray, as when starting with the system\n\
              \x20 --version     print the version\n\
              \x20 --unregister  stop starting with the system, and forget the notification\n\
-             \x20               registration (Windows), before deleting b33p\n\n\
+             \x20               registration (Windows), before deleting b33p\n\
+             \x20 --uninstall   remove the installed b33p (Windows), asking whether to\n\
+             \x20               delete the messages and keys too\n\n\
              RUST_LOG raises how much is logged. Logs go to {}.\n\
              {}",
             env!("CARGO_PKG_VERSION"),
@@ -578,6 +600,11 @@ fn main() -> Result<(), slint::PlatformError> {
         println!("{answer}");
         return Ok(());
     }
+    // Before the log opens: it is in a folder this may delete.
+    if std::env::args().nth(1).as_deref() == Some(install::UNINSTALL) {
+        install::uninstall();
+        return Ok(());
+    }
     let settings = Settings::load();
     // Qt reads its style once, when it starts, so this has to come first.
     let qt_style_at_start = if settings.style == WidgetStyle::Fusion
@@ -591,6 +618,14 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     logging::init();
+    // Restarted by an update: the old b33p first has to let go of the lock, the database and
+    // its exe (renamed aside, which the installed copy removes as it starts).
+    updates::wait_for_previous();
+    // Run from the zip, a release copies itself to its place and starts from there.
+    if install::on_start() == install::Flow::Exit {
+        return Ok(());
+    }
+    memory::watch();
 
     // Before the backend opens the database.
     let instance = match instance::claim(Backend::mock_requested()) {
@@ -641,11 +676,14 @@ fn main() -> Result<(), slint::PlatformError> {
         playback_timer: slint::Timer::default(),
         me: me.clone(),
         desktop,
+        updates: updates::Updates::default(),
         #[cfg(all(feature = "harness", target_family = "unix"))]
         agent: agent::Handle::default(),
     });
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
+    // Before the window is first shown.
+    capture::set(settings.screen_security, None);
     shared.apply_motion();
     // The desktop's reduced-motion preference, as it is and as it changes.
     let system_motion = motion::watch();
@@ -679,9 +717,21 @@ fn main() -> Result<(), slint::PlatformError> {
         let activations = instance.activations.clone();
         let shared = shared.clone();
         slint::spawn_local(async move {
-            while let Ok(token) = activations.recv().await {
-                tracing::info!(token = token.is_some(), "started again; showing the window");
-                shared.activate(token);
+            while let Ok(request) = activations.recv().await {
+                match request {
+                    instance::Request::Show(token) => {
+                        tracing::info!(
+                            token = token.is_some(),
+                            "started again; showing the window"
+                        );
+                        shared.activate(token);
+                    }
+                    instance::Request::Quit => {
+                        tracing::info!("asked to quit, to install or uninstall b33p");
+                        // Fails only once the event loop has stopped: quitting already.
+                        slint::quit_event_loop().ok();
+                    }
+                }
             }
         })
         .expect("the event loop is set up");
@@ -823,10 +873,12 @@ fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
                 conversation,
                 title,
                 body,
+                silent,
             } => notifier.show(Notification {
                 key: conversation.map(|id| id.0),
                 title,
                 body,
+                silent,
             }),
             Notice::Withdraw(id) => notifier.withdraw(&id.0),
         }
@@ -848,6 +900,8 @@ pub struct Images {
     texts: RefCell<HashMap<u64, slint::StyledText>>,
     /// [`ChatState::downloads_forgotten`] when `attachments` last let go of what it forgot.
     forgotten: Cell<u64>,
+    /// The picture the viewer shows at full size: only that one, let go of once it closes.
+    viewed: RefCell<Option<(Arc<Picture>, Image)>>,
 }
 
 impl Images {
@@ -875,6 +929,23 @@ impl Images {
             .borrow_mut()
             .insert(hash.to_owned(), image.clone());
         image
+    }
+
+    /// The viewer's picture, converted once.
+    fn viewed(&self, picture: &Arc<Picture>) -> Image {
+        let mut viewed = self.viewed.borrow_mut();
+        if let Some((kept, image)) = &*viewed
+            && Arc::ptr_eq(kept, picture)
+        {
+            return image.clone();
+        }
+        let image = picture_image(picture);
+        *viewed = Some((picture.clone(), image.clone()));
+        image
+    }
+
+    fn forget_viewed(&self) {
+        self.viewed.replace(None);
     }
 
     /// Lets go of the pictures the state let go of (to keep memory in bounds), which would

@@ -841,10 +841,12 @@ fn deliver_notices(notifier: &Notifier, chat: &mut ChatState) {
                 conversation,
                 title,
                 body,
+                silent,
             } => notifier.show(Notification {
                 key: conversation.map(|id| id.0),
                 title,
                 body,
+                silent,
             }),
             Notice::Withdraw(id) => notifier.withdraw(&id.0),
         }

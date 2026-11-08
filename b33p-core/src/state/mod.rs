@@ -11,10 +11,11 @@ use std::{
 use crate::settings::NotificationContent;
 use crate::timeline;
 use crate::{
-    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatSettings,
-    Command, Conversation, ConversationId, Details, Event, Failure, HistoryTransfer, Mention,
-    MessageInfo, MessageRef, Password, Person, Picture, PinnedMessage, QrMatrix, Quote, Reaction,
-    RequestResponse, StyleRange, SyncStage, Unsent, apply_reaction, format, now_millis,
+    Attachment, AttachmentContent, AttachmentId, AttachmentKind, ChatMessage, ChatNotify,
+    ChatSettings, Command, Conversation, ConversationId, Details, Event, Failure, FullPicture,
+    HistoryTransfer, Mention, MessageInfo, MessageRef, Password, Person, Picture, PinnedMessage,
+    QrMatrix, Quote, Reaction, RequestResponse, StyleRange, SyncStage, Unsent, apply_reaction,
+    format, now_millis,
 };
 
 mod attachments;
@@ -30,6 +31,7 @@ mod receipts;
 mod selection;
 mod session;
 mod text;
+mod viewer;
 mod views;
 
 pub use attachments::*;
@@ -37,6 +39,7 @@ pub use clock::*;
 use history::*;
 pub use pins::PIN_LIMIT;
 pub use text::*;
+pub use viewer::*;
 use views::*;
 
 /// Minimum length for a newly chosen database password.
@@ -253,6 +256,8 @@ pub enum Notice {
         conversation: Option<ConversationId>,
         title: String,
         body: String,
+        /// Without a sound: the chat's own setting ([`crate::ChatNotify::silent`]).
+        silent: bool,
     },
     /// The conversation was read; its notification is stale.
     Withdraw(ConversationId),
@@ -296,6 +301,8 @@ const RUN_GAP_MS: u64 = 5 * 60 * 1000;
 pub struct ChatState {
     screen: Screen,
     account: String,
+    /// Our own service ID, as messages name whom they mention and whose message they quote.
+    service_id: String,
     synced: bool,
     /// Connected to Signal; see [`ChatState::connection`].
     connected: bool,
@@ -438,6 +445,8 @@ pub struct ChatState {
     stories: Vec<crate::Story>,
     /// The story shown: whose (a conversation) and which of theirs.
     story_view: Option<(ConversationId, usize)>,
+    /// The picture viewer, while open.
+    viewing: Option<viewer::Viewing>,
     /// The installed sticker packs, once asked for: `Some(None)` while they are gathered.
     sticker_packs: Option<Option<Vec<crate::StickerPack>>>,
     /// The open chat's messages that changed in place since the UI last asked; see

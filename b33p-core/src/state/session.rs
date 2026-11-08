@@ -265,6 +265,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::SetPins(_)
         | Command::Mute { .. }
         | Command::Archive { .. }
+        | Command::SetChatNotify { .. }
         | Command::SetTimer { .. }
         | Command::PinMessage { .. }
         | Command::UnpinMessage { .. }
@@ -277,6 +278,7 @@ fn offers_retry(command: &Command) -> bool {
         | Command::SetDeviceName(_)
         | Command::SkipHistory
         | Command::FetchAttachment(_)
+        | Command::FetchFullPicture(_)
         | Command::SaveAttachment(_)
         | Command::OpenAttachment(_)
         | Command::Send { .. }

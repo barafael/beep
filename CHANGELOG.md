@@ -25,6 +25,11 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### New
 
+- The tray icon shows how many messages are unread, and so does the taskbar button on Windows.
+- On Windows, b33p installs itself when started from the zip, with a Start menu entry and an
+  Installed apps entry that removes it again.
+- On Windows, **Check for updates** in Settings (off unless you turn it on) offers a newer,
+  signed release from GitHub with **Update and restart**.
 - **Start** on the start-up screen while catching up: the chats show at once, and the rest
   comes in as they do.
 - A chat with many unread messages opens at the first of them; a ↓ button goes back to the
@@ -46,6 +51,12 @@ The release workflow takes a version's notes from here (the section headed with 
 - Pinned messages, as in Signal's apps: **Pin** in a message's menu, for 24 hours, 7 days,
   30 days or until unpinned; a bar above the chat shows them, newest first, and a click shows
   the message. Up to three per chat; in a group, if you may change its details.
+- Photos open in b33p's own viewer, over the window: the wheel zooms (stopping at 100% on the
+  way), dragging moves a zoomed photo, a double click switches between fitting and 100%, ← and
+  → go through the chat's photos, and **Save** and **Open with…** are at hand.
+- Notifications per chat, in its details beside muting: only for mentions of you and replies
+  to your messages, without the message text, or without a sound. Kept on this computer; the
+  phone doesn't have these.
 
 ### Looks
 
@@ -59,6 +70,11 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- Windows: Ctrl shortcuts (copy, paste, select all, b33p's own) work while a Korean input
+  method is on; before, it swallowed them.
+- Windows: b33p's window is kept out of screenshots, screen sharing and Recall, as it was meant
+  to be all along: the request was made before the window existed, so it never took effect.
+  **Settings → Privacy → Screen security** turns it off, as in Signal Desktop.
 - The names offered for an @mention follow a name typed through an input method (Hangul,
   kana, pinyin) while it is composed, not a syllable behind.
 - Long messages reach phones: past 2000 characters the text goes out as Signal's apps send

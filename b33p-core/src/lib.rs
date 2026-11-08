@@ -26,6 +26,7 @@ mod outbox;
 #[cfg(feature = "signal")]
 mod preview;
 mod qr;
+pub mod resample;
 pub mod scratch;
 pub mod scrub;
 pub mod settings;
@@ -38,7 +39,10 @@ pub mod timeline;
 #[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]
+pub mod update;
+#[cfg(feature = "signal")]
 mod vault;
+pub mod version;
 #[cfg(feature = "signal")]
 mod wire;
 
@@ -340,6 +344,21 @@ pub struct ChatSettings {
     pub blocked: bool,
     /// Accepted as a chat, not a message request: here, on the phone, or by writing to it.
     pub accepted: bool,
+    /// How its new messages notify, when it isn't muted.
+    pub notify: ChatNotify,
+}
+
+/// How a chat's new messages notify, besides muting it (which wins over all of this). Kept on
+/// this computer only: Signal's storage service has no place for it, so the phone and other
+/// devices neither see nor change it. The default notifies as the app's settings say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChatNotify {
+    /// Only messages that mention us or reply to one of ours notify.
+    pub mentions_only: bool,
+    /// Notifications say who wrote, not what. The app's "Show" setting can hide more still.
+    pub hide_text: bool,
+    /// Notifications come without a sound, where the desktop lets them (see `b33p-notify`).
+    pub silent: bool,
 }
 
 impl ChatSettings {
@@ -672,6 +691,26 @@ pub struct Attachment {
     pub(crate) pointer: Arc<[u8]>,
 }
 
+impl Attachment {
+    /// An attachment with nothing to download it by, as a UI's tests make them: the rest is
+    /// the caller's to fill in.
+    pub fn without_pointer(id: AttachmentId, kind: AttachmentKind) -> Self {
+        Self {
+            id,
+            kind,
+            content_type: String::new(),
+            file_name: None,
+            size: 0,
+            width: 0,
+            height: 0,
+            blurhash: None,
+            caption: None,
+            gif: false,
+            pointer: Arc::from(Vec::new()),
+        }
+    }
+}
+
 impl std::fmt::Debug for Attachment {
     // Leaves out the pointer, which holds the attachment's key.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -693,6 +732,16 @@ pub enum AttachmentContent {
     Text(String),
     /// Audio and voice messages, as downloaded (decoded by the player).
     Audio(Arc<[u8]>),
+}
+
+/// A picture for the picture viewer; see [`Event::FullPicture`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FullPicture {
+    /// At most the viewer's limit a side (scaled down if it was larger).
+    pub pixels: Arc<Picture>,
+    /// The size the picture really has, in pixels: what 100% shows.
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Stages of the message history transfer; see [`Event::HistoryTransfer`].
@@ -808,6 +857,8 @@ pub enum Event {
     /// Linked (or loaded an existing registration) as `account`.
     Linked {
         account: String,
+        /// Our own service ID (ACI), as messages name their authors and whom they mention.
+        service_id: String,
     },
     /// Lost the connection to Signal and retrying; [`Event::Synced`] follows once back.
     Reconnecting,
@@ -836,6 +887,11 @@ pub enum Event {
     Attachment {
         id: AttachmentId,
         content: Result<AttachmentContent, Error>,
+    },
+    /// Answer to [`Command::FetchFullPicture`].
+    FullPicture {
+        id: AttachmentId,
+        picture: Result<FullPicture, Error>,
     },
     /// Answer to [`Command::SaveAttachment`]: where the file was written.
     AttachmentSaved {
@@ -1014,6 +1070,9 @@ pub enum Command {
     SkipHistory,
     /// Download an image, sticker or long text for display; see [`Event::Attachment`].
     FetchAttachment(Attachment),
+    /// Download a picture for the picture viewer, as large as it shows there; see
+    /// [`Event::FullPicture`].
+    FetchFullPicture(Attachment),
     /// Download an attachment into the user's downloads folder; see [`Event::AttachmentSaved`].
     SaveAttachment(Attachment),
     /// `quote` makes it a reply to that message; `files` are attached (the body may then be
@@ -1159,6 +1218,11 @@ pub enum Command {
     Archive {
         conversation: ConversationId,
         archived: bool,
+    },
+    /// Sets how a chat's new messages notify; kept here only, never sent anywhere.
+    SetChatNotify {
+        conversation: ConversationId,
+        notify: ChatNotify,
     },
     /// Sets the disappearing-message timer (seconds; 0 turns it off).
     SetTimer {
@@ -1394,6 +1458,14 @@ impl Drop for Backend {
             tracing::error!("the backend thread panicked");
         }
     }
+}
+
+/// Removes the database key b33p keeps in the system keyring for its standard data directory:
+/// for uninstalling with the data, after which the key would open nothing. Done if there was
+/// none.
+#[cfg(feature = "signal")]
+pub fn forget_database_key() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Ok(vault::delete_keyring_key(vault::DEFAULT_ACCOUNT)?)
 }
 
 /// Current time in Signal's timestamp format.

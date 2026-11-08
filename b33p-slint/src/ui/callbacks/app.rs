@@ -48,6 +48,10 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             });
         }
     });
+    window.global::<Prefs>().on_update_now({
+        let shared = shared.clone();
+        move || shared.update_now()
+    });
     window.global::<Prefs>().on_settings_changed({
         let shared = shared.clone();
         let window = window.as_weak();

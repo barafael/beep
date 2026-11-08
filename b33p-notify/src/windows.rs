@@ -161,8 +161,13 @@ fn toast_xml(notification: &Notification) -> String {
         ),
         None => String::new(),
     };
+    let audio = if notification.silent {
+        r#"<audio silent="true"/>"#
+    } else {
+        ""
+    };
     format!(
-        r#"<toast launch="open:{key}"><visual><binding template="ToastGeneric"><text>{title}</text><text>{body}</text></binding></visual>{reply}</toast>"#,
+        r#"<toast launch="open:{key}"><visual><binding template="ToastGeneric"><text>{title}</text><text>{body}</text></binding></visual>{audio}{reply}</toast>"#,
         key = escape(key),
         title = escape(&notification.title),
         body = escape(&notification.body),

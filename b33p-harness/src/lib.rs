@@ -338,6 +338,11 @@ pub enum Action {
         conversation: String,
         archived: bool,
     },
+    /// How a chat's new messages notify, besides muting it; see [`NotifySnapshot`].
+    SetChatNotify {
+        conversation: String,
+        notify: NotifySnapshot,
+    },
     Block {
         conversation: String,
         blocked: bool,
@@ -501,6 +506,19 @@ pub enum Action {
     SaveAttachment {
         id: String,
     },
+    /// Opens a photo of the open chat in the picture viewer, as a click on it does.
+    OpenViewer {
+        id: String,
+    },
+    /// The viewer's → and ←: the chat's next and previous photo.
+    ViewerNext,
+    ViewerPrevious,
+    /// Zooms the viewer as this many notches of the mouse wheel would, at the window's centre
+    /// (positive zooms in); it catches at 100% as the wheel does.
+    ZoomViewer {
+        notches: f32,
+    },
+    CloseViewer,
     /// Sends the message at `index` in the open chat again, after it failed.
     RetrySend {
         index: u32,
@@ -596,6 +614,26 @@ pub struct Snapshot {
     /// in a b33p built before it.
     #[serde(default)]
     pub message_info: Option<Option<Vec<ReceiptSnapshot>>>,
+    /// The picture viewer, while open. Absent in a b33p built before it.
+    #[serde(default)]
+    pub viewer: Option<ViewerSnapshot>,
+}
+
+/// The picture shown in the viewer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewerSnapshot {
+    /// The attachment's id.
+    pub id: String,
+    pub sender: String,
+    pub timestamp: u64,
+    /// Its place among the chat's photos, from 0, and how many there are.
+    pub index: usize,
+    pub count: usize,
+    pub download: Download,
+    /// Only a direct `snapshot` answer has it: the picture's pixels per physical pixel (1 for
+    /// 100%), and whether that is because it fits the window.
+    pub zoom: Option<f32>,
+    pub fitted: Option<bool>,
 }
 
 /// One recipient of a message of ours, and when they said it was delivered and read.
@@ -767,6 +805,21 @@ pub struct ConversationSnapshot {
     pub avatar: bool,
     /// How far the safety number is trusted; a changed one keeps the composer closed.
     pub trust: Trust,
+    /// How its new messages notify when it isn't muted. Absent in a b33p built before it.
+    #[serde(default)]
+    pub notify: NotifySnapshot,
+}
+
+/// How a chat's new messages notify, besides muting it (which wins): kept on this computer
+/// only. The default notifies for every message, with its text and a sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifySnapshot {
+    /// Only mentions of us and replies to our messages notify.
+    pub mentions_only: bool,
+    /// Notifications say who wrote, not what.
+    pub hide_text: bool,
+    /// Notifications come without a sound.
+    pub silent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -25,14 +25,20 @@ use crate::{Images, Shared, qr_image};
 
 mod callbacks;
 mod items;
+mod notify;
 mod pins;
 mod render;
+mod viewer;
 
 pub(crate) use items::set_up_models;
 use items::*;
+use notify::*;
 use pins::*;
 pub(crate) use render::render;
 use render::*;
+use viewer::*;
+#[cfg(test)]
+pub(crate) use viewer::{open_picture, wire_zoom};
 
 /// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 /// What the agent harness asked of the window that it couldn't do.
@@ -57,6 +63,8 @@ pub enum HarnessError {
 
 pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     let window = AppWindow::new()?;
+    #[cfg(windows)]
+    crate::keys::fix_ctrl_shortcuts(&window);
     if Backend::mock_requested() {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
     }
@@ -96,9 +104,15 @@ impl Window {
         render(&self.0, chat, images, update, whole_list);
     }
 
+    /// Keeps the window out of screen captures, or no longer (`capture.rs`).
+    pub fn set_screen_security(&self, on: bool) {
+        crate::capture::set(on, Some(&self.0));
+    }
+
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         self.0.show()?;
-        crate::capture::exclude(self.0.window());
+        crate::capture::apply(&self.0);
+        crate::badge::taskbar::attach(&self.0);
         Ok(())
     }
 
@@ -116,7 +130,10 @@ impl Window {
     pub fn raise(&self) {
         self.0.window().set_minimized(false);
         match self.0.show() {
-            Ok(()) => crate::capture::exclude(self.0.window()),
+            Ok(()) => {
+                crate::capture::apply(&self.0);
+                crate::badge::taskbar::attach(&self.0);
+            }
             Err(error) => tracing::warn!(%error, "failed to show the window"),
         }
         // Not in Slint's public API. On Qt this raises and activates the window, which on
@@ -153,6 +170,14 @@ impl Window {
         self.0
             .global::<Motion>()
             .set_scale(if enabled { 1.0 } else { 0.0 });
+    }
+
+    /// What "Check for updates" found (`version`, empty if nothing) and is doing.
+    pub fn show_update(&self, version: &str, status: &str, updating: bool) {
+        let prefs = self.0.global::<Prefs>();
+        prefs.set_update_offer(version.into());
+        prefs.set_update_status(status.into());
+        prefs.set_updating(updating);
     }
 
     /// Puts `settings` on the window, as at start-up, after they changed from outside it: by
@@ -205,6 +230,35 @@ impl Window {
                 source,
             })?;
         Ok((width, height))
+    }
+
+    /// The viewer's zoom (its picture's pixels per physical pixel), and whether that is
+    /// because the picture fits the window.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn viewer_zoom(&self) -> (f32, bool) {
+        let viewer = self.0.global::<Viewer>();
+        // The zoom chosen as it was set, not as the viewer passed it on: that waits for its
+        // change handler.
+        match viewer.get_zoom() {
+            zoom if zoom > 0.0 => (zoom, false),
+            _ => (viewer.get_fit_zoom(), true),
+        }
+    }
+
+    /// Zooms the viewer as `notches` of the wheel would, at the window's centre.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn zoom_viewer(&self, notches: f32) {
+        let viewer = self.0.global::<Viewer>();
+        let (shown, _) = self.viewer_zoom();
+        let fit = viewer.get_fit_zoom();
+        let zoom = state::wheel_zoom(shown, notches, fit);
+        viewer.set_zoom(if zoom == fit { 0.0 } else { zoom });
+    }
+
+    /// The viewer's close button, for the harness.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn close_viewer(&self, shared: &Shared) {
+        close_viewer(shared, &self.0);
     }
 
     /// Gives the window a size, in logical pixels.
@@ -279,6 +333,15 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
         .set_close_to_tray(settings.close_to_tray);
     window
         .global::<Prefs>()
+        .set_screen_security(settings.screen_security);
+    window
+        .global::<Prefs>()
+        .set_update_supported(crate::updates::supported());
+    window
+        .global::<Prefs>()
+        .set_check_updates(settings.check_updates);
+    window
+        .global::<Prefs>()
         .set_read_receipts(settings.preferences.read_receipts);
     window
         .global::<Prefs>()
@@ -292,6 +355,9 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
     window
         .global::<Prefs>()
         .set_autostart_supported(crate::autostart::SUPPORTED);
+    window
+        .global::<Prefs>()
+        .set_screen_security_supported(crate::capture::SUPPORTED);
     window
         .global::<Prefs>()
         .set_start_with_system(crate::autostart::enabled());
@@ -324,6 +390,8 @@ fn read_settings(window: &AppWindow) -> Settings {
         show_activity: window.global::<Prefs>().get_show_activity(),
         show_calendar: window.global::<Prefs>().get_show_calendar(),
         close_to_tray: window.global::<Prefs>().get_close_to_tray(),
+        screen_security: window.global::<Prefs>().get_screen_security(),
+        check_updates: window.global::<Prefs>().get_check_updates(),
         device_name: None,
         recent_emoji: Vec::new(),
         preferences: b33p_core::Preferences {
@@ -466,7 +534,9 @@ fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         return true;
     }
     let mut chat = shared.chat.borrow_mut();
-    if chat.join().is_some() {
+    if chat.viewer().is_some() {
+        chat.close_viewer();
+    } else if chat.join().is_some() {
         chat.close_join();
     } else if window.global::<Panels>().get_stories_open() {
         if chat.current_story().is_some() {
