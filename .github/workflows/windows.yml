@@ -72,6 +72,29 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           New-Item -ItemType Directory -Force smoke | Out-Null
           $failed = $false
+          function Shoot($name) {
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $shot = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            [System.Drawing.Graphics]::FromImage($shot).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+            $shot.Save("smoke/$name.png")
+          }
+          $logs = "$env:LOCALAPPDATA\barafael\b33p\data\logs"
+          # Screen security, on as b33p starts: the window must ask to be kept out of captures,
+          # and secure.png should show the desktop where it is.
+          $env:SLINT_BACKEND = "winit-femtovg"
+          $app = Start-Process target/release/b33p.exe -PassThru
+          Start-Sleep -Seconds 30
+          Shoot "secure"
+          Stop-Process -Id $app.Id -Force
+          $app.WaitForExit()
+          Start-Sleep -Seconds 3
+          if (-not (Select-String -Path "$logs\b33p.log" -Pattern "screen capture affinity set" -Quiet)) {
+            Write-Host "Screen security: the window never asked to be kept out of captures"
+            $failed = $true
+          }
+          # Then off, so the screenshots below show the window.
+          New-Item -ItemType Directory -Force "$env:APPDATA\barafael\b33p\config" | Out-Null
+          Set-Content "$env:APPDATA\barafael\b33p\config\settings.conf" "screen_security = false"
           "| Renderer | Private memory | Working set |" >> $env:GITHUB_STEP_SUMMARY
           "|---|---|---|" >> $env:GITHUB_STEP_SUMMARY
           foreach ($renderer in "femtovg", "software") {
@@ -79,10 +102,7 @@ jobs:
             $app = Start-Process target/release/b33p.exe -PassThru
             # The mock's sync, the first frames, and the pictures it loads.
             Start-Sleep -Seconds 45
-            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $shot = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            [System.Drawing.Graphics]::FromImage($shot).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-            $shot.Save("smoke/$renderer.png")
+            Shoot $renderer
             if ($app.HasExited) {
               "| $renderer | exited with $($app.ExitCode) | |" >> $env:GITHUB_STEP_SUMMARY
               $failed = $true
@@ -97,7 +117,7 @@ jobs:
             }
             Start-Sleep -Seconds 3
           }
-          Copy-Item -Recurse "$env:LOCALAPPDATA\barafael\b33p\data\logs" smoke/logs -ErrorAction SilentlyContinue
+          Copy-Item -Recurse $logs smoke/logs -ErrorAction SilentlyContinue
           if ($failed) { Get-Content smoke/logs/b33p.log -Tail 50 -ErrorAction SilentlyContinue; exit 1 }
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

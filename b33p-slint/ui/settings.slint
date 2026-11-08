@@ -21,6 +21,8 @@ export component SettingsPage inherits Rectangle {
     // Whether the desktop shows tray icons; without, closing the window quits.
     in property <bool> tray-available: true;
     in property <bool> autostart-supported;
+    in-out property <bool> screen-security;
+    in property <bool> screen-security-supported;
     // Whether this system shows b33p's notifications at all.
     in property <bool> notifications-supported: true;
     // Shortcut labels in the Mac's own signs.
@@ -191,6 +193,15 @@ export component SettingsPage inherits Rectangle {
                         hint: root.close-to-tray && root.tray-available ? "Starts in the tray when you log in." : "Opens b33p when you log in.";
                         checked <=> root.start-with-system;
                         toggled => { root.changed-start-with-system(self.checked); }
+                    }
+
+                    if root.screen-security-supported: Rectangle { height: Theme.space-s; }
+                    if root.screen-security-supported: SectionTitle { text: "Privacy"; }
+                    if root.screen-security-supported: SwitchRow {
+                        label: "Screen security";
+                        hint: "Keeps b33p's window out of screenshots, screen sharing and Windows Recall.";
+                        checked <=> root.screen-security;
+                        toggled => { root.changed-settings(); }
                     }
 
                     Rectangle { height: Theme.space-s; }
