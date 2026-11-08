@@ -512,6 +512,10 @@ impl Shared {
         if let Some(tray) = &*self.tray.borrow() {
             tray.set_shown(settings.close_to_tray);
         }
+        match self.ui() {
+            Some(ui) => ui.set_screen_security(settings.screen_security),
+            None => capture::set(settings.screen_security, None),
+        }
         let rebuild =
             self.images.avatars_enabled.replace(settings.show_avatars) != settings.show_avatars;
         self.act(|chat| {
@@ -650,6 +654,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
+    // Before the window is first shown.
+    capture::set(settings.screen_security, None);
     shared.apply_motion();
     // The desktop's reduced-motion preference, as it is and as it changes.
     let system_motion = motion::watch();
