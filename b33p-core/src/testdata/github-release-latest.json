@@ -1,0 +1,90 @@
+{
+  "url": "https://api.github.com/repos/barafael/beep/releases/260000000",
+  "assets_url": "https://api.github.com/repos/barafael/beep/releases/260000000/assets",
+  "html_url": "https://github.com/barafael/beep/releases/tag/v0.3.0",
+  "id": 260000000,
+  "author": {
+    "login": "github-actions[bot]",
+    "id": 41898282,
+    "type": "Bot"
+  },
+  "tag_name": "v0.3.0",
+  "target_commitish": "main",
+  "name": "b33p 0.3.0",
+  "draft": false,
+  "immutable": false,
+  "prerelease": false,
+  "created_at": "2026-11-20T10:00:00Z",
+  "published_at": "2026-11-20T10:30:00Z",
+  "assets": [
+    {
+      "url": "https://api.github.com/repos/barafael/beep/releases/assets/310000001",
+      "id": 310000001,
+      "name": "b33p-0.3.0-windows-x86_64.zip",
+      "label": "",
+      "content_type": "application/zip",
+      "state": "uploaded",
+      "size": 14680064,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "download_count": 3,
+      "created_at": "2026-11-20T10:29:00Z",
+      "updated_at": "2026-11-20T10:29:10Z",
+      "browser_download_url": "https://github.com/barafael/beep/releases/download/v0.3.0/b33p-0.3.0-windows-x86_64.zip"
+    },
+    {
+      "url": "https://api.github.com/repos/barafael/beep/releases/assets/310000002",
+      "id": 310000002,
+      "name": "b33p-0.3.0-windows-x86_64.zip.minisig",
+      "label": "",
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "size": 340,
+      "download_count": 3,
+      "created_at": "2026-11-20T10:29:00Z",
+      "updated_at": "2026-11-20T10:29:01Z",
+      "browser_download_url": "https://github.com/barafael/beep/releases/download/v0.3.0/b33p-0.3.0-windows-x86_64.zip.minisig"
+    },
+    {
+      "url": "https://api.github.com/repos/barafael/beep/releases/assets/310000003",
+      "id": 310000003,
+      "name": "b33p-0.3.0-windows-aarch64.zip",
+      "label": "",
+      "content_type": "application/zip",
+      "state": "uploaded",
+      "size": 13631488,
+      "download_count": 0,
+      "created_at": "2026-11-20T10:29:00Z",
+      "updated_at": "2026-11-20T10:29:10Z",
+      "browser_download_url": "https://github.com/barafael/beep/releases/download/v0.3.0/b33p-0.3.0-windows-aarch64.zip"
+    },
+    {
+      "url": "https://api.github.com/repos/barafael/beep/releases/assets/310000004",
+      "id": 310000004,
+      "name": "b33p-0.3.0-linux-x86_64.AppImage",
+      "label": "",
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "size": 41943040,
+      "download_count": 1,
+      "created_at": "2026-11-20T10:29:00Z",
+      "updated_at": "2026-11-20T10:29:20Z",
+      "browser_download_url": "https://github.com/barafael/beep/releases/download/v0.3.0/b33p-0.3.0-linux-x86_64.AppImage"
+    },
+    {
+      "url": "https://api.github.com/repos/barafael/beep/releases/assets/310000005",
+      "id": 310000005,
+      "name": "SHA256SUMS",
+      "label": "",
+      "content_type": "text/plain",
+      "state": "uploaded",
+      "size": 812,
+      "download_count": 0,
+      "created_at": "2026-11-20T10:29:00Z",
+      "updated_at": "2026-11-20T10:29:01Z",
+      "browser_download_url": "https://github.com/barafael/beep/releases/download/v0.3.0/SHA256SUMS"
+    }
+  ],
+  "tarball_url": "https://api.github.com/repos/barafael/beep/tarball/v0.3.0",
+  "zipball_url": "https://api.github.com/repos/barafael/beep/zipball/v0.3.0",
+  "body": "### New\n\n- Updates, if you turn them on."
+}

@@ -248,6 +248,10 @@ jobs:
       - name: Build
         # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
         shell: pwsh
+        env:
+          # The key updates are checked with (b33p-core/src/update.rs, docs/updates.md). Unset,
+          # the build offers no updates.
+          B33P_UPDATE_PUBLIC_KEY: ${{ vars.B33P_UPDATE_PUBLIC_KEY }}
         run: cargo build --release --locked -p b33p-slint
       - name: Package zip
         env:
@@ -293,6 +297,33 @@ jobs:
             echo "::error::CHANGELOG.md has no section for $VERSION"
             exit 1
           fi
+      # Here, not in each build job: one job holds the secret, and only for a tag. The trusted
+      # comment names the version and the file, so an installed b33p can't be handed an older
+      # signed build, or another platform's, as an update (b33p-core/src/update.rs).
+      - name: Sign the archives
+        env:
+          B33P_MINISIGN_KEY: ${{ secrets.B33P_MINISIGN_KEY }}
+          B33P_UPDATE_PUBLIC_KEY: ${{ vars.B33P_UPDATE_PUBLIC_KEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [[ -z "$B33P_MINISIGN_KEY" ]]; then
+            echo "::notice::B33P_MINISIGN_KEY isn't set: the release isn't signed, and installed copies won't take it as an update"
+            exit 0
+          fi
+          sudo apt-get update -q
+          sudo apt-get install -y -q minisign
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$B33P_MINISIGN_KEY" > "$key"
+          cd dist
+          for file in b33p-*; do
+            minisign -S -s "$key" -m "$file" -t "b33p $VERSION $file"
+            # What the app will check, so a key pair that doesn't match fails here, not there.
+            if [[ -n "$B33P_UPDATE_PUBLIC_KEY" ]]; then
+              minisign -V -q -P "$B33P_UPDATE_PUBLIC_KEY" -m "$file"
+            fi
+          done
+          ls -l ./*.minisig
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

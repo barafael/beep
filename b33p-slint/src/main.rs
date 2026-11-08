@@ -40,6 +40,7 @@ mod shutdown;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod updates;
 
 use markdown::{highlighted, rich_text};
 
@@ -108,6 +109,8 @@ pub struct Shared {
     me: std::rc::Weak<Shared>,
     /// The file dialogs and the clipboard; see `desktop.rs`.
     desktop: desktop::Requests,
+    /// "Check for updates"; see `updates.rs`.
+    updates: updates::Updates,
     /// Answers the agent harness's socket (`--features harness`).
     #[cfg(all(feature = "harness", target_family = "unix"))]
     agent: agent::Handle,
@@ -216,6 +219,9 @@ impl Shared {
             } else if matches!(screen, Screen::Chats) {
                 self.start_hidden.set(false);
             }
+        }
+        if matches!(chat.screen(), Screen::Chats) {
+            self.chats_shown();
         }
         // One count for the tray and the taskbar, the one the chat list's folders add up.
         let unread = chat.unread_total();
@@ -533,6 +539,8 @@ impl Shared {
                 },
             )
         });
+        // Turned on, it checks now; off, it offers nothing more.
+        self.check_for_update();
     }
 }
 
@@ -610,6 +618,9 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     logging::init();
+    // Restarted by an update: the old b33p first has to let go of the lock, the database and
+    // its exe (renamed aside, which the installed copy removes as it starts).
+    updates::wait_for_previous();
     // Run from the zip, a release copies itself to its place and starts from there.
     if install::on_start() == install::Flow::Exit {
         return Ok(());
@@ -665,6 +676,7 @@ fn main() -> Result<(), slint::PlatformError> {
         playback_timer: slint::Timer::default(),
         me: me.clone(),
         desktop,
+        updates: updates::Updates::default(),
         #[cfg(all(feature = "harness", target_family = "unix"))]
         agent: agent::Handle::default(),
     });

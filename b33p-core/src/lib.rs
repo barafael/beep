@@ -39,6 +39,8 @@ pub mod timeline;
 #[cfg(feature = "signal")]
 mod transfer;
 #[cfg(feature = "signal")]
+pub mod update;
+#[cfg(feature = "signal")]
 mod vault;
 pub mod version;
 #[cfg(feature = "signal")]
