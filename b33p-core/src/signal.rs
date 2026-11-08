@@ -336,8 +336,10 @@ mod tests {
                 "presage migration changed or gone: {line}\nnow:\n{applied}"
             );
         }
+        // By line: a checkout on Windows may end the file's lines with CRLF.
         assert_eq!(
-            applied, known,
+            applied.lines().collect::<Vec<_>>(),
+            known.lines().collect::<Vec<_>>(),
             "new presage migrations: add them to tests/presage-migrations.txt"
         );
     }

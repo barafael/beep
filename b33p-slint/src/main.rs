@@ -30,6 +30,7 @@ mod capture;
 mod desktop;
 mod emoji;
 mod markdown;
+mod memory;
 mod rows;
 mod shutdown;
 mod tray;
@@ -591,6 +592,7 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     logging::init();
+    memory::watch();
 
     // Before the backend opens the database.
     let instance = match instance::claim(Backend::mock_requested()) {
