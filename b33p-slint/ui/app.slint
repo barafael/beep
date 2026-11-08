@@ -147,7 +147,7 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     alignment: center;
                     Icon {
-                        source: @image-url("@lucide/circle-alert.svg");
+                        source: @image-url("@lucide/circle-exclamation-point.svg");
                         tint: Theme.on-accent;
                     }
                 }
@@ -965,7 +965,7 @@ export component AppWindow inherits Window {
                                             VerticalLayout {
                                                 alignment: start;
                                                 Icon {
-                                                    source: @image-url("@lucide/shield-alert.svg");
+                                                    source: @image-url("@lucide/shield-exclamation-point.svg");
                                                     tint: Theme.danger-text;
                                                 }
                                             }
@@ -1601,7 +1601,7 @@ export component AppWindow inherits Window {
                         text: ChatList.current.subtitle;
                     }
                     if ChatList.current.safety-changed: Banner {
-                        icon: @image-url("@lucide/shield-alert.svg");
+                        icon: @image-url("@lucide/shield-exclamation-point.svg");
                         text: "Your safety number with " + ChatList.current.title + " changed since you verified it. Compare it again, or continue without.";
                         VerticalLayout {
                             alignment: center;
