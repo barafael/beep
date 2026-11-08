@@ -1,0 +1,107 @@
+name: Windows
+
+# Windows was built only for a release, so a broken `cfg(windows)` path (toasts, autostart, the
+# single instance, shutdown, capture exclusion, the keyring) showed up on release day, and no
+# test had ever run there. Every PR: a path filter would miss Windows code in shared files.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    # Code only Windows compiles warns nowhere else.
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The app with the real backend is built for the tests, so this is the Windows build too.
+      # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
+      - name: Test
+        shell: pwsh
+        run: cargo test --locked --no-fail-fast -p b33p-core -p b33p-platform -p b33p-slint -p b33p-notify
+
+  # The release build on the mock, as a person would start it: does the window draw, with the
+  # fonts Windows has (the mock's "Yuki 駅 鉄 国 · 김민지" chat shows whether ideographs and
+  # Hangul fall back to a font that has them), and how much private memory it holds idle, on
+  # femtovg and on the software renderer (sigwin measured 212 MB against 8 MB).
+  smoke:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Without the `signal` feature the app always runs the mock; the software renderer is
+      # compiled in next to femtovg so `SLINT_BACKEND` can pick either.
+      - name: Build
+        shell: pwsh
+        run: cargo build --release --locked -p b33p-slint --no-default-features --features slint/renderer-software
+      - name: Start, look, measure
+        shell: pwsh
+        run: |
+          # The runner's screen is 1024x768: too short for the whole chat list.
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "resolution unchanged: $_" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          $failed = $false
+          "| Renderer | Private memory | Working set |" >> $env:GITHUB_STEP_SUMMARY
+          "|---|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($renderer in "femtovg", "software") {
+            $env:SLINT_BACKEND = "winit-$renderer"
+            $app = Start-Process target/release/b33p.exe -PassThru
+            # The mock's sync, the first frames, and the pictures it loads.
+            Start-Sleep -Seconds 45
+            $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $shot = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            [System.Drawing.Graphics]::FromImage($shot).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+            $shot.Save("smoke/$renderer.png")
+            if ($app.HasExited) {
+              "| $renderer | exited with $($app.ExitCode) | |" >> $env:GITHUB_STEP_SUMMARY
+              $failed = $true
+            } else {
+              $app.Refresh()
+              $private = [math]::Round($app.PrivateMemorySize64 / 1MB, 1)
+              $working = [math]::Round($app.WorkingSet64 / 1MB, 1)
+              "| $renderer | $private MiB | $working MiB |" >> $env:GITHUB_STEP_SUMMARY
+              Write-Host "mem: $renderer private $private MiB, working set $working MiB"
+              Stop-Process -Id $app.Id -Force
+              $app.WaitForExit()
+            }
+            Start-Sleep -Seconds 3
+          }
+          Copy-Item -Recurse "$env:LOCALAPPDATA\barafael\b33p\data\logs" smoke/logs -ErrorAction SilentlyContinue
+          if ($failed) { Get-Content smoke/logs/b33p.log -Tail 50 -ErrorAction SilentlyContinue; exit 1 }
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-smoke
+          path: smoke
+          if-no-files-found: error

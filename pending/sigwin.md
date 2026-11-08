@@ -70,19 +70,9 @@ Each is a test before it is a change: if b33p doesn't have the bug, record that 
 
 ## Phase 1: the conversation's feel (each change on its own)
 
-**Progress (2026-11-07, evening):**
-
-| Item | State |
-|---|---|
-| 0.4 mentions while composing | #135 |
-| 1.1 quote jump | #136 (desktop 28/28) |
-| 2.1 pinned messages | #137, stacked on #136 (all default phases 169/169; desktop 3 rounds) |
-| 1.4 Read more | #138 |
-| 1.3 readers, 1.6 message info | core in #139 (desktop 28/28, storage 13/13); the UI waits for the row model |
-| 1.2 elapsed times, 1.3/1.6 UI, 1.5, 2.3 albums | wait for the gpui branch's Slint pass on `main` (it reworks `items.rs` and `types.slint`, and adds `sent-minute` for 1.2) |
-| 2.2 viewer, 2.4 animated stickers, 2.5 | not started |
-| Phase 3 | needs a Windows machine to measure |
-| Phase 4 | waits for a yes |
+**Merged (2026-11-07):** 0.4 mentions while composing (#135), 1.1 quote jump (#136), 2.1 pinned
+messages (#137), 1.4 Read more (#138), and the core of 1.3 readers and 1.6 message info (#139). The
+rest is planned under **What's next** below.
 
 | # | Change | sigwin | b33p today | How |
 |---|---|---|---|---|
@@ -155,15 +145,9 @@ sigwin holds idle private memory under 30 MB on Windows. b33p peaked at 66 MiB i
    different path from sigwin's renderer. Their COLR approach doesn't apply to Qt; note it with
    those findings, don't merge them.
 
-## Phase 4: Windows integration (ask before starting; it widens what b33p maintains)
+## Phase 4: Windows integration
 
-- An unread count overlay on the taskbar button (`ITaskbarList3`, redrawn per DPI, re-applied when
-  Explorer restarts) and a count on the tray icon instead of a dot (`61394d1`, `57a59bd`).
-- Self-update from signed GitHub releases (minisign, `380bb67`) for the Windows zip and the
-  AppImage. Packages from distributions update themselves. This is new outgoing traffic, so it
-  needs a setting, off by default.
-- File dialogs in a child process (heavy shell DLLs stay out of the process), only if phase 3's
-  measurement shows the cost.
+See **What's next**, step D.
 
 ## How each change is checked
 
@@ -172,6 +156,208 @@ sigwin holds idle private memory under 30 MB on Windows. b33p peaked at 66 MiB i
   eye. Add the viewer and the pin bar to its screens.
 - A test box check where the wire is involved (1.1, 2.1, 2.4), and the default phases with the tour
   before any merge.
-- One branch and PR per numbered item. Order: phase 0, then 1.1 and 2.1 together (the jump is
-  shared), then the rest of phase 1, then 2.2 and 2.3, then phase 3's measurement. Phase 4 waits
-  for a yes.
+- One branch and PR per numbered item.
+
+## What's next (planned 2026-11-07, after #134–#139)
+
+Five steps, A to E. A and B need nothing from anyone. C waits for the gpui branch. D and E need a
+yes on the decisions listed at the end.
+
+### A. Windows in CI (first: everything in D and E builds on it)
+
+Today Windows is built only by `release.yml`. A broken `cfg(windows)` path (toasts, autostart,
+single instance, shutdown, capture exclusion, keyring) shows up only on release day, and no test
+has ever run on Windows.
+
+1. **A `windows` job in `ci.yml`** on `windows-2025`:
+   - `cargo build -p b33p-slint`, plus `cargo test -p b33p-core -p b33p-slint`. The UI tests use
+     Slint's testing backend, which needs no display.
+   - Keep the BoringSSL and protoc steps from `release.yml`, and cache `target/`.
+   - Run on pushes to `main`, and on PRs that touch `cfg(windows)` code, `b33p-notify` or
+     `Cargo.lock` (`paths:`). x86_64 only; arm64 stays in the release.
+2. **A smoke run of the release build with the mock backend** (`Backend::mock_requested()`):
+   - Start it, wait for the window, take a harness snapshot and a `screenshot`, then quit.
+     Upload the screenshot as a CI artifact.
+   - This is the first proof that the Windows window draws at all, with the fonts Windows has.
+     It also covers 0.3 (CJK on femtovg): the mock gets a chat with 駅 鉄 国 and Hangul, and the
+     screenshot shows them, or blanks.
+3. **Memory on that runner** (phase 3.1, which no longer needs a Windows machine):
+   - Add a `mem:` log line: private bytes from `GetProcessMemoryInfo` on Windows and
+     `/proc/self/status` on Linux.
+   - Optional: a counting allocator, as sigwin's `alloc.rs`, only behind a feature.
+   - Run the mock idle with one chat open and record the figure on femtovg. Then do one run with
+     `renderer-software` (a feature switch, not a release change) to see whether sigwin's
+     212 MB → 8 MB finding holds for b33p.
+   - Phase 3.2 (the software renderer patches) is decided by that number.
+
+### B. Features that need no one else
+
+1. **2.4 Animated stickers**:
+   - In `attachments.rs`, decode APNG (`image` with `png`'s APNG) and animated WebP
+     (`image-webp`) into frames with their delays. Cap the frames and pixels, as for any image,
+     against decompression bombs.
+   - In the slint crate, one 16 ms-granular `Timer` drives every sticker on screen. Each sticker's
+     frame is chosen from `now - started` and its delays, so a slow frame never shifts the timing.
+     Stickers off screen hold no frames: an LRU of decoded frames, about 32 MB.
+   - Reduced motion and an unfocused window both show the first frame.
+   - Tests: unit tests on two fixture files (frame times, the loop, the cap), and a ui test that
+     the frame changes with the clock.
+   - Check in the testbox whether Desktop at `f3040f3e` can send an animated sticker (it needs a
+     pack installed on the device). If not, the check is the mock's sticker plus the screenshot.
+2. **2.5 Notification settings per chat**:
+   - Settings: mentions and replies only, whether the text shows, and sound on or off.
+   - Kept locally, in a table next to `ChatSettings`. The storage service has no field for these,
+     so they don't sync.
+   - The decision lives in b33p-core, where the notification is built: an `Event` carries the
+     setting, and the toast is either left out or shown without the text.
+   - Tests in `state/tests.rs` for each rule. The UI goes in the chat's details panel, next to
+     mute.
+3. **2.2 An image viewer of our own**, as an overlay in the main window first:
+   - The overlay works the same on Wayland, X11, Windows and macOS, and needs no window placement.
+     A separate window on Windows and X11 can come later, if anyone misses it.
+   - Decode into a `SharedPixelBuffer` with a pixel cap, and scale with `fast_image_resize`
+     (Lanczos3 down, Catmull-Rom up), keeping sigwin's crop test (Cykooz/fast_image_resize#63).
+   - Zoom with the wheel, catching at 100%; pan by dragging; ←/→ for the chat's other pictures;
+     Esc closes. Bare pixels while dragging, smoothed 100 ms after.
+   - The viewer has **Save** and **Open with…** (today's plain copy, now only when asked for).
+     Clicking a picture no longer writes a copy for another app.
+   - Harness actions `OpenViewer`, `ViewerNext` and `CloseViewer`, ui tests, and `shoot.py`
+     screens.
+4. **Small follow-ups from phase 0:**
+   - 0.4 with a real input method: fcitx5 with Hangul in the dev container, and pick a name in the
+     middle of a syllable.
+
+### C. Waiting for the gpui branch's Slint pass to reach `main`
+
+That branch reworks `items.rs` and `types.slint`, and it adds `sent-minute`. Whoever merges it
+tells this plan; then, each on its own branch:
+
+- **1.2 Elapsed times**: formatting in b33p-core with the injected clock, and one 30 s timer.
+- **1.3 Readers in the UI**: up to three avatars and "+N" under the row from `readers_of`, with
+  the label "Read by A, B and 2 others".
+- **1.6 Message info**: a popup from the row's menu, built on `open_message_info`. It has a
+  harness snapshot already.
+- **1.5 Time at the last line**: decided by `shoot.py` screenshots, not ported blindly.
+- **2.3 Albums as a grid**: a click opens 2.2's viewer on that picture, so after B.3.
+
+### D. Windows integration (wants a yes per item)
+
+What b33p already has on Windows: toasts with an app id (`b33p-notify`), autostart, a single
+instance over a named pipe, clean shutdown on log-off, exclusion from screen capture, and the
+database key in Credential Manager (sigwin keeps it with DPAPI; ours is equivalent, so nothing to
+take). What it lacks, from sigwin, in order of value:
+
+1. **A Windows test machine in the testbox** (needs a yes: it downloads a Windows 11 evaluation
+   image, about 6 GB, which expires after 90 days and is then rebuilt):
+   - Run `dockur/windows` in a container on KVM (`/dev/kvm` is here), in the testbox pod, with
+     b33p linked to the testbox server like the Linux instance. The harness talks to it over the
+     pod network.
+   - This is where the rest of D gets checked by hand and by the driver. It is also what CI
+     can't do: toast clicks, the taskbar, IME.
+2. **Installing per user**, without admin rights or an installer (sigwin `install.rs`):
+   - Run from the zip, b33p copies itself to `%LOCALAPPDATA%\b33p\b33p.exe`, adds a Start menu
+     shortcut and an entry in "Installed apps" (HKCU), then starts the installed copy.
+   - Uninstalling from "Installed apps" removes it all, and the account data only if asked.
+   - It never overwrites a newer installed version, whose database may be migrated already.
+   - One fixed path keeps autostart and the updater pointing at the same file. Today the `Run`
+     key (`autostart.rs`) holds wherever the zip was unpacked, so moving or re-unpacking the
+     folder silently breaks start-with-Windows.
+3. **The unread count on the taskbar button and on the tray icon** (`61394d1`, `7561454`,
+   `57a59bd`):
+   - An `ITaskbarList3::SetOverlayIcon` badge, up to "99+", drawn for the window's DPI.
+   - It is re-applied on `TaskbarButtonCreated`, which needs a window procedure subclass like
+     sigwin's `winhook.rs` (`SetWindowSubclass` on the main window; `shutdown.rs` runs its own
+     hidden window, which doesn't get taskbar messages).
+   - The tray count can serve every platform: our tray shows a dot today.
+   - The count's words go to the tooltip, for screen readers.
+4. **Ctrl shortcuts during an IME composition** (from 0.2):
+   - winit reports Ctrl+letter during a Korean IME composition as `Named(Process)`, and Slint
+     drops it.
+   - Find out first whether winit or Slint should map it, and offer the fix there as a draft PR.
+     Use sigwin's event filter (`e3055df`) only as a stopgap in our Slint fork.
+   - Checked on the test machine from D.1.
+5. **Self-update from signed releases** (sigwin `update.rs`, `380bb67`):
+   - `release.yml` signs each archive with minisign (the secret key in an Actions secret).
+   - The app checks GitHub's latest release after the first sync, and only if a setting allows
+     it, off by default: it is new outgoing traffic.
+   - The download is streamed to disk and checked against the signature, whose trusted comment
+     names that exact version, so an old signed build can't be replayed. The app then swaps in
+     the installed copy from D.2.
+   - Windows and the AppImage only: distribution packages update themselves.
+6. **Code signing**, so SmartScreen stops warning:
+   - Not code, but a decision. SignPath's free plan for open source signs from CI, with
+     conditions on the project. A paid certificate is the other way.
+   - Without either, D.2 still helps: SmartScreen asks once, for the zip.
+7. **Only if A.3 measures the cost: the file dialog in a child process** (sigwin `picker.rs`).
+   The shell, thumbnail and cloud-sync DLLs add 28 MB while open, and over 10 MB stay after.
+8. **To check on the test machine, not port:**
+   - Pasting a picture from the Windows clipboard (our `clipboard.rs`).
+   - A toast click opening the chat (sigwin `4e3bbee`).
+   - The window after restoring from minimized. sigwin's repaint fix is for the software
+     renderer only; it matters to us only if A.3 moves us to it.
+
+### E. Order and decisions
+
+Order: A.1 → A.2 → A.3 and B, in parallel (B.1, B.2, then B.3) → C, when the gpui branch lands →
+D in its numbered order.
+
+Decisions needed:
+
+| Decision | Blocks |
+|---|---|
+| A Windows job in CI (free: the repo is public; it adds roughly 15–25 min of wall time to those runs) | A |
+| When the gpui branch's Slint pass merges, and beep-6a's two Slint fork patches | C |
+| A Windows 11 evaluation VM in the testbox | D.1, and checking D.3–D.8 |
+| Installing per user to `%LOCALAPPDATA%` | D.2, D.5 |
+| Self-update (and a minisign key in the repo's secrets) | D.5 |
+| Code signing, and with what | D.6 |
+
+### F. Implementation (started 2026-11-07, on the owner's "implement them")
+
+Found while planning:
+- Windows code that links C (BoringSSL, aws-lc, ring) can't be checked from Linux without
+  Microsoft's SDK. `cargo check --target x86_64-pc-windows-msvc` works only for `b33p-notify`.
+  The Windows CI job (A.1) is therefore the check for every item in D, and the D branches
+  stack on it until it merges.
+- **B.1 animated stickers moves to C**: a sticker's picture is converted in `items.rs`
+  (`:345`–`:413`), which the gpui branch reworks.
+
+Taken as decided by "implement them": A, B.2–B.4, D.2, D.3, D.4 and D.5. D.5 is off by
+default, and its release signing step skips when no key is set, so the code can merge before
+the owner creates the key. Still the owner's call: D.1 (the Windows evaluation image's licence
+and download), D.6 (a signing account), the key for D.5, and C.
+
+| Item | Branch | Files | Proof |
+|---|---|---|---|
+| A.1 Windows CI job | `windows-ci` | `.github/workflows/ci.yml` | the job green on the PR |
+| A.2 Smoke run with the mock, CJK in the mock | `windows-ci` | `ci.yml`, a `--smoke` exit in `main.rs` after the first frame and a screenshot, the mock's chat text | the screenshot artifact, looked at |
+| A.3 `mem:` line | `windows-ci` | a `memory` module in b33p-slint (Windows `GetProcessMemoryInfo`, Linux `/proc/self/status`), logged once a minute and at the smoke run's end | the number in the job log, written into phase 3 |
+| B.2 Notification settings per chat | `notify-per-chat` | `local.rs` table, `ChatSettings`, the notification decision in b33p-core, details panel | core tests per rule, ui test, harness action |
+| B.3 Image viewer overlay | `image-viewer` | a new `viewer.slint` with its own global, `src/ui/viewer.rs`, the picture click in `callbacks/chat.rs`; no `items.rs` | ui tests, harness `OpenViewer`/`ViewerNext`/`CloseViewer`, a screenshot |
+| B.4 fcitx5 Hangul check of #135 | done, no branch | a throwaway image on the testbox's b33p image: fcitx5 + fcitx5-hangul + the Qt 6 frontend on a private D-Bus, keys by `wtype` into the headless `cage`, harness screenshots | see below |
+| D.2 Per-user install | `windows-install`, on `windows-ci` | `install.rs` (HKCU Uninstall key, Start menu `.lnk` via `IShellLinkW`), `main.rs` | Windows CI build, unit tests on the decisions (version compare, paths) |
+| D.3 Unread counts | `unread-badge`, on `windows-ci` | `badge.rs` (`ITaskbarList3`), a window subclass, the tray icon with a count on every platform | Windows CI build, a ui or unit test of the count's words and "99+" |
+| D.4 IME Ctrl shortcuts | `ime-ctrl` (#143), on `windows-ci` | `keys.rs`: a filter through Slint's public winit hook, no fork patch (Slint's own fallback, `key_without_modifiers`, is `Process` too) | unit tests in the Windows CI job |
+| D.5 Self-update | `self-update`, on `windows-install` | `update.rs` (`minisign-verify`), the setting, `release.yml` signing | unit tests on signature and version checks with a test key |
+
+**A results (2026-11-07, #141):**
+- **The first Windows run found main broken there**:
+  - since 9b642ac, `windows_registry::Error` is private, so no Windows build since then compiled;
+  - a migrations test compared CRLF-checked-out text;
+  - two variants that only Unix builds were unused on Windows.
+
+  All fixed in #141, and the test job now treats warnings as errors.
+- **0.3 CJK fallback**: on an en-US Windows Server 2025 runner, femtovg shows 駅 鉄 国 and Hangul in names and previews. sigwin's blanks came from a Korean locale picking Malgun Gothic for every ideograph; that needs a Korean-locale machine (D.1).
+- **3.1 memory, idle on the mock**:
+
+  | Renderer | Private | Working set |
+  |---|---|---|
+  | femtovg | 10.6 MiB | 39.1 MiB |
+  | software | 8.9 MiB | 36.3 MiB |
+
+  The runner has no GPU driver, so the cost sigwin measured for femtovg (212 MB, the driver loaded into the process) can't show here. That number still needs real hardware.
+- **Found by #144: screen-capture exclusion never took effect on Windows**: it asked before Slint had made the window. Fixed in #148, with a Screen security setting as in Signal Desktop and a smoke check.
+
+**B.4 result (2026-11-07):**
+- With a real fcitx5 Hangul input method, `@` followed by composing 가 closes the @mention list: b33p sees the composition while its committed draft is still `@`. Before #135 the list showed every name. #135 holds.
+- **New finding:** Enter in the middle of a syllable commits it *and sends* the message in one press (`@가` went out). Chromium, and so Signal-Desktop, spends that first Enter on finishing the syllable. Changing it needs to know that the commit and the Enter came from one key press: Qt's fcitx plugin commits the preedit before it delivers the Return, so `Composer.composing` is already empty when the composer sees Enter. Owner's call whether to match Desktop.

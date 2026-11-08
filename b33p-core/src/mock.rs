@@ -43,6 +43,9 @@ const CONVERSATIONS: &[(&str, &str, bool)] = &[
     ("rust", "Rustaceans 🦀", true),
     ("bob", "Bob", false),
     ("dana", "Dana", false),
+    // Ideographs some fonts lack (Japanese, Chinese-only) and Hangul: a font fallback that
+    // picks one font per script shows blanks here (sigwin `de6f512`).
+    ("yuki", "Yuki 駅 鉄 国 · 김민지", false),
     // A group we're invited to, not in yet.
     ("club", "Book club", true),
     ("me", "Note to Self", false),
@@ -1311,6 +1314,13 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
             "Dana",
             "Old news",
             ago(60 * 24 * 40),
+            false,
+        )],
+        "yuki" => vec![message(
+            "yuki",
+            "Yuki",
+            "駅で会おう、鉄道の国へ。민지도 같이 가요",
+            ago(4),
             false,
         )],
         "rust" => vec![

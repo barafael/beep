@@ -115,6 +115,8 @@ pub enum PrivateFileError {
     Sync { path: PathBuf, source: io::Error },
     #[error("failed to put the new {} in place", path.display())]
     Persist { path: PathBuf, source: io::Error },
+    // Only Unix syncs a directory (`sync_parent`).
+    #[cfg(unix)]
     #[error("failed to make the rename in {} last", dir.display())]
     SyncDir { dir: PathBuf, source: io::Error },
 }
@@ -128,8 +130,9 @@ impl PrivateFileError {
             | Self::CreateTemp { source, .. }
             | Self::Write { source, .. }
             | Self::Sync { source, .. }
-            | Self::Persist { source, .. }
-            | Self::SyncDir { source, .. } => source,
+            | Self::Persist { source, .. } => source,
+            #[cfg(unix)]
+            Self::SyncDir { source, .. } => source,
         }
     }
 }
