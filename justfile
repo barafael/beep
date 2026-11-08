@@ -103,3 +103,9 @@ harness:
 [group('end to end')]
 testbox *phases:
     cargo testbox run {{ phases }}
+
+# Takes down every test box that has an Android emulator, then stops the emulators and adb
+# servers left on the host (testbox/android/stop-android.sh). `--dry-run` only lists them.
+[group('end to end')]
+stop-android *flags:
+    testbox/android/stop-android.sh {{ flags }}
