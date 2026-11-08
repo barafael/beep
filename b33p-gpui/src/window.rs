@@ -12,6 +12,7 @@ use std::time::Duration;
 use b33p_core::settings::Settings;
 use b33p_core::state::{ChatState, Screen};
 use b33p_core::{Backend, Failure};
+use b33p_platform::instance;
 use gpui_kit::{
     App, AppContext as _, AsyncApp, Bounds, TitlebarOptions, WindowBounds, WindowDecorations,
     WindowOptions, WindowingRequest, px, size,
@@ -80,7 +81,7 @@ fn open_or_quit(shared: &Rc<Shared>, cx: &mut App) {
 /// menu. Call once, with the first window open (or not, for `--hidden`).
 pub fn start(
     shared: &Rc<Shared>,
-    activations: Option<async_channel::Receiver<Option<String>>>,
+    activations: Option<async_channel::Receiver<instance::Request>>,
     hidden: bool,
     cx: &mut App,
 ) {
@@ -103,14 +104,25 @@ pub fn start(
     })
     .detach();
 
-    // Starting b33p again shows this one.
+    // Starting b33p again shows this one; installing or uninstalling b33p ends it.
     if let Some(activations) = activations {
         cx.spawn({
             let shared = shared.clone();
             async move |cx: &mut AsyncApp| {
-                while let Ok(token) = activations.recv().await {
-                    tracing::info!(token = token.is_some(), "started again; showing the window");
-                    cx.update(|cx| activate(&shared, token, cx));
+                while let Ok(request) = activations.recv().await {
+                    match request {
+                        instance::Request::Show(token) => {
+                            tracing::info!(
+                                token = token.is_some(),
+                                "started again; showing the window"
+                            );
+                            cx.update(|cx| activate(&shared, token, cx));
+                        }
+                        instance::Request::Quit => {
+                            tracing::info!("asked to quit, to install or uninstall b33p");
+                            cx.update(|cx| cx.quit());
+                        }
+                    }
                 }
             }
         })
