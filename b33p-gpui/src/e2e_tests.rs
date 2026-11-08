@@ -50,10 +50,12 @@ fn in_app(
             "agent-{}.sock",
             cx.test_function_name().unwrap_or("test")
         ));
-    let live = testing::boot_live(cx, &socket);
     // Work arrives from threads (the backend's, the client's): the app is not done when it
-    // has nothing to run for the moment.
+    // has nothing to run for the moment. Allowed before the app boots: booting starts the
+    // backend's thread, whose first event can wake the app's waiting task at once, and a wake
+    // from another thread before this is taken for a nondeterministic test.
     cx.executor().allow_parking();
+    let live = testing::boot_live(cx, &socket);
     let client = std::thread::spawn(move || {
         let stream = UnixStream::connect(&socket)
             .unwrap_or_else(|error| panic!("no agent socket at {}: {error}", socket.display()));
