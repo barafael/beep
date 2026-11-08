@@ -274,7 +274,9 @@ mod win {
     use windows_registry::CURRENT_USER;
 
     use super::{Flow, Layout, Plan, Skip, Step, UNINSTALL_KEY};
-    use crate::{APP, autostart, instance};
+    use b33p_platform::{autostart, instance};
+
+    use crate::APP;
 
     /// No console window for the installed copy's `--version`.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
