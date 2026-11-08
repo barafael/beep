@@ -1017,6 +1017,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     false,
                 )));
             }
+            // Taking turns: Bob is muted, so Alice's are what the unread count on the tray
+            // and the taskbar shows (Windows CI's screenshot looks for it).
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 arrived += 1;
                 let (chat, sender, body) = if scale.incoming > 0.0 {
@@ -1025,6 +1027,8 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                         "Casey",
                         format!("incoming message number {arrived}"),
                     )
+                } else if arrived % 2 == 1 {
+                    ("alice", "Alice", "Are you there?".to_owned())
                 } else {
                     ("bob", "Bob", "ping".to_owned())
                 };

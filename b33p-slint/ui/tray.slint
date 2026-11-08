@@ -3,9 +3,11 @@
 
 export component Tray inherits SystemTrayIcon {
     in property <int> unread;
+    // The count in words ("3 unread messages"), for the tooltip and screen readers.
+    in property <string> unread-words;
     // The "Keep running in the tray" setting.
     in property <bool> shown: true;
-    // The icon with a dot for unread messages, drawn by Rust: a tray icon is pixels, not items.
+    // The icon with the count, drawn by Rust (`badge.rs`): a tray icon is pixels, not items.
     in property <image> unread-icon;
 
     callback open();
@@ -14,7 +16,7 @@ export component Tray inherits SystemTrayIcon {
     icon: root.unread > 0 && root.unread-icon.width > 0 ? root.unread-icon : @image-url("../assets/b33p.svg");
     title: "b33p";
     visible: root.shown;
-    tooltip: unread == 0 ? "b33p" : unread == 1 ? "b33p — 1 unread message" : "b33p — \{unread} unread messages";
+    tooltip: root.unread == 0 ? "b33p" : "b33p — \{root.unread-words}";
     clicked => { root.open(); }
 
     Menu {
