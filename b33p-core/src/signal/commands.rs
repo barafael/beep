@@ -199,6 +199,7 @@ enum ChatChange {
     MarkUnread,
     Mute,
     Archive(bool),
+    Notify,
 }
 
 impl std::fmt::Display for ChatChange {
@@ -211,6 +212,7 @@ impl std::fmt::Display for ChatChange {
             Self::Mute => "muted",
             Self::Archive(true) => "archived",
             Self::Archive(false) => "taken out of the archive",
+            Self::Notify => "given its notification settings",
         })
     }
 }
@@ -1216,6 +1218,20 @@ async fn handle_command(
                 .map_err(|source| CommandError::ChangeChat {
                     conversation,
                     change: ChatChange::Archive(archived),
+                    source,
+                })?;
+        }
+        // This computer's alone: nothing goes to the storage service, or anywhere else.
+        Command::SetChatNotify {
+            conversation,
+            notify,
+        } => {
+            ctx.tables
+                .update(&conversation, |s| s.notify = notify)
+                .await
+                .map_err(|source| CommandError::ChangeChat {
+                    conversation,
+                    change: ChatChange::Notify,
                     source,
                 })?;
         }

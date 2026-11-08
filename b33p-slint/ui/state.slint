@@ -205,6 +205,18 @@ export global OpenChat {
     in property <int> appended-total;
 }
 
+// How the open chat's new messages notify, besides muting it: kept on this computer only.
+// Rust sets them for the open chat; the details page changes them and calls `changed`.
+export global ChatNotify {
+    // 0: all messages; 1: only mentions of us and replies to our messages.
+    in-out property <int> notify-for;
+    // Notifications say what was written, not only who wrote.
+    in-out property <bool> show-text: true;
+    // Notifications make a sound.
+    in-out property <bool> sound: true;
+    callback changed;
+}
+
 // Writing: the draft, files going with it, replies and edits, mentions, pasting and
 // stickers.
 export global Composer {

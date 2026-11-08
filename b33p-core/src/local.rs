@@ -18,7 +18,8 @@ use sqlx::{
 use presage::{proto::verified::State, store::Thread};
 
 use crate::{
-    ChatSettings, Command, ConversationId, Delivery, Mention, MessageRef, Quote, Style, StyleRange,
+    ChatNotify, ChatSettings, Command, ConversationId, Delivery, Mention, MessageRef, Quote, Style,
+    StyleRange,
 };
 
 /// Whether a contact's safety number was verified, and for which of their identity keys
@@ -164,7 +165,8 @@ fn style_of(code: &str) -> Option<Style> {
 /// The columns [`settings_of`] reads, in its order, after the conversation id.
 macro_rules! settings {
     () => {
-        "id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted"
+        "id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted,
+         notify_mentions_only, notify_hide_text, notify_silent"
     };
 }
 
@@ -177,6 +179,11 @@ fn settings_of(row: &SqliteRow) -> ChatSettings {
         marked_unread: row.get::<i64, _>(5) != 0,
         blocked: row.get::<i64, _>(6) != 0,
         accepted: row.get::<i64, _>(7) != 0,
+        notify: ChatNotify {
+            mentions_only: row.get::<i64, _>(8) != 0,
+            hide_text: row.get::<i64, _>(9) != 0,
+            silent: row.get::<i64, _>(10) != 0,
+        },
     }
 }
 
@@ -381,6 +388,23 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
         "accepted",
         "ALTER TABLE b33p_conversation ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
     ),
+    // How each chat notifies (`ChatNotify`): this computer's alone, the storage service has
+    // no place for it, so `b33p_remote` doesn't have them.
+    (
+        "b33p_conversation",
+        "notify_mentions_only",
+        "ALTER TABLE b33p_conversation ADD COLUMN notify_mentions_only INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "b33p_conversation",
+        "notify_hide_text",
+        "ALTER TABLE b33p_conversation ADD COLUMN notify_hide_text INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "b33p_conversation",
+        "notify_silent",
+        "ALTER TABLE b33p_conversation ADD COLUMN notify_silent INTEGER NOT NULL DEFAULT 0",
+    ),
     (
         "b33p_remote",
         "blocked",
@@ -533,8 +557,9 @@ impl LocalStore {
         change(&mut state);
         sqlx::query(
             "INSERT OR REPLACE INTO b33p_conversation
-                (id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted,
+                 notify_mentions_only, notify_hide_text, notify_silent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id.0)
         .bind(state.pinned.map(i64::from))
@@ -544,6 +569,9 @@ impl LocalStore {
         .bind(state.marked_unread as i64)
         .bind(state.blocked as i64)
         .bind(state.accepted as i64)
+        .bind(state.notify.mentions_only as i64)
+        .bind(state.notify.hide_text as i64)
+        .bind(state.notify.silent as i64)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1704,7 +1732,7 @@ async fn remote_in(
     db: impl sqlx::SqliteExecutor<'_>,
 ) -> Result<HashMap<ConversationId, ChatSettings>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, pinned, muted_until, archived, 0, marked_unread, blocked, accepted
+        "SELECT id, pinned, muted_until, archived, 0, marked_unread, blocked, accepted, 0, 0, 0
          FROM b33p_remote",
     )
     .fetch_all(db)
@@ -2420,6 +2448,53 @@ mod tests {
             assert_eq!(local.settings(&a).await.unwrap().unwrap().last_read, 5);
             let blocked = local.update(&a, |s| s.blocked = true).await.unwrap();
             assert!(blocked.blocked && !blocked.accepted);
+            assert_eq!(blocked.notify, ChatNotify::default(), "notifies as before");
+        });
+    }
+
+    /// How a chat notifies is kept, and stays through every other change to its settings:
+    /// reading it, blocking it, and taking in what the storage service says, which has no
+    /// place for it.
+    #[test]
+    fn remembers_how_a_chat_notifies() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            let a = ConversationId("a".into());
+            let notify = ChatNotify {
+                mentions_only: true,
+                hide_text: false,
+                silent: true,
+            };
+            local.update(&a, |s| s.notify = notify).await.unwrap();
+            assert_eq!(local.settings(&a).await.unwrap().unwrap().notify, notify);
+            assert_eq!(local.mark_read(&a, 10).await.unwrap().notify, notify);
+            let blocked = local.set_blocked(&[(a.clone(), true)]).await.unwrap();
+            assert_eq!(blocked[0].1.notify, notify);
+
+            let remote = HashMap::from([(
+                a.clone(),
+                ChatSettings {
+                    muted_until: Some(5),
+                    ..ChatSettings::default()
+                },
+            )]);
+            let changed = local
+                .take_remote(&remote, 1, |local, _, now| {
+                    let mut settings = local[&a].clone();
+                    settings.muted_until = now[&a].muted_until;
+                    vec![(a.clone(), settings)]
+                })
+                .await
+                .unwrap();
+            assert_eq!(changed[0].1.notify, notify);
+            let kept = local.settings(&a).await.unwrap().unwrap();
+            assert_eq!((kept.muted_until, kept.notify), (Some(5), notify));
+            assert_eq!(
+                local.remote().await.unwrap()[&a].notify,
+                ChatNotify::default(),
+                "the storage service's side has none"
+            );
         });
     }
 

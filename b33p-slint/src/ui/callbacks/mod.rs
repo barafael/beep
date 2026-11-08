@@ -14,4 +14,5 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
     panels::wire(window, shared);
     wire_pins(window, shared);
     wire_viewer(window, shared);
+    wire_notify(window, shared);
 }

@@ -338,6 +338,11 @@ pub enum Action {
         conversation: String,
         archived: bool,
     },
+    /// How a chat's new messages notify, besides muting it; see [`NotifySnapshot`].
+    SetChatNotify {
+        conversation: String,
+        notify: NotifySnapshot,
+    },
     Block {
         conversation: String,
         blocked: bool,
@@ -800,6 +805,21 @@ pub struct ConversationSnapshot {
     pub avatar: bool,
     /// How far the safety number is trusted; a changed one keeps the composer closed.
     pub trust: Trust,
+    /// How its new messages notify when it isn't muted. Absent in a b33p built before it.
+    #[serde(default)]
+    pub notify: NotifySnapshot,
+}
+
+/// How a chat's new messages notify, besides muting it (which wins): kept on this computer
+/// only. The default notifies for every message, with its text and a sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifySnapshot {
+    /// Only mentions of us and replies to our messages notify.
+    pub mentions_only: bool,
+    /// Notifications say who wrote, not what.
+    pub hide_text: bool,
+    /// Notifications come without a sound.
+    pub silent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

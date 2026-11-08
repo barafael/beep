@@ -401,6 +401,7 @@ export component SwitchRow inherits SettingRow {
     in property <bool> enabled: true;
     callback toggled;
     Switch {
+        accessible-label: root.label;
         enabled: root.enabled;
         checked <=> root.checked;
         toggled => { root.toggled(); }

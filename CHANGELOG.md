@@ -49,6 +49,9 @@ The release workflow takes a version's notes from here (the section headed with 
 - Photos open in b33p's own viewer, over the window: the wheel zooms (stopping at 100% on the
   way), dragging moves a zoomed photo, a double click switches between fitting and 100%, ← and
   → go through the chat's photos, and **Save** and **Open with…** are at hand.
+- Notifications per chat, in its details beside muting: only for mentions of you and replies
+  to your messages, without the message text, or without a sound. Kept on this computer; the
+  phone doesn't have these.
 
 ### Looks
 

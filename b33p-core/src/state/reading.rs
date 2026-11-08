@@ -135,15 +135,19 @@ impl ChatState {
     }
 
     /// Whether a message of `id` is to be told to the user as it comes, as far as that is known
-    /// without the message: not for a muted chat or the open one of a focused window. While
-    /// catching up it is only counted, for the one notification that sums it up; the caller
-    /// then needn't make the text up for each of a backlog's messages.
-    pub(super) fn wants_notice(&mut self, id: &ConversationId) -> bool {
-        let muted = self
-            .conversation(id)
-            .is_some_and(|c| c.settings.muted(self.now()));
+    /// without the message's text: not for a muted chat or the open one of a focused window, nor
+    /// for a chat that notifies only for mentions and replies unless it is one (`for_me`; see
+    /// [`addresses`]). While catching up it is only counted, for the one notification that sums
+    /// it up; the caller then needn't make the text up for each of a backlog's messages.
+    pub(super) fn wants_notice(&mut self, id: &ConversationId, for_me: bool) -> bool {
+        let conversation = self.conversation(id);
+        let muted = conversation.is_some_and(|c| c.settings.muted(self.now()));
+        let mentions_only = conversation.is_some_and(|c| c.settings.notify.mentions_only);
         let n = &mut self.notifications;
         if !n.enabled || muted || (n.window_focused && self.selected.as_ref() == Some(id)) {
+            return false;
+        }
+        if mentions_only && !for_me {
             return false;
         }
         if !self.synced {
@@ -153,15 +157,23 @@ impl ChatState {
         true
     }
 
-    /// Tells the user of a message of `id` that [`ChatState::wants_notice`] said yes to.
+    /// Tells the user of a message of `id` that [`ChatState::wants_notice`] said yes to, as the
+    /// app's settings and its chat's say.
     pub(super) fn notify_message(&mut self, id: &ConversationId, sender: String, body: String) {
-        let group = self.conversation(id).filter(|c| c.is_group());
+        let conversation = self.conversation(id);
+        let chat = conversation.map(|c| c.settings.notify).unwrap_or_default();
+        let group = conversation.filter(|c| c.is_group());
         let name = match group {
             Some(group) => format!("{sender} in {}", group.title),
             None => sender,
         };
         let n = &mut self.notifications;
-        let (title, body) = match n.content {
+        // The chat's setting only ever hides more than the app's.
+        let content = match n.content {
+            NotificationContent::NameAndMessage if chat.hide_text => NotificationContent::NameOnly,
+            content => content,
+        };
+        let (title, body) = match content {
             NotificationContent::NameAndMessage => (name, body),
             NotificationContent::NameOnly => (name, "New message".into()),
             NotificationContent::Nothing => ("b33p".into(), "New message".into()),
@@ -170,10 +182,16 @@ impl ChatState {
             conversation: Some(id.clone()),
             title,
             body,
+            silent: chat.silent,
         });
     }
 
     pub(super) fn announce_caught_up(&mut self) {
+        // Quiet if every chat in it is.
+        let silent = self.notifications.caught_up.keys().all(|id| {
+            self.conversation(id)
+                .is_some_and(|c| c.settings.notify.silent)
+        });
         let n = &mut self.notifications;
         let chats = n.caught_up.len();
         let messages: usize = n.caught_up.drain().map(|(_, count)| count).sum();
@@ -189,6 +207,25 @@ impl ChatState {
             conversation: None,
             title: "b33p".into(),
             body,
+            silent,
         });
     }
+}
+
+/// Whether an incoming message is for us in particular: it mentions us (`own`, our service ID),
+/// or replies to one of our messages. The quote names its author; one that doesn't is looked
+/// for in `history`, its conversation's.
+pub(super) fn addresses(message: &ChatMessage, own: &str, history: &[ChatMessage]) -> bool {
+    let mentioned = !own.is_empty() && message.mentions.iter().any(|m| m.service_id == own);
+    let replied = message.quote.as_ref().is_some_and(|quote| {
+        if quote.author_id.is_empty() {
+            quote.timestamp != 0
+                && history
+                    .iter()
+                    .any(|m| m.outgoing && m.timestamp == quote.timestamp)
+        } else {
+            quote.author_id == own
+        }
+    });
+    mentioned || replied
 }
