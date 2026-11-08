@@ -139,3 +139,86 @@ is growth by design), so a non-zero slope is expected.
 **Experiment.** A 20-minute soak of the patched Slint and the current GPUI, subtracting the
 expected message growth (messages received times the per-message size), looking at the
 remainder.
+
+## Added after the multi-way run and the extended testbox runs (2026-11-08)
+
+The multi-way comparison ([performance-multiway.html](performance-multiway.html), raw tables in
+[performance-multiway-raw.md](performance-multiway-raw.md)) measured seven builds on the mock
+backend at f9c0db9 (Slint on Qt, FemtoVG and Skia, each with and without the fork patches, and
+GPUI). The testbox runs are in [testbox-extended-runs.md](testbox-extended-runs.md). They left
+these open.
+
+### Q8. Do the merges since the benchmark change the numbers?
+
+**Known.** The benchmark ran on a tree based on 8ddd7d8; the testbox runs on 31083b5. Main is
+now past both: #142 (per-chat notification settings through the agent), #145 (no picture viewer
+in GPUI), #146 (`window.rs` takes `instance::Request`), #152 (the GPUI window review) and #153
+(non-Qt Slint on Linux). New views can add idle redraws.
+
+**Experiment.** Run `bench.py run --ways-dir <binaries> --rounds 3 --sync-rounds 3
+--frames-rounds 2 --backlog 200000 --soak 120 --max-load 6` again for the same seven ways, and
+check that "idle in a chat after the caret stops" is still 0 wakeups for GPUI and the patched
+Slint builds. About 2 hours on a calm machine. The testbox phases should run on the new main too,
+with `--ui gpui` and the default.
+
+### Q9. Should the Wayland activation-token reconnect stay?
+
+**Known.** GPUI accepts an activation token only when it connects, so the window reconnects to
+take a token handed over later. The reconnect drops a clipboard selection the window owns.
+Written and merged, not verified at a compositor.
+
+**Decision for the owner.** Keep it (a lost selection is rare, a window that cannot raise itself
+is a visible bug), or drop it and document that a second launch cannot raise the window on
+Wayland. A check that copies, triggers the token and pastes would give the cost.
+
+### Q10. What do the non-Qt Slint windows lack that Qt has?
+
+**Known.** On Linux Slint can now be built with FemtoVG or Skia and no Qt (`gpu-femtovg`,
+`gpu-skia`; Qt stays the default; Fluent is the widget style without Qt). GPU use was verified
+and the benchmark ran on them. Not exercised: input methods (IME), the tray icon, file dialogs,
+the clipboard, drag and drop, accessibility, and the XDG activation token. The testbox has only
+ever run the Qt build.
+
+**Experiment.** Run each of these by hand in a Wayland session with each of the three builds,
+then add `--features gpu-skia` (or whichever is chosen) as a testbox build option. Until then
+the report's claim is "for rendering and the benchmark's scenarios".
+
+### Q11. Why do the fork patches help only on Qt?
+
+**Known.** Patch `0001` (no animation from a value to itself) cut CPU with messages arriving
+from 22.1% to 8% on Qt, and changed nothing measurable on FemtoVG and Skia (10.1 to 11.8 and
+9.8 to 9.5; the first is inside the noise of 3 rounds). Patch `0002` (the caret stops blinking
+after 10 s) takes the idle chat to 0 wakeups on all three.
+
+**Guess, not checked.** The Qt backend's timers wake the loop for each animation tick even when
+nothing changes, where the winit backends' frames are only requested when something is drawn.
+Settle it by counting animation ticks and frames per second in the soak for both. It matters for
+the upstream pull request (#14823): its description says what the patch does in Slint's core, so
+it should say that the effect depends on the backend. The fork's revision in the workspace
+`Cargo.toml` is bumped, and patch `0001` deleted, only when it is released.
+
+### Q12. Which Slint renderer should Linux ship?
+
+**Known.** Against Qt, FemtoVG and Skia used about 30% less CPU scrolling (15.5 and 15.4 against
+22.8, % of a core) and switching chats (16.3 and 15.5 against 25.6), and made a quarter to a
+sixth of the wakeups while scrolling, but cost memory: RSS after all phases 314 MB (FemtoVG) and 283 MB (Skia)
+against 204 MB (Qt), and 20 to 27 threads against 22. Typing used more CPU on both (7.1 and 6.9
+against 5.5). The binary is 45.8 and 52.7 MB against 40.8. GPUI (185 MB, 3.9% with messages
+arriving) is lowest on most rows but has 60 threads. All of it on one AMD GPU and driver.
+
+**Decision for the owner.** Qt stays the default for the system's look (the owner said the Qt
+widget style is not important, but the system's fonts and colors are what Qt gives); which of
+the GPU builds, if any, ships as a second package, and whether the .deb should list Qt as
+optional. Needs Q10 first.
+
+### Q13. Does the soak's memory growth come from history or from a leak?
+
+**Known.** The 120 s soak in the multi-way run: Qt and FemtoVG flat (0 to 0.02 MB a minute),
+Skia 0.25, GPUI 0.33. The 30-minute testbox soak went from 35 MiB to 68 MiB, with 47 to 48 open
+files throughout, and its "nothing keeps growing" check passed; the samples of the last minutes
+moved between 48 and 56 MiB, so the end point is a single high one. Messages accumulate in the
+history, so some growth is expected.
+
+**Experiment.** This extends Q7: a 20-minute soak per build in `bench.py`, subtracting the
+messages received times the per-message size, and in the testbox a longer soak sampled more often
+(the memory at each sample is in the record), then look at whether the remainder has a slope.
