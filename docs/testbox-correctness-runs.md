@@ -57,10 +57,24 @@ What this rules in and out so far:
   acquire timeout) and would have logged it.
 - Not the shared `STORAGE_NAMES` lock (`signal/conversations.rs`): no guard outlives an await.
 
-The root cause is not found yet. Next: run `cargo testbox test core --ui gpui` again until it
-hangs, and take the stacks of b33p's threads then (not done yet because a benchmark is running
-on the machine). The same check passed with GPUI in the extended runs this morning
-(`testbox-extended-runs.md`) and with Slint here.
+The root cause is not found yet. The same check passed with GPUI in the extended runs this
+morning (`testbox-extended-runs.md`) and with Slint here.
+
+Looking for it again (2026-11-08 and -09, `origin/main` with `presage=debug` in b33p's
+`RUST_LOG`), with a watcher that takes the stacks of b33p's threads
+(`podman unshare gdb -p <b33p's host pid>`, which resolves symbols in the debug build) once a
+sync has gone 60 s without ending:
+
+- `cargo testbox test core --ui gpui`, 21 rounds (9 on a quiet machine, then 12 more, the
+  first 3 of them beside a second box): 8/0 every time, the watcher never fired.
+- `cargo testbox run --ui gpui --rounds 20`, 7 rounds and part of an 8th before it was stopped
+  for the failures below: core 8/0 every time, the watcher never fired.
+
+What the logs narrow it to: on a restart that passes, `synced with Signal` follows the decrypt
+of the waiting message within 30 ms. The hung b33p decrypted it and never got there, so it
+stopped between the decrypt and the end of handling that first item: in presage's
+`handle_content`/`save_message` (stores, profile key) or in b33p's handling. Next: the full
+run again, with the watcher, until it hangs.
 
 Record: `target/testbox-correct-record/run/1794149039/1/linked/` in the worktree
 `/home/rafael/code/beep-deps`.
@@ -96,3 +110,47 @@ in b33p or Signal-Android.
 
 Record: `target/testbox-correct-record/run/1794147788/1/android/` (`logcat.txt`) in the same
 worktree.
+
+## Found in the full GPUI runs, 2026-11-09
+
+`cargo testbox run --ui gpui --rounds 20` on `origin/main` (1e6423b, with #157), 10:14 to 12:20:
+7 rounds and part of an 8th (stopped in its attachments phase) for these two failures. Record:
+`target/testbox-correct-record/run/1794215681/` in `/home/rafael/code/beep-deps`.
+
+### Android box, setup: "Android registers" (3 of 7 rounds), a regression from #157, fixed
+
+The agent answered `no focused field as wanted` on Signal-Android's "Create your PIN" screen.
+The driver types the verification code with `Echo::Anything`, and the code submits itself: once
+it is set, Signal moves on to "Create your PIN", which has no field with input focus. Since #157
+the echo wait reads the focused field fresh, so it timed out whenever Signal had moved on before
+the first look. Before #157 it passed because UiAutomation's cache still handed back the code
+field. #160 skips the echo wait for `Echo::Anything` (its only use is that code); with it,
+`cargo testbox test android --ui gpui` passed 3 of 3 (registering in 15 s). The agent's message
+reaching the driver whole is #157's other half at work.
+
+### Network: "a picture from b33p reaches Desktop over it" (4 of 7 rounds), cause not found yet
+
+Desktop waited the check's 120 s for the picture. b33p never sent it: in exactly the 4 failing
+rounds (1, 4, 5, 7) b33p logged one
+`failed to upload “…”: … client error (SendRequest): connection closed before message completed`,
+and in no passing round.
+
+- The failing request is the upload's first, the tus create (`POST /upload/attachments`, from
+  libsignal-service's `upload_attachment`): the CDN3 log has 13 creates in the failing rounds and
+  14 in the passing ones, and the missing one is the picture's. The request never reached
+  wrangler.
+- hyper's `connection closed before message completed` is a request written on a pooled
+  keep-alive connection whose other end had closed. b33p's last use of CDN3 before it was about
+  12 s earlier (round 1: 09:18:35 to 09:18:47).
+- The connection to CDN3 runs b33p → `front` (testbox/tools `front.rs`, which takes the TLS and
+  copies bytes to wrangler, closing a client's connection when wrangler closes its side, and
+  logged no error) → wrangler. So wrangler, `front`, or the slow and lossy link closed it; the
+  logs can't tell which.
+- Not the dependency update: #155 changed neither hyper nor reqwest in b33p's lock file.
+- The network phase passed in both runs of 2026-11-08 above, in 3 of these 7 (rounds 2, 3, 6),
+  and in the 2 rounds of `cargo testbox test network --ui gpui --capture` run since, neither of
+  which logged a failed upload.
+
+Next: `cargo testbox test network --ui gpui --capture` until it fails, and read in the capture
+who closed that connection and when. If the CDN side closes idle connections, b33p should try
+an upload's first request again on a new connection, as a real CDN may do the same.
