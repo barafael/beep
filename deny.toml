@@ -26,6 +26,10 @@ allow = [
     "LGPL-2.1-or-later",
     "MIT",
     "MPL-2.0",
+    # The University of Illinois' BSD-style license, GPL-compatible. `libfuzzer-sys` (MIT or
+    # Apache-2.0, and NCSA for its code from LLVM) comes with `rav1e`, through `image`'s AVIF
+    # decoder, which `dioxus-desktop` (b33p-dioxus's renderer) turns on with `image`'s defaults.
+    "NCSA",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",

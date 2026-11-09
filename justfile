@@ -37,6 +37,26 @@ gpui-view:
     sleep 5
     testbox/gpui-view/view.sh shot first
 
+# The Android app on the offline mock, for the emulator (what to install first: b33p-dioxus/README.md).
+[group('android')]
+android-mock:
+    dx build --android --target x86_64-linux-android -p b33p-dioxus --features mobile
+
+# The Android client against Signal, for the emulator.
+[group('android')]
+android:
+    dx build --android --target x86_64-linux-android -p b33p-dioxus --features mobile,signal
+
+# The Android client against Signal, for a phone (arm64).
+[group('android')]
+android-phone:
+    dx build --android --target aarch64-linux-android -p b33p-dioxus --features mobile,signal
+
+# Installs the APK the last build made onto the one device or emulator that is connected.
+[group('android')]
+android-install:
+    adb install -r target/dx/b33p-dioxus/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
+
 [group('check')]
 fmt:
     cargo fmt --all
@@ -103,3 +123,9 @@ harness:
 [group('end to end')]
 testbox *phases:
     cargo testbox run {{ phases }}
+
+# Takes down every test box that has an Android emulator, then stops the emulators and adb
+# servers left on the host (testbox/android/stop-android.sh). `--dry-run` only lists them.
+[group('end to end')]
+stop-android *flags:
+    testbox/android/stop-android.sh {{ flags }}

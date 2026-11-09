@@ -219,6 +219,9 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
   hand in Android's scanner.
 - `cargo testbox down` stops the pod and keeps the accounts and stores; `down --wipe` removes them
   too.
+- `just stop-android` (`testbox/android/stop-android.sh`) takes down every box with an Android
+  container, through `down` and so under each box's lock, and then stops the emulators and adb
+  servers left on the host, such as an emulator started by hand. `--dry-run` only lists them.
 
 ## Layout
 

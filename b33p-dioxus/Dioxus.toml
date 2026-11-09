@@ -1,0 +1,9 @@
+[application]
+# `dx` merges what it needs into this manifest (the INTERNET permission, the activity).
+android_manifest = "android/AndroidManifest.xml"
+
+[bundle]
+# The id the desktop clients use too (`io.github.barafael.B33p`), lower-cased as Android's
+# package names are by convention.
+identifier = "io.github.barafael.b33p"
+publisher = "barafael"
