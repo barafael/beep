@@ -61,6 +61,10 @@ private const val LONG_PRESS_MS = 1000
 /** How long a swipe may bring no change before the screen is looked at again. */
 private const val SWIPE_STILL_MS = 2_000L
 
+/** How long a focused field is waited on without an event before it is looked at again: a field
+ * that took its text is quiet, and may say nothing more. */
+private const val FIELD_STILL_MS = 500L
+
 /** What a list offers while it can scroll on: forward, or down as Compose's lists also say. */
 private val SCROLLS = listOf(AccessibilityAction.ACTION_SCROLL_FORWARD, AccessibilityAction.ACTION_SCROLL_DOWN)
 
@@ -337,20 +341,23 @@ private class Screen(private val device: Device, private val owner: Long) {
     }
   }
 
-  /** The input-focused field, once there is one that `reads` as wanted, looked at now and after
-   * each event. Not settled: it is typed into, not tapped. */
+  /** The input-focused field, once there is one that `reads` as wanted, looked at now, after each
+   * event, and every [FIELD_STILL_MS] without one: a field that took its text may stay quiet.
+   * Read fresh, as [windows] reads. Not settled: it is typed into, not tapped. */
   private fun awaitFocusedField(
     deadline: Long,
     reads: (AccessibilityNodeInfo) -> Boolean,
   ): AccessibilityNodeInfo {
     var seen = -1L
     while (true) {
-      seen =
-        nextChange(seen, deadline)
-          ?: throw TimeoutException("no focused field as wanted: ${shown(nodes(windows()))}")
+      automation.clearCache()
       automation.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable && reads(it) }?.let {
         return it
       }
+      if (SystemClock.uptimeMillis() >= deadline) {
+        throw TimeoutException("no focused field as wanted: ${shown(nodes(windows()))}")
+      }
+      seen = nextChange(seen, minOf(deadline, SystemClock.uptimeMillis() + FIELD_STILL_MS)) ?: seen
     }
   }
 
