@@ -263,5 +263,27 @@ class Aggregation(unittest.TestCase):
                 self.assertIn(w, out.stdout)
 
 
+class SystemGpu(unittest.TestCase):
+    def test_window_means_the_samples_inside_it(self):
+        g = bench.SysGpu("/nonexistent")
+        g.samples = [(1.0, 10, 20.0, 700), (2.0, 30, 24.0, 900), (3.0, 50, None, None), (9.0, 99, 99.0, 9999)]
+        w = g.window(0.5, 3.5)
+        self.assertEqual(w, {"sys_gpu_busy_pct": 30.0, "sys_gpu_busy_max_pct": 50.0,
+                             "sys_gpu_power_w": 22.0, "sys_gpu_sclk_mhz": 800.0})
+        self.assertEqual(g.window(5, 6), {})
+
+    def test_derive_subtracts_the_runs_own_idle_reading(self):
+        result = {"gpu_idle_no_client": {"sys_gpu_busy_pct": 2.0, "sys_gpu_power_w": 17.0},
+                  "scroll_up_8s": {"cpu_pct": 1.0, "sys_gpu_busy_pct": 12.0, "sys_gpu_power_w": 25.5}}
+        d = bench.derive("static", result)
+        self.assertEqual(d["scroll_up_8s"]["sys_gpu_over_idle_busy_pct"], 10.0)
+        self.assertEqual(d["scroll_up_8s"]["sys_gpu_over_idle_power_w"], 8.5)
+        self.assertNotIn("sys_gpu_over_idle_busy_pct", d["gpu_idle_no_client"])
+
+    def test_no_idle_reading_no_difference(self):
+        d = bench.derive("static", {"scroll_up_8s": {"sys_gpu_busy_pct": 12.0}})
+        self.assertNotIn("sys_gpu_over_idle_busy_pct", d["scroll_up_8s"])
+
+
 if __name__ == "__main__":
     unittest.main()
