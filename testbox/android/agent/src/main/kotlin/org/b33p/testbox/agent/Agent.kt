@@ -302,7 +302,11 @@ private class Screen(private val device: Device, private val owner: Long) {
       }
     val took = device.asOwner(owner) { field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments) }
     check(took) { "the focused field took no text" }
-    awaitFocusedField(deadline) { echo.matches(it) }
+    // Anything is a code that submits itself: once it took the text, the screen moves on, and
+    // the next one may have no field with focus.
+    if (echo !is Echo.Anything) {
+      awaitFocusedField(deadline) { echo.matches(it) }
+    }
   }
 
   /** Swipes up the largest list of the topmost window that has one until `label` shows. Each look
