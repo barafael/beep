@@ -768,10 +768,13 @@ async fn handle_content(
     // too) that came by sealed sender, which is when `needs_receipt` is set. It names the
     // envelope's timestamp, which for an edit is the edit's own. Not to an unanswered message
     // request: as with read receipts, a stranger isn't told the message arrived.
+    // Read before the await: a `Ref` held across it blocks `send_replace` in `follow_storage`,
+    // and with it this thread, for good.
+    let storage_read = *ctx.storage_read.borrow();
     if content.metadata.needs_receipt
         && !is_outgoing(manager, content)
         && data_of(content).is_some()
-        && accepted(ctx, &id, *ctx.storage_read.borrow()).await
+        && accepted(ctx, &id, storage_read).await
     {
         receipts.owe(content.metadata.sender, stored_at(content));
     }
