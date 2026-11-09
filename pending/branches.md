@@ -37,8 +37,8 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`3de451c`) | `dbbebe0` (the fork's PRs on upstream main, rebuilt past #454; its sender-key commits rustfmt'd 2026-11-09) with upstream main `4b81740` merged in, 2026-11-06. The PR branches were rebased on the same base that morning; only rebase context differs from what the branch carries | Pinned by `forks-1106` |
-| `langis/integration-next` (`614e717`), `pr/thread-messages-index` (`2c29de5`), `pr/batch-save-messages` (`9dd1a3f`), pushed | The thread index (`thread_messages (thread_id, ts)`, migration re-dated 20261106100000) and `ContentsStore::save_messages`, written 2026-10-24, rebased 2026-11-06; store tests pass. No upstream PR yet (texts in beep-records/tidy-2026-11-06); not pinned by b33p, whose import doesn't use the batch yet | In progress; see [followups.md](followups.md) |
+| `langis/integration` (`8057f23`) | Rebuilt 2026-11-09 on upstream main `4b81740`: the same PRs as before, one commit per theme (settings; the store; receiving with `keep` and `Kept`; groups; a linked device; sending; the client identity; the CLI), new code in modules of their own; each commit builds and passes its tests. The branch before is `langis/integration-2026-11-09` (`3de451c`) | Pinned by `main` |
+| `langis/integration-next` (`724dbbf`), `pr/thread-messages-index` (`2c29de5`), `pr/batch-save-messages` (`9dd1a3f`), pushed | The thread index and `ContentsStore::save_messages` on the rebuilt `langis/integration`, 2026-11-09 (before: `langis/integration-next-2026-11-09`, `614e717`); store tests pass | In progress; see [followups.md](followups.md) |
 | `pr/groups` (`1873f8b`) | #448 plus: asking to join (with approval) and cancelling tell the members and invitees we have stored, as Signal-Desktop's `modifyGroupV2` does, and keep them (a first-time request tells nobody, as on Desktop); a group asked to join without a picture drops the one cached from before (found by the tour); pins libsignal-service #473 as fixed (`421083d`) | whisperfish/presage#448 |
 | `pr/link-preview-setting` (`fa90b68`) | `Manager::set_automatic_link_previews`: since #359 every send without a preview fetches the page of its first link, bypassing b33p's `link_previews`; on stays upstream's default, b33p turns it off | whisperfish/presage#478 |
 | `pr/edited-targets` (`eea5a19`), pushed | The same commit on `pr/sender-owns-message` (whisperfish/presage#453, which it needs), both rebased on upstream main `291c7ee` past #471; store and manager tests pass | whisperfish/presage#475 (stacked on #453) |
@@ -56,7 +56,7 @@ the session lock). Its commits, oldest first:
 
 | Branch | What | State |
 |---|---|---|
-| `langis/integration` (`f0c244a`) | `75d0cbd` with master `b3be5c2` (1.20) merged in, 2026-11-06. #13985 and #14449 have landed: **no difference from master**; the fork stays only until a release carries both | Pinned by `forks-1106` |
+| `langis/integration` (`5d7a6f2`) | Master `d600063` merged in, 2026-11-09, on the branch b33p pinned (`2a80213`: the emoji and StyledText selection, landed upstream as #13985 and #14449, and two animation fixes); the fork stays until a release carries them | Pinned by `forks-1106` |
 | `pr/qt-color-bitmap-glyphs` (`930ceeb`), pushed | The emoji commit, master merged in, `CBDT` and `sbix` in the spell-check words, and the review's points: a stroke draws no emoji (it drew them twice: 713 of 2499 pixels differed), the font parsed only on a cache miss, why glyphs without a bitmap are skipped, straight alpha (measured), `tests/Cargo.lock` master's plus `swash`, "color". On Debian 12's Qt 6.4.2, b33p's mock under valgrind: 0 errors; 5 invalid writes in `QFontEngineFT::loadGlyph` without the fix | slint-ui/slint#14449 |
 
 ## Testbox runs

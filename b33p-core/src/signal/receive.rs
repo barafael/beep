@@ -394,7 +394,8 @@ async fn handle_received(
             on_retry_receipt(manager, ctx, repairs, sender, sender_device, &message).await;
             true
         }
-        Received::Content(content) => {
+        Received::Content { content, kept } => {
+            debug!(?kept, "presage kept");
             let metadata = &content.metadata;
             decrypted.note((metadata.sender, metadata.sender_device, stored_at(&content)));
             let handled = handle_content(manager, ctx, names, receipts, &content).await;

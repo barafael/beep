@@ -36,68 +36,40 @@ i-slint-core = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f2
 i-slint-common = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221" }
 i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221" }
 
-# Not on crates.io. Branch langis/integration of our fork: upstream main plus each of our
-# open pull requests, so b33p builds on exactly what is proposed upstream:
-#   #443 paged thread reads                         #444 storage service from a linked device
-#   #447 wait for the history archive
-#   #448 create and change groups, accept or decline invitations, retry a clashing change,
-#        the group picture, invite links and join requests, a request told to the members we
-#        know, as Signal-Desktop does, and its group without a stale picture, saved before the
-#        picture, which a first request has no group for yet (needs libsignal-service-rs#473)
-#   #449 report only real identity changes, and note them in the contact's thread
-#   #450 pin an identity required for sending (verified contacts' changed keys wait), and keep
-#        the key a pin refused, so that it can be shown and taken over
-#   #461 why a message failed to decrypt, and from which device and when, and retry receipts as
-#        their own event
-#   #453 only a message's sender deletes or edits it
-#   #464 a send retried once when the websocket closed under it
-#   servers of one's own: `SignalServers::Custom` carries its configuration (follows our
-#        libsignal-service branch)
-#   #472 a sender's profile key stored before the message is handed on, not left to the task
-#        that fetches their profile
-#   #473 the manager's ciphers and senders share one session lock (needs
-#        libsignal-service-rs#488)
-#   #475 an edited message is found by its latest edit's time, which Signal's apps name it by
-#   #476 an envelope is decrypted and its message kept in one store transaction, and
-#        acknowledged after it: a receiver stopping midway neither loses the message nor has
-#        it acknowledged unkept (on #473; needs libsignal-service-rs#442 and #489)
-#   (no PR yet) a receipt doesn't keep a message out of the store, nor take its place (with
-#        #453)
-#   #477 presage-cli's list-messages doesn't panic
-#   #478 a setting to turn automatic link previews off: since #359 presage fetches the page of
-#        every message's first link, which b33p leaves to its user's `link_previews`
-#   #480 a group whose fetch failed on its connection is fetched once more,
-#        and the error logged with its causes
-#   #483 a replenishment's pre-keys saved in one transaction, one sync to disk instead of
-#        about 200, and the write lock waited for 30 s, not 5 (needs libsignal-service-rs#491)
-#   #484 the group sync from the storage service takes its key from the account entropy pool
-#   #485 `identified_push_service` is public (testbox/stickers asks for upload forms with it)
-#   (on #473) `session_lock()` is public, for b33p's own session steps
-#   (no PR yet) `Received::StickerPackInstalled` once a pack installed elsewhere is stored
-#   (no PR yet) `refresh_profile`: a contact's profile fetched even when one is cached, as a new
-#        picture keeps the profile key
-#   (no PR yet) a linked secondary starts with read receipts on (needs libsignal-service-rs#492)
-#   #489 a setting for whether the server delivers stories, which b33p turns on
-#   #490 every story sealed: the server stores a story without its sender
-#   #491 the group credentials shared by every groups manager, fetched once a week, not per
-#        group operation
-#   #492 the client's user agent and languages, set by the application (needs
-#        libsignal-service-rs#495)
-#   #493 group changes applied from the messages that carry them, the log read for gaps,
-#        missed changes passed on, `update_group` (needs libsignal-service-rs#496 and #497)
-#   (no PR yet) a group message sent with a sender key, in one request; `renew_sender_key`
-# Rebuilt on upstream main past #454, 2026-10-27; upstream main merged in as it moves (last 2026-11-06).
-# Landed upstream and dropped from the branch: #442 (history-transfer key on
-# RegistrationData), #446 (a linked device unlinks itself), #452 (no panic on a group
-# master key of the wrong length), #454 (write transactions take the lock up front) and #460
-# (the provisioning link logged at debug instead of info); #445 (drop sync messages from other
-# accounts) is now libsignal-service-rs#474's job.
+# Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
+# requests, rebuilt 2026-11-09 as one commit per theme, new code in modules of their own
+# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs):
+#   build on our libsignal-service fork: servers of one's own (`SignalServers::Custom`), the
+#        envelope ack handle, a linked secondary starting with read receipts on (#492 there)
+#   settings: one `Settings`, `Manager::set_settings`: automatic link previews off (#478) and
+#        stories delivered (#489)
+#   the store: paged thread reads (#443); identity changes reported only when real, noted, and
+#        pinned, the key a pin refused kept (#449, #450); a replenishment's pre-keys in one
+#        transaction, the write lock waited for 30 s (#483)
+#   receiving: the loop in a module of its own; `keep`, public and tested, and
+#        `Received::Content { content, kept }` saying what was kept; only a message's sender
+#        deletes or edits it (#453), an edit found by its latest edit's time (#475), a receipt
+#        not taking a message's place, a sender's profile key stored first (#472); one session
+#        step and one store transaction per envelope, acked after the commit (#473, #476, on
+#        libsignal-service-rs#488, #442, #489), why a message failed to decrypt and retry receipts
+#        (#461), `Received::StickerPackInstalled` (#486), `session_lock()` public
+#   groups: create, change and join them (#448), the credentials shared (#491); kept current
+#        from the changes messages carry and the server's log, missed changes passed on,
+#        `update_group`, a fetch tried once more, the storage key from the account entropy pool
+#        (#480, #484, #493); a group message sent with a sender key in one request,
+#        `renew_sender_key`
+#   what a linked device needs: the history archive (#447), the storage service (#444),
+#        `refresh_profile` (#487), `identified_push_service` public (#485)
+#   sending: a send that met a closed websocket goes again (#464), every story sealed (#490)
+#   the client's user agent and languages, set by the application (#492)
+#   presage-cli's list-messages doesn't panic (#477)
+# The branch before the rebuild is langis/integration-2026-11-09.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "3de451c6ca4447cf2d0888056ab935f06eb1f96e" }
+presage = { git = "https://github.com/barafael/presage", rev = "8057f23b1b4585703ddb9ce154a4a649ba6bbcaf" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "3de451c6ca4447cf2d0888056ab935f06eb1f96e", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "8057f23b1b4585703ddb9ce154a4a649ba6bbcaf", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
