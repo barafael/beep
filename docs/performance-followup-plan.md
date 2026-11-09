@@ -11,8 +11,9 @@ in [performance-open-questions.md](performance-open-questions.md). Parity is tra
 - Patch `0001` (no animation from a value to itself) goes upstream to Slint as a draft pull
   request: https://github.com/slint-ui/slint/pull/14823 (branch `no-op-animation` of the
   `barafael/slint` fork, with a test; write-up in
-  [upstream-slint-no-op-animation.md](upstream-slint-no-op-animation.md)). When it is merged
-  upstream, bump the fork pin and delete the patch file.
+  [upstream-slint-no-op-animation.md](upstream-slint-no-op-animation.md)). It is in our fork's
+  `langis/integration` (merge `84f66189a`, the pin since then), so the patch file is gone; when
+  upstream merges it, nothing is left to do but the next master merge.
 - Patch `0002` (the text cursor stops blinking after 10 s) stays in this repository in
   `b33p-slint/fork-patches/`. It is a behaviour choice of b33p, not a bug fix.
 - The Qt widget style (system or Fusion) is not wanted in the GPUI window.

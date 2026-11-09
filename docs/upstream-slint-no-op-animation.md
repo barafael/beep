@@ -3,8 +3,8 @@
 Status: opened as a draft, https://github.com/slint-ui/slint/pull/14823 (branch pushed to the
 `barafael/slint` fork). Branch `no-op-animation` (commit `d4a708214`) in
 `/home/rafael/code/beep-gpui-patch/slint`, based on upstream `slint-ui/slint` master `8d51770e7`
-(2026-11-07). b33p carries the same change as
-`b33p-slint/fork-patches/0001-no-op-animation.patch` until this is merged.
+(2026-11-07). b33p has it through the fork's `langis/integration`
+(merge `84f66189a`); the patch file `0001-no-op-animation.patch` that carried it is deleted.
 
 ## How the draft PR was opened
 
@@ -136,8 +136,8 @@ ChangeLog: Fixed an animated property keeping the window redrawing when its depe
   not recorded, so the PR text gives only the CPU for it.
 - The b33p row properties named in the motivation were checked against `b33p-slint/ui/bubble.slint`
   (animated `background`, `opacity`, `arrived`, `flash`).
-- b33p does not need a new fork commit: it pins `f0c244a22` of the fork and applies the patch file.
-  When upstream merges this, bump the pin and delete `0001-no-op-animation.patch`.
+- b33p pins `84f66189a` of the fork, which merges this branch into `langis/integration`.
+  (Until then it pinned `f0c244a22` and applied the patch file `0001-no-op-animation.patch`.)
 - The ported change differs from `0001-no-op-animation.patch` in one detail: the new value is not
   stored as the target when the animation is skipped, so the binding stays "never animated".
   The fork's version passes the same tests (the leftover state is masked by the default

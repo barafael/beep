@@ -10,9 +10,9 @@
 #   slint-femtovg           Slint's winit backend, FemtoVG on OpenGL, Fluent style
 #   slint-skia              the same with Skia (Vulkan if the driver has it, else OpenGL)
 #   slint-qt-patched, slint-femtovg-patched, slint-skia-patched
-#                           the same with the two Slint fork patches of b33p-slint/fork-patches
-#                           (no animation from a value to itself; the text cursor stops blinking
-#                           after 10 s), applied to a copy of the pinned Slint revision that the
+#                           the same with the Slint fork patch of b33p-slint/fork-patches
+#                           (the text cursor stops blinking after 10 s; the fix for animations
+#                           from a value to itself is in the pinned fork now), applied to a copy of the pinned Slint revision that the
 #                           workspace is pointed at for that one cargo call; Cargo.toml and
 #                           Cargo.lock are put back afterwards, whatever happens.
 # The out directory must not be inside the worktree (cargo would take the patched copy of Slint
