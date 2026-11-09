@@ -147,11 +147,14 @@ pub enum SocketError {
 }
 
 /// A tool's exit: its failure on stderr, under its name.
-pub fn exit<E: std::error::Error>(tool: &str, outcome: Result<(), E>) -> std::process::ExitCode {
+pub fn exit<E: Into<Box<dyn std::error::Error + Send + Sync>>>(
+    tool: &str,
+    outcome: Result<(), E>,
+) -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{tool}: {}", Report(&error));
+            eprintln!("{tool}: {}", Report(&*error.into()));
             std::process::ExitCode::FAILURE
         }
     }

@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use testbox_tools::connections::{Connection, Record};
+use testbox_tools::{read, write};
 
 use crate::checks::record::Span;
 use content::ContentError;
@@ -125,12 +126,8 @@ pub(crate) enum DecodeError {
         #[source]
         source: std::io::Error,
     },
-    #[error("reading {}", path.display())]
-    Read {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    File(#[from] testbox_tools::FileError),
     /// A relayed connection's `<n>-<port>.json` that isn't one.
     #[error("{} is not a relayed connection", path.display())]
     Connection {
@@ -157,12 +154,6 @@ pub(crate) enum DecodeError {
         path: PathBuf,
         #[source]
         source: serde_json::Error,
-    },
-    #[error("writing {}", path.display())]
-    Write {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
     },
     #[error("comparing the contents b33p took in")]
     Contents(#[source] ContentError),
@@ -327,28 +318,12 @@ fn write_lines<T: Serialize>(path: &Path, items: &[T]) -> Result<(), DecodeError
         );
         out.push('\n');
     }
-    write(path, out)
+    Ok(write(path, out)?)
 }
 
 /// The entries of the directory `path`.
 fn list(path: &Path) -> Result<std::fs::ReadDir, DecodeError> {
     std::fs::read_dir(path).map_err(|source| DecodeError::List {
-        path: path.to_owned(),
-        source,
-    })
-}
-
-/// The file at `path`, as text.
-fn read(path: &Path) -> Result<String, DecodeError> {
-    std::fs::read_to_string(path).map_err(|source| DecodeError::Read {
-        path: path.to_owned(),
-        source,
-    })
-}
-
-/// Writes `contents` to the file at `path`, replacing what it had.
-fn write(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), DecodeError> {
-    std::fs::write(path, contents).map_err(|source| DecodeError::Write {
         path: path.to_owned(),
         source,
     })

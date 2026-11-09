@@ -59,20 +59,7 @@ fn is_error(line: &str) -> bool {
 /// `line` without its timestamp and ANSI colours, so that the same error on two boxes reads
 /// the same and [`super::Reported`] counts it once.
 fn unnumbered(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            // An escape sequence: up to its final letter.
-            for next in chars.by_ref() {
-                if next.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
+    let out = super::without_colours(line);
     let trimmed = out.trim_start();
     // tracing's timestamp first: up to the first space.
     match trimmed.split_once(' ') {

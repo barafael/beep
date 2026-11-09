@@ -69,12 +69,13 @@ use crate::{
     ChatMessage, ConversationId, Event, MessageRef, Quote, Reaction, Style, StyleRange,
     attachments,
     format::{self, RangeValue, WireRange},
+    local::LocalStore,
     now_millis,
 };
 
 use super::{
     Ctx, Mgr,
-    conversations::{Names, display_name, or_logged, own_id, thread_of},
+    conversations::{Names, conversation_id, display_name, or_logged, own_id, thread_of},
     groups::group_notice,
     trust::identity_note,
 };
@@ -108,6 +109,119 @@ pub(super) fn stored_at(content: &Content) -> u64 {
     content.metadata.client_timestamp.timestamp_millis() as u64
 }
 
+/// Keeps `content` beside the store if the store just turned it away: presage keeps one content
+/// per thread and millisecond, and drops a message at a time someone else's holds. Called once
+/// presage has saved what it would. An edit or a delete isn't saved at its own time, so one
+/// says nothing of the time's holder.
+pub(super) async fn keep_if_dropped(
+    store: &SqliteStore,
+    tables: &LocalStore,
+    thread: &Thread,
+    content: &Content,
+) {
+    if !data_of(content).is_some_and(|(data, edit)| !edit && data.delete.is_none()) {
+        return;
+    }
+    let holder = store.message(thread, stored_at(content)).await;
+    if let Ok(Some(holder)) = holder
+        && holder.metadata.sender != content.metadata.sender
+    {
+        debug!(thread = %thread, "keeping a message beside the store");
+        let conversation = conversation_id(thread);
+        if let Err(error) = tables.keep_collided(&conversation, content).await {
+            warn!(error = %crate::scrub::chain(&error), "failed to keep a message beside the store");
+        }
+    }
+}
+
+/// `edit` of `target`, in its place, if `target` is kept beside the store: presage finds someone
+/// else's message at that time, and ignores it.
+pub(super) async fn keep_edit_if_dropped(
+    tables: &LocalStore,
+    conversation: &ConversationId,
+    target: &MessageRef,
+    edit: &Content,
+) {
+    let kept = or_logged(
+        tables.collided_message(conversation, target).await,
+        "messages kept beside the store",
+    );
+    let Some(kept) = kept else {
+        return;
+    };
+    let mut edit = edit.clone();
+    edit.metadata.client_timestamp = kept.metadata.client_timestamp;
+    match &mut edit.body {
+        ContentBody::EditMessage(edit)
+        | ContentBody::SynchronizeMessage(SyncMessage {
+            content:
+                Some(SyncContent::Sent(Sent {
+                    edit_message: Some(edit),
+                    ..
+                })),
+            ..
+        }) => edit.target_sent_timestamp = Some(target.timestamp),
+        _ => return,
+    }
+    if let Err(error) = tables.keep_collided(conversation, &edit).await {
+        warn!(error = %crate::scrub::chain(&error), "failed to keep an edit beside the store");
+    }
+}
+
+/// The content that holds `target`: kept beside the store, or else the store's at its time.
+pub(super) async fn stored_message(
+    store: &SqliteStore,
+    tables: &LocalStore,
+    conversation: &ConversationId,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Option<Content> {
+    if let Ok(Some(kept)) = tables.collided_message(conversation, target).await {
+        return Some(kept);
+    }
+    store.message(thread, target.timestamp).await.ok().flatten()
+}
+
+/// Up to `limit` stored contents of a thread before `before` (or the newest), newest first, with
+/// those kept beside the store among them: all of those the page's times reach, so that a page
+/// ending at a time doesn't leave one of its contents to the next, which starts before it. More
+/// than `limit`, then; fewer means there are no older ones.
+pub(super) async fn contents_before(
+    store: &SqliteStore,
+    tables: &LocalStore,
+    thread: &Thread,
+    before: Option<u64>,
+    limit: u32,
+) -> Result<Vec<Content>, StoreError> {
+    let mut contents = store.messages_before(thread, before, limit).await?;
+    let from = match contents.last() {
+        Some(oldest) if contents.len() == limit as usize => stored_at(oldest),
+        _ => 0,
+    };
+    with_kept(tables, thread, from, before, &mut contents).await;
+    Ok(contents)
+}
+
+/// Adds what is kept beside the store from `from` up to `before` to `contents`, newest first.
+async fn with_kept(
+    tables: &LocalStore,
+    thread: &Thread,
+    from: u64,
+    before: Option<u64>,
+    contents: &mut Vec<Content>,
+) {
+    let kept = or_logged(
+        tables
+            .collided(&conversation_id(thread), from, before)
+            .await,
+        "messages kept beside the store",
+    );
+    if !kept.is_empty() {
+        contents.extend(kept);
+        contents.sort_by_key(|content| std::cmp::Reverse(stored_at(content)));
+    }
+}
+
 /// Messages shown per page of history.
 const HISTORY_PAGE: usize = 100;
 
@@ -115,6 +229,7 @@ const HISTORY_PAGE: usize = 100;
 /// [`HISTORY_PAGE`] messages, plus where the next older page starts, if there is one.
 pub(super) async fn history_page(
     manager: &Mgr,
+    tables: &LocalStore,
     thread: &Thread,
     before: Option<u64>,
 ) -> Result<(Vec<Content>, Option<u64>), HistoryError> {
@@ -123,9 +238,7 @@ pub(super) async fn history_page(
     let mut contents = Vec::new();
     let mut cursor = before;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, cursor, BATCH)
+        let batch = contents_before(manager.store(), tables, thread, cursor, BATCH)
             .await
             .map_err(|source| HistoryError::Page {
                 before: cursor,
@@ -156,6 +269,7 @@ pub(super) async fn history_page(
 /// start small and grow: most threads have only a few contents that recent.
 pub(super) async fn stored_since(
     store: &SqliteStore,
+    tables: &LocalStore,
     thread: &Thread,
     from: u64,
 ) -> Option<Vec<Content>> {
@@ -166,12 +280,15 @@ pub(super) async fn stored_since(
         let Ok(batch) = store.messages_before(thread, before, page).await else {
             // A content that doesn't decode fails its whole page; the range skips just it.
             let contents = store.messages(thread, from..).await.ok()?;
-            return Some(contents.flatten().collect());
+            let mut contents: Vec<Content> = contents.flatten().collect();
+            with_kept(tables, thread, from, None, &mut contents).await;
+            return Some(contents);
         };
         let full = batch.len() == page as usize;
         before = batch.last().map(stored_at);
         found.extend(batch.into_iter().take_while(|c| stored_at(c) >= from));
         if !full || before.is_none_or(|oldest| oldest < from) {
+            with_kept(tables, thread, from, None, &mut found).await;
             return Some(found);
         }
         page = (page * 4).min(512);
@@ -285,6 +402,7 @@ pub(super) async fn start_timers(
 /// The disappearing timers of stored messages, for messages read elsewhere.
 pub(super) async fn stored_timers(
     manager: &Mgr,
+    tables: &LocalStore,
     conversation: &ConversationId,
     messages: &[MessageRef],
 ) -> Vec<(MessageRef, u32)> {
@@ -293,7 +411,8 @@ pub(super) async fn stored_timers(
     };
     let mut timers = Vec::new();
     for message in messages {
-        if let Ok(Some(content)) = manager.store().message(&thread, message.timestamp).await
+        if let Some(content) =
+            stored_message(manager.store(), tables, conversation, &thread, message).await
             && let Some(timer) = data_of(&content).and_then(|(data, _)| data.expire_timer)
         {
             timers.push((message.clone(), timer));
@@ -402,8 +521,18 @@ pub(super) async fn erase_deleted(
     thread: &Thread,
     target: &MessageRef,
 ) -> Result<bool, HistoryError> {
+    // Kept beside the store: what the store holds at its time is someone else's.
+    let kept = ctx
+        .tables
+        .forget_collided(conversation, target)
+        .await
+        .map_err(|source| HistoryError::NoteDeleted {
+            conversation: conversation.clone(),
+            target: target.clone(),
+            source,
+        })?;
     let mut store = manager.store().clone();
-    if !erase_from_store(&mut store, thread, target).await? {
+    if !kept && !erase_from_store(&mut store, thread, target).await? {
         return Ok(false);
     }
     ctx.tables
@@ -662,6 +791,7 @@ pub(super) async fn to_chat_message(
 /// newest first, at most [`MEDIA_MESSAGES`].
 pub(super) async fn media(
     manager: &Mgr,
+    tables: &LocalStore,
     thread: &Thread,
     conversation: &ConversationId,
 ) -> Result<Vec<ChatMessage>, HistoryError> {
@@ -671,9 +801,7 @@ pub(super) async fn media(
     let mut found = Vec::new();
     let mut before = None;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, before, BATCH)
+        let batch = contents_before(manager.store(), tables, thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Media {
                 conversation: conversation.clone(),
@@ -710,6 +838,7 @@ pub(super) async fn media(
 /// [`SEARCH_HITS`].
 pub(super) async fn search(
     manager: &Mgr,
+    tables: &LocalStore,
     thread: &Thread,
     conversation: &ConversationId,
     query: &str,
@@ -724,9 +853,7 @@ pub(super) async fn search(
     let mut hits = Vec::new();
     let mut before = None;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, before, BATCH)
+        let batch = contents_before(manager.store(), tables, thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Search {
                 conversation: conversation.clone(),

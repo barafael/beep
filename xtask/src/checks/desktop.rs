@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use b33p_harness::Action;
+use b33p_harness::{Action, SettingsChange};
 
 use super::b33p::{
     B33pError, b33p_chat, b33p_shows, chat_previewing, delivered, edit, incoming_index,
-    message_timestamp, outgoing_index, select, type_and_send,
+    link_previews, message_timestamp, outgoing_index, select, type_and_send,
 };
 use super::clients::{desktop_shows, desktop_shows_whole, desktop_text};
 use super::presage::Account;
@@ -448,45 +448,12 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
 /// How long a message with a 30 s timer may take to go, on either side.
 const EXPIRY_PATIENCE_MS: u64 = 90_000;
 
-/// Turns b33p's link previews on or off, as its settings switch does.
-fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
-    b33p.act(Action::SetSettings {
-        theme: None,
-        text_size: None,
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
-        typing_indicators: None,
-        link_previews: Some(on),
-        sync_to_phone: None,
-    })?;
-    b33p.wait_for("b33p's link previews", super::PATIENCE, |snapshot| {
-        (snapshot.settings.link_previews == on).then_some(())
-    })
-}
-
 /// Turns b33p's typing indicators on or off, as its settings switch does.
 fn typing_indicators(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
-    b33p.act(Action::SetSettings {
-        theme: None,
-        text_size: None,
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
+    b33p.act(Action::SetSettings(SettingsChange {
         typing_indicators: Some(on),
-        link_previews: None,
-        sync_to_phone: None,
-    })?;
+        ..SettingsChange::default()
+    }))?;
     b33p.wait_for("b33p's typing indicators", super::PATIENCE, |snapshot| {
         (snapshot.settings.typing_indicators == on).then_some(())
     })

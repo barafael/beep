@@ -28,8 +28,8 @@ pub(super) fn render_pins(window: &AppWindow, chat: &ChatState) {
         })
         .collect();
     let keys: Vec<SharedString> = pins.iter().map(|pin| pin.key.clone()).collect();
-    update_list(&open.get_pins(), pins, |a, b| a == b);
-    update_list(&open.get_pinned_keys(), keys, |a, b| a == b);
+    update_list(&open.get_pins(), pins);
+    update_list(&open.get_pinned_keys(), keys);
     open.set_can_pin(chat.can_pin_messages());
     open.set_pins_full(chat.pins_full());
 }

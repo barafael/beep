@@ -145,7 +145,7 @@ pub(super) struct MeshB33p<'pod> {
 impl MeshB33p<'_> {
     /// The id of the other b33ps' chat with its account.
     pub(super) fn chat(&self) -> String {
-        format!("c:{}", self.aci)
+        b33p_core::ConversationId::contact(&self.aci).0
     }
 }
 

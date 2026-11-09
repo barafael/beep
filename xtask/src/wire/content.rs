@@ -39,12 +39,37 @@ pub(crate) enum ContentError {
     },
 }
 
-/// One content as b33p logged it.
+/// One content as b33p logged it (b33p-core/src/content_log.rs).
 #[derive(serde::Deserialize)]
-struct Logged {
-    sender: String,
+pub(crate) struct Logged {
+    pub(crate) sender: String,
     device: u32,
+    pub(crate) timestamp: u64,
     content: String,
+}
+
+impl Logged {
+    /// The content's fields, if it decodes.
+    fn fields(&self) -> Option<Vec<Field>> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.content)
+            .ok()?;
+        proto::parse(&bytes)
+    }
+
+    /// The text of the data message in it, if it is one with a body.
+    pub(crate) fn body(&self) -> Option<String> {
+        let fields = self.fields()?;
+        let data_message = fields.iter().find(|field| field.number == 1)?;
+        let Value::Message(data_message) = &data_message.value else {
+            return None;
+        };
+        let body = data_message.iter().find(|field| field.number == 1)?;
+        let Value::Bytes(body) = &body.value else {
+            return None;
+        };
+        String::from_utf8(body.clone()).ok()
+    }
 }
 
 /// The section of compare.md on the contents, if the record has any: for each kind of content,
@@ -80,11 +105,7 @@ pub(crate) fn report(record: &Path, summaries: &[Summary]) -> Result<Option<Stri
                 .get(&(logged.sender.clone(), logged.device))
                 .cloned()
                 .unwrap_or_else(|| format!("{}.{}", short(&logged.sender), logged.device));
-            let Some(fields) = base64::engine::general_purpose::STANDARD
-                .decode(&logged.content)
-                .ok()
-                .and_then(|bytes| proto::parse(&bytes))
-            else {
+            let Some(fields) = logged.fields() else {
                 continue;
             };
             let kind = kind(&fields);

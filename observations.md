@@ -1037,6 +1037,47 @@ the chat port from 127.0.0.1, 96 bytes out and 36 in, five empty frames, no requ
 and settings and nothing else, closed within 18 ms. Not seen in the earlier runs today; worth
 a look if it recurs, as a client that opens the omnibus port and says nothing.
 
+## Main at 817aaa2, again (2 Nov, morning): every default phase and the tour
+
+`main` reconciled first: it matches `origin/main`, the error-type refactor, the actor rework
+and the reaction and start-up fixes all in; rustfmt, clippy (`-D warnings`, the main workspace
+and the five testbox workspaces) and the tests (381) clean. One false alarm on the way: a
+whole-workspace clippy failed on `drivers::Desktop` calls that are in the source
+(`WaitForTyping`, `WaitForImages`), from a stale build of `testbox-tools` under the
+workspace's feature set; touching `drivers.rs` rebuilt it, and nothing needed changing.
+
+`cargo testbox test --capture --screenshots desktop attachments network core android groups
+storage large-group tour`, one go, host idle:
+
+| box / phase | checks |
+|---|---|
+| linked box setup, desktop, attachments, network, core | 13, 27, 13, 16, 8 |
+| Android box setup, android, groups, storage, large-group | 17, 18, 30, 13, 11 |
+| mesh box setup, tour (seed 1793606697) | 11, 79 |
+
+All green, no unexpected ERROR line in any phase. The wire decoded whole in every box (148,
+380 and 193 connections, none partly undecoded).
+
+The `unknown` connection of last night's run came again, once, in the Android box: port 8445,
+an HTTP/2 preface, SETTINGS, then GOAWAY 0 from the client within 14 ms, no request. Its TLS
+fingerprint (`ceb40329`) is the one Signal-Android's libsignal connections to that port carry,
+and the phone's next connection to the port opens right after it: the phone's libsignal
+opening a connection and dropping it unused, not a stranger. The decoder attributes by user
+agent, which a connection that never makes a request doesn't have; attributing such a
+connection by fingerprint would name it.
+
+The stress phases on the same `main`, `--optimized` (the first since the actor rework): volume
+13, interrupt 15, concurrency 17, the 30-minute soak 12 (seed 1793608127; memory 26 to 64 MiB,
+46 to 48 open files, every snapshot within 77 ms), all passed. Content failed one check, the
+checks' own: since long texts go out as Signal's apps send them, presage-cli shows a text over
+2000 bytes as its first part (it prints the body, not the text attachment), and the check
+wanted the whole; it now wants what b33p puts inline (`inline_head`), and passed 16 of 16.
+Under `--b33p-memory 768`, content passed (the huge pictures took b33p to 702 MiB) and
+concurrency found Desktop's 003 missing on b33p: it came at the millisecond presage-cli's 002
+did, from the same account, and one of two such messages is kept, as Signal-Android keeps one
+(pending/stress.md finding 8). The check tells such a set from a loss now; five rounds of
+concurrency under the cap passed after.
+
 ## The sweep on the forks of 6 Nov (`forks-1106`)
 
 Slint at master (1.20, 261 commits newer, no difference from upstream any more), presage and

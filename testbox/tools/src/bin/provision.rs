@@ -303,13 +303,7 @@ async fn main() -> std::process::ExitCode {
         Ok(Some(argument)) => Err(ArgumentError { argument }.into()),
         Err(error) => Err(error.into()),
     };
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("provision: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("provision", outcome)
 }
 
 async fn run(keys_only: bool) -> Result<(), Failure> {

@@ -140,7 +140,10 @@ fn impaired(
     checks.record(
         "a 1 MiB file from Desktop arrives over a 1 Mbit/s link, downloaded",
         || {
-            testbox_tools::write(&files.join("narrow.bin"), incompressible(FILE_SIZE))?;
+            testbox_tools::write(
+                &files.join("narrow.bin"),
+                super::rng::incompressible(FILE_SIZE),
+            )?;
             let text = "testbox network: a file over a narrow link";
             let started = Instant::now();
             desktop.call(drivers::Desktop::SendFiles {
@@ -329,17 +332,4 @@ fn in_order_once(
         return Err(NetworkError::OutOfOrder { shown });
     }
     Ok(())
-}
-
-/// `size` bytes that don't compress: a hash chain, so that the link carries them all.
-fn incompressible(size: usize) -> Vec<u8> {
-    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
-    (0..size)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            (state >> 24) as u8
-        })
-        .collect()
 }

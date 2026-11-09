@@ -8,9 +8,12 @@ use presage::{
     proto::{DataMessage, data_message::pin_message::PinDuration},
     store::{ContentExt as _, ContentsStore as _, Thread},
 };
+use presage_store_sqlite::SqliteStore;
 use tracing::{debug, warn};
 
-use crate::{ChatMessage, ConversationId, Event, MessageRef, PinnedMessage, now_millis};
+use crate::{
+    ChatMessage, ConversationId, Event, MessageRef, PinnedMessage, local::LocalStore, now_millis,
+};
 
 use super::{
     Ctx, Mgr,
@@ -108,7 +111,7 @@ pub(super) async fn on_pin_change(
         timestamp,
     };
     let target = original(ctx, id, named).await;
-    if !is_stored(manager, &thread, &target).await {
+    if !is_stored(manager, ctx, id, &thread, &target).await {
         debug!("ignored a pin of a message that isn't here");
         return PinOutcome::Refused;
     }
@@ -164,8 +167,21 @@ async fn may_change_pins(manager: &Mgr, thread: &Thread, who: ServiceId) -> bool
             .is_some_and(|access| access.attributes == AccessRequired::Member)
 }
 
-/// Whether the store has `message`, by its author.
-async fn is_stored(manager: &Mgr, thread: &Thread, message: &MessageRef) -> bool {
+/// Whether `message` is stored, by its author: kept beside the store, or in it.
+async fn is_stored(
+    manager: &Mgr,
+    ctx: &Ctx,
+    id: &ConversationId,
+    thread: &Thread,
+    message: &MessageRef,
+) -> bool {
+    let kept = or_logged(
+        ctx.tables.collided_message(id, message).await,
+        "messages kept beside the store",
+    );
+    if kept.is_some() {
+        return true;
+    }
     manager
         .store()
         .message_sent_or_edited_at(thread, message.timestamp)
@@ -259,15 +275,7 @@ pub(super) async fn tell_pins(manager: &Mgr, ctx: &Ctx, id: &ConversationId) {
     let mut names = Names::new();
     let mut pins = Vec::with_capacity(pinned.len());
     for (target, expires_at) in pinned {
-        // The version shown: its latest edit's, stored under the edit's time.
-        let at = or_logged(ctx.tables.latest_edit(id, &target).await, "edit times")
-            .unwrap_or(target.timestamp);
-        let stored = manager
-            .store()
-            .message_sent_or_edited_at(&thread, at)
-            .await
-            .ok()
-            .flatten();
+        let stored = pinned_content(manager.store(), &ctx.tables, id, &thread, &target).await;
         let Some(stored) = stored else {
             continue;
         };
@@ -285,6 +293,32 @@ pub(super) async fn tell_pins(manager: &Mgr, ctx: &Ctx, id: &ConversationId) {
         conversation: id.clone(),
         pins,
     });
+}
+
+/// `target` in the version a pin shows, its latest: kept beside the store, where its edits
+/// take its place, or else the store's, under its latest edit's time. Not the store's at
+/// `target`'s time alone: that can be someone else's message, from the same millisecond.
+pub(super) async fn pinned_content(
+    store: &SqliteStore,
+    tables: &LocalStore,
+    id: &ConversationId,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Option<Content> {
+    let kept = or_logged(
+        tables.collided_message(id, target).await,
+        "messages kept beside the store",
+    );
+    if kept.is_some() {
+        return kept;
+    }
+    let at =
+        or_logged(tables.latest_edit(id, target).await, "edit times").unwrap_or(target.timestamp);
+    store
+        .message_sent_or_edited_at(thread, at)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

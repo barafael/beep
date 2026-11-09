@@ -266,6 +266,49 @@ a connection is more likely in use when presage-cli exits. The box now builds pr
 b33p's libsqlite3-sys (`RUSQLITE_REV`, checked by the pins test); the next 30-minute soak passed
 without a crash. presage-cli on whisperfish's rusqlite can still crash this way.
 
+### 8. Messages at one millisecond: presage's store has room for one (across accounts fixed, one account open)
+
+2 November, `main` 817aaa2 with the actor rework, `--optimized --b33p-memory 768`:
+`stress-concurrency` found "b33p shows 14 of 15; missing from Desktop 003". b33p's content
+log has 003 received, from the peer's account, device 2, at 1793610522680, the very
+millisecond presage-cli's 002 came from device 1 (and b33p sent something at it too). The memory
+limit had nothing to do with it: b33p wasn't killed, and the message was received and decrypted.
+(In the same capped run the content phase's huge pictures took b33p to 702 MiB of its 768, and it
+passed.)
+
+presage keeps a thread's contents by `PRIMARY KEY (ts, thread_id)`, with no author in it, while
+b33p's list goes by timestamp and sender. That key goes back to whisperfish/presage#67 (2022): one
+sled tree per thread, keyed by timestamp. The PR's author pointed out that a thread can have two
+messages at one millisecond, and the reviewer answered that Signal's server takes care of that, an
+assumption to make. It doesn't. The SQLite store (#301) took the same shape over. Deleting for
+everyone and edits now rely on saving replacing what is at that time, so the key can't simply take
+the author in.
+
+What that does, by who wrote the two:
+
+- **Two accounts.** The guard "not saving a message in the place of someone else's" (#453) drops
+  the second: the live list showed both, and after a restart one was gone with nothing to say so.
+  Signal-Android has no such loss: its `MessageTable` is unique on `date_sent, from_recipient_id,
+  thread_id`, with the author. **Fixed in b33p:** what presage turned away is kept in
+  `b33p_collided` and read back with the rest (`signal/history.rs`, `keep_if_dropped`,
+  `contents_before`); edits, expiry, deleting and clearing a chat reach it there. Our own sends go
+  the same way, and a backup's messages, which would have replaced the holder. The concurrency
+  check restarts b33p and compares again.
+- **One account, two devices. Open.** A message is known by its author and timestamp, which is
+  what edits, reactions, quotes and deletes point at, so two at one millisecond can't both be
+  addressed. Signal-Android keeps one, as its key says; Desktop keeps both (it looks messages up by
+  device as well). But b33p's list keeps the first and presage's store the last (`INSERT OR
+  REPLACE`), so the message read is replaced by one never seen on the next restart. By then the
+  first is gone from the store, so this can't be mended from b33p; it takes presage keeping the
+  first. The check (`same_moment`) wants exactly one of each such set shown, either one.
+
+Between real devices one account's case takes a person on two of their devices sending in the
+same millisecond. Two accounts in one chat is the likelier: about 2 a year for a chat with 1000
+stored messages a day spread evenly, more in bursts. In the box every client shares one clock and
+sends every 75 ms or so.
+
+What is still open, with how to re-derive each: `pending/same-millisecond.md`.
+
 ### What Group C and D found right
 
 - Every awkward text from the peer showed as sent: right to left and mixed, a direction

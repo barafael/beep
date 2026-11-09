@@ -59,10 +59,8 @@ pub(super) enum Ending {
 /// [`Failed::message`] are what the user is told.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum Failed {
-    #[error("could not determine a data directory")]
-    NoDataDir,
-    #[error("failed to make the data directory private")]
-    DataDir(#[source] vault::PrivateFileError),
+    #[error(transparent)]
+    Paths(#[from] PathsError),
     #[error("failed to open the lock file {}", path.display())]
     OpenLock {
         path: PathBuf,
@@ -222,10 +220,8 @@ impl crate::Classified for Notice {
 /// Why the local data couldn't be deleted.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum WipeError {
-    #[error("could not determine a data directory")]
-    NoDataDir,
-    #[error("failed to make the data directory private")]
-    DataDir(#[source] vault::PrivateFileError),
+    #[error(transparent)]
+    Paths(#[from] PathsError),
     #[error("Couldn't delete {}", path.display())]
     Delete {
         path: PathBuf,
@@ -249,10 +245,7 @@ pub(super) fn attempt(
     lock: &mut Option<std::fs::File>,
     use_password: bool,
 ) -> Result<Ending, Failed> {
-    let paths = Paths::new().map_err(|error| match error {
-        PathsError::NoDataDir => Failed::NoDataDir,
-        PathsError::DataDir(error) => Failed::DataDir(error),
-    })?;
+    let paths = Paths::new()?;
     if lock.is_none() {
         *lock = Some(lock_data(&paths)?);
     }
@@ -372,18 +365,12 @@ pub(super) struct Paths {
 }
 
 /// Why the data directory can't be had.
+#[derive(Debug, thiserror::Error)]
 pub(super) enum PathsError {
+    #[error("could not determine a data directory")]
     NoDataDir,
-    DataDir(vault::PrivateFileError),
-}
-
-impl From<PathsError> for WipeError {
-    fn from(error: PathsError) -> Self {
-        match error {
-            PathsError::NoDataDir => Self::NoDataDir,
-            PathsError::DataDir(error) => Self::DataDir(error),
-        }
-    }
+    #[error("failed to make the data directory private")]
+    DataDir(#[source] vault::PrivateFileError),
 }
 
 impl Paths {
@@ -795,7 +782,7 @@ async fn session(
             Some(marker) => {
                 unlink(manager).await;
                 events.send(Event::Error(Notice::TransferInterrupted.into()));
-                reset(store.clone(), &tables, paths, marker.keeps()).await?;
+                reset(store.clone(), &tables, paths, marker).await?;
                 link_with_history(
                     store.clone(),
                     &tables,
@@ -939,6 +926,7 @@ async fn run_linked(
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(
         manager.clone(),
+        ctx.tables.clone(),
         ctx.threads_now(),
         events.clone(),
     ));
@@ -1064,7 +1052,7 @@ async fn link_with_history(
             }
         }
         unlink(manager).await;
-        reset(store.clone(), tables, paths, mode.keeps()).await?;
+        reset(store.clone(), tables, paths, mode).await?;
     }
 }
 
@@ -1115,38 +1103,22 @@ impl Marker {
             _ => Ok(()),
         }
     }
-
-    /// What resetting for another try leaves in place.
-    fn keeps(self) -> Keep {
-        match self {
-            Self::Link => Keep::Nothing,
-            Self::Relink => Keep::Contents,
-        }
-    }
 }
 
-/// What [`reset`] leaves in place.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Keep {
-    /// The messages, contacts and groups (and b33p's own records of them): linking again.
-    Contents,
-    /// Nothing: a first link, whose half-done import must go.
-    Nothing,
-}
-
-/// Forgets the registration, and with `Keep::Nothing` everything stored with it, ready to link
-/// again.
+/// Forgets the registration, ready to link again. A first link (`Marker::Link`) forgets
+/// everything stored with it too, as its half-done import must go; linking again keeps the
+/// messages, contacts and groups, and b33p's own records of them.
 async fn reset(
     mut store: SqliteStore,
     tables: &LocalStore,
     paths: &Paths,
-    keep: Keep,
+    mode: Marker,
 ) -> Result<(), Failed> {
     store
         .clear_registration()
         .await
         .map_err(Failed::ClearRegistration)?;
-    if keep == Keep::Nothing {
+    if mode == Marker::Link {
         store
             .clear_contents()
             .await
@@ -1238,7 +1210,11 @@ async fn link(
 pub(super) mod tests {
     use super::*;
     use crate::signal::conversations::conversation_id;
-    use crate::signal::history::{stored_at, stored_since};
+    use crate::signal::history::{
+        contents_before, keep_edit_if_dropped, keep_if_dropped, stored_at, stored_message,
+        stored_since,
+    };
+    use crate::signal::pins::pinned_content;
     use crate::signal::tests::aci;
     use crate::{ConversationId, MessageRef};
     use presage::{
@@ -1387,16 +1363,16 @@ pub(super) mod tests {
         let paths = test_paths(tmp.path());
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
         let ann = ConversationId::contact("ann");
-        let kept = async |store: &SqliteStore, tables: &LocalStore, keep: Keep| {
+        let kept = async |store: &SqliteStore, tables: &LocalStore, mode: Marker| {
             tables.update(&ann, |s| s.pinned = Some(1)).await.unwrap();
             Marker::Relink.write(&paths).unwrap();
-            reset(store.clone(), tables, &paths, keep).await.unwrap();
+            reset(store.clone(), tables, &paths, mode).await.unwrap();
             assert!(Marker::read(&paths).is_none(), "the marker goes");
             tables.settings(&ann).await.unwrap().is_some()
         };
         open_and_close(&paths, &key, async |store, tables| {
-            assert!(kept(store, tables, Keep::Contents).await);
-            assert!(!kept(store, tables, Keep::Nothing).await);
+            assert!(kept(store, tables, Marker::Relink).await);
+            assert!(!kept(store, tables, Marker::Link).await);
         })
         .unwrap();
     }
@@ -1441,8 +1417,6 @@ pub(super) mod tests {
         // As 0.1 left it.
         std::fs::write(paths.transfer_marker(), b"").unwrap();
         assert_eq!(Marker::read(&paths), Some(Marker::Link));
-        assert_eq!(Marker::Link.keeps(), Keep::Nothing);
-        assert_eq!(Marker::Relink.keeps(), Keep::Contents);
         Marker::remove(&paths).unwrap();
         Marker::remove(&paths).unwrap();
         assert_eq!(Marker::read(&paths), None);
@@ -1585,6 +1559,174 @@ pub(super) mod tests {
         .unwrap();
     }
 
+    /// The body of a content's data message.
+    fn body_of(content: &Content) -> Option<&str> {
+        crate::signal::history::data_of(content).and_then(|(data, _)| data.body.as_deref())
+    }
+
+    /// Two authors at one millisecond: presage's store holds one, and the other is kept beside
+    /// it, comes back as it was among the store's in pages that don't skip or repeat it, and
+    /// goes on its own when edited, expired or deleted. The holder stays through all of it.
+    #[test]
+    fn a_message_the_store_has_no_place_for_is_kept_beside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        open_and_close(&paths, &key, async |store, tables| {
+            let (ann, bob) = (ServiceId::Aci(aci(1)), ServiceId::Aci(aci(2)));
+            let thread = Thread::Group([9; 32]);
+            let id = conversation_id(&thread);
+            let of = |who: ServiceId, timestamp| MessageRef {
+                author_id: who.service_id_string(),
+                timestamp,
+            };
+            for ts in [10, 20, 30] {
+                store.save_message(&thread, stored(ann, ts)).await.unwrap();
+            }
+            let bobs = stored(bob, 20);
+            keep_if_dropped(store, tables, &thread, &bobs).await;
+
+            // Only what the store turned away: the holder's own isn't, nor a time nobody holds.
+            keep_if_dropped(store, tables, &thread, &stored(ann, 30)).await;
+            keep_if_dropped(store, tables, &thread, &stored(bob, 40)).await;
+            // A delete names a time and isn't saved at its own, so it says nothing of the holder.
+            let delete = Content {
+                body: ContentBody::DataMessage(DataMessage {
+                    delete: Some(presage::proto::data_message::Delete {
+                        target_sent_timestamp: Some(10),
+                    }),
+                    ..Default::default()
+                }),
+                ..stored(bob, 30)
+            };
+            keep_if_dropped(store, tables, &thread, &delete).await;
+            let kept = tables.collided(&id, 0, None).await.unwrap();
+            assert_eq!(kept.len(), 1, "bob's message at 20 alone");
+
+            // As it was.
+            let kept = &kept[0];
+            assert_eq!(kept.metadata.sender, bob);
+            assert_eq!(kept.metadata.destination, bobs.metadata.destination);
+            assert_eq!(kept.metadata.sender_device, bobs.metadata.sender_device);
+            assert_eq!(stored_at(kept), 20);
+            assert_eq!(
+                kept.metadata.server_timestamp,
+                bobs.metadata.server_timestamp
+            );
+            assert_eq!(body_of(kept), Some("at 20"));
+            let found = stored_message(store, tables, &id, &thread, &of(bob, 20)).await;
+            assert_eq!(found.unwrap().metadata.sender, bob);
+            let found = stored_message(store, tables, &id, &thread, &of(ann, 20)).await;
+            assert_eq!(found.unwrap().metadata.sender, ann);
+            // A pin of either shows that one, not the other's at its time.
+            let pinned = pinned_content(store, tables, &id, &thread, &of(bob, 20)).await;
+            assert_eq!(pinned.unwrap().metadata.sender, bob);
+            let pinned = pinned_content(store, tables, &id, &thread, &of(ann, 20)).await;
+            assert_eq!(pinned.unwrap().metadata.sender, ann);
+            assert_eq!(
+                tables
+                    .collided_conversation(&bob.service_id_string(), 20)
+                    .await
+                    .unwrap(),
+                Some(id.clone())
+            );
+
+            // Every page size, read to the end: each once, newest first, none left out at a
+            // page's edge, where the next page starts before the time it ended at.
+            for limit in 1..=4 {
+                let mut seen = Vec::new();
+                let mut before = None;
+                loop {
+                    let page = contents_before(store, tables, &thread, before, limit)
+                        .await
+                        .unwrap();
+                    seen.extend(page.iter().map(|c| (stored_at(c), c.metadata.sender)));
+                    if page.len() < limit as usize {
+                        break;
+                    }
+                    before = page.last().map(stored_at);
+                }
+                assert_eq!(seen.len(), 4, "page of {limit}: {seen:?}");
+                assert!(seen.contains(&(20, bob)), "page of {limit}");
+                assert!(seen.is_sorted_by_key(|(ts, _)| std::cmp::Reverse(*ts)));
+            }
+            let since = stored_since(store, tables, &thread, 20).await.unwrap();
+            assert_eq!(
+                since.iter().map(stored_at).collect::<Vec<_>>(),
+                [30, 20, 20]
+            );
+
+            // An edit takes its place, at its first time; one of the holder's touches nothing.
+            let mut edit = stored(bob, 25);
+            edit.body = ContentBody::EditMessage(presage::proto::EditMessage {
+                target_sent_timestamp: Some(20),
+                data_message: Some(DataMessage {
+                    body: Some("edited".into()),
+                    timestamp: Some(25),
+                    ..Default::default()
+                }),
+            });
+            keep_edit_if_dropped(tables, &id, &of(bob, 20), &edit).await;
+            keep_edit_if_dropped(tables, &id, &of(ann, 20), &edit).await;
+            let kept = tables.collided(&id, 0, None).await.unwrap();
+            assert_eq!(kept.len(), 1);
+            assert_eq!(stored_at(&kept[0]), 20);
+            assert_eq!(body_of(&kept[0]), Some("edited"));
+
+            // Expiring it leaves the holder; then the holder expiring takes the store's.
+            let entry = |message| (id.clone(), message, Some(thread.clone()));
+            tables.delete_messages(&[entry(of(bob, 20))]).await.unwrap();
+            assert!(tables.collided(&id, 0, None).await.unwrap().is_empty());
+            assert!(store.message(&thread, 20).await.unwrap().is_some());
+            tables.delete_messages(&[entry(of(ann, 20))]).await.unwrap();
+            assert!(store.message(&thread, 20).await.unwrap().is_none());
+
+            // Forgotten one by one, whether there was one to forget, and by chat.
+            tables.keep_collided(&id, &stored(bob, 30)).await.unwrap();
+            assert!(tables.forget_collided(&id, &of(bob, 30)).await.unwrap());
+            assert!(!tables.forget_collided(&id, &of(bob, 30)).await.unwrap());
+            tables.keep_collided(&id, &stored(bob, 30)).await.unwrap();
+            tables.forget_collided_chat(&id).await.unwrap();
+            assert!(tables.collided(&id, 0, None).await.unwrap().is_empty());
+        })
+        .unwrap();
+    }
+
+    /// A backup's message at a time someone else's holds doesn't replace it, as saving would; and
+    /// importing twice stays harmless.
+    #[test]
+    fn importing_a_message_at_someone_elses_time_keeps_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
+        open_and_close(&paths, &key, async |store, tables| {
+            let (ann, bob) = (ServiceId::Aci(aci(1)), ServiceId::Aci(aci(2)));
+            let thread = Thread::Group([9; 32]);
+            let id = conversation_id(&thread);
+            let mut writer = store.clone();
+            for _ in 0..2 {
+                for sender in [ann, bob] {
+                    crate::import::store(
+                        &mut writer,
+                        tables,
+                        crate::import::Record::Message {
+                            thread: thread.clone(),
+                            content: stored(sender, 40),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            let holder = store.message(&thread, 40).await.unwrap().unwrap();
+            assert_eq!(holder.metadata.sender, ann);
+            let kept = tables.collided(&id, 0, None).await.unwrap();
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].metadata.sender, bob);
+        })
+        .unwrap();
+    }
+
     /// Disappearing messages go from presage's store and b33p's tables at once, from their
     /// own thread only, by contact or group.
     #[test]
@@ -1633,7 +1775,7 @@ pub(super) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
-        open_and_close(&paths, &key, async |store, _| {
+        open_and_close(&paths, &key, async |store, tables| {
             let who = |n: u8| {
                 ServiceId::parse_from_service_id_string(&format!(
                     "00000000-0000-0000-0000-0000000000{n:02}"
@@ -1652,7 +1794,7 @@ pub(super) mod tests {
                     .unwrap();
             }
             let times = async |thread: &Thread, from: u64| -> Vec<u64> {
-                stored_since(store, thread, from)
+                stored_since(store, tables, thread, from)
                     .await
                     .unwrap()
                     .iter()

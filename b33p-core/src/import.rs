@@ -137,20 +137,8 @@ impl Importer {
             Some(proto::frame::Item::ChatItem(item)) => {
                 records.extend(self.flush_groups());
                 match self.message(&item) {
-                    Some((thread, content)) => {
+                    Some((thread, content, group_v2)) => {
                         self.stats.messages += 1;
-                        let group_v2 = match &content.body {
-                            ContentBody::DataMessage(data) => data.group_v2.clone(),
-                            ContentBody::SynchronizeMessage(SyncMessage {
-                                content:
-                                    Some(SyncContent::Sent(Sent {
-                                        message: Some(data),
-                                        ..
-                                    })),
-                                ..
-                            }) => data.group_v2.clone(),
-                            _ => None,
-                        };
                         let reactions = self.reactions(&item, &thread, group_v2);
                         self.stats.reactions += reactions.len();
                         // Its timer is running on the phone: it goes here at the same time.
@@ -293,7 +281,7 @@ impl Importer {
 
     /// A text message as presage would have stored it on receipt: a data message if incoming,
     /// a "sent" sync message if we wrote it. Anything else is skipped for now.
-    fn message(&self, item: &proto::ChatItem) -> Option<(Thread, Content)> {
+    fn message(&self, item: &proto::ChatItem) -> Option<(Thread, Content, Option<GroupContextV2>)> {
         use proto::chat_item::Item;
         let empty = proto::StandardMessage::default();
         let (message, sticker, view_once) = match &item.item {
@@ -359,17 +347,9 @@ impl Importer {
                 }),
             ),
         };
-        let author = match self.recipients.get(&item.authorId)? {
-            Party::Me => self.me,
-            Party::Contact(aci) => *aci,
-            Party::Group { .. } => return None,
-        };
+        let author = self.aci_of(item.authorId)?;
         let quote = message.quote.as_ref().and_then(|quote| {
-            let author = match self.recipients.get(&quote.authorId)? {
-                Party::Me => self.me,
-                Party::Contact(aci) => *aci,
-                Party::Group { .. } => return None,
-            };
+            let author = self.aci_of(quote.authorId)?;
             Some(Quote {
                 id: quote.targetSentTimestamp,
                 author_aci: Some(ServiceId::Aci(author).service_id_string()),
@@ -386,7 +366,7 @@ impl Importer {
             body: (!body.is_empty()).then_some(body),
             body_ranges: self.body_ranges(&message.text.bodyRanges),
             timestamp: Some(item.dateSent),
-            group_v2,
+            group_v2: group_v2.clone(),
             quote,
             attachments,
             sticker,
@@ -414,7 +394,7 @@ impl Importer {
             sealed,
             outgoing,
         );
-        Some((thread, content))
+        Some((thread, content, group_v2))
     }
 
     /// The reactions on a chat item, each as the reaction message its author sent, the way
@@ -653,13 +633,20 @@ pub(crate) enum ImportError {
         conversation: crate::ConversationId,
         source: sqlx::Error,
     },
+    #[error("failed to keep a message of the history that shares its time with another's")]
+    Collided {
+        conversation: crate::ConversationId,
+        source: sqlx::Error,
+    },
 }
 
 impl crate::Classified for ImportError {
     fn kind(&self) -> crate::ErrorKind {
         match self {
             Self::Frame(_) => crate::ErrorKind::Refused,
-            Self::Store { .. } | Self::Expiry { .. } => crate::ErrorKind::Storage,
+            Self::Store { .. } | Self::Expiry { .. } | Self::Collided { .. } => {
+                crate::ErrorKind::Storage
+            }
         }
     }
 }
@@ -695,7 +682,27 @@ where
             }
         }
         Record::Group { master_key, group } => store.save_group(master_key, group).await,
-        Record::Message { thread, content } => store.save_message(&thread, content).await,
+        // The store keeps one content per thread and millisecond, and saving replaces it.
+        Record::Message { thread, content } => {
+            let at = content.metadata.client_timestamp.timestamp_millis() as u64;
+            match store.message(&thread, at).await {
+                Ok(Some(holder))
+                    if holder.metadata.sender != content.metadata.sender
+                        && !matches!(holder.body, ContentBody::ReceiptMessage(_)) =>
+                {
+                    let conversation = crate::signal::conversation_id(&thread);
+                    return match tables.keep_collided(&conversation, &content).await {
+                        Ok(()) => Ok(()),
+                        Err(source) => Err(ImportError::Collided {
+                            conversation,
+                            source,
+                        }),
+                    };
+                }
+                Ok(_) => store.save_message(&thread, content).await,
+                Err(error) => Err(error),
+            }
+        }
         Record::Timer {
             contact,
             seconds,

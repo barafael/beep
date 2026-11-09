@@ -29,13 +29,7 @@ struct ServeError {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
-    match serve().await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("preview: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("preview", serve().await)
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

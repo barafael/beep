@@ -587,6 +587,20 @@ impl Checks {
     }
 }
 
+/// `line` without its ANSI escape sequences, each up to its final letter: the colours of a log.
+fn without_colours(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            chars.by_ref().find(char::is_ascii_alphabetic);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::Reported;

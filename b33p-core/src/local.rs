@@ -15,7 +15,16 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
 
-use presage::{proto::verified::State, store::Thread};
+use presage::{
+    libsignal_service::{
+        content::{Content, Metadata},
+        prelude::ProtobufMessage as _,
+        protocol::{Pni, ServiceId},
+    },
+    proto::verified::State,
+    store::Thread,
+};
+use tracing::warn;
 
 use crate::{
     ChatNotify, ChatSettings, Command, ConversationId, Delivery, Mention, MessageRef, Quote, Style,
@@ -237,6 +246,23 @@ const SCHEMA: &[&str] = &[
         last_read INTEGER NOT NULL DEFAULT 0,
         marked_unread INTEGER NOT NULL DEFAULT 0
     )",
+    // What presage's store has no place for. It keeps one content per thread and millisecond,
+    // whoever wrote it (`thread_messages`' key), and drops a message at a time someone else's
+    // holds; so that message is kept here, as presage would have it, and read back with the rest.
+    "CREATE TABLE IF NOT EXISTS b33p_collided (
+        conversation TEXT NOT NULL,
+        author TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        server_ts INTEGER NOT NULL,
+        device INTEGER NOT NULL,
+        destination TEXT NOT NULL,
+        needs_receipt INTEGER NOT NULL,
+        unidentified_sender INTEGER NOT NULL,
+        was_plaintext INTEGER NOT NULL,
+        pni_verified TEXT,
+        content BLOB NOT NULL,
+        PRIMARY KEY (conversation, author, ts)
+    )",
     "CREATE TABLE IF NOT EXISTS b33p_delivery (
         conversation TEXT NOT NULL,
         ts INTEGER NOT NULL,
@@ -446,16 +472,14 @@ impl LocalStore {
             .map_err(OpenError::Connect)?;
         // Before changing anything: a newer b33p may have changed the tables in ways this one
         // would get wrong.
-        let found: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'schema'")
-                .fetch_optional(&db)
-                .await
-                .or_else(|error| match &error {
-                    // Made before the version was kept, or not at all yet.
-                    sqlx::Error::Database(e) if e.message().contains("no such table") => Ok(None),
-                    _ => Err(error),
-                })
-                .map_err(OpenError::ReadVersion)?;
+        let found = meta(&db, "schema")
+            .await
+            .or_else(|error| match &error {
+                // Made before the version was kept, or not at all yet.
+                sqlx::Error::Database(e) if e.message().contains("no such table") => Ok(None),
+                _ => Err(error),
+            })
+            .map_err(OpenError::ReadVersion)?;
         if let Some(found) = found
             && found > SCHEMA_VERSION
         {
@@ -486,14 +510,9 @@ impl LocalStore {
                 source,
             })?;
         }
-        sqlx::query(
-            "INSERT INTO b33p_meta (key, value) VALUES ('schema', ?)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(SCHEMA_VERSION)
-        .execute(&db)
-        .await
-        .map_err(OpenError::WriteVersion)?;
+        set_meta(&db, "schema", SCHEMA_VERSION)
+            .await
+            .map_err(OpenError::WriteVersion)?;
         Ok(Self { db })
     }
 
@@ -555,25 +574,19 @@ impl LocalStore {
         let mut tx = self.begin_write().await?;
         let mut state = settings_in(&mut *tx, id).await?.unwrap_or_default();
         change(&mut state);
-        sqlx::query(
+        let query = sqlx::query(
             "INSERT OR REPLACE INTO b33p_conversation
-                (id, pinned, muted_until, archived, last_read, marked_unread, blocked, accepted,
+                (id, pinned, muted_until, archived, marked_unread, blocked, accepted, last_read,
                  notify_mentions_only, notify_hide_text, notify_silent)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id.0)
-        .bind(state.pinned.map(i64::from))
-        .bind(state.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
-        .bind(state.archived as i64)
-        .bind(state.last_read as i64)
-        .bind(state.marked_unread as i64)
-        .bind(state.blocked as i64)
-        .bind(state.accepted as i64)
-        .bind(state.notify.mentions_only as i64)
-        .bind(state.notify.hide_text as i64)
-        .bind(state.notify.silent as i64)
-        .execute(&mut *tx)
-        .await?;
+        );
+        bind_settings(query, id, &state)
+            .bind(state.last_read as i64)
+            .bind(state.notify.mentions_only as i64)
+            .bind(state.notify.hide_text as i64)
+            .bind(state.notify.silent as i64)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(state)
     }
@@ -809,10 +822,7 @@ impl LocalStore {
 
     /// The storage service's manifest version last read; 0 before the first time.
     pub(crate) async fn storage_version(&self) -> Result<u64, sqlx::Error> {
-        let version: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'storage_version'")
-                .fetch_optional(&self.db)
-                .await?;
+        let version = meta(&self.db, "storage_version").await?;
         Ok(version.unwrap_or(0) as u64)
     }
 
@@ -830,13 +840,11 @@ impl LocalStore {
 
     /// Every contact we verified or cleared the verification of, by ACI.
     pub(crate) async fn verifications(&self) -> Result<HashMap<String, Verification>, sqlx::Error> {
-        let rows = sqlx::query("SELECT aci, identity_key, verified FROM b33p_verification")
-            .fetch_all(&self.db)
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|row| (row.get(0), verification_of(row, 1)))
-            .collect())
+        verifications_in(
+            &self.db,
+            "SELECT aci, identity_key, verified FROM b33p_verification",
+        )
+        .await
     }
 
     /// Remembers whether we verified the contact with this ACI, for this key of theirs.
@@ -861,22 +869,17 @@ impl LocalStore {
     pub(crate) async fn remote_verifications(
         &self,
     ) -> Result<HashMap<String, Verification>, sqlx::Error> {
-        let rows = sqlx::query("SELECT aci, identity_key, verified FROM b33p_remote_verification")
-            .fetch_all(&self.db)
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|row| (row.get(0), verification_of(row, 1)))
-            .collect())
+        verifications_in(
+            &self.db,
+            "SELECT aci, identity_key, verified FROM b33p_remote_verification",
+        )
+        .await
     }
 
     /// Whether what the storage service says about verifications was ever read: until then,
     /// the whole manifest is read again even if it didn't change.
     pub(crate) async fn remote_verifications_read(&self) -> Result<bool, sqlx::Error> {
-        let read: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'remote_verifications'")
-                .fetch_optional(&self.db)
-                .await?;
+        let read = meta(&self.db, "remote_verifications").await?;
         Ok(read.is_some())
     }
 
@@ -884,10 +887,7 @@ impl LocalStore {
     pub(crate) async fn remote_preferences(
         &self,
     ) -> Result<Option<AccountPreferences>, sqlx::Error> {
-        let bits: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'remote_preferences'")
-                .fetch_optional(&self.db)
-                .await?;
+        let bits = meta(&self.db, "remote_preferences").await?;
         Ok(bits.map(AccountPreferences::from_bits))
     }
 
@@ -896,14 +896,7 @@ impl LocalStore {
         &self,
         preferences: AccountPreferences,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO b33p_meta (key, value) VALUES ('remote_preferences', ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(preferences.bits())
-        .execute(&self.db)
-        .await
-        .map(drop)
+        set_meta(&self.db, "remote_preferences", preferences.bits()).await
     }
 
     /// Replaces what the storage service said last about verifications.
@@ -926,12 +919,7 @@ impl LocalStore {
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query(
-            "INSERT INTO b33p_meta (key, value) VALUES ('remote_verifications', 1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .execute(&mut *tx)
-        .await?;
+        set_meta(&mut *tx, "remote_verifications", 1).await?;
         tx.commit().await
     }
 
@@ -1014,11 +1002,15 @@ impl LocalStore {
         messages: &[(ConversationId, u64)],
         delivery: Delivery,
     ) -> Result<(), sqlx::Error> {
+        if messages.is_empty() {
+            return Ok(());
+        }
         let mut tx = self.begin_write().await?;
         for (conversation, ts) in messages {
             sqlx::query(
                 "INSERT INTO b33p_delivery (conversation, ts, state) VALUES (?, ?, ?)
-                 ON CONFLICT(conversation, ts) DO UPDATE SET state = max(state, excluded.state)",
+                 ON CONFLICT(conversation, ts) DO UPDATE SET state = excluded.state
+                 WHERE excluded.state > state",
             )
             .bind(&conversation.0)
             .bind(*ts as i64)
@@ -1656,6 +1648,131 @@ impl LocalStore {
         tx.commit().await
     }
 
+    /// Keeps a content presage's store has no place for; see [`SCHEMA`]'s `b33p_collided`. Again
+    /// for the same author and time replaces it: redelivered, or edited.
+    pub(crate) async fn keep_collided(
+        &self,
+        conversation: &ConversationId,
+        content: &Content,
+    ) -> Result<(), sqlx::Error> {
+        let metadata = &content.metadata;
+        sqlx::query(
+            "INSERT OR REPLACE INTO b33p_collided (conversation, author, ts, server_ts, device,
+                destination, needs_receipt, unidentified_sender, was_plaintext, pni_verified,
+                content)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&conversation.0)
+        .bind(metadata.sender.service_id_string())
+        .bind(metadata.client_timestamp.timestamp_millis())
+        .bind(metadata.server_timestamp.timestamp_millis())
+        .bind(i64::from(u32::from(metadata.sender_device)))
+        .bind(metadata.destination.service_id_string())
+        .bind(metadata.needs_receipt)
+        .bind(metadata.unidentified_sender)
+        .bind(metadata.was_plaintext)
+        .bind(
+            metadata
+                .pni_verified
+                .as_ref()
+                .map(|pni| pni.service_id_string()),
+        )
+        .bind(content.body.clone().into_proto().encode_to_vec())
+        .execute(&self.db)
+        .await
+        .map(drop)
+    }
+
+    /// What [`Self::keep_collided`] kept of a conversation sent from `from` up to, not
+    /// including, `before`.
+    pub(crate) async fn collided(
+        &self,
+        conversation: &ConversationId,
+        from: u64,
+        before: Option<u64>,
+    ) -> Result<Vec<Content>, sqlx::Error> {
+        let before = before.map_or(i64::MAX, |ts| ts.min(i64::MAX as u64) as i64);
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            collided_columns!(),
+            " FROM b33p_collided WHERE conversation = ? AND ts >= ? AND ts < ?"
+        ))
+        .bind(&conversation.0)
+        .bind(from.min(i64::MAX as u64) as i64)
+        .bind(before)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.iter().filter_map(collided_of).collect())
+    }
+
+    /// What [`Self::keep_collided`] kept of `target`.
+    pub(crate) async fn collided_message(
+        &self,
+        conversation: &ConversationId,
+        target: &MessageRef,
+    ) -> Result<Option<Content>, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, target);
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            collided_columns!(),
+            " FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?"
+        ))
+        .bind(conversation)
+        .bind(author)
+        .bind(ts)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.as_ref().and_then(collided_of))
+    }
+
+    /// The conversation of what [`Self::keep_collided`] kept from `author` at `ts`: presage's
+    /// [`thread_for_sender_and_timestamp`](presage::store::ContentsStore::thread_for_sender_and_timestamp)
+    /// for what it has no place for.
+    pub(crate) async fn collided_conversation(
+        &self,
+        author: &str,
+        ts: u64,
+    ) -> Result<Option<ConversationId>, sqlx::Error> {
+        let conversation: Option<String> = sqlx::query_scalar(
+            "SELECT conversation FROM b33p_collided WHERE author = ? AND ts = ?",
+        )
+        .bind(author)
+        .bind(ts as i64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(conversation.map(ConversationId))
+    }
+
+    /// Forgets what [`Self::keep_collided`] kept of `target`; whether it had.
+    pub(crate) async fn forget_collided(
+        &self,
+        conversation: &ConversationId,
+        target: &MessageRef,
+    ) -> Result<bool, sqlx::Error> {
+        let (conversation, author, ts) = key(conversation, target);
+        let result = sqlx::query(
+            "DELETE FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?",
+        )
+        .bind(conversation)
+        .bind(author)
+        .bind(ts)
+        .execute(&self.db)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Forgets all [`Self::keep_collided`] kept of a conversation, with its thread cleared.
+    pub(crate) async fn forget_collided_chat(
+        &self,
+        conversation: &ConversationId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM b33p_collided WHERE conversation = ?")
+            .bind(&conversation.0)
+            .execute(&self.db)
+            .await
+            .map(drop)
+    }
+
     /// Deletes messages from presage's store, each from its thread (if it has one), and
     /// forgets them here, all in one transaction: presage's `delete_message` writes, and syncs
     /// to disk, once per message. Its statement, on its table, as presage has them; see
@@ -1665,7 +1782,20 @@ impl LocalStore {
         messages: &[(ConversationId, MessageRef, Option<Thread>)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.begin_write().await?;
-        for (_, message, thread) in messages {
+        for (conversation, message, thread) in messages {
+            // Kept beside the store: what the store holds at its time is someone else's.
+            let (id, author, ts) = key(conversation, message);
+            let collided = sqlx::query(
+                "DELETE FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?",
+            )
+            .bind(id)
+            .bind(author)
+            .bind(ts)
+            .execute(&mut *tx)
+            .await?;
+            if collided.rows_affected() > 0 {
+                continue;
+            }
             // presage finds a thread by its group's master key or the contact's UUID.
             let (group, contact) = match thread {
                 None => continue,
@@ -1749,22 +1879,19 @@ async fn save_settings_in(
     settings: &[(ConversationId, ChatSettings)],
 ) -> Result<(), sqlx::Error> {
     for (id, s) in settings {
-        sqlx::query(
-            "INSERT INTO b33p_conversation
+        bind_settings(
+            sqlx::query(
+                "INSERT INTO b33p_conversation
                 (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
              VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET pinned = excluded.pinned,
                 muted_until = excluded.muted_until, archived = excluded.archived,
                 marked_unread = excluded.marked_unread, blocked = excluded.blocked,
                 accepted = excluded.accepted",
+            ),
+            id,
+            s,
         )
-        .bind(&id.0)
-        .bind(s.pinned.map(i64::from))
-        .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
-        .bind(s.archived as i64)
-        .bind(s.marked_unread as i64)
-        .bind(s.blocked as i64)
-        .bind(s.accepted as i64)
         .execute(&mut *tx)
         .await?;
     }
@@ -1781,11 +1908,67 @@ async fn set_remote_in(
         .execute(&mut *tx)
         .await?;
     for (id, s) in remote {
-        sqlx::query(
-            "INSERT INTO b33p_remote
+        bind_settings(
+            sqlx::query(
+                "INSERT INTO b33p_remote
                 (id, pinned, muted_until, archived, marked_unread, blocked, accepted)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ),
+            id,
+            s,
         )
+        .execute(&mut *tx)
+        .await?;
+    }
+    set_meta(tx, "storage_version", version.min(i64::MAX as u64) as i64).await
+}
+
+/// What [`collided_of`] reads.
+macro_rules! collided_columns {
+    () => {
+        "author, ts, server_ts, device, destination, needs_receipt, unidentified_sender,
+         was_plaintext, pni_verified, content"
+    };
+}
+use collided_columns;
+
+/// A row of `b33p_collided` as the content it was; `None`, and said in the log, if it can't be.
+fn collided_of(row: &SqliteRow) -> Option<Content> {
+    let content = (|| {
+        let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis);
+        let device = u8::try_from(row.get::<i64, _>(3)).ok()?;
+        let metadata = Metadata {
+            sender: ServiceId::parse_from_service_id_string(row.get(0))?,
+            client_timestamp: at(row.get(1))?,
+            server_timestamp: at(row.get(2))?,
+            sender_device: device.try_into().ok()?,
+            destination: ServiceId::parse_from_service_id_string(row.get(4))?,
+            needs_receipt: row.get(5),
+            unidentified_sender: row.get(6),
+            was_plaintext: row.get(7),
+            pni_verified: match row.get::<Option<&str>, _>(8) {
+                Some(pni) => Some(Pni::parse_from_service_id_string(pni)?),
+                None => None,
+            },
+            server_guid: None,
+        };
+        let body = presage::proto::Content::decode(row.get::<&[u8], _>(9)).ok()?;
+        Content::from_proto(body, metadata).ok()
+    })();
+    if content.is_none() {
+        warn!("failed to read a message kept beside the store");
+    }
+    content
+}
+
+/// Binds `id`, then the columns of the settings that b33p and the storage service both keep:
+/// pinned, muted_until, archived, marked_unread, blocked, accepted.
+fn bind_settings<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
+    id: &'q ConversationId,
+    s: &ChatSettings,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    query
         .bind(&id.0)
         .bind(s.pinned.map(i64::from))
         .bind(s.muted_until.map(|m| m.min(i64::MAX as u64) as i64))
@@ -1793,17 +1976,43 @@ async fn set_remote_in(
         .bind(s.marked_unread as i64)
         .bind(s.blocked as i64)
         .bind(s.accepted as i64)
-        .execute(&mut *tx)
-        .await?;
-    }
+}
+
+/// `key`'s value in `b33p_meta`.
+async fn meta(db: impl sqlx::SqliteExecutor<'_>, key: &str) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+}
+
+/// Replaces `key`'s value in `b33p_meta`.
+async fn set_meta(
+    db: impl sqlx::SqliteExecutor<'_>,
+    key: &str,
+    value: i64,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO b33p_meta (key, value) VALUES ('storage_version', ?)
+        "INSERT INTO b33p_meta (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
-    .bind(version.min(i64::MAX as u64) as i64)
-    .execute(&mut *tx)
-    .await?;
-    Ok(())
+    .bind(key)
+    .bind(value)
+    .execute(db)
+    .await
+    .map(drop)
+}
+
+/// The verifications `query` selects, as `aci, identity_key, verified`, by ACI.
+async fn verifications_in(
+    db: &SqlitePool,
+    query: &'static str,
+) -> Result<HashMap<String, Verification>, sqlx::Error> {
+    let rows = sqlx::query(query).fetch_all(db).await?;
+    Ok(rows
+        .iter()
+        .map(|row| (row.get(0), verification_of(row, 1)))
+        .collect())
 }
 
 /// One conversation's settings, read through `db`: the pool, or a transaction.

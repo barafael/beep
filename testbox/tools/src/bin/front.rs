@@ -62,13 +62,7 @@ fn main() -> std::process::ExitCode {
         .build()
         .map_err(|source| FrontError::Runtime(source).into())
         .and_then(|runtime| runtime.block_on(run()));
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("front: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("front", outcome)
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

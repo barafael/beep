@@ -19,7 +19,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
         conversation,
     } = fixture;
     checks.record("Android's note reaches b33p in the history", || {
-        select(b33p, &format!("c:{android_aci}"))?;
+        select(b33p, &b33p_core::ConversationId::contact(android_aci).0)?;
         Ok(b33p_shows(b33p, NOTE, |message| message.text == NOTE)?)
     });
 
@@ -197,7 +197,7 @@ pub(super) fn android(checks: &mut Checks, fixture: &mut AndroidBox<'_>) -> Resu
     // sync to Android, which lists it under Note to Self.
     let note = "testbox android: a note b33p writes to itself";
     checks.record("a note b33p writes to itself shows on Android", || {
-        select(b33p, &format!("c:{android_aci}"))?;
+        select(b33p, &b33p_core::ConversationId::contact(android_aci).0)?;
         type_and_send(b33p, note)?;
         android.call(drivers::Android::OpenConversation {
             text: "Note to Self".to_owned(),

@@ -185,6 +185,22 @@ impl Shared {
         }
     }
 
+    /// [`Shared::refresh`]es with `update` when `timer` runs out.
+    fn refresh_after(
+        &self,
+        timer: &slint::Timer,
+        mode: slint::TimerMode,
+        wait: Duration,
+        update: Update,
+    ) {
+        let me = self.me.clone();
+        timer.start(mode, wait, move || {
+            if let Some(shared) = me.upgrade() {
+                shared.refresh(update);
+            }
+        });
+    }
+
     fn flush(&self) {
         let Some(update) = self.pending.borrow_mut().take() else {
             return;
@@ -226,17 +242,13 @@ impl Shared {
         match chat.typing_expires() {
             Some(at) => {
                 let wait = at.saturating_sub(b33p_core::now_millis()) + 50;
-                let me = self.me.clone();
-                self.typing_timer.start(
+                self.refresh_after(
+                    &self.typing_timer,
                     slint::TimerMode::SingleShot,
                     Duration::from_millis(wait),
-                    move || {
-                        if let Some(shared) = me.upgrade() {
-                            shared.refresh(Update {
-                                conversations: true,
-                                ..Update::default()
-                            });
-                        }
+                    Update {
+                        conversations: true,
+                        ..Update::default()
                     },
                 );
             }
@@ -246,18 +258,14 @@ impl Shared {
         // and so do the days over the messages ("Today"). Counted anew whenever the list is
         // drawn: the timer's clock stops while the computer sleeps.
         if update.conversations {
-            let me = self.me.clone();
-            self.midnight_timer.start(
+            self.refresh_after(
+                &self.midnight_timer,
                 slint::TimerMode::SingleShot,
                 b33p_core::state::until_midnight() + Duration::from_secs(1),
-                move || {
-                    if let Some(shared) = me.upgrade() {
-                        shared.refresh(Update {
-                            conversations: true,
-                            rows: true,
-                            ..Update::default()
-                        });
-                    }
+                Update {
+                    conversations: true,
+                    rows: true,
+                    ..Update::default()
                 },
             );
         }
@@ -265,17 +273,13 @@ impl Shared {
         // the open chat has any.
         if chat.shows_expiring() {
             if !self.expiry_timer.running() {
-                let me = self.me.clone();
-                self.expiry_timer.start(
+                self.refresh_after(
+                    &self.expiry_timer,
                     slint::TimerMode::Repeated,
                     Duration::from_secs(60),
-                    move || {
-                        if let Some(shared) = me.upgrade() {
-                            shared.refresh(Update {
-                                rows: true,
-                                ..Update::default()
-                            });
-                        }
+                    Update {
+                        rows: true,
+                        ..Update::default()
                     },
                 );
             }
@@ -882,6 +886,9 @@ pub struct Images {
     /// Message text as styled text, by what it says and how: making it means writing and
     /// parsing Markdown, and rows are made again whenever they are redrawn.
     texts: RefCell<HashMap<u64, slint::StyledText>>,
+    /// `texts` as it was when last full, from which it takes back what is still drawn: a pass
+    /// over more rows than it holds would otherwise evict each before the next pass needs it.
+    older_texts: RefCell<HashMap<u64, slint::StyledText>>,
     /// [`ChatState::downloads_forgotten`] when `attachments` last let go of what it forgot.
     forgotten: Cell<u64>,
     /// The picture the viewer shows at full size: only that one, let go of once it closes.
@@ -970,10 +977,14 @@ impl Images {
         if let Some(text) = self.texts.borrow().get(&key) {
             return text.clone();
         }
-        let text = rich_text(body, styles, mentions, revealed);
+        let text = self
+            .older_texts
+            .borrow_mut()
+            .remove(&key)
+            .unwrap_or_else(|| rich_text(body, styles, mentions, revealed));
         let mut texts = self.texts.borrow_mut();
         if texts.len() >= KEPT {
-            texts.clear();
+            self.older_texts.replace(std::mem::take(&mut *texts));
         }
         texts.insert(key, text.clone());
         text

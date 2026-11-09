@@ -57,13 +57,7 @@ async fn main() -> std::process::ExitCode {
         Ok(Some(argument)) => Err(StorageError::Argument { argument }.into()),
         Err(error) => Err(error.into()),
     };
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("storage: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("storage", outcome)
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

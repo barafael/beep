@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, NotifySnapshot,
-    Outcome, Pong, Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize,
-    Theme, Trust,
+    Outcome, Pong, Pushed, Reply, Request, Saved, ScreenSnapshot, SettingsChange, Snapshot,
+    Subscribed, TextSize, Theme, Trust,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -310,21 +310,11 @@ fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
 
 /// Changes only the theme and the text size.
 fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
-    Action::SetSettings {
+    Action::SetSettings(SettingsChange {
         theme: Some(theme),
         text_size: Some(text_size),
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
-        typing_indicators: None,
-        link_previews: None,
-        sync_to_phone: None,
-    }
+        ..SettingsChange::default()
+    })
 }
 
 /// Starting, connecting, and reading are the test; also that nonsense is refused.
@@ -459,28 +449,22 @@ fn attachments_are_fetched_and_saved() {
     let (_app, mut agent) = app("attachments");
     let chats = wait_for_chats(&mut agent);
     agent.select(&id_of(&chats, "Alice"));
-    let attachment = |snapshot: &Snapshot, id: &str| {
-        snapshot
-            .messages
-            .iter()
-            .flat_map(|m| &m.attachments)
-            .find(|a| a.id == id)
-            .cloned()
-    };
-    agent.wait_for("Alice's photo", |s| attachment(s, "photo").is_some());
+    agent.wait_for("Alice's photo", |s| s.attachment("photo").is_some());
     agent.act(Action::FetchAttachment {
         id: "photo".to_owned(),
     });
     agent.wait_for("the photo downloaded", |s| {
-        attachment(s, "photo").is_some_and(|a| a.download == Some(Download::Ready))
+        s.attachment("photo")
+            .is_some_and(|a| a.download == Some(Download::Ready))
     });
     agent.act(Action::SaveAttachment {
         id: "notes".to_owned(),
     });
     let saved = agent.wait_for("the notes saved", |s| {
-        attachment(s, "notes").is_some_and(|a| matches!(a.saved, Some(Saved::Saved(_))))
+        s.attachment("notes")
+            .is_some_and(|a| matches!(a.saved, Some(Saved::Saved(_))))
     });
-    let Some(Saved::Saved(path)) = attachment(&saved, "notes").unwrap().saved else {
+    let Some(Saved::Saved(path)) = saved.attachment("notes").unwrap().saved.clone() else {
         unreachable!("waited for it")
     };
     assert!(path.ends_with("route-notes.pdf"));

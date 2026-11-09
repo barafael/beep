@@ -81,13 +81,7 @@ impl Asset {
 }
 
 fn main() -> std::process::ExitCode {
-    match run() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("testbox-web: {}", Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("testbox-web", run())
 }
 
 /// What the server itself fails at; testbox-vnc's failures come as its own.

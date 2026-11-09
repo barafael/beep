@@ -88,9 +88,7 @@ pub(crate) fn render(
                 .into()
         })
         .collect();
-    update_list(&window.global::<Composer>().get_staged(), staged, |a, b| {
-        a == b
-    });
+    update_list(&window.global::<Composer>().get_staged(), staged);
     render_media(window, chat, images);
     render_pins(window, chat);
     render_viewer(window, chat, images);
@@ -122,11 +120,7 @@ pub(crate) fn render(
                 .collect()
         })
         .unwrap_or_default();
-    update_list(
-        &window.global::<Panels>().get_search_results(),
-        results,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Panels>().get_search_results(), results);
     window
         .global::<ChatList>()
         .set_search_is_number(state::looks_like_number(
@@ -161,7 +155,6 @@ pub(crate) fn render(
         update_list(
             &window.global::<Groups>().get_group_candidates(),
             candidates,
-            |a, b| a == b,
         );
     }
     let join = chat.join();
@@ -204,11 +197,7 @@ pub(crate) fn render(
                 ..Default::default()
             })
             .collect();
-        update_list(
-            &window.global::<Panels>().get_forward_targets(),
-            targets,
-            |a, b| a == b,
-        );
+        update_list(&window.global::<Panels>().get_forward_targets(), targets);
     }
     let (archived, archived_unread) = chat.archived();
     window
@@ -228,16 +217,8 @@ pub(crate) fn render(
     let unread: Vec<i32> = (0..folders.len())
         .map(|at| chat.folder_unread(at) as i32)
         .collect();
-    update_list(
-        &window.global::<ChatList>().get_folders(),
-        folders,
-        |a, b| a == b,
-    );
-    update_list(
-        &window.global::<ChatList>().get_folder_unread(),
-        unread,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<ChatList>().get_folders(), folders);
+    update_list(&window.global::<ChatList>().get_folder_unread(), unread);
     window
         .global::<ChatList>()
         .set_folder(chat.folder().map_or(-1, |at| at as i32));
@@ -282,13 +263,11 @@ pub(crate) fn render(
             if let Some(before) = messages.row_count().checked_sub(1)
                 && let Some(view) = chat.message_view(before)
             {
-                let item = message_item(&view, in_group, chat, images);
-                if !messages
-                    .row_data(before)
-                    .is_some_and(|old| same_message(&old, &item))
-                {
-                    messages.set_row_data(before, item);
-                }
+                redraw_message(
+                    messages,
+                    before,
+                    message_item(&view, in_group, chat, images),
+                );
             }
             // Fading a row in redraws the whole window for as long as it lasts (a backend
             // that paints all of it at every frame), so only a message that comes after a quiet
@@ -405,16 +384,7 @@ pub(crate) fn render(
                     .conversations()
                     .map(|c| conversation_item(&c, pinned, chat, images, &list_time))
                     .collect();
-                // Update in place where possible so the list keeps its scroll position.
-                if conversations.row_count() == items.len() {
-                    for (row, item) in items.into_iter().enumerate() {
-                        if conversations.row_data(row).as_ref() != Some(&item) {
-                            conversations.set_row_data(row, item);
-                        }
-                    }
-                } else {
-                    conversations.set_vec(items);
-                }
+                update_list(&window.global::<ChatList>().get_conversations(), items);
             }
         }
         window
@@ -489,24 +459,19 @@ pub(super) fn render_composer(window: &AppWindow, chat: &ChatState) {
     update_list(
         &window.global::<Composer>().get_mention_candidates(),
         candidates,
-        |a, b| a == b,
     );
 }
 
 /// Brings a list in line with `items`, touching only rows that differ, so it keeps its scroll
-/// position. `same` compares rows (nested models compare by identity otherwise).
-pub(super) fn update_list<T: Clone + 'static>(
-    model: &ModelRc<T>,
-    items: Vec<T>,
-    same: impl Fn(&T, &T) -> bool,
-) {
+/// position.
+pub(super) fn update_list<T: Clone + PartialEq + 'static>(model: &ModelRc<T>, items: Vec<T>) {
     let model = vec_model(model);
     if model.row_count() != items.len() {
         model.set_vec(items);
         return;
     }
     for (row, item) in items.into_iter().enumerate() {
-        if !model.row_data(row).is_some_and(|old| same(&old, &item)) {
+        if model.row_data(row).as_ref() != Some(&item) {
             model.set_row_data(row, item);
         }
     }
@@ -583,11 +548,7 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
             time: state::format_list_time(ring.latest).into(),
         })
         .collect();
-    update_list(
-        &window.global::<Panels>().get_story_rings(),
-        rings,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Panels>().get_story_rings(), rings);
     // Rebuilt when the groups or their names change; the choice stays with its group.
     let groups = chat.story_groups();
     let ids: Vec<ConversationId> = groups.iter().map(|c| c.id.clone()).collect();
@@ -716,11 +677,7 @@ pub(super) fn render_details(window: &AppWindow, chat: &ChatState) {
         .iter()
         .map(|person| member_item(person, false))
         .collect();
-    update_list(
-        &window.global::<Groups>().get_details_requests(),
-        requests,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Groups>().get_details_requests(), requests);
     let members: Vec<MemberItem> = details
         .members
         .iter()
@@ -728,11 +685,7 @@ pub(super) fn render_details(window: &AppWindow, chat: &ChatState) {
         .collect();
     // Row by row: a new model would rebuild the rows, closing a member's menu under the
     // pointer whenever anything happens.
-    update_list(
-        &window.global::<Groups>().get_details_members(),
-        members,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Groups>().get_details_members(), members);
 }
 
 /// The media overview.
@@ -755,11 +708,8 @@ pub(super) fn render_media(window: &AppWindow, chat: &ChatState, images: &Images
         .iter()
         .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
         .collect();
-    update_list(
-        &window.global::<Panels>().get_media_tiles(),
-        tiles,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Panels>().get_media_tiles(), tiles);
+    let when = state::time_formatter();
     let files: Vec<SharedItem> = overview
         .files
         .iter()
@@ -767,29 +717,21 @@ pub(super) fn render_media(window: &AppWindow, chat: &ChatState, images: &Images
             attachment: attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images),
             url: SharedString::new(),
             sender: m.sender.as_str().into(),
-            when: state::format_time(m.timestamp).into(),
+            when: when(m.timestamp).into(),
         })
         .collect();
-    update_list(
-        &window.global::<Panels>().get_media_files(),
-        files,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Panels>().get_media_files(), files);
     let links: Vec<SharedItem> = overview
         .links
         .iter()
         .map(|(m, url)| SharedItem {
             url: url.as_str().into(),
             sender: m.sender.as_str().into(),
-            when: state::format_time(m.timestamp).into(),
+            when: when(m.timestamp).into(),
             ..Default::default()
         })
         .collect();
-    update_list(
-        &window.global::<Panels>().get_media_links(),
-        links,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<Panels>().get_media_links(), links);
 }
 
 /// The open chat's activity strip, or none while it is turned off.
@@ -799,11 +741,7 @@ pub(super) fn render_activity(window: &AppWindow, chat: &ChatState) {
     } else {
         Vec::new()
     };
-    update_list(
-        &window.global::<OpenChat>().get_activity(),
-        items,
-        |a, b| a == b,
-    );
+    update_list(&window.global::<OpenChat>().get_activity(), items);
 }
 
 /// Weeks or months (whichever fit) from top to bottom, long silences folded into a short gap.

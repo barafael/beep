@@ -452,13 +452,7 @@ fn at_row(chat: &mut ChatState, key: &str, action: fn(&mut ChatState, usize) -> 
 /// `draft` with its bytes `from` to `to` replaced by `text` (the offsets clamped to the draft
 /// and to character boundaries), and the byte offset just after `text`.
 pub(crate) fn splice(draft: &str, text: &str, from: i32, to: i32) -> (String, usize) {
-    let at = |offset: i32| {
-        let mut at = usize::try_from(offset).unwrap_or(0).min(draft.len());
-        while !draft.is_char_boundary(at) {
-            at -= 1;
-        }
-        at
-    };
+    let at = |offset: i32| draft.floor_char_boundary(usize::try_from(offset).unwrap_or(0));
     let (from, to) = (at(from.min(to)), at(from.max(to)));
     let spliced = [&draft[..from], text, &draft[to..]].concat();
     (spliced, from + text.len())

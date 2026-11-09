@@ -25,19 +25,7 @@ use super::{
 
 /// Sends a group's picture as presage has it now (see [`fetch_avatars`]), or that it has none.
 pub(super) async fn send_group_avatar(mut manager: Mgr, ctx: &Ctx, key: [u8; 32]) {
-    let revision = manager
-        .store()
-        .group(key)
-        .await
-        .ok()
-        .flatten()
-        .map_or(0, |group| group.revision);
-    let context = GroupContextV2 {
-        master_key: Some(key.to_vec()),
-        revision: Some(revision),
-        ..Default::default()
-    };
-    let avatar = match manager.retrieve_group_avatar(context).await {
+    let avatar = match group_picture(&mut manager, key).await {
         Ok(Some(bytes)) => decode_avatar(bytes).await.map(Arc::new),
         Ok(None) => None,
         Err(error) => {
@@ -66,6 +54,27 @@ pub(super) async fn send_contact_avatar(mut manager: Mgr, ctx: &Ctx, aci: Aci) {
         conversation: conversation_id(&Thread::Contact(ServiceId::Aci(aci))),
         avatar,
     });
+}
+
+/// The group's picture as presage has it now, if it has one.
+async fn group_picture(
+    manager: &mut Mgr,
+    key: [u8; 32],
+) -> Result<Option<Vec<u8>>, PresageError<SqliteStoreError>> {
+    // presage only refetches the group if this revision is newer than the cached one.
+    let revision = manager
+        .store()
+        .group(key)
+        .await
+        .ok()
+        .flatten()
+        .map_or(0, |group| group.revision);
+    let context = GroupContextV2 {
+        master_key: Some(key.to_vec()),
+        revision: Some(revision),
+        ..Default::default()
+    };
+    manager.retrieve_group_avatar(context).await
 }
 
 /// A contact's profile picture. It needs their profile key, which only arrives with their
@@ -137,22 +146,7 @@ async fn fetch_avatars(mut manager: Mgr, threads: Vec<(ConversationId, Thread)>,
         let picture = match thread {
             Thread::Contact(ServiceId::Aci(aci)) => contact_picture(&mut manager, aci).await,
             Thread::Contact(_) => continue,
-            Thread::Group(key) => {
-                // presage only refetches the group if this revision is newer than the cached one.
-                let revision = manager
-                    .store()
-                    .group(key)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map_or(0, |group| group.revision);
-                let context = GroupContextV2 {
-                    master_key: Some(key.to_vec()),
-                    revision: Some(revision),
-                    ..Default::default()
-                };
-                manager.retrieve_group_avatar(context).await
-            }
+            Thread::Group(key) => group_picture(&mut manager, key).await,
         };
         match picture {
             Ok(Some(bytes)) => match decode_avatar(bytes).await {

@@ -17,7 +17,7 @@ use crate::{
 use super::{
     Ctx, ForSession, Mgr, Ports, Threads,
     groups::group_conversation,
-    history::{stored_at, stored_since, to_chat_message},
+    history::{contents_before, stored_at, stored_since, to_chat_message},
     trust::{pin_verified, safety_number, trust_given, trust_of},
 };
 
@@ -179,7 +179,7 @@ async fn with_settings(manager: &Mgr, ctx: &Ctx, conversations: &mut [Conversati
             None => {
                 let thread = ctx.threads.borrow().get(&conversation.id).cloned();
                 let newest = match thread {
-                    Some(thread) => newest_stored(manager, &thread).await,
+                    Some(thread) => newest_stored(manager, ctx, &thread).await,
                     None => 0,
                 };
                 first_settings(ctx, &conversation.id, newest).await
@@ -209,8 +209,8 @@ pub(super) async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) ->
 }
 
 /// When the newest content stored in a thread was sent, or 0 for none.
-async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
-    match manager.store().messages_before(thread, None, 1).await {
+async fn newest_stored(manager: &Mgr, ctx: &Ctx, thread: &Thread) -> u64 {
+    match contents_before(manager.store(), &ctx.tables, thread, None, 1).await {
         Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
         Err(error) => {
             warn!(error = %crate::scrub::chain(&error), "failed to read a thread's newest message");
@@ -312,6 +312,7 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
 /// activity and show previews before any history is opened.
 pub(super) async fn send_latest_messages(
     manager: Mgr,
+    tables: LocalStore,
     threads: Vec<(ConversationId, Thread)>,
     events: Events,
 ) {
@@ -319,7 +320,7 @@ pub(super) async fn send_latest_messages(
     for (id, thread) in threads {
         // Only for the preview and the order: `LoadHistory` replaces it with the full message
         // (delivery, edits, …).
-        let Some(latest) = latest_message(&manager, &mut names, &id, &thread).await else {
+        let Some(latest) = latest_message(&manager, &tables, &mut names, &id, &thread).await else {
             continue;
         };
         if !events.sent(Event::Latest(latest)) {
@@ -349,7 +350,7 @@ pub(super) async fn send_unread(manager: &Mgr, ctx: &Ctx) {
         let Some(settings) = remembered.get(&id) else {
             continue;
         };
-        let count = count_unread(manager, &thread, settings.last_read).await;
+        let count = count_unread(manager, ctx, &thread, settings.last_read).await;
         if count > 0 {
             unread.push((id, count));
         }
@@ -363,18 +364,20 @@ pub(super) async fn send_unread(manager: &Mgr, ctx: &Ctx) {
 /// reaches further back for quiet conversations, instead of reading every chat's full history.
 async fn latest_message(
     manager: &Mgr,
+    tables: &LocalStore,
     names: &mut Names,
     id: &ConversationId,
     thread: &Thread,
 ) -> Option<ChatMessage> {
-    // Receipts and the like are stored too; look past them a few at a time.
+    // Receipts and the like are stored too; look past them a few at a time, as the newest is
+    // usually the one and each read decodes its whole page.
     let mut before = None;
+    let mut page = 2;
     loop {
-        let contents = manager
-            .store()
-            .messages_before(thread, before, 20)
+        let contents = contents_before(manager.store(), tables, thread, before, page)
             .await
             .ok()?;
+        page = (page * 2).min(32);
         for content in &contents {
             if let Some(message) = to_chat_message(manager, names, id.clone(), content).await {
                 return Some(message);
@@ -385,10 +388,10 @@ async fn latest_message(
 }
 
 /// Incoming messages in a thread after `last_read`.
-async fn count_unread(manager: &Mgr, thread: &Thread, last_read: u64) -> u32 {
+async fn count_unread(manager: &Mgr, ctx: &Ctx, thread: &Thread, last_read: u64) -> u32 {
     let own = own_id(manager);
     let from = last_read.saturating_add(1);
-    let Some(contents) = stored_since(manager.store(), thread, from).await else {
+    let Some(contents) = stored_since(manager.store(), &ctx.tables, thread, from).await else {
         return 0;
     };
     let count = contents

@@ -1,4 +1,4 @@
-use b33p_harness::Action;
+use b33p_harness::{Action, SettingsChange};
 
 use super::b33p::{b33p_chat, b33p_shows, edit, outgoing_index, read, select, type_and_send};
 use super::clients::{Android, desktop_shows, desktop_status};
@@ -253,21 +253,10 @@ fn android_takes(
 /// Turns b33p's "sync to phone" on or off, as its settings switch does: the next write to the
 /// storage service, or none.
 fn sync_to_phone(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
-    b33p.act(Action::SetSettings {
-        theme: None,
-        text_size: None,
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
-        typing_indicators: None,
-        link_previews: None,
+    b33p.act(Action::SetSettings(SettingsChange {
         sync_to_phone: Some(on),
-    })?;
+        ..SettingsChange::default()
+    }))?;
     b33p.wait_for("b33p's sync to phone", PATIENCE, |snapshot| {
         (snapshot.settings.sync_to_phone == on).then_some(())
     })

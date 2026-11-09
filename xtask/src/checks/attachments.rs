@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use b33p_harness::{
-    Action, AttachmentKind, AttachmentSnapshot, Download, Saved, Snapshot, StickersSnapshot,
-};
+use b33p_harness::{Action, AttachmentKind, AttachmentSnapshot, Download, Saved, StickersSnapshot};
 
 use super::b33p::{
     b33p_chat, b33p_shows, incoming_index, message_timestamp, outgoing_index, select, type_and_send,
@@ -347,7 +345,7 @@ fn settled(
         Step::Save => format!("{id} saved"),
     };
     b33p.wait_for(&waiting, PATIENCE, |snapshot| {
-        outcome(attachment(snapshot, id)?)
+        outcome(snapshot.attachment(id)?)
     })
     .map_err(|source| AttachmentsError::Waiting {
         id: id.to_owned(),
@@ -359,12 +357,4 @@ fn settled(
         step,
         error,
     })
-}
-
-fn attachment<'a>(snapshot: &'a Snapshot, id: &str) -> Option<&'a AttachmentSnapshot> {
-    snapshot
-        .messages
-        .iter()
-        .flat_map(|message| &message.attachments)
-        .find(|attachment| attachment.id == id)
 }

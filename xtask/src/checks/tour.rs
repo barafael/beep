@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Action, AttachmentKind, Delivery, InviteLinkAccess, Snapshot, StickersSnapshot, Trust,
@@ -20,7 +20,7 @@ use b33p_harness::{
 use serde::Serialize;
 use strum::VariantArray;
 
-use super::b33p::{edit, select, story_shows};
+use super::b33p::{edit, link_previews, select, story_shows};
 use super::rng::{self, Xorshift};
 use super::setup::{MeshB33p, MeshBox, started};
 use super::stress::{Sample, growing, no_panic, sample};
@@ -93,28 +93,6 @@ enum Kind {
     /// A link sent with link previews on: every member shows the box's page as its preview,
     /// title and picture (testbox/tools `preview`).
     LinkPreview,
-}
-
-/// Turns b33p's link previews on or off, as its settings switch does.
-fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
-    b33p.act(Action::SetSettings {
-        theme: None,
-        text_size: None,
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
-        typing_indicators: None,
-        link_previews: Some(on),
-        sync_to_phone: None,
-    })?;
-    b33p.wait_for("b33p's link previews", PATIENCE, |snapshot| {
-        (snapshot.settings.link_previews == on).then_some(())
-    })
 }
 
 /// What a message is searched by: the start of its text, "tour 12:", which no other message
@@ -1409,7 +1387,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         let acis = b33ps.iter().map(|each| each.aci.clone()).collect();
         let mut world = World::new(acis, seed, repeat);
         // The chats' first messages, the primaries' (setup.rs `mesh_hello`), are before the tour.
-        let start = now_ms();
+        let start = b33p_core::now_millis();
         for thread in &mut world.threads {
             thread.joined = thread.members.iter().map(|&k| (k, start)).collect();
         }
@@ -1455,7 +1433,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     /// Sends what is in `k`'s composer to its open chat, and waits until the server took it; its
     /// timestamp.
     fn send(&mut self, k: usize, text: &str) -> Result<u64, Failure> {
-        let before = now_ms();
+        let before = b33p_core::now_millis();
         let b33p = self.harness(k);
         b33p.act(Action::Type {
             text: text.to_owned(),
@@ -1612,7 +1590,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
                 let index = self.index(by, message)?;
                 let original = self.message(from, message)?.clone();
                 let target = self.world.threads[to].id_on(by, self.b33ps);
-                let before = now_ms();
+                let before = b33p_core::now_millis();
                 let started = Instant::now();
                 let b33p = self.harness(by);
                 b33p.act(Action::Forward { index })?;
@@ -1843,7 +1821,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
         let thread = &mut self.world.threads[thread];
         thread.members.insert(k);
         thread.left.remove(&k);
-        thread.joined.insert(k, now_ms());
+        thread.joined.insert(k, b33p_core::now_millis());
     }
 
     /// `k` is no longer in `thread`: its b33p says it left.
@@ -2167,7 +2145,7 @@ impl<'run, 'pod> Tour<'run, 'pod> {
     fn sticker(&mut self, by: usize, thread: usize) -> Result<(), Failure> {
         let (pack, sticker) = self.sticker_pack(by)?;
         self.open(by, thread)?;
-        let before = now_ms();
+        let before = b33p_core::now_millis();
         let started = Instant::now();
         let b33p = self.harness(by);
         if !b33p.act(Action::SendSticker { pack, sticker })? {
@@ -2738,13 +2716,6 @@ fn difference(expected: &[Seen], shown: &[Seen]) -> String {
     } else {
         lines.join("\n")
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
 }
 
 /// The median, the 95th percentile and the most of `values`; zeros of none.

@@ -22,6 +22,7 @@ use crate::Sockets;
 use crate::harness::{Harness, HarnessError};
 use crate::pod::{B33P, Pod, Service};
 use crate::process;
+use crate::wire::content::Logged;
 use testbox_tools::drivers;
 
 /// Messages in a burst.
@@ -64,6 +65,10 @@ pub(super) enum StressError {
         repeated: Vec<String>,
         out_of_order: Option<(String, String)>,
     },
+    /// `texts` reached b33p from one account at one millisecond, and b33p shows `shown` of
+    /// them rather than one ([`same_moment`]).
+    #[error("{texts:?} came at one millisecond from one account; b33p shows {shown} of them")]
+    SameMoment { texts: Vec<String>, shown: usize },
     /// What b33p was sending when it was killed, neither reached the peer and shown so nor shown
     /// as failed.
     #[error("{}", lines(sends))]
@@ -486,14 +491,7 @@ pub(crate) fn interrupt(
                 .into());
             }
             b33p.wait_for("the saving under way", PATIENCE, |snapshot| {
-                snapshot
-                    .messages
-                    .iter()
-                    .flat_map(|message| &message.attachments)
-                    .find(|attachment| attachment.id == id)?
-                    .saved
-                    .as_ref()
-                    .map(drop)
+                snapshot.attachment(&id)?.saved.as_ref().map(drop)
             })?;
             b33p = kill_and_start(containers, sockets)?;
             select(&mut b33p, &conversation)?;
@@ -510,13 +508,7 @@ pub(crate) fn interrupt(
             b33p.wait_for(
                 "the file saved",
                 HISTORY_PATIENCE,
-                |snapshot| match &snapshot
-                    .messages
-                    .iter()
-                    .flat_map(|message| &message.attachments)
-                    .find(|attachment| attachment.id == id)?
-                    .saved
-                {
+                |snapshot| match &snapshot.attachment(&id)?.saved {
                     Some(Saved::Saved(_)) => Some(Ok(())),
                     Some(Saved::Failed(error)) => Some(Err(StressError::SaveFailed {
                         id: id.clone(),
@@ -604,11 +596,12 @@ pub(crate) fn content(
             type_and_send(&mut b33p, text)?;
         }
         let received = peer.sync()?;
-        // presage-cli prints what comes inline; that a long text's attachment makes it whole
-        // again is for Signal's apps to say, in the desktop and android phases.
+        // presage-cli prints a message's body and not its attachments, so the peer shows a long
+        // text's inline part; the whole reaching Signal's apps is the desktop and android phases'
+        // long-text checks.
         let missing: Vec<String> = texts
             .iter()
-            .filter(|(_, text)| !received.contains(inline_part(text)))
+            .filter(|(_, text)| !received.contains(b33p_core::format::inline_head(text)))
             .map(|(what, _)| (*what).to_owned())
             .collect();
         if missing.is_empty() {
@@ -753,7 +746,7 @@ pub(crate) fn concurrency(
     })?;
 
     checks.record(
-        "presage-cli, Desktop and b33p sending at once: each gets the others' messages in order, once",
+        "presage-cli, Desktop and b33p sending at once: each gets the others' messages in order, once, and b33p after a restart too",
         || {
             let from_cli = numbered("testbox stress: from presage-cli", 60);
             let from_desktop = numbered("testbox stress: from Desktop", 15);
@@ -788,21 +781,56 @@ pub(crate) fn concurrency(
                     .then_some(())
             })?;
             settled(&mut b33p)?;
-            in_order_once(
-                &all_texts(&mut b33p, "testbox stress: from presage-cli ")?,
-                &from_cli,
-            )?;
-            in_order_once(
-                &all_texts(&mut b33p, "testbox stress: from Desktop ")?,
-                &from_desktop,
-            )?;
-            in_order_once(&all_texts(&mut b33p, "testbox stress: from b33p ")?, &from_b33p)?;
+            // presage-cli and Desktop are one account, the peer's, on one clock: two of their
+            // messages can carry the same millisecond, and b33p keeps one of those.
+            let together = same_moment(containers, &[&from_cli, &from_desktop])?;
+            let shows_each_once = |b33p: &mut Harness| -> Result<(), Failure> {
+                let from_cli_shown = all_texts(b33p, "testbox stress: from presage-cli ")?;
+                let from_desktop_shown = all_texts(b33p, "testbox stress: from Desktop ")?;
+                for texts in &together {
+                    let shown: Vec<&String> = from_cli_shown
+                        .iter()
+                        .chain(&from_desktop_shown)
+                        .filter(|text| texts.contains(text))
+                        .collect();
+                    println!(
+                        "  {texts:?} reached b33p from the peer's account at one millisecond; \
+                         b33p shows {shown:?}"
+                    );
+                    if shown.len() != 1 {
+                        return Err(StressError::SameMoment {
+                            texts: texts.clone(),
+                            shown: shown.len(),
+                        }
+                        .into());
+                    }
+                }
+                let apart = |texts: &[String]| -> Vec<String> {
+                    texts
+                        .iter()
+                        .filter(|text| !together.iter().any(|group| group.contains(text)))
+                        .cloned()
+                        .collect()
+                };
+                in_order_once(&apart(&from_cli_shown), &apart(&from_cli))?;
+                in_order_once(&apart(&from_desktop_shown), &apart(&from_desktop))?;
+                in_order_once(&all_texts(b33p, "testbox stress: from b33p ")?, &from_b33p)?;
+                Ok(())
+            };
+            shows_each_once(&mut b33p)?;
             // On the peer's side, Desktop: presage-cli's sends receive in the background and
             // exit, which can drop a message between decrypting and storing it (finding 1b),
             // and the check every phase ends with names those.
             for text in &from_b33p {
                 desktop_shows(&mut desktop, text)?;
             }
+            // Read back from what b33p stored rather than from what it was told: two messages
+            // from two accounts at one millisecond both show until then, and are one row in
+            // presage's store, the other kept beside it.
+            b33p = kill_and_start(containers, sockets)?;
+            select(&mut b33p, &conversation)?;
+            settled(&mut b33p)?;
+            shows_each_once(&mut b33p)?;
             Ok(())
         },
     );
@@ -1220,20 +1248,6 @@ fn awkward_texts() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// What of `text` b33p sends inline: as Signal's apps, up to 2000 bytes, and whole characters
-/// (b33p-core's `split_long`).
-fn inline_part(text: &str) -> &str {
-    const INLINE: usize = 2000;
-    if text.len() <= INLINE {
-        return text;
-    }
-    let cut = (0..=INLINE)
-        .rev()
-        .find(|&at| text.is_char_boundary(at))
-        .unwrap_or(0);
-    &text[..cut]
-}
-
 /// Fails, naming them, unless `shown` has each of [`awkward_texts`] as it is.
 fn missing_texts(shown: &[String]) -> Result<(), StressError> {
     let wrong: Vec<Mangled> = awkward_texts()
@@ -1299,15 +1313,8 @@ fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure>
         }
         .into());
     }
-    // The state the save before left: wait for this one's.
-    thread::sleep(Duration::from_millis(500));
     Ok(b33p.wait_for("saved, or not", PATIENCE, |snapshot| {
-        let attachment = snapshot
-            .messages
-            .iter()
-            .flat_map(|message| &message.attachments)
-            .find(|attachment| attachment.id == id)?;
-        match &attachment.saved {
+        match &snapshot.attachment(id)?.saved {
             Some(Saved::Saved(path)) => Some(Ok(path.clone())),
             Some(Saved::Failed(error)) => Some(Err(error.clone())),
             Some(Saved::Saving) | None => None,
@@ -1525,6 +1532,41 @@ fn in_order_once(found: &[String], expected: &[String]) -> Result<(), StressErro
     })
 }
 
+/// Those of `texts` that reached b33p from one account at one millisecond, in sets of two or
+/// more, as b33p's content log has them. Signal knows a message by its author and timestamp
+/// (edits, reactions, quotes and deletes point at it so), so of two from one account's two
+/// devices at one millisecond b33p keeps one, as Signal-Android does (its `MessageTable`'s
+/// unique `date_sent, from_recipient_id, thread_id`); Desktop tells them apart by device.
+fn same_moment(containers: &Pod, texts: &[&[String]]) -> Result<Vec<Vec<String>>, Failure> {
+    let path = containers.content_log(&B33P.name());
+    moments_in(&testbox_tools::read(&path)?, texts)
+}
+
+/// [`same_moment`] of a content log's lines, `log`.
+fn moments_in(log: &str, texts: &[&[String]]) -> Result<Vec<Vec<String>>, Failure> {
+    let mut moments: std::collections::BTreeMap<(String, u64), Vec<String>> =
+        std::collections::BTreeMap::new();
+    for line in log.lines() {
+        let logged: Logged = serde_json::from_str(line)?;
+        let Some(text) = logged
+            .body()
+            .filter(|body| texts.iter().any(|texts| texts.contains(body)))
+        else {
+            continue;
+        };
+        let moment = moments
+            .entry((logged.sender, logged.timestamp))
+            .or_default();
+        if !moment.contains(&text) {
+            moment.push(text);
+        }
+    }
+    Ok(moments
+        .into_values()
+        .filter(|moment| moment.len() > 1)
+        .collect())
+}
+
 /// Kills b33p's container, starts it again, and connects to it unlocked.
 fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness, Failure> {
     let since = process::now()?;
@@ -1578,16 +1620,7 @@ pub(super) fn no_panic(containers: &Pod, service: Service) -> Result<(), Failure
 
 /// [`LARGE_FILE`] bytes that don't compress: a counter through xorshift.
 fn large_file() -> Vec<u8> {
-    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
-    let mut bytes = Vec::with_capacity(LARGE_FILE);
-    while bytes.len() < LARGE_FILE {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        bytes.extend_from_slice(&state.to_le_bytes());
-    }
-    bytes.truncate(LARGE_FILE);
-    bytes
+    rng::incompressible(LARGE_FILE)
 }
 
 #[cfg(test)]
@@ -1601,6 +1634,40 @@ mod tests {
             files,
             answer: Duration::from_millis(5),
         }
+    }
+
+    #[test]
+    fn messages_from_one_account_at_one_millisecond_are_found_together() {
+        use base64::Engine as _;
+        let line = |sender: &str, timestamp: u64, text: &str| {
+            // Content { dataMessage { body: text } }.
+            let length = u8::try_from(text.len()).unwrap();
+            let content = base64::engine::general_purpose::STANDARD
+                .encode([&[10, length + 2, 10, length], text.as_bytes()].concat());
+            format!(
+                r#"{{"content":"{content}","device":1,"sender":"{sender}","timestamp":{timestamp}}}"#
+            )
+        };
+        let cli = numbered("from presage-cli", 30);
+        let desktop = numbered("from Desktop", 5);
+        let log = [
+            line("peer", 10, "from presage-cli 021"),
+            line("peer", 10, "from Desktop 003"),
+            // Redelivered: the same text again is no second message.
+            line("peer", 11, "from presage-cli 022"),
+            line("peer", 11, "from presage-cli 022"),
+            // Another account's at the same millisecond: b33p keeps both, `b33p_collided`.
+            line("other", 12, "from presage-cli 023"),
+            line("peer", 12, "from Desktop 004"),
+        ]
+        .join("\n");
+        assert_eq!(
+            moments_in(&log, &[&cli, &desktop]).unwrap(),
+            vec![vec![
+                "from presage-cli 021".to_owned(),
+                "from Desktop 003".to_owned()
+            ]]
+        );
     }
 
     #[test]

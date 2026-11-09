@@ -475,13 +475,7 @@ fn main() -> std::process::ExitCode {
         [show, url] if show == "show-qr" => show_qr(url).map_err(Failure::from),
         _ => Err(UsageError.into()),
     };
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("android: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("android", outcome)
 }
 
 /// Creates `path` and its parents.

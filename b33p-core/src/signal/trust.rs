@@ -61,7 +61,7 @@ async fn show_identity_notes(
         return;
     }
     // This runs for every message that arrives: the newest few, not the whole thread.
-    let Some(recent) = stored_since(manager.store(), &thread, since).await else {
+    let Some(recent) = stored_since(manager.store(), &ctx.tables, &thread, since).await else {
         return;
     };
     for content in recent.iter().filter(|c| identity_note(c).is_some()) {

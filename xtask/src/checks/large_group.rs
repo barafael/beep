@@ -141,8 +141,8 @@ pub(super) fn large_group(
     );
 
     // presage-cli knows the group from b33p's greeting; each member writes at once.
-    let master_key = group
-        .strip_prefix("g:")
+    let master_key = b33p_core::ConversationId(group.clone())
+        .group_key()
         .ok_or_else(|| LargeGroupError::NotAGroup { id: group.clone() })?
         .to_owned();
     let answer = |member: &Presage<'_>| format!("testbox large group: {} answers", member.name());

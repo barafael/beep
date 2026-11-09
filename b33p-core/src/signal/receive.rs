@@ -42,8 +42,9 @@ use super::{
         own_membership_change, refresh_group, signed_group_change, told_changes,
     },
     history::{
-        author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
-        stored_at, stored_timers, to_chat_message, to_reaction,
+        author_of, checkpoint, data_of, erase_deleted, is_outgoing, keep_edit_if_dropped,
+        keep_if_dropped, original, start_timers, stored_at, stored_timers, to_chat_message,
+        to_reaction,
     },
     pins::{PinOutcome, on_pin_change, pin_change},
     stories::on_story,
@@ -308,6 +309,11 @@ async fn handle_received(
                         .thread_for_sender_and_timestamp(&sender, timestamp)
                         .await
                         .is_ok_and(|thread| thread.is_some())
+                        || ctx
+                            .tables
+                            .collided_conversation(&sender.service_id_string(), timestamp)
+                            .await
+                            .is_ok_and(|conversation| conversation.is_some())
                 };
                 if decrypted.contains(&(sender, sender_device, timestamp)) || stored().await {
                     debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
@@ -319,12 +325,12 @@ async fn handle_received(
                         sender = %sender.service_id_string(),
                         device = %sender_device,
                         timestamp,
-                        "lost a message: its counter was used before, and it isn't stored"
+                        "{}", crate::LOST_COUNTER_USED_LOG
                     );
                 }
                 return true;
             }
-            warn!(sender = %sender.service_id_string(), error = %crate::scrub::chain(&error), "failed to decrypt a message");
+            warn!(sender = %sender.service_id_string(), error = %crate::scrub::chain(&error), "{}", crate::DECRYPTION_FAILED_LOG);
             // Our own devices' messages: nothing to reset (a session with ourselves), and
             // nothing to tell in a chat with ourselves.
             if sender == own_id(manager) {
@@ -769,6 +775,8 @@ async fn handle_content(
     {
         receipts.owe(content.metadata.sender, stored_at(content));
     }
+    // Past what b33p drops above: what it doesn't show isn't worth keeping.
+    keep_if_dropped(manager.store(), &ctx.tables, &thread, content).await;
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         let target = original(ctx, &id, target).await;
         return events.sent(Event::Reaction {
@@ -880,6 +888,7 @@ async fn handle_content(
     if edit {
         // An edit of an edit names the one before; what it edits is the message first sent.
         let target = original(ctx, &id, message.reference()).await;
+        keep_edit_if_dropped(&ctx.tables, &id, &target, content).await;
         if let Some(edited_at) = message.edited_at
             && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
         {
@@ -1034,6 +1043,9 @@ async fn on_answered_elsewhere(
         let mut store = manager.store().clone();
         match store.clear_thread(&thread).await {
             Ok(()) => {
+                if let Err(error) = ctx.tables.forget_collided_chat(&id).await {
+                    warn!(error = %crate::scrub::chain(&error), "failed to forget what was kept of a deleted chat");
+                }
                 checkpoint(ctx).await;
                 ctx.events.send(Event::Cleared(id));
             }
@@ -1054,20 +1066,30 @@ async fn on_receipt(manager: &Mgr, ctx: &Ctx, sender: ServiceId, receipt: &Recei
         Type::Delivery => Delivery::Delivered,
         Type::Read | Type::Viewed => Delivery::Read,
     };
-    let mut found = match ctx.tables.conversations_of(&receipt.timestamp).await {
+    let found = match ctx.tables.conversations_of(&receipt.timestamp).await {
         Ok(found) => found,
         Err(error) => {
             warn!(error = %crate::scrub::chain(&error), "failed to look up receipted messages");
             return true;
         }
     };
-    let mut theirs = Vec::new();
+    // One receipt names up to `RECEIPT_TIMESTAMPS` messages, usually of one conversation.
+    let mut parties: HashMap<ConversationId, bool> = HashMap::new();
+    let mut found_theirs = Vec::new();
     for (conversation, timestamp) in found {
-        if is_party(manager, &conversation, sender).await {
-            theirs.push((conversation, timestamp));
+        let party = match parties.get(&conversation) {
+            Some(&party) => party,
+            None => {
+                let party = is_party(manager, &conversation, sender).await;
+                parties.insert(conversation.clone(), party);
+                party
+            }
+        };
+        if party {
+            found_theirs.push((conversation, timestamp));
         }
     }
-    found = theirs;
+    let found = found_theirs;
     if let Err(error) = ctx.tables.set_deliveries(&found, delivery).await {
         warn!(error = %crate::scrub::chain(&error), "failed to remember a receipt");
     }
@@ -1174,14 +1196,21 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                 conversation
             }
             _ => {
-                let Ok(Some(thread)) = manager
+                let stored = manager
                     .store()
                     .thread_for_sender_and_timestamp(&sender, timestamp)
-                    .await
-                else {
-                    continue;
-                };
-                conversation_id(&thread)
+                    .await;
+                match stored {
+                    Ok(Some(thread)) => conversation_id(&thread),
+                    _ => match ctx
+                        .tables
+                        .collided_conversation(&message.author_id, timestamp)
+                        .await
+                    {
+                        Ok(Some(conversation)) => conversation,
+                        _ => continue,
+                    },
+                }
             }
         };
         read.entry(conversation).or_default().push(message);
@@ -1204,7 +1233,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                 warn!(error = %crate::scrub::chain(&error), "failed to remember what was read")
             }
         }
-        let timers = stored_timers(manager, &conversation, &messages).await;
+        let timers = stored_timers(manager, &ctx.tables, &conversation, &messages).await;
         start_timers(ctx, &conversation, &timers, now).await;
     }
 }

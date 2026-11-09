@@ -38,7 +38,7 @@ use super::{
     },
     history::{
         checkpoint, data_of, decorate, erase_deleted, history_page, is_outgoing, media, original,
-        search, start_timers, to_chat_message, to_reaction,
+        search, start_timers, stored_message, to_chat_message, to_reaction,
     },
     send::{
         Outgoing, aci_binary, body_ranges, group_context, link_preview, respond, send_blocked,
@@ -74,13 +74,14 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
         else {
             continue;
         };
+        let ours = MessageRef {
+            author_id: own_id(manager).service_id_string(),
+            timestamp: *timestamp,
+        };
         let stored = match thread_of(conversation) {
-            Some(thread) => manager
-                .store()
-                .message(&thread, *timestamp)
-                .await
-                .ok()
-                .flatten(),
+            Some(thread) => {
+                stored_message(manager.store(), &ctx.tables, conversation, &thread, &ours).await
+            }
             None => None,
         };
         if stored.is_some_and(|content| is_outgoing(manager, &content)) {
@@ -397,7 +398,7 @@ async fn handle_command(
             let Ok(thread) = thread(&id) else {
                 return Ok(());
             };
-            let (contents, older) = history_page(manager, &thread, before).await?;
+            let (contents, older) = history_page(manager, &ctx.tables, &thread, before).await?;
             let mut names = Names::new();
             let mut messages = Vec::new();
             let mut reactions = Vec::new();
@@ -894,9 +895,9 @@ async fn handle_command(
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
             };
-            let (manager, events) = (manager.clone(), events.clone());
+            let (manager, tables, events) = (manager.clone(), ctx.tables.clone(), events.clone());
             ctx.background.run(BackgroundKind::Media, async move {
-                match media(&manager, &thread, &conversation).await {
+                match media(&manager, &tables, &thread, &conversation).await {
                     Ok(messages) => {
                         events.send(Event::Media {
                             conversation,
@@ -917,9 +918,9 @@ async fn handle_command(
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
             };
-            let (manager, events) = (manager.clone(), events.clone());
+            let (manager, tables, events) = (manager.clone(), ctx.tables.clone(), events.clone());
             ctx.background.run(BackgroundKind::Search, async move {
-                match search(&manager, &thread, &conversation, &query).await {
+                match search(&manager, &tables, &thread, &conversation, &query).await {
                     Ok(messages) => {
                         events.send(Event::SearchResults {
                             conversation,
@@ -998,12 +999,14 @@ async fn handle_command(
             // An edit replaces the whole message, so all but the text comes from the message
             // as sent: its attachments, quote, sticker and timer stay (receivers show what
             // the edit carries, and nothing else).
-            let stored = manager
-                .store()
-                .message(&thread, target.timestamp)
-                .await
-                .ok()
-                .flatten();
+            let stored = stored_message(
+                manager.store(),
+                &ctx.tables,
+                &conversation,
+                &thread,
+                &target,
+            )
+            .await;
             let original = stored
                 .as_ref()
                 .and_then(data_of)
@@ -1114,8 +1117,18 @@ async fn handle_command(
             for_everyone: false,
         } => {
             let thread = thread(&conversation)?;
+            // Kept beside the store: what the store holds at its time is someone else's.
+            let kept = or_logged(
+                ctx.tables.forget_collided(&conversation, &target).await,
+                "messages kept beside the store",
+            );
             let mut store = manager.store().clone();
-            if let Err(source) = store.delete_message(&thread, target.timestamp).await {
+            let deleted = if kept {
+                Ok(true)
+            } else {
+                store.delete_message(&thread, target.timestamp).await
+            };
+            if let Err(source) = deleted {
                 return Err(CommandError::DeleteHere {
                     conversation,
                     target,

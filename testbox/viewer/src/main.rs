@@ -173,13 +173,7 @@ fn main() -> std::process::ExitCode {
     // on the sandbox.
     // SAFETY: the process's only thread yet; nothing reads the environment concurrently.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "disabled:") };
-    match run() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("testbox-viewer: {}", Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("testbox-viewer", run())
 }
 
 /// What the viewer itself fails at; testbox-vnc's failures come as its own.

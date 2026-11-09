@@ -13,11 +13,15 @@ pub(super) fn seed() -> Result<u64, EnvNumberError> {
 pub(super) struct Xorshift(pub(super) u64);
 
 impl Xorshift {
-    pub(super) fn below(&mut self, bound: u64) -> u64 {
+    fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
-        self.0 % bound
+        self.0
+    }
+
+    pub(super) fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
     }
 
     /// One of `items`, none of none.
@@ -27,6 +31,17 @@ impl Xorshift {
         }
         items.get(usize::try_from(self.below(items.len() as u64)).ok()?)
     }
+}
+
+/// `size` bytes that don't compress, so that the link carries them all.
+pub(super) fn incompressible(size: usize) -> Vec<u8> {
+    let mut rng = Xorshift(0x9e37_79b9_7f4a_7c15);
+    let mut bytes = Vec::with_capacity(size.next_multiple_of(8));
+    while bytes.len() < size {
+        bytes.extend_from_slice(&rng.next().to_le_bytes());
+    }
+    bytes.truncate(size);
+    bytes
 }
 
 #[cfg(test)]

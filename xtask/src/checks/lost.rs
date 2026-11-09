@@ -15,12 +15,13 @@
 
 use std::collections::HashSet;
 
+use super::without_colours;
 use crate::pod::{Pod, PodError, Service};
 
-/// b33p's lines for a lost message (b33p-core/src/signal.rs, `Received::DecryptionError`).
+/// b33p's lines for a lost message.
 const B33P: [&str; 2] = [
-    "lost a message: its counter was used before, and it isn't stored",
-    "failed to decrypt a message",
+    b33p_core::LOST_COUNTER_USED_LOG,
+    b33p_core::DECRYPTION_FAILED_LOG,
 ];
 /// Signal-Android's (MessageDecryptor.kt).
 const ANDROID_FAILED: &str = "| Decryption error";
@@ -45,7 +46,7 @@ pub(super) fn found(containers: &Pod) -> Result<Vec<String>, PodError> {
         lost.extend(
             log.lines()
                 .filter(|line| B33P.iter().any(|needle| line.contains(needle)))
-                .map(|line| format!("{name}: {}", plain(line).trim())),
+                .map(|line| format!("{name}: {}", without_colours(line).trim())),
         );
     }
     if containers.running(Service::Android) {
@@ -58,20 +59,6 @@ pub(super) fn found(containers: &Pod) -> Result<Vec<String>, PodError> {
     }
     lost.extend(containers.lost());
     Ok(lost)
-}
-
-/// `line` without the colours of b33p's log (SGR escapes, `ESC [ … m`).
-fn plain(line: &str) -> String {
-    let mut plain = String::with_capacity(line.len());
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            chars.by_ref().find(|&c| c == 'm');
-        } else {
-            plain.push(c);
-        }
-    }
-    plain
 }
 
 /// The lines of Signal-Android's `logcat` that tell of a lost message.
@@ -140,7 +127,10 @@ mod tests {
     #[test]
     fn colours_are_left_out() {
         let line = "\u{1b}[33m WARN\u{1b}[0m \u{1b}[2mb33p_core::signal\u{1b}[0m: lost a message";
-        assert_eq!(plain(line), " WARN b33p_core::signal: lost a message");
+        assert_eq!(
+            without_colours(line),
+            " WARN b33p_core::signal: lost a message"
+        );
     }
 
     /// As for Android: a duplicate counts only if Desktop never decrypted that envelope.

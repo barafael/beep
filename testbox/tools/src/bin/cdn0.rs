@@ -141,13 +141,7 @@ enum ForwardError {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
-    match run().await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("cdn0: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("cdn0", run().await)
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

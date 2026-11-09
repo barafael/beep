@@ -57,13 +57,7 @@ async fn main() -> std::process::ExitCode {
         Ok(Some(argument)) => Err(FoundationDbError::Argument { argument }.into()),
         Err(error) => Err(error.into()),
     };
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("foundationdb: {}", testbox_tools::Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("foundationdb", outcome)
 }
 
 /// What fdbcli printed. Its exit status isn't checked: an unavailable database and a database

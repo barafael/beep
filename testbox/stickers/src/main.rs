@@ -32,7 +32,7 @@ use presage::libsignal_service::sticker_cipher::{
 use presage::model::identity::OnNewIdentity;
 use presage_store_sqlite::{SqliteStore, SqliteStoreError};
 use serde::Deserialize;
-use testbox_tools::{Report, UsageError};
+use testbox_tools::UsageError;
 
 const TITLE: &str = "testbox stickers";
 const AUTHOR: &str = "b33p testbox";
@@ -59,13 +59,7 @@ async fn main() -> std::process::ExitCode {
             .into()),
             Err(error) => Err(error.into()),
         };
-    match outcome {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("testbox-stickers: {}", Report(&*error));
-            std::process::ExitCode::FAILURE
-        }
-    }
+    testbox_tools::exit("testbox-stickers", outcome)
 }
 
 /// What keeps the pack from being seeded or installed.

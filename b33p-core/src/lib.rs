@@ -1468,6 +1468,13 @@ pub fn forget_database_key() -> Result<(), Box<dyn std::error::Error + Send + Sy
     Ok(vault::delete_keyring_key(vault::DEFAULT_ACCOUNT)?)
 }
 
+/// What b33p logs when a message from a counter used before isn't stored: it is lost. The test
+/// box's "no client lost a message" looks for these (xtask `checks/lost.rs`).
+pub const LOST_COUNTER_USED_LOG: &str =
+    "lost a message: its counter was used before, and it isn't stored";
+/// What b33p logs when a message fails to decrypt; see [`LOST_COUNTER_USED_LOG`].
+pub const DECRYPTION_FAILED_LOG: &str = "failed to decrypt a message";
+
 /// Current time in Signal's timestamp format.
 pub fn now_millis() -> u64 {
     std::time::SystemTime::now()

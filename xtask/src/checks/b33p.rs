@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Action, Answer, ConversationSnapshot, Delivery, DetailsSnapshot, MessageSnapshot,
-    ScreenSnapshot, Snapshot,
+    ScreenSnapshot, SettingsChange, Snapshot,
 };
 
 use super::presage::Presage;
@@ -283,16 +283,15 @@ pub(super) fn select(b33p: &mut Harness, conversation: &str) -> Result<(), Harne
     .map(drop)
 }
 
-/// The account b33p is linked to: its Note to Self is `c:` and the account's ACI
-/// (b33p-core/src/signal.rs `conversation_id`).
+/// The account b33p is linked to: the person its Note to Self is with.
 pub(super) fn own_aci(b33p: &mut Harness) -> Result<String, HarnessError> {
     b33p.wait_for("b33p's Note to Self", PATIENCE, |snapshot| {
-        snapshot
+        let note = snapshot
             .conversations
             .iter()
-            .find(|conversation| conversation.note_to_self)?
-            .id
-            .strip_prefix("c:")
+            .find(|conversation| conversation.note_to_self)?;
+        b33p_core::ConversationId(note.id.clone())
+            .contact_id()
             .map(str::to_owned)
     })
 }
@@ -453,4 +452,15 @@ fn outgoing_delivery(snapshot: &Snapshot, text: &str) -> Option<Delivery> {
         .iter()
         .find(|message| message.outgoing && message.text == text)
         .and_then(|message| message.delivery)
+}
+
+/// Turns b33p's link previews on or off, as its settings switch does.
+pub(super) fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
+    b33p.act(Action::SetSettings(SettingsChange {
+        link_previews: Some(on),
+        ..SettingsChange::default()
+    }))?;
+    b33p.wait_for("b33p's link previews", PATIENCE, |snapshot| {
+        (snapshot.settings.link_previews == on).then_some(())
+    })
 }

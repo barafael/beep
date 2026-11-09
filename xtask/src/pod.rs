@@ -597,6 +597,12 @@ impl Pod {
         self.target("run")
     }
 
+    /// The file `service`, a b33p, logs the contents it takes in to.
+    pub fn content_log(&self, service: &str) -> PathBuf {
+        self.run_dir()
+            .join(format!("{CONTENT_LOG_PREFIX}{service}.jsonl"))
+    }
+
     /// With `capture`, the boxes played from now on write the wire down: the pod's loopback as
     /// tcpdump sees it and the servers' TLS secrets, in [`Self::capture_dir`] (testbox/capture).
     pub fn capture(&self, capture: bool) {

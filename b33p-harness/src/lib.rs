@@ -537,21 +537,25 @@ pub enum Action {
         height: f32,
     },
     /// Changes the given settings and leaves the rest as they are.
-    SetSettings {
-        theme: Option<Theme>,
-        text_size: Option<TextSize>,
-        animations: Option<Animations>,
-        show_avatars: Option<bool>,
-        notifications: Option<bool>,
-        notification_content: Option<NotificationContent>,
-        show_activity: Option<bool>,
-        show_calendar: Option<bool>,
-        close_to_tray: Option<bool>,
-        read_receipts: Option<bool>,
-        typing_indicators: Option<bool>,
-        link_previews: Option<bool>,
-        sync_to_phone: Option<bool>,
-    },
+    SetSettings(SettingsChange),
+}
+
+/// The settings [`Action::SetSettings`] changes: those that are `Some`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettingsChange {
+    pub theme: Option<Theme>,
+    pub text_size: Option<TextSize>,
+    pub animations: Option<Animations>,
+    pub show_avatars: Option<bool>,
+    pub notifications: Option<bool>,
+    pub notification_content: Option<NotificationContent>,
+    pub show_activity: Option<bool>,
+    pub show_calendar: Option<bool>,
+    pub close_to_tray: Option<bool>,
+    pub read_receipts: Option<bool>,
+    pub typing_indicators: Option<bool>,
+    pub link_previews: Option<bool>,
+    pub sync_to_phone: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -634,6 +638,16 @@ pub struct ReceiptSnapshot {
     pub name: String,
     pub delivered_at: Option<u64>,
     pub read_at: Option<u64>,
+}
+
+impl Snapshot {
+    /// The attachment `id`, on any message shown.
+    pub fn attachment(&self, id: &str) -> Option<&AttachmentSnapshot> {
+        self.messages
+            .iter()
+            .flat_map(|message| &message.attachments)
+            .find(|attachment| attachment.id == id)
+    }
 }
 
 /// A search in the open conversation: what is looked for, and what was found, in the order

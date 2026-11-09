@@ -12,6 +12,17 @@ const MARKERS: [(&str, Style); 5] = [
     ("`", Style::Monospace),
 ];
 
+/// How much of a text Signal's apps send inline, in bytes: past it, the whole text goes as a
+/// `LongText` attachment beside the inline part, and a receiver splices it in. Signal-Android
+/// refuses a message whose body is over 2048 bytes as invalid (EnvelopeContentValidator.kt),
+/// as a sync of our own send too.
+pub const INLINE_BODY_BYTES: usize = 2000;
+
+/// The part of `text` that goes inline: all of it, or [`INLINE_BODY_BYTES`] cut at a character.
+pub fn inline_head(text: &str) -> &str {
+    &text[..text.floor_char_boundary(INLINE_BODY_BYTES)]
+}
+
 /// Takes the markers out of `text`, returning the plain text and its formatting in its bytes.
 /// A marker only counts in a pair around non-blank text that doesn't start or end with a
 /// space, so `2 * 3 * 4` and `snake_case_name` stay as they are. Inside `` ` `` nothing else is
@@ -408,6 +419,17 @@ pub fn links(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_text_goes_inline_cut_at_a_character() {
+        assert_eq!(inline_head("short"), "short");
+        assert_eq!(inline_head(&"x".repeat(20_000)).len(), INLINE_BODY_BYTES);
+        // Four bytes a character: 2000 is a boundary of them alone, one byte before shifts it.
+        let emoji = "😀".repeat(600);
+        assert_eq!(inline_head(&emoji).len(), INLINE_BODY_BYTES);
+        let shifted = format!("a{emoji}");
+        assert_eq!(inline_head(&shifted).len(), 1997);
+    }
 
     fn found(text: &str) -> Option<&str> {
         find_url(text).map(|(start, end)| &text[start..end])
