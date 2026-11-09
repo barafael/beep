@@ -70,6 +70,9 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Fixed
 
+- b33p no longer stops taking messages when many arrive at once while it reads the storage
+  service (a large group's members all answering, say): it took none after the first few
+  until restarted.
 - Windows: Ctrl shortcuts (copy, paste, select all, b33p's own) work while a Korean input
   method is on; before, it swallowed them.
 - Windows: b33p's window is kept out of screenshots, screen sharing and Recall, as it was meant
