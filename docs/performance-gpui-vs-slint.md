@@ -89,7 +89,8 @@ A text cursor blinker also ran forever.
   gap check avoids restarting fades (`b33p-slint/src/ui/`, `ui/types.slint`).
   This gave 24% to 23% incoming CPU and 228 to 204 MB RSS: small.
 - Fork patches in `b33p-slint/fork-patches/` (against `barafael/slint`):
-  `0001-no-op-animation.patch` skips animations from a value to itself and
+  `0001-no-op-animation.patch` skips animations from a value to itself (since
+  moved into the fork itself) and
   `0002-cursor-blink-timeout.patch` stops the caret after 10 s. These bring
   incoming CPU from 23% to 7.6% and idle from 1.0% to 0 CPU, 0 wakeups. They are
   **not pushed**: the fork and the five workspace `rev` entries are unchanged.
