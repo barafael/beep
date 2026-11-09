@@ -47,6 +47,7 @@ switch_100_chats, resize_sweep, type_80_keys, panels_details_media, incoming_5_p
 
 import argparse
 import collections
+import glob
 import json
 import math
 import os
@@ -58,6 +59,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -270,6 +272,66 @@ class Probe:
         return {"t": time.time(), "cpu": self.cpu(), "sw": self.switches(), **self.gpu()}
 
 
+class SysGpu:
+    """The whole GPU's load, from the amdgpu driver's sysfs files, sampled five times a second in
+    a thread for the whole run: the busy percentage (`gpu_busy_percent`), the package power in
+    watts (hwmon `power1_average`; on an APU it holds the CPU cores too) and the shader clock in
+    MHz (`freq1_input`). Unlike the drm fdinfo, which counts the client's own GPU time, this
+    counts everything that draws on the GPU, the host's desktop included: a run's own idle
+    reading (`gpu_idle_no_client`, taken before its client starts) is what to subtract."""
+
+    PERIOD_S = 0.2
+
+    def __init__(self, device):
+        self.device = device
+        self.hwmon = next(iter(sorted(glob.glob(f"{device}/hwmon/hwmon*"))), None)
+        self.samples = []  # (time, busy %, watts, MHz); None for what could not be read
+        self.stop_flag = threading.Event()
+        self.thread = None
+
+    @staticmethod
+    def detect():
+        for device in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+            if os.path.exists(f"{device}/gpu_busy_percent"):
+                return SysGpu(device)
+        return None
+
+    def read(self, path, scale):
+        try:
+            return int(open(path).read().strip()) / scale
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def sample_once(self):
+        hw = self.hwmon
+        return (time.time(), self.read(f"{self.device}/gpu_busy_percent", 1),
+                self.read(f"{hw}/power1_average", 1e6) if hw else None,
+                self.read(f"{hw}/freq1_input", 1e6) if hw else None)
+
+    def start(self):
+        def loop():
+            while not self.stop_flag.is_set():
+                self.samples.append(self.sample_once())
+                self.stop_flag.wait(self.PERIOD_S)
+        self.thread = threading.Thread(target=loop, daemon=True)
+        self.thread.start()
+
+    def window(self, t0, t1):
+        """The means (and the busy maximum) over the samples from t0 to t1, as phase metrics."""
+        rows = [s for s in list(self.samples) if t0 <= s[0] <= t1]
+        out = {}
+        for index, key in ((1, "sys_gpu_busy_pct"), (2, "sys_gpu_power_w"), (3, "sys_gpu_sclk_mhz")):
+            values = [s[index] for s in rows if s[index] is not None]
+            if values:
+                out[key] = round(statistics.mean(values), 2)
+                if index == 1:
+                    out["sys_gpu_busy_max_pct"] = round(max(values), 1)
+        return out
+
+
+SYSGPU = None  # set by `run` when the machine has an amdgpu
+
+
 def delta(before, after, probe):
     wall = after["t"] - before["t"]
     return {
@@ -282,6 +344,7 @@ def delta(before, after, probe):
         "gtt_mb": round(after["gtt_mb"], 1),
         **{k: round(v, 1) for k, v in probe.memory().items()},
         "threads": probe.threads(),
+        **(SYSGPU.window(before["t"], after["t"]) if SYSGPU else {}),
     }
 
 
@@ -723,6 +786,13 @@ def run_all(args):
     if not ways:
         sys.exit("bench.py: no way to run (no binary found)")
     args.out = os.path.abspath(args.out)
+    global SYSGPU
+    SYSGPU = SysGpu.detect()
+    if SYSGPU:
+        SYSGPU.start()
+        print(f"whole-GPU sampling: {SYSGPU.device} (hwmon {SYSGPU.hwmon})", flush=True)
+    else:
+        print("note: no amdgpu with gpu_busy_percent: the whole GPU is not sampled", flush=True)
     jobs = plan_jobs(ways, args.rounds, args.sync_rounds, args.frames_rounds)
     if args.dry_run:
         print_plan(args, ways, skipped, jobs)
@@ -753,6 +823,11 @@ def run_all(args):
         wait = wait_for_load(args.max_load)
         state = machine_state()
         r = Run(way, mode, round_, args.out, job_scale(args, mode), frames=(mode == "frames"))
+        gpu_idle = {}
+        if SYSGPU:  # the GPU with no client of ours: the desktop's own load, to subtract
+            t_from = time.time()
+            time.sleep(6)
+            gpu_idle = SYSGPU.window(t_from, time.time())
         try:
             r.start()
             if mode == "static":
@@ -771,6 +846,8 @@ def run_all(args):
             continue
         finally:
             r.stop()
+        if gpu_idle:
+            result["gpu_idle_no_client"] = gpu_idle
         record = {"ui": way.label, "way": way.label, "kind": way.kind, "mode": mode, "round": round_,
                   "scale": args.scale, "result": result,
                   "env": {**state, "load_wait": wait, "loadavg_after": read_file("/proc/loadavg")}}
@@ -792,10 +869,19 @@ def derive(mode, result):
     for metrics in result.values():
         if "vram_mb" in metrics and "gtt_mb" in metrics:
             metrics["gpu_mem_mb"] = round(metrics["vram_mb"] + metrics["gtt_mb"], 1)
+    idle = result.get("gpu_idle_no_client", {})
+    for name, metrics in result.items():
+        if name == "gpu_idle_no_client":
+            continue
+        for key, base in (("sys_gpu_busy_pct", "sys_gpu_busy_pct"), ("sys_gpu_power_w", "sys_gpu_power_w")):
+            if key in metrics and base in idle:
+                metrics[key.replace("sys_gpu_", "sys_gpu_over_idle_")] = round(metrics[key] - idle[base], 2)
     up, down = result.get("scroll_up_8s"), result.get("scroll_down_8s")
     if mode == "static" and up and down:
         result["scroll_both_8s_mean"] = {
-            key: round((up[key] + down[key]) / 2, 2) for key in ("cpu_pct", "cpu_s", "gpu_s", "wakeups_per_s")
+            key: round((up[key] + down[key]) / 2, 2)
+            for key in ("cpu_pct", "cpu_s", "gpu_s", "wakeups_per_s", "sys_gpu_busy_pct", "sys_gpu_power_w",
+                        "sys_gpu_over_idle_busy_pct", "sys_gpu_over_idle_power_w")
             if key in up and key in down}
     return result
 
@@ -874,7 +960,8 @@ def fmt_cell(c):
     return f"{c['median']:g}" if c["min"] == c["max"] else f"{c['median']:g} ({c['min']:g}-{c['max']:g})"
 
 
-SHOW = ("cpu_pct", "gpu_s", "wakeups_per_s", "frames_per_s", "gap_ms_p95", "gap_ms_p99", "gap_ms_max",
+SHOW = ("cpu_pct", "gpu_s", "sys_gpu_busy_pct", "sys_gpu_busy_max_pct", "sys_gpu_over_idle_busy_pct",
+        "sys_gpu_power_w", "sys_gpu_over_idle_power_w", "sys_gpu_sclk_mhz", "wakeups_per_s", "frames_per_s", "gap_ms_p95", "gap_ms_p99", "gap_ms_max",
         "gaps_over_33ms", "rss_mb", "pss_mb", "anon_mb", "vram_mb", "gtt_mb", "gpu_mem_mb", "threads",
         "harness_ready_s", "chat_list_s", "synced_flag_s", "caught_up_s", "snapshot_ms_p95", "snapshot_ms_max",
         "cpu_s", "unread_total", "rss_slope_mb_per_min", "anon_slope_mb_per_min")
