@@ -411,6 +411,17 @@ SECTIONS = [
       ("static", "scroll_down_8s", "gpu_s", "GPU time, scrolling down", "seconds in the phase", LOW)]),
     ("switching", "Switching chats", "100 selections of ten different chats, 80 ms apart.",
      [("static", "switch_100_chats", m, f"{t}, switching chats", u, LOW) for m, t, u in (CPU, WAKE, GPU_S)]),
+    ("gpu_system", "Whole GPU", "Everything the GPU does while the phase runs, from the amdgpu sysfs files (busy percentage, "
+     "package power, shader clock), sampled five times a second. Unlike the GPU time above, which counts only the client's "
+     "own engine time, this includes the desktop of the host; each run took its own reading with no client started "
+     "(`gpu_idle_no_client`) and the bars are the phase minus that. The power is the package's: on this APU it holds the CPU cores "
+     "too, so a CPU-heavy build shows watts here that are not the GPU's.",
+     [(mode, scen, m, f"{t}, {name}", u, LOW)
+      for mode, scen, name in (("static", "scroll_both_8s_mean", "scrolling"), ("static", "switch_100_chats", "switching chats"),
+                               ("live", "incoming_5_per_s_30s", "messages arriving"), ("live", "soak", "soak"))
+      for m, t, u in (("sys_gpu_over_idle_busy_pct", "GPU busy over idle", "percentage points"),
+                      ("sys_gpu_over_idle_power_w", "Package power over idle", "watts"))
+      ]),
     ("typing", "Typing", "80 real key presses through the display, 66 ms apart, into the message field.",
      [("static", "type_80_keys", m, f"{t}, typing", u, LOW) for m, t, u in (CPU, WAKE, GPU_S)]),
     ("panels", "Panels", "The details panel of a 500-member group, then the media panel of the long chat, three times.",

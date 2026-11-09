@@ -80,7 +80,8 @@ impl Wanted {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Echo {
-    /// Any text: the field only has to have focus.
+    /// Any text, and not read back: a code that submits itself, whose screen is gone once the
+    /// field took it.
     Anything,
     Exact(String),
     /// Its digits, whatever the field formats around them (a phone number).

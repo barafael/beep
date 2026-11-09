@@ -58,7 +58,7 @@ emojis = "0.9"
 [build-dependencies]
 slint-build.workspace = true
 # The icons (Lucide), written out for the UI to use as `@image-url("@lucide/<name>.svg")`.
-lucide-static-svg = "1.55"
+lucide-static-svg = "1.70"
 
 # The program's icon and version in the Windows executable (`assets/b33p.rc`).
 [target.'cfg(windows)'.build-dependencies]

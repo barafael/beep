@@ -55,6 +55,7 @@ pub fn is_deceptive(link: &str) -> bool {
     let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     host.contains('@')
+        || host.contains('\\')
         || !host.is_ascii()
         || host
             .split(['.', ':'])
@@ -69,6 +70,18 @@ fn hides_text(c: char) -> bool {
             c,
             '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{061c}' | '\u{feff}'
         )
+}
+
+/// The host (and port) an address really goes to, spelled out as by [`spelled_out`]: what a
+/// browser reaches, so without a user name before the `@`, and ending at a backslash, which
+/// browsers read as a slash.
+pub fn destination(link: &str) -> String {
+    let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    spelled_out(host)
 }
 
 /// `link` with every character outside ASCII spelled as its code point, for a dialog to show
@@ -88,6 +101,22 @@ pub fn spelled_out(link: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_destination_is_the_host_a_browser_reaches() {
+        assert_eq!(
+            destination("https://signal.org@evil.example/login"),
+            "evil.example"
+        );
+        assert_eq!(
+            destination("https://a:b@evil.example:8443/x?y@z"),
+            "evil.example:8443"
+        );
+        assert_eq!(destination("https://good.org\\@evil.example/"), "good.org");
+        assert_eq!(destination("https://\u{430}pple.com/"), "[U+0430]pple.com");
+        assert!(is_deceptive("https://good.org\\@evil.example/"));
+        assert!(is_deceptive("https://good.org\\evil/"));
+    }
 
     #[test]
     fn ordinary_addresses_open_without_a_question() {

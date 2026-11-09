@@ -26,7 +26,7 @@ pub struct Texts {
 /// The texts of `confirm`, for the open chat's `title` and the number of messages picked.
 pub fn texts(confirm: Confirm, title: &str, picked: usize) -> Texts {
     if confirm == Confirm::OpenLink {
-        // `title` is what the address really is (see `web::spelled_out`).
+        // `title` is what the address really is and where it goes (see `web::spelled_out`).
         return Texts {
             title: "Open this link?".to_owned(),
             text: format!(
@@ -249,7 +249,11 @@ impl Render for ConfirmView {
                 None => chat.selected(),
             };
             let title = match (&ui.confirm, &ui.confirm_link, &ui.confirm_member) {
-                (Confirm::OpenLink, Some(link), _) => crate::web::spelled_out(link),
+                (Confirm::OpenLink, Some(link), _) => format!(
+                    "{}\n\nGoes to: {}",
+                    crate::web::spelled_out(link),
+                    crate::web::destination(link)
+                ),
                 (Confirm::RemoveMember, _, Some((_, name))) => name.clone(),
                 _ => about.map(|c| c.title.clone()).unwrap_or_default(),
             };
