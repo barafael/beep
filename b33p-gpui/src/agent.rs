@@ -807,7 +807,6 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
         }
         Action::SetSettings {
             theme,
-            style,
             text_size,
             animations,
             show_avatars,
@@ -824,9 +823,6 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             let mut settings = shared.settings.borrow().clone();
             if let Some(value) = theme {
                 settings.theme = value.into();
-            }
-            if let Some(value) = style {
-                settings.style = value.into();
             }
             if let Some(value) = text_size {
                 settings.text_size = value.into();
@@ -1161,7 +1157,6 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&UiState>) -> 
         }),
         settings: SettingsSnapshot {
             theme: settings.theme.into(),
-            style: settings.style.into(),
             text_size: settings.text_size.into(),
             animations: settings.animations.into(),
             show_avatars: settings.show_avatars,

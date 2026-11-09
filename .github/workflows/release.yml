@@ -84,7 +84,8 @@ jobs:
             echo "::error::b33p links OpenSSL next to BoringSSL"
             exit 1
           fi
-      # The tarball and the .deb use the system's Qt (6.4 or newer); the AppImage brings its own.
+      # b33p draws with Skia, linked in statically; the window system's and the GPU driver's
+      # libraries (Wayland, X11, Vulkan or OpenGL) are the system's, in all three packages.
       - name: Package tarball
         env:
           NAME: b33p-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}
@@ -111,33 +112,23 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           LINUXDEPLOY_OUTPUT_VERSION: ${{ needs.version.outputs.label }}
           LDAI_OUTPUT: b33p-${{ needs.version.outputs.label }}-linux-${{ matrix.arch }}.AppImage
-          # Qt's Wayland client, so b33p runs natively on Wayland desktops, not through XWayland
-          # (with its window decorations, which come along with it).
-          EXTRA_PLATFORM_PLUGINS: libqwayland-egl.so;libqwayland-generic.so
-          # Qt's GTK theme, which the AppImage turns on under GNOME and Xfce: their colours,
-          # dark included, rather than Fusion's own.
-          DEPLOY_PLATFORM_THEMES: "1"
         run: |
           # Fixed releases, checked: whatever they contain ends up in the AppImage.
           base=https://github.com/linuxdeploy
           curl -fsSLo linuxdeploy "$base/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-$ARCH.AppImage"
-          curl -fsSLo linuxdeploy-plugin-qt "$base/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-$ARCH.AppImage"
           case "$ARCH" in
             x86_64)
-              sums="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  linuxdeploy
-          15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724  linuxdeploy-plugin-qt" ;;
+              sums="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  linuxdeploy" ;;
             aarch64)
-              sums="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff  linuxdeploy
-          bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1  linuxdeploy-plugin-qt" ;;
+              sums="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff  linuxdeploy" ;;
           esac
           echo "$sums" | sed 's/^ *//' | sha256sum --check
-          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          chmod +x linuxdeploy
           cp b33p-slint/assets/b33p.svg io.github.barafael.B33p.svg
           ./linuxdeploy --appdir AppDir \
             --executable target/release/b33p \
             --desktop-file packaging/linux/io.github.barafael.B33p.desktop \
             --icon-file io.github.barafael.B33p.svg \
-            --plugin qt \
             --output appimage
           test -f "$LDAI_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

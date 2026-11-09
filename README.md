@@ -50,11 +50,12 @@ On the first start b33p shows a code: on your phone, open Signal → Settings �
 
 **Linux** (Debian 12, Ubuntu 23.04, Fedora 38 or newer):
 
-- The **AppImage** brings its own Qt: `chmod +x b33p-*.AppImage` and run it.
-- The **.deb** and the **tarball** use the system's Qt 6 (6.4 or newer), so b33p takes on the
-  desktop's own style: `sudo apt install ./b33p-*.deb`, or put the tarball's `b33p` on your
-  `PATH` and its `.desktop` file and icon in `~/.local/share/applications/` and
-  `~/.local/share/icons/hicolor/scalable/apps/`.
+- The **AppImage**: `chmod +x b33p-*.AppImage` and run it.
+- The **.deb**: `sudo apt install ./b33p-*.deb`.
+- The **tarball**: put its `b33p` on your `PATH` and its `.desktop` file and icon in
+  `~/.local/share/applications/` and `~/.local/share/icons/hicolor/scalable/apps/`.
+
+b33p draws with Skia, on the GPU through Vulkan, or through OpenGL if there is no Vulkan driver.
 
 **macOS** (11 or newer): open the `.dmg` and drag b33p to Applications. The app isn't
 notarized, so macOS refuses to open it at first: right-click it in Applications → Open →
@@ -88,8 +89,8 @@ numbers and IDs, but look it over before you attach it. `RUST_LOG=debug` makes i
 
 ## Building and running
 
-You need Rust and, on Linux, Qt 6 (the native style draws real Qt widgets); elsewhere Slint's
-own windowing backend is used. The [dev container](.devcontainer) has everything for Linux,
+You need Rust. On Linux the window is Slint's own (winit) with Skia; the Slint client's
+`gpu-femtovg` feature draws with FemtoVG instead. The [dev container](.devcontainer) has everything for Linux,
 on the Debian 12 the releases are built on; its `install-deps.sh` lists the Debian packages.
 
 On Windows (x86_64) you also need CMake and NASM, which BoringSSL (contact discovery) builds with:
@@ -102,7 +103,7 @@ B33P_MOCK=1 cargo run -p b33p-slint  # an offline fake, for trying the UI: nothi
 ```
 
 The same client with its window drawn by [GPUI](https://gpui.rs) instead of Slint is `b33p-gpui`
-(`cargo run -p b33p-gpui`, `B33P_MOCK=1` likewise; it needs no Qt, but Vulkan and the Wayland or
+(`cargo run -p b33p-gpui`, `B33P_MOCK=1` likewise; it needs Vulkan and the Wayland or
 X11 libraries): see [b33p-gpui/README.md](b33p-gpui/README.md).
 
 The Android app is `b33p-dioxus`, built with `dx` rather than `cargo run`: `just android-mock` builds

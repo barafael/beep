@@ -1,7 +1,7 @@
 # b33p for the box, from the working tree, as b33p's CI and release builds build it (Debian 12,
-# glibc 2.36, Qt 6.4: .github/workflows/ci.yml's image, .devcontainer/install-deps.sh), run in
-# Debian 13 as the box's other images, whose Qt 6.8 runs what Qt 6.4 built. The build context is
-# the repository; .containerignore leaves out build output and .git.
+# glibc 2.36: .github/workflows/ci.yml's image, .devcontainer/install-deps.sh), run in Debian 13
+# as the box's other images. The build context is the repository; .containerignore leaves out
+# build output and .git.
 #
 # `--build-arg UI=gpui` (`cargo testbox --ui gpui`) builds b33p-gpui, the window drawn with GPUI,
 # in place of b33p-slint: either way the binary is /usr/local/bin/b33p, which the box runs.
@@ -38,24 +38,27 @@ RUN --network=none \
     && cp "target/$([ "$PROFILE" = dev ] && echo debug || echo "$PROFILE")/$([ "$UI" = gpui ] && echo b33p-gpui || echo b33p)" /usr/local/bin/b33p
 
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
-# What b33p links against, and Qt's Wayland platform plugin (QT_QPA_PLATFORM); cage, wayvnc and
-# wlr-randr for its display (testbox/tools `with-display`). An emoji font, as a desktop has, for
+# What b33p links against; cage, wayvnc and wlr-randr for its display (testbox/tools
+# `with-display`). An emoji font, as a desktop has, for
 # reactions in screenshots, and a small CJK one for the tour's Chinese text (Noto CJK is twenty
 # times its size). The CA certificates a desktop has: without them reqwest's verifier
 # (rustls-platform-verifier) finds no roots and no client builds, so b33p's and presage's link
 # previews never get as far as the network.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates libqt6core6t64 libqt6gui6 libqt6widgets6 libqt6dbus6 qt6-qpa-plugins qt6-wayland \
-        libasound2t64 libfontconfig1 libwayland-client0 libxkbcommon0 fonts-dejavu-core \
+        ca-certificates libasound2t64 libfontconfig1 libwayland-client0 libxkbcommon0 fonts-dejavu-core \
         fonts-noto-color-emoji fonts-wqy-microhei cage wayvnc wlr-randr \
     && rm -rf /var/lib/apt/lists/* \
     && rm /usr/bin/Xwayland
-# GPUI draws with Vulkan, and the box has no GPU: Mesa's software one (lavapipe), and the X11
-# libraries its X11 backend loads even where Wayland is what runs.
+# Both windows draw with Vulkan (b33p-slint with Skia, which falls back to OpenGL if there is no
+# Vulkan driver; GPUI), and the box has no GPU: Mesa's software one (lavapipe).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        mesa-vulkan-drivers libvulkan1 \
+    && rm -rf /var/lib/apt/lists/*
+# GPUI's X11 backend loads the X11 libraries even where Wayland is what runs.
 ARG UI=slint
 RUN if [ "$UI" = gpui ]; then \
         apt-get update && apt-get install -y --no-install-recommends \
-            mesa-vulkan-drivers libvulkan1 libxkbcommon-x11-0 libxcb1 libxcb-xkb1 libx11-6 \
+            libxkbcommon-x11-0 libxcb1 libxcb-xkb1 libx11-6 \
             fonts-noto-core \
         && rm -rf /var/lib/apt/lists/*; \
     fi

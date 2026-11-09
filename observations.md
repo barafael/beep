@@ -639,7 +639,7 @@ addition to that list, from what this run showed.
    search checks (TESTPLAN §1.9, §2.2) something to scroll.
 6. **Locale, scale and theme.** Everything runs in `en`, UTC, scale 1, light theme, 1280×900.
    The tour's texts cover scripts; the window doesn't cover its own variants: a `de_DE` run,
-   `TZ=Europe/Berlin`, `QT_SCALE_FACTOR=2`, dark theme, and a narrow window (TESTPLAN's
+   `TZ=Europe/Berlin`, `SLINT_SCALE_FACTOR=2`, dark theme, and a narrow window (TESTPLAN's
    layouts) are environment variables away, and the screenshots would show what a user there
    sees.
 7. **Accessibility.** TESTPLAN §2.14 (Orca) has no automated counterpart; the harness snapshot

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use b33p_core::settings::{Settings, WidgetStyle};
+use b33p_core::settings::Settings;
 use b33p_core::state::{AttachmentState, ChatState, MessagesUpdate, Notice, Screen, Update};
 use b33p_core::{
     AttachmentContent, AttachmentId, Backend, Command, Commands, Config, ConversationId, Event,
@@ -30,10 +30,10 @@ mod badge;
 mod capture;
 #[cfg(all(
     target_os = "linux",
-    not(any(feature = "qt", feature = "gpu-femtovg", feature = "gpu-skia"))
+    not(any(feature = "gpu-femtovg", feature = "gpu-skia"))
 ))]
 compile_error!(
-    "b33p-slint needs a graphics stack on Linux: the feature `qt`, `gpu-femtovg` or `gpu-skia`"
+    "b33p-slint needs a graphics stack on Linux: the feature `gpu-skia` or `gpu-femtovg`"
 );
 
 mod desktop;
@@ -53,7 +53,7 @@ mod updates;
 use markdown::{highlighted, rich_text};
 
 /// The UI Slint compiles from `ui/app.slint` (see `build.rs`): in the native style for the app,
-/// in Fluent for the tests, which run without Qt. `ui.rs` builds on whichever it is.
+/// in Fluent for the tests. `ui.rs` builds on whichever it is.
 // Slint's code, not ours, discards what it likes.
 #[allow(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 mod generated {
@@ -81,9 +81,6 @@ pub struct Shared {
     notifier: Notifier,
     commands: Commands,
     settings: RefCell<Settings>,
-    /// The Qt style this process started with. Qt picks it once, so changing between the
-    /// system style and Fusion waits for a restart.
-    qt_style_at_start: QtStyle,
     ui: RefCell<Option<Rc<ui::Window>>>,
     tray: RefCell<Option<tray::Tray>>,
     /// Started for the tray (`--hidden`): the window stays closed unless the user is needed,
@@ -122,21 +119,6 @@ pub struct Shared {
     /// Answers the agent harness's socket (`--features harness`).
     #[cfg(all(feature = "harness", target_family = "unix"))]
     agent: agent::Handle,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum QtStyle {
-    System,
-    Fusion,
-}
-
-impl QtStyle {
-    fn of(style: WidgetStyle) -> Self {
-        match style {
-            WidgetStyle::Native => Self::System,
-            WidgetStyle::Fusion => Self::Fusion,
-        }
-    }
 }
 
 impl Shared {
@@ -440,8 +422,8 @@ impl Shared {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         if let Some(token) = token {
-            // Qt's Wayland plugin takes the token from here when the window asks to be
-            // activated, and clears it; KDE's KWindowSystem hands tokens to Qt the same way.
+            // winit takes the token from here when the window is created (shown anew above),
+            // and clears it.
             // SAFETY: setting the environment races with C code reading it on another thread
             // (Rust's own readers are locked). Accepted, as in KWindowSystem: nothing else in
             // b33p reads this variable, and the moment is short.
@@ -464,16 +446,6 @@ impl Shared {
 
     fn in_tray(&self) -> bool {
         self.settings.borrow().close_to_tray && tray::host_present()
-    }
-
-    /// Why the chosen style isn't showing yet, if it isn't.
-    fn style_note(&self) -> String {
-        // Only Qt reads a style once, at start; the winit builds have no such choice.
-        if ui::QT && QtStyle::of(self.settings.borrow().style) != self.qt_style_at_start {
-            "Takes effect when b33p restarts.".into()
-        } else {
-            String::new()
-        }
     }
 
     /// Animates, or not, as the settings and the desktop say.
@@ -516,7 +488,7 @@ impl Shared {
         let mut settings = self.settings.borrow().clone();
         settings.preferences = preferences;
         if let Some(window) = self.ui() {
-            window.show_settings(&settings, &self.style_note());
+            window.show_settings(&settings);
         }
         self.apply_settings(settings);
     }
@@ -614,19 +586,13 @@ fn main() -> Result<(), slint::PlatformError> {
         install::uninstall();
         return Ok(());
     }
+    // The harness tests have no desktop to open a window on: Slint's headless testing backend
+    // stands in for the window system, with the real clock (`b33p-slint/tests/harness.rs`).
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    if std::env::var_os("B33P_HEADLESS").is_some() {
+        i_slint_backend_testing::init_integration_test_with_system_time();
+    }
     let settings = Settings::load();
-    // Qt reads its style once, when it starts, so this has to come first.
-    let qt_style_at_start = if ui::QT
-        && settings.style == WidgetStyle::Fusion
-        && std::env::var_os("QT_STYLE_OVERRIDE").is_none()
-    {
-        // SAFETY: nothing else runs yet; the backend and Qt start below.
-        unsafe { std::env::set_var("QT_STYLE_OVERRIDE", "Fusion") };
-        QtStyle::Fusion
-    } else {
-        QtStyle::System
-    };
-
     logging::init();
     // Restarted by an update: the old b33p first has to let go of the lock, the database and
     // its exe (renamed aside, which the installed copy removes as it starts).
@@ -670,7 +636,6 @@ fn main() -> Result<(), slint::PlatformError> {
         notifier,
         commands: backend.commands(),
         settings: RefCell::new(settings.clone()),
-        qt_style_at_start,
         ui: RefCell::default(),
         tray: RefCell::default(),
         start_hidden: Cell::new(false),
@@ -692,12 +657,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
     let ui = ui::create(&shared)?;
     shared.ui.replace(Some(ui.clone()));
-    // Qt names its Wayland window after the program; Slint's own winit backend names it
-    // nothing, so the desktop can't find b33p's launcher and icon for it. The name of the
-    // desktop file (packaging/linux), as the notifications use it. Once the platform is up (making
-    // the window does that), before the window is shown, when winit reads it.
-    if !ui::QT
-        && cfg!(target_os = "linux")
+    // Slint's winit backend names its Wayland window nothing, so the desktop can't find b33p's
+    // launcher and icon for it. The name of the desktop file (packaging/linux), as the
+    // notifications use it. Once the platform is up (making the window does that), before the
+    // window is shown, when winit reads it.
+    if cfg!(target_os = "linux")
         && let Err(error) = slint::set_xdg_app_id(APP.id)
     {
         tracing::warn!(%error, "failed to name the window's application");

@@ -87,7 +87,7 @@ pub(crate) struct Record {
 ///
 /// A b33p's is its harness's: the window drawn from the state the check left, where its display
 /// shows that only once b33p has painted it and the compositor and the viewer have caught up,
-/// often a check later. Popups are windows of their own on Qt, so they aren't in it.
+/// often a check later. Popups may be windows of their own, and then they aren't in it.
 #[derive(Clone)]
 struct Shots {
     tool: PathBuf,

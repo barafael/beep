@@ -52,7 +52,6 @@ Legend: yes = same behaviour; differs = same purpose, other form (see notes); no
 | Reduced motion: "Animations" = As the desktop says / On / Off, following the desktop live | yes | yes | see [Animations](#animations) |
 | Theme System / Light / Dark; "System" follows the desktop as it changes | yes | yes | GPUI took the scheme only when b33p started or the setting changed: it follows `observe_window_appearance` now (not testable: the test platform has no way to change the appearance) |
 | Text size small / default / large | yes | yes | code |
-| Qt widget style (system or Fusion) | yes | no | Slint on Qt only |
 | Window title bar, resize, drag | server side | server side | |
 
 ## Chats
@@ -187,7 +186,6 @@ tests find an element by its name, not its role.
   surface texture with `COPY_SRC` and `render_to_image` on the Wayland window), or running the
   harness build entirely offscreen. The display's screenshot (`testbox/gpui-view/view.sh shot`)
   is the way, as before. The error says so.
-* **The Qt style** setting exists only with Qt.
 
 In GPUI and not in Slint: the "Send again" and "Save attachment" entries of the message menu, and the message info and readers (core has them; Slint has no window for them yet).
 
@@ -206,12 +204,12 @@ Slint's tests and where GPUI has the same:
 
 | Slint | GPUI |
 |---|---|
-| `b33p-slint/tests/harness.rs` (13 tests, the real binary on Qt's offscreen platform) | `src/e2e_tests.rs`: the same 13, through the same protocol |
+| `b33p-slint/tests/harness.rs` (13 tests, the real binary on Slint's testing backend) | `src/e2e_tests.rs`: the same 13, through the same protocol |
 | `b33p-slint/src/ui_tests.rs` (27 tests, Slint's testing backend) | `src/ui_tests.rs`: the same 26 (the 27th is a callgrind workload, not a test: `bench.py` measures GPUI), and the ones named in the tables above |
 | `b33p-slint/tests/theme.rs` (the look comes from `theme.slint`) | `theme.rs`'s `the_look_comes_from_the_theme`: no colour, text size or corner of a view's own outside `theme.rs` |
 | `markdown.rs` property tests | `text.rs`'s own tests |
 
-A window needs a display; CI has none and no GPU. Slint answers with Qt's offscreen platform.
+A window needs a display; CI has none and no GPU. Slint answers with its testing backend, which has windows but draws nothing.
 GPUI has a test platform (`gpui`'s `test-support`: windows, layout, input, a clock you move) that
 needs neither, so both kinds of test run on it, in the test binary, with no display:
 

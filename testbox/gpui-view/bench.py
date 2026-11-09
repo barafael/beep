@@ -7,14 +7,14 @@ Wayland requests the client sends.
 
   bench.py run [--rounds 5] [--soak 120] [--frames-rounds 1] [--scale SPEC] [--out DIR]
                [--uis slint,gpui | --ways LABEL=PATH,... | --ways-dir DIR] [--max-load 6] [--dry-run]
-  bench.py report DIR [--baseline slint-qt] [--json]
+  bench.py report DIR [--baseline slint-skia] [--json]
   report_html.py DIR OUT.html          (beside this file: one self-contained HTML page)
 
 A "way" is one client binary in one graphics stack. The two-way default is `slint` and `gpui`
 (BENCH_SLINT, BENCH_GPUI, `--uis`); a multi-way run names its ways, `--ways
-slint-qt=PATH,slint-femtovg=PATH,gpui=PATH`, or takes every known name that exists in a
-directory (`--ways-dir`: slint-qt, slint-qt-patched, slint-femtovg, slint-femtovg-patched,
-slint-skia, slint-skia-patched, gpui). The kind of a way, slint or gpui, is the prefix of its
+slint-skia=PATH,slint-femtovg=PATH,gpui=PATH`, or takes every known name that exists in a
+directory (`--ways-dir`: slint-femtovg, slint-femtovg-patched, slint-skia,
+slint-skia-patched, gpui). The kind of a way, slint or gpui, is the prefix of its
 label. Every way is mounted as `b33p` in a container of its own, so everything below is
 the same for all of them.
 
@@ -79,8 +79,9 @@ WITH_DISPLAY = os.environ.get("BENCH_WITH_DISPLAY", f"{ROOT}/target/testbox-work
 WIDTH, HEIGHT = 1280, 900
 GEOMETRY = f"{WIDTH}x{HEIGHT}"
 # The names a multi-way run knows, in the order they are listed in reports and charts.
-KNOWN_WAYS = ["slint-qt", "slint-qt-patched", "slint-femtovg", "slint-femtovg-patched",
-              "slint-skia", "slint-skia-patched", "gpui"]
+KNOWN_WAYS = ["slint-femtovg", "slint-femtovg-patched", "slint-skia", "slint-skia-patched", "gpui"]
+# Qt is not part of b33p any more; results of runs that had it still list in their old place.
+RETIRED_WAYS = ["slint-qt", "slint-qt-patched"]
 KINDS = ("slint", "gpui")
 # Seconds a run of each mode takes, roughly, for the plan of --dry-run (a soak is added to live).
 ESTIMATE_S = {"static": 120, "live": 50, "sync": 15, "frames": 45}
@@ -110,7 +111,7 @@ class Way:
 def way_order(label):
     """Known names in KNOWN_WAYS' order (the 2-way names first), other Slint ones after those,
     GPUI-kind ones last."""
-    legacy = ["slint"] + KNOWN_WAYS
+    legacy = ["slint"] + RETIRED_WAYS + KNOWN_WAYS
     rank = legacy.index(label) if label in legacy else len(legacy)
     return (label == "gpui" or label.startswith("gpui-"), rank, label)
 
@@ -943,9 +944,10 @@ def aggregate(directory):
 
 
 def pick_baseline(ways, wanted):
-    """The way the ratios are against: `wanted` if it is among `ways`, else slint-qt (the
-    shipped one), else the two-way run's slint, else the first way."""
-    for candidate in (wanted, "slint-qt", "slint"):
+    """The way the ratios are against: `wanted` if it is among `ways`, else slint-skia (the
+    shipped one), else slint-qt (runs from before it was retired), else the two-way run's
+    slint, else the first way."""
+    for candidate in (wanted, "slint-skia", "slint-qt", "slint"):
         if candidate in ways:
             return candidate
     return ways[0] if ways else None
@@ -1015,7 +1017,7 @@ def main():
     run.add_argument("--uis", default="slint,gpui",
                      help="the two-way names (slint, gpui; binaries BENCH_SLINT, BENCH_GPUI); ignored with --ways or --ways-dir")
     run.add_argument("--ways", help="LABEL=PATH,LABEL=PATH,...: the ways to run, e.g. "
-                     "slint-qt=/b/slint-qt,slint-femtovg=/b/slint-femtovg,gpui=/b/gpui. The label starts with "
+                     "slint-skia=/b/slint-skia,slint-femtovg=/b/slint-femtovg,gpui=/b/gpui. The label starts with "
                      "slint or gpui, which is the kind. Overrides a --ways-dir entry of the same label")
     run.add_argument("--ways-dir", help="DIR: every known name that exists in it is a way (" + ", ".join(KNOWN_WAYS)
                      + "); the missing ones are skipped with a note")
@@ -1036,9 +1038,9 @@ def main():
     run.add_argument("--dry-run", action="store_true", help="print the runs and the podman commands, start nothing, write nothing")
     rep = sub.add_parser("report", help="print a markdown table of an output directory")
     rep.add_argument("directory")
-    rep.add_argument("--baseline", default="slint-qt",
-                     help="the way the ratio columns divide by (default slint-qt, the shipped one; the 2-way "
-                     "slint if there is no slint-qt; else the first way)")
+    rep.add_argument("--baseline", default="slint-skia",
+                     help="the way the ratio columns divide by (default slint-skia, the shipped one; slint-qt "
+                     "in runs from before Qt was retired; the 2-way slint if there is neither; else the first way)")
     rep.add_argument("--json", action="store_true", dest="as_json",
                      help="print the aggregated numbers (per scenario, per metric, per way: median, min, max, values, n) as json")
     args = parser.parse_args()

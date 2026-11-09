@@ -11,21 +11,19 @@ name = "b33p"
 path = "src/main.rs"
 
 [features]
-default = ["signal", "qt"]
+default = ["signal", "gpu-skia"]
 signal = ["b33p-core/signal"]
 # The agent harness (`agent.rs`, `B33P_AGENT_SOCKET`): a socket a script can use to read what
 # the window shows and to act as if it were the input, for tests and demonstrations. Unix
 # only; never part of a release build.
-harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json"]
+harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json", "dep:i-slint-backend-testing"]
 test-servers = ["b33p-core/test-servers"]
-# What draws the window on Linux; build.rs picks the widget style to match. On the other
-# platforms Slint's own winit window and FemtoVG draw it whichever of these is on.
-#   qt            Qt 6, drawing on the CPU, with the desktop's own style and colours (the default).
-#                 Wins when another is on as well, since Slint prefers its Qt backend.
-#   gpu-femtovg   Slint's winit backend (Wayland and X11) with FemtoVG on OpenGL, in Slint's Fluent style.
-#   gpu-skia      the same with Skia, Vulkan if the driver has it and OpenGL if not.
-# Build one with `--no-default-features --features signal,gpu-femtovg` (or `gpu-skia`).
-qt = ["dep:i-slint-backend-selector"]
+# What draws the window on Linux, in Slint's Fluent style. On the other platforms Slint's own
+# winit window and FemtoVG draw it whichever of these is on.
+#   gpu-skia      Slint's winit backend (Wayland and X11) with Skia, Vulkan if the driver has it
+#                 and OpenGL if not (the default).
+#   gpu-femtovg   the same with FemtoVG on OpenGL; lighter to build, heavier to run.
+# Build the other with `--no-default-features --features signal,gpu-femtovg`.
 gpu-femtovg = ["slint/backend-winit", "slint/renderer-femtovg"]
 gpu-skia = ["slint/backend-winit", "slint/renderer-skia-vulkan"]
 
@@ -34,7 +32,7 @@ thiserror.workspace = true
 b33p-core.workspace = true
 b33p-notify = { path = "../b33p-notify" }
 b33p-platform = { path = "../b33p-platform" }
-# Slint's defaults bring both the winit and the Qt backend; each platform picks one below.
+# Slint's defaults are off; each platform picks its backend and renderer below.
 slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
 # Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
 # Internal, so taken at the same revision as slint (see the workspace's fork pin).
@@ -45,6 +43,8 @@ async-channel = "2"
 futures-channel = "0.3"
 # The harness's JSON protocol (`agent.rs`, its types in b33p-harness).
 b33p-harness = { workspace = true, optional = true }
+# `B33P_HEADLESS`: the harness tests' window system (`main.rs`).
+i-slint-backend-testing = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 # Opens links in the browser.
@@ -64,15 +64,7 @@ lucide-static-svg = "1.70"
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
 
-# On Linux, the `qt` feature (a default) renders through Qt only, so the native style draws real
-# Breeze/Qt widgets and follows the desktop's colors and fonts. Qt 6 is required at runtime; there
-# is no winit fallback. The `gpu-*` features turn Qt off instead (see `[features]`).
-[target.'cfg(target_os = "linux")'.dependencies]
-# `slint`'s `backend-qt` is this feature of the backend picker (plus its Qt crate, which comes
-# with it), on a dependency of its own so that only Linux builds Qt.
-i-slint-backend-selector = { workspace = true, features = ["backend-qt"], optional = true }
-
-# Elsewhere, Slint's own window and renderer.
+# Off Linux, Slint's own window and FemtoVG (the `gpu-*` features choose on Linux).
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg"] }
 
@@ -122,16 +114,16 @@ proptest = "1"
 # The folders the install tests lay out and remove (`install.rs`).
 tempfile = "3"
 
-# The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). It uses the system's
-# Qt, so the desktop's own style and theme plugins load; `$auto` reads the libraries it needs
-# (Qt 6, ALSA, …) off the binary.
+# The .deb for Debian and Ubuntu (`cargo deb`, run by the release workflow). `$auto` reads the
+# libraries it needs (ALSA, …) off the binary; Skia loads Vulkan or EGL when it starts, which the
+# binary doesn't name, so one of them is asked for outright.
 [package.metadata.deb]
 name = "b33p"
 maintainer = "Rafael Bachmann <rafael.bachmann.93@gmail.com>"
-extended-description = "A desktop Signal client. Uses the system's Qt 6, so it looks like the rest of the desktop."
+extended-description = "A desktop Signal client, drawn on the GPU."
 section = "net"
 priority = "optional"
-depends = "$auto"
+depends = "$auto, libegl1 | libvulkan1"
 license-file = ["../LICENSE", "0"]
 assets = [
     ["target/release/b33p", "usr/bin/", "755"],

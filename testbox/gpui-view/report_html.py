@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One self-contained HTML page from a bench.py output directory, for any number of ways.
 
-  report_html.py DIR OUT.html [--baseline slint-qt] [--title TEXT]
+  report_html.py DIR OUT.html [--baseline slint-skia] [--title TEXT]
 
 No script, font or image is loaded from anywhere: the CSS is inline and the charts are inline
 SVG drawn here. Every number on the page comes from `bench.aggregate(DIR)` (the medians,
@@ -27,7 +27,7 @@ import bench  # noqa: E402
 # cool family (blue, aqua, violet; patched variants are a lighter tint of their stack's hue,
 # hatched), GPUI is orange, the odd one out. The base colours are slots 1, 3, 7 and 2 of the
 # reference palette of the dataviz skill, in the order the rows are listed (qt, femtovg, skia,
-# gpui), which validates in both modes on the adjacent pairlist; the rows are also labelled
+# gpui; Qt is retired, its colour stays for the results of runs that had it), which validates in both modes on the adjacent pairlist; the rows are also labelled
 # with their names, and the table at the bottom has every number.
 
 STACK_COLORS = {  # stack: (light, dark)
@@ -75,7 +75,7 @@ def way_palette(ways):
     for way in ways:
         stack = stack_of(way)
         if stack == "slint" and "slint" not in colors:
-            colors["slint"] = STACK_COLORS["slint-qt"]  # the two-way run's Slint is Qt
+            colors["slint"] = STACK_COLORS["slint-skia"]  # the two-way run's Slint is the shipped one
         if stack not in colors:
             colors[stack] = next(extra, ("#898781", "#898781"))
         light, dark = colors[stack]
@@ -539,7 +539,7 @@ def memory_section(data):
             ("static", "after", "gpu_mem_mb", "GPU memory after all phases (VRAM + GTT)", "MB")):
         out.append(metric_panel(data, mode, scenario, metric, title, unit))
     segs = "".join(f'<li><span class="sw seg" style="--c:var(--s-{k})"></span>{esc(n)}</li>' for k, n, _ in SEGMENTS)
-    intro = ("RSS is what the process holds in RAM (shared libraries included, which is why Qt's file-backed part is large); "
+    intro = ("RSS is what the process holds in RAM (shared libraries included, which is why a stack with large libraries has a large file-backed part); "
              "anonymous is its heap. VRAM and GTT are read from the drm client's fdinfo. The stacks use the medians of "
              "each part, so a stack's total is the median RSS plus the median GPU memory.")
     return (f'<section id="memory"><h2>Memory</h2><p class="intro">{esc(intro)}</p><ul class="legend segs">{segs}</ul>'
@@ -703,7 +703,8 @@ def measured_section(data):
                  "<li>The mock has no network, no real Signal data and no real pictures from a camera; it measures the clients, not the service.</li>"
                  "<li>CPU is the whole process, all threads, in percent of one core; a way that moves work to the GPU shows it in GPU time and memory, not in CPU.</li>"
                  "<li>Wakeups are context switches of the process (voluntary and not), not hardware wakeups or power.</li>"
-                 "<li>Qt on the CPU draws without the GPU, so its GPU numbers are zero by design; the file-backed part of its RSS includes the Qt libraries.</li>"
+                 + ("<li>Qt on the CPU draws without the GPU, so its GPU numbers are zero by design; the file-backed part of its RSS includes the Qt libraries.</li>"
+                    if any("qt" in w for w in data.ways) else "") +
                  "<li>A few rounds give a median and a range, not a confidence interval. The whiskers are the smallest and the largest round.</li>"
                  "<li>Frame gaps come from separate runs with the request log on, which costs processor time; they say how evenly frames were committed, not how they looked.</li>"
                  "<li>Nothing here measures input latency, text quality or visual differences.</li></ul>")
@@ -831,7 +832,7 @@ def defs(ways, pal):
     return "".join(out)
 
 
-def build(directory, baseline="slint-qt", title="b33p graphics stacks"):
+def build(directory, baseline="slint-skia", title="b33p graphics stacks"):
     agg = bench.aggregate(directory)
     data = Data(agg)
     if not data.ways:
@@ -871,7 +872,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("directory", help="a bench.py output directory")
     parser.add_argument("out", help="the html file to write")
-    parser.add_argument("--baseline", default="slint-qt", help="the way the ratios in the headline table are against (default slint-qt)")
+    parser.add_argument("--baseline", default="slint-skia", help="the way the ratios in the headline table are against (default slint-skia)")
     parser.add_argument("--title", default="b33p graphics stacks")
     args = parser.parse_args()
     page = build(args.directory, args.baseline, args.title)

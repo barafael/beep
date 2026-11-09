@@ -49,8 +49,8 @@ How some of them turned out:
 - **4.5** (bounded state), on purpose: reactions, edits and deletions that came for a trimmed page
   can't be restored when the page loads again, so trimming would lose them.
 - **7.7** (regenerating `docs/screenshots` and the demo GIF). `docs/screenshots/shoot.py` makes the
-  shots, but offscreen Qt draws italic text garbled, so the README's images should be taken on a
-  real desktop.
+  shots, but offscreen Qt drew italic text garbled (Qt is not part of b33p any more, so this may be
+  gone; not checked), so the README's images should be taken on a real desktop or in a display of its own.
 
 ## Ground rules
 

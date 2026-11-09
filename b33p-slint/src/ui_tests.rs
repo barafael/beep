@@ -1,6 +1,5 @@
 //! The window's own behaviour, on Slint's headless testing backend: what the Slint code does
-//! with the properties Rust sets and the input it gets. (The fluent style, since the native one
-//! needs Qt.)
+//! with the properties Rust sets and the input it gets. (The fluent style, the one Linux builds use.)
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -583,7 +582,7 @@ fn a_composition_reaches_rust_before_it_is_committed() {
         .mock_single_click(PointerEventButton::Left);
     settle(&window);
     window.global::<Composer>().set_draft("@".into());
-    // As the Qt backend hands on an input method's composition: "홍", not yet committed.
+    // As a backend hands on an input method's composition: "홍", not yet committed.
     let compose = |preedit: &str| {
         let event = InternalKeyEvent {
             event_type: KeyEventType::UpdateComposition,

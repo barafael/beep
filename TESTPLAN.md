@@ -500,9 +500,9 @@ a real account, a desktop or a person.
 What getting every test box phase to pass changed in b33p. The box checks these against
 Signal-Desktop; these are the checks with a phone and a desktop of your own.
 
-1. On Debian 12 (Qt 6.4) with `fonts-noto-color-emoji` installed, send and receive 👍📎🦀🎉 and
+1. On Debian 12 with `fonts-noto-color-emoji` installed, send and receive 👍📎🦀🎉 and
    react with ❤️: they show in colour, here and in the chat list, and b33p doesn't crash. (Qt
-   6.4 itself overran memory drawing colour emoji; b33p's Slint now draws them.)
+   6.4, which b33p used to draw with, overran memory drawing colour emoji.)
 2. Have someone b33p has never heard of write first: within moments the chat is titled with
    their name, not a long code, without restarting.
 3. With a phone (Signal-Android) on the other side: 1.4 item 8 and 1.2 item 6.
@@ -545,9 +545,9 @@ Back up `~/.local/share/b33p` before these; some delete it on purpose.
 
 ## 6. The packages, on a clean system
 
-1. **AppImage** on GNOME (Wayland): it starts, has a title bar, follows the GTK theme (dark
-   too). Notifications show b33p's name and icon.
-2. **.deb** on a fresh Debian 12: `sudo apt install ./b33p-*.deb` pulls in Qt and starts from
+1. **AppImage** on GNOME (Wayland): it starts, has a title bar, follows the desktop's light or dark
+   setting. Notifications show b33p's name and icon.
+2. **.deb** on a fresh Debian 12: `sudo apt install ./b33p-*.deb` starts from
    the menu with its icon; `apt remove b33p` removes it.
 3. **Windows zip** on a fresh Windows 11: SmartScreen as the README says; the exe shows the
    icon in Explorer and its version under Properties → Details; a toast shows the icon; the

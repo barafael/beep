@@ -58,10 +58,10 @@ class Ways(unittest.TestCase):
         return d
 
     def test_ways_dir_skips_missing_with_a_note(self):
-        d = self.make_dir(["gpui", "slint-qt", "slint-skia-patched"])
+        d = self.make_dir(["gpui", "slint-femtovg", "slint-skia-patched"])
         ways, skipped = bench.resolve_ways(ways_dir=d)
-        self.assertEqual([w.label for w in ways], ["slint-qt", "slint-skia-patched", "gpui"])
-        self.assertEqual({l for l, _ in skipped}, {"slint-qt-patched", "slint-femtovg", "slint-femtovg-patched", "slint-skia"})
+        self.assertEqual([w.label for w in ways], ["slint-femtovg", "slint-skia-patched", "gpui"])
+        self.assertEqual({l for l, _ in skipped}, {"slint-femtovg-patched", "slint-skia"})
         self.assertEqual([w.kind for w in ways], ["slint", "slint", "gpui"])
 
     def test_explicit_ways_win_and_take_env(self):
@@ -150,21 +150,21 @@ class Resume(unittest.TestCase):
 
     def test_dry_run_shows_what_resume_skips(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as b:
-            for n in ("slint-qt", "gpui"):
+            for n in ("slint-skia", "gpui"):
                 p = os.path.join(b, n)
                 with open(p, "w") as f:
                     f.write("#!/bin/sh\n")
                 os.chmod(p, 0o755)
-            write_run(d, "slint-qt", "static", 1, static_result(10))
+            write_run(d, "slint-skia", "static", 1, static_result(10))
             out = subprocess.run([sys.executable, "-I", os.path.join(HERE, "bench.py"), "run", "--ways-dir", b,
                                   "--rounds", "1", "--sync-rounds", "0", "--frames-rounds", "0", "--soak", "30",
                                   "--out", d, "--dry-run"], capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertIn("== slint-qt-static-1 (slint, ~120 s) already done: skipped (resume)", out.stdout)
+            self.assertIn("== slint-skia-static-1 (slint, ~120 s) already done: skipped (resume)", out.stdout)
             self.assertIn("== gpui-static-1 (gpui", out.stdout)
             self.assertEqual(out.stdout.count("podman run"), 3)
             self.assertIn("skipped slint-femtovg", out.stdout)
-            self.assertEqual(sorted(os.listdir(d)), ["slint-qt-static-1.json"])  # nothing written
+            self.assertEqual(sorted(os.listdir(d)), ["slint-skia-static-1.json"])  # nothing written
 
 
 class LoadCheck(unittest.TestCase):
@@ -234,10 +234,12 @@ class Aggregation(unittest.TestCase):
         self.assertEqual(bench.aggregate(d)["ways"], ["slint"])
 
     def test_baseline(self):
-        self.assertEqual(bench.pick_baseline(["slint-qt", "gpui"], "slint-qt"), "slint-qt")
-        self.assertEqual(bench.pick_baseline(["slint", "gpui"], "slint-qt"), "slint")
-        self.assertEqual(bench.pick_baseline(["gpui", "slint-skia"], "slint-qt"), "gpui")
-        self.assertEqual(bench.pick_baseline(["slint-qt", "gpui"], "gpui"), "gpui")
+        self.assertEqual(bench.pick_baseline(["slint-skia", "gpui"], "slint-skia"), "slint-skia")
+        self.assertEqual(bench.pick_baseline(["slint", "gpui"], "slint-skia"), "slint")
+        self.assertEqual(bench.pick_baseline(["gpui", "slint-femtovg"], "slint-skia"), "gpui")
+        self.assertEqual(bench.pick_baseline(["slint-skia", "gpui"], "gpui"), "gpui")
+        # runs from before Qt was retired
+        self.assertEqual(bench.pick_baseline(["slint-qt", "gpui"], "slint-skia"), "slint-qt")
 
     def test_report_table_and_ratios(self):
         out = io.StringIO()

@@ -1,9 +1,9 @@
-# The display for bench.py: Containerfile's, with what b33p-slint needs (Qt 6, drawn on the CPU;
-# its winit builds, `gpu-femtovg` and `gpu-skia`, find libEGL, libvulkan and Mesa's drivers here
-# already, and Xwayland gives them X11 to run on) and what b33p-gpui draws with on the host's
+# The display for bench.py: Containerfile's, with what b33p-slint needs (its winit builds,
+# `gpu-skia` and `gpu-femtovg`, find libEGL, libvulkan and Mesa's drivers here already, and
+# Xwayland gives them X11 to run on) and what b33p-gpui draws with on the host's
 # GPU, through its render node (Mesa's Vulkan driver for AMD; another GPU needs its own:
 # `vulkan-intel`, or the vendor's). The binaries are built on the host and mounted in, so that
-# this image matches the host's glibc, Qt and Mesa (Arch).
+# this image matches the host's glibc and Mesa (Arch).
 FROM localhost/b33p-gpui-view
-RUN pacman -Sy --noconfirm --needed vulkan-radeon libdrm qt6-base qt6-wayland qt6-svg xorg-xwayland \
+RUN pacman -Sy --noconfirm --needed vulkan-radeon libdrm xorg-xwayland \
     && pacman -Scc --noconfirm

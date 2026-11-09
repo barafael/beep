@@ -10,13 +10,9 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use super::*;
 
-/// How far one notch of the wheel scrolls, as the backend reports it: Qt passes the wheel's
-/// angle in eighths of a degree (120 a notch), winit 60 logical pixels a line.
-const NOTCH: f32 = if cfg!(target_os = "linux") {
-    120.0
-} else {
-    60.0
-};
+/// How far one notch of the wheel scrolls, as the backend reports it: winit 60 logical pixels
+/// a line.
+const NOTCH: f32 = 60.0;
 
 /// How long the zoom stays put before what shows is resampled for it: longer than the gaps
 /// within a burst of wheel notches (65 ms at most, as Othereum/sigwin measured), so a spin

@@ -69,9 +69,6 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                 .global::<Prefs>()
                 .set_font_scale(settings.text_size.scale());
             shared.apply_settings(settings);
-            window
-                .global::<Prefs>()
-                .set_style_note(shared.style_note().into());
             render_activity(&window, &shared.chat.borrow());
         }
     });

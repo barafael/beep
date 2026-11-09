@@ -1,8 +1,6 @@
 //! Compiles the UI. Slint fixes the widget style when it compiles a `.slint` file, and each
 //! style is a whole copy of the UI in the binary, so b33p ships one: the native one, which
-//! on Linux is Qt's (the desktop's Qt style, or Fusion; Qt picks between them at startup) in a
-//! build with the `qt` feature, and Slint's own Fluent in one with `gpu-femtovg` or `gpu-skia`
-//! (no Qt, so no Qt style to compile against).
+//! on Linux is Slint's own Fluent (Linux has no native style of its own).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,21 +11,16 @@ fn main() {
     let icons = write_icons(&out);
     let input = manifest.join("ui/app.slint");
     // Named outright on Linux: Slint resolves "native" through a file it expects at a fixed
-    // place in `target/`, which newer cargo layouts move, and then quietly builds Fluent.
-    // Without the `qt` feature there is no Qt backend, and Fluent is what "native" would
-    // have meant (src/ui/mod.rs's `QT` follows this choice).
+    // place in `target/`, which newer cargo layouts move, and then quietly builds Fluent,
+    // which is what "native" means there anyway.
     let native = if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux") {
-        if std::env::var_os("CARGO_FEATURE_QT").is_some() {
-            "qt"
-        } else {
-            "fluent"
-        }
+        "fluent"
     } else {
         "native"
     };
     compile(&input, &out.join("app_native.rs"), native, false, &icons);
-    // The UI tests (`src/ui_tests.rs`) run without Qt, so they get a Fluent copy, compiled
-    // into the tests only. Finding elements in it needs debug info in its generated code.
+    // The UI tests (`src/ui_tests.rs`) always get a Fluent copy (the native style is another
+    // one off Linux), compiled into the tests only. Finding elements in it needs debug info in its generated code.
     compile(&input, &out.join("app_fluent.rs"), "fluent", true, &icons);
     // The tray icon has no widgets, so its style doesn't matter.
     compile(

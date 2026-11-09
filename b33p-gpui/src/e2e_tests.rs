@@ -2,7 +2,7 @@
 //! The same tests as `b33p-slint/tests/harness.rs`, of the same behaviours, through the same
 //! protocol: a client on a thread of its own talks to the agent's Unix socket, while this
 //! thread runs the app on GPUI's test platform, which needs no compositor, no GPU and no
-//! display (the Slint tests need Qt's offscreen platform for the same reason). Runs only with
+//! display (the Slint tests use Slint's testing backend for the same reason). Runs only with
 //! `--features harness`, like those; every file it writes goes to a scratch home (`testing.rs`).
 
 #![cfg(all(feature = "harness", target_family = "unix"))]
@@ -269,7 +269,6 @@ fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
 fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
     Action::SetSettings {
         theme: Some(theme),
-        style: None,
         text_size: Some(text_size),
         animations: None,
         show_avatars: None,

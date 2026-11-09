@@ -16,9 +16,8 @@
           # Every content it takes in, for the wire comparison (b33p-core content_log.rs): the
           # record moves it in (xtask `keep_contents`).
           { name: "B33P_CONTENT_LOG", value: "/run/b33p/content-@B33P@.jsonl" },
-          { name: "QT_QPA_PLATFORM", value: "wayland" },
           # Drawn larger: the viewers show the display shrunk beside the others.
-          { name: "QT_SCALE_FACTOR", value: "1.5" },
+          { name: "SLINT_SCALE_FACTOR", value: "1.5" },
           # A bus of its own that isn't there, as in b33p-slint/tests/harness.rs.
           { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent" },
           { name: "RUST_LOG", value: "b33p=debug,presage=info,libsignal_service=info" },
