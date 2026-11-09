@@ -255,7 +255,6 @@ fn android_takes(
 fn sync_to_phone(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
-        style: None,
         text_size: None,
         animations: None,
         show_avatars: None,

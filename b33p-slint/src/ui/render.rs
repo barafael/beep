@@ -290,8 +290,8 @@ pub(crate) fn render(
                     messages.set_row_data(before, item);
                 }
             }
-            // Fading a row in redraws the whole window for as long as it lasts (the Qt backend
-            // paints all of it at every frame), so only a message that comes after a quiet
+            // Fading a row in redraws the whole window for as long as it lasts (a backend
+            // that paints all of it at every frame), so only a message that comes after a quiet
             // moment fades; in a stream of them nobody sees the single fades anyway.
             let fresh = fade_in_allowed(std::time::Instant::now());
             messages.extend(chat.last_messages(n).map(|message| MessageItem {

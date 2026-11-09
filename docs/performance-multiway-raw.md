@@ -1,3 +1,5 @@
+> Qt was removed from the codebase after these runs (Skia is the default on Linux now); the runs stay as the record, and their slint-qt columns are the Qt build as it was.
+
 Measured at f9c0db9 on 7.3.1-1-cachyos | governor performance | load at start 2.66 6.49 8.22 1/5163 3343853
 Binaries: {'slint-qt': '40.8 MB', 'slint-qt-patched': '40.8 MB', 'slint-femtovg': '45.8 MB', 'slint-femtovg-patched': '45.8 MB', 'slint-skia': '52.7 MB', 'slint-skia-patched': '52.7 MB', 'gpui': '52.5 MB'}
 Rounds: {'slint-qt': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'slint-qt-patched': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'slint-femtovg': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'slint-femtovg-patched': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'slint-skia': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'slint-skia-patched': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}, 'gpui': {'static': 3, 'live': 3, 'sync': 3, 'frames': 2}}

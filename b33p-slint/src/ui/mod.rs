@@ -3,9 +3,7 @@
 
 use std::rc::Rc;
 
-use b33p_core::settings::{
-    Animations, NotificationContent, Settings, TextSize, Theme, WidgetStyle,
-};
+use b33p_core::settings::{Animations, NotificationContent, Settings, TextSize, Theme};
 use b33p_core::state::{
     self, AttachmentState, ChatState, Connection, ConversationView, MessageView, MessagesUpdate,
     SaveState, Update,
@@ -40,12 +38,6 @@ use viewer::*;
 #[cfg(test)]
 pub(crate) use viewer::{open_picture, wire_zoom};
 
-/// Whether Qt draws the window, as build.rs chose the widget style: only on Linux, and only in a
-/// build with the `qt` feature. The settings page then offers Qt's style and leaves the colours
-/// to the desktop; without Qt (Slint's own winit window), there is no such style to choose, but
-/// a theme.
-pub(crate) const QT: bool = cfg!(all(target_os = "linux", feature = "qt"));
-
 /// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 /// What the agent harness asked of the window that it couldn't do.
 #[cfg(all(feature = "harness", target_family = "unix"))]
@@ -74,7 +66,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     if Backend::mock_requested() {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
     }
-    show_settings(&window, &shared.settings.borrow(), &shared.style_note());
+    show_settings(&window, &shared.settings.borrow());
     window
         .global::<Prefs>()
         .set_notifications_supported(shared.notifier.available());
@@ -93,7 +85,32 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         .global::<Account>()
         .set_version(env!("CARGO_PKG_VERSION").into());
 
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    if std::env::var_os("B33P_HEADLESS").is_some() {
+        keep_tree_current(&window);
+    }
+
     Ok(Rc::new(Window(window)))
+}
+
+/// Nothing renders on the headless testing backend, so conditional parts and lists would never be
+/// created and the change handlers never settle: the tree is visited every so often instead, as
+/// `ui_tests.rs` does (which finds an element of every kind to get its parts made).
+#[cfg(all(feature = "harness", target_family = "unix"))]
+fn keep_tree_current(window: &AppWindow) {
+    use i_slint_backend_testing::ElementHandle;
+    let window = window.as_weak();
+    // The test process ends with the app: nothing to stop the timer for.
+    let timer = Box::leak(Box::new(slint::Timer::default()));
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(20),
+        move || {
+            if let Some(window) = window.upgrade() {
+                let _visited = ElementHandle::find_by_accessible_label(&window, "").count();
+            }
+        },
+    );
 }
 
 pub struct Window(AppWindow);
@@ -142,8 +159,8 @@ impl Window {
             }
             Err(error) => tracing::warn!(%error, "failed to show the window"),
         }
-        // Not in Slint's public API. On Qt this raises and activates the window, which on
-        // Wayland asks the compositor with the token in `XDG_ACTIVATION_TOKEN`, if there is one.
+        // Not in Slint's public API. This raises and activates the window, which on Wayland
+        // asks the compositor with the token in `XDG_ACTIVATION_TOKEN`, if there is one.
         let adapter = i_slint_core::window::WindowInner::from_pub(self.0.window()).window_adapter();
         if let Some(internal) = adapter.internal(i_slint_core::InternalToken)
             && let Err(error) = internal.bring_to_front()
@@ -156,8 +173,8 @@ impl Window {
         self.0.window().is_visible()
     }
 
-    /// Whether the window is the active one. Slint's public API doesn't offer this yet, but both
-    /// the Qt and the winit backend keep it up to date internally.
+    /// Whether the window is the active one. Slint's public API doesn't offer this yet, but the
+    /// winit backend keeps it up to date internally.
     pub fn active(&self) -> bool {
         i_slint_core::window::WindowInner::from_pub(self.0.window()).active()
     }
@@ -188,8 +205,8 @@ impl Window {
 
     /// Puts `settings` on the window, as at start-up, after they changed from outside it: by
     /// the harness, or on the phone.
-    pub fn show_settings(&self, settings: &Settings, style_note: &str) {
-        show_settings(&self.0, settings, style_note);
+    pub fn show_settings(&self, settings: &Settings) {
+        show_settings(&self.0, settings);
     }
 
     /// Puts `text` in the composer, as if typed; the harness calls this, since its keystrokes
@@ -308,15 +325,10 @@ impl Window {
 }
 
 /// The settings page shows choices by index, in the order of these enums.
-fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
-    window.global::<Prefs>().set_qt(QT);
+fn show_settings(window: &AppWindow, settings: &Settings) {
     window
         .global::<Prefs>()
         .set_theme(index_of(&Theme::ALL, settings.theme));
-    window
-        .global::<Prefs>()
-        .set_widget_style(index_of(&WidgetStyle::ALL, settings.style));
-    window.global::<Prefs>().set_style_note(style_note.into());
     window
         .global::<Prefs>()
         .set_text_size(index_of(&TextSize::ALL, settings.text_size));
@@ -380,10 +392,6 @@ fn show_settings(window: &AppWindow, settings: &Settings, style_note: &str) {
 fn read_settings(window: &AppWindow) -> Settings {
     Settings {
         theme: at_index(&Theme::ALL, window.global::<Prefs>().get_theme()),
-        style: at_index(
-            &WidgetStyle::ALL,
-            window.global::<Prefs>().get_widget_style(),
-        ),
         animations: at_index(&Animations::ALL, window.global::<Prefs>().get_animations()),
         text_size: at_index(&TextSize::ALL, window.global::<Prefs>().get_text_size()),
         show_avatars: window.global::<Prefs>().get_show_avatars(),

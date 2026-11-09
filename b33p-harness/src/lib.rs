@@ -126,13 +126,6 @@ pub enum Theme {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WidgetStyle {
-    Native,
-    Fusion,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum TextSize {
     Small,
     Default,
@@ -181,7 +174,6 @@ mod core_enums {
     }
 
     same_variants!(b33p_core::settings::Theme => Theme: System, Light, Dark);
-    same_variants!(b33p_core::settings::WidgetStyle => WidgetStyle: Native, Fusion);
     same_variants!(b33p_core::settings::TextSize => TextSize: Small, Default, Large);
     same_variants!(b33p_core::settings::Animations => Animations: System, On, Off);
     same_variants!(
@@ -547,7 +539,6 @@ pub enum Action {
     /// Changes the given settings and leaves the rest as they are.
     SetSettings {
         theme: Option<Theme>,
-        style: Option<WidgetStyle>,
         text_size: Option<TextSize>,
         animations: Option<Animations>,
         show_avatars: Option<bool>,
@@ -890,7 +881,6 @@ pub struct AttachmentSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingsSnapshot {
     pub theme: Theme,
-    pub style: WidgetStyle,
     pub text_size: TextSize,
     pub animations: Animations,
     pub show_avatars: bool,

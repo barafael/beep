@@ -90,7 +90,7 @@ is inflated.
   exhaustively, so an action added to `b33p-harness` doesn't build until both have it.
 - `settings.rs` is the settings page: it reads `Shared::settings` each time it is drawn and
   changes it only through `Shared::apply_settings` (save, theme, backend), so the phone's changes
-  (`take_preferences`) show on their own. The Qt-only widget style is left out.
+  (`take_preferences`) show on their own.
 - `window.rs` is the window's life, which `Shared` outlives: opening it, closing it into the
   tray or ending b33p (`QuitMode::Explicit`, the choice is `window::in_tray`), opening it again
   from the tray, a second start or a notification (`activate`), and `--hidden`. GPUI windows

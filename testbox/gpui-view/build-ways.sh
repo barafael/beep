@@ -6,10 +6,9 @@
 #   testbox/gpui-view/build-ways.sh <out-dir> [variant...]
 #
 # Variants (all of them when none is named):
-#   slint-qt                Qt 6 on the CPU (the default features)
 #   slint-femtovg           Slint's winit backend, FemtoVG on OpenGL, Fluent style
 #   slint-skia              the same with Skia (Vulkan if the driver has it, else OpenGL)
-#   slint-qt-patched, slint-femtovg-patched, slint-skia-patched
+#   slint-femtovg-patched, slint-skia-patched
 #                           the same with the Slint fork patch of b33p-slint/fork-patches
 #                           (the text cursor stops blinking after 10 s; the fix for animations
 #                           from a value to itself is in the pinned fork now), applied to a copy of the pinned Slint revision that the
@@ -25,11 +24,10 @@ out=$(mkdir -p "${1:?usage: build-ways.sh <out-dir> [variant...]}" && cd "$1" &&
 shift
 case $out/ in "$root"/*) echo "the out dir must be outside $root" >&2; exit 2 ;; esac
 variants=("$@")
-[ ${#variants[@]} -eq 0 ] && variants=(slint-qt slint-femtovg slint-skia slint-qt-patched slint-femtovg-patched slint-skia-patched)
+[ ${#variants[@]} -eq 0 ] && variants=(slint-skia slint-femtovg slint-skia-patched slint-femtovg-patched)
 
 features() { # the cargo arguments that select the graphics stack of a variant
     case ${1%-patched} in
-    slint-qt) echo "--features harness" ;;
     slint-femtovg) echo "--no-default-features --features harness,signal,gpu-femtovg" ;;
     slint-skia) echo "--no-default-features --features harness,signal,gpu-skia" ;;
     *) echo "unknown variant $1" >&2; return 1 ;;
@@ -61,8 +59,7 @@ for v in "${variants[@]}"; do
 import re, sys
 fork = sys.argv[1]
 where = {"slint": "api/rs/slint", "slint-build": "api/rs/build", "i-slint-core": "internal/core",
-         "i-slint-common": "internal/common", "i-slint-backend-testing": "internal/backends/testing",
-         "i-slint-backend-selector": "internal/backends/selector"}
+         "i-slint-common": "internal/common", "i-slint-backend-testing": "internal/backends/testing"}
 s = open("Cargo.toml").read()
 for name, path in where.items():
     s, n = re.subn(r'^(%s = \{ )git = "https://github\.com/barafael/slint", rev = "[0-9a-f]+"' % re.escape(name),

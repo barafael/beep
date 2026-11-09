@@ -1,16 +1,9 @@
 //! Drives the real app over the agent harness: the mock backend in, actions in, snapshots
-//! out. Runs only with `--features harness` (otherwise this file is empty); the window draws
-//! on Qt's offscreen platform, since a test has no desktop, and every file it writes goes to
-//! a scratch home, so a test leaves nothing behind.
-
-// Not in a Linux build without Qt: its winit window has no offscreen platform, so these tests
-// would open windows on the desktop they run on. Such a build is driven in a display of its own
-// instead (`testbox/gpui-view/view.sh`).
-#![cfg(all(
-    feature = "harness",
-    target_family = "unix",
-    any(not(target_os = "linux"), feature = "qt")
-))]
+//! out. Runs only with `--features harness` (otherwise this file is empty); the window is
+//! Slint's headless testing backend (`B33P_HEADLESS`), since a test has no desktop, and every
+//! file it writes goes to a scratch home, so a test leaves nothing behind. Nothing is drawn: a
+//! build is looked at in a display of its own instead (`testbox/gpui-view/view.sh`).
+#![cfg(all(feature = "harness", target_family = "unix"))]
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
@@ -118,7 +111,7 @@ fn app_with(name: &str, env: &[(&str, &str)]) -> (App, Agent) {
             "DBUS_SESSION_BUS_ADDRESS",
             format!("unix:path={}", scratch.join("bus").display()),
         )
-        .env("QT_QPA_PLATFORM", "offscreen")
+        .env("B33P_HEADLESS", "1")
         // Its log, at the default level: it says when the socket listens.
         .env_remove("RUST_LOG")
         .envs(env.iter().copied())
@@ -319,7 +312,6 @@ fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
 fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
     Action::SetSettings {
         theme: Some(theme),
-        style: None,
         text_size: Some(text_size),
         animations: None,
         show_avatars: None,
@@ -505,6 +497,12 @@ fn photos_open_in_the_viewer() {
             .iter()
             .flat_map(|m| &m.attachments)
             .any(|a| a.id == "photo")
+    });
+    // The headless window has no size of its own, and the zoom that fits depends on it: a window
+    // the photo doesn't fit in, so that it zooms in from below 100%.
+    agent.act(Action::Resize {
+        width: 400.0,
+        height: 300.0,
     });
     assert!(!agent.act(Action::OpenViewer {
         id: "notes".to_owned(),

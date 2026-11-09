@@ -3,13 +3,7 @@ import { Theme } from "theme.slint";
 import { PanelHeader, SectionTitle, SettingRow, SwitchRow } from "widgets.slint";
 
 export component SettingsPage inherits Rectangle {
-    // Qt draws the window (Linux, the `qt` feature): its style is chosen, its colours are the
-    // desktop's. Elsewhere (Windows, macOS, Linux on the winit backend) there is no Qt style to
-    // choose, but a theme.
-    in property <bool> qt;
     in-out property <int> theme;
-    in-out property <int> widget-style;
-    in property <string> style-note;
     in-out property <int> text-size;
     // In the order of `Animations::ALL`.
     in-out property <int> animations;
@@ -77,24 +71,12 @@ export component SettingsPage inherits Rectangle {
                     alignment: start;
 
                     SectionTitle { text: "Appearance"; }
-                    // Qt's styles take their colours from the desktop.
-                    if !root.qt: SettingRow {
+                    SettingRow {
                         label: "Theme";
                         ComboBox {
                             width: 200px;
                             model: ["System", "Light", "Dark"];
                             current-index <=> root.theme;
-                            selected => { root.changed-settings(); }
-                        }
-                    }
-                    if root.qt: SettingRow {
-                        label: "Style";
-                        hint: root.style-note;
-                        ComboBox {
-                            width: 200px;
-                            // In the order of `WidgetStyle::ALL`.
-                            model: ["System", "Fusion"];
-                            current-index <=> root.widget-style;
                             selected => { root.changed-settings(); }
                         }
                     }

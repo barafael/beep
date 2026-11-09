@@ -43,12 +43,10 @@ export component AppWindow inherits Window {
     changed open-chat => { OpenChat.calendar-open = false; }
     property <length> platform-font-size;
     property <int> chosen-theme: Prefs.theme;
-    property <bool> qt: Prefs.qt;
     property <float> font-scale: Prefs.font-scale;
 
     function apply-settings() {
-        Palette.color-scheme = Prefs.qt ? ColorScheme.unknown
-            : Prefs.theme == 1 ? ColorScheme.light
+        Palette.color-scheme = Prefs.theme == 1 ? ColorScheme.light
             : Prefs.theme == 2 ? ColorScheme.dark : ColorScheme.unknown;
         root.default-font-size = root.platform-font-size * Prefs.font-scale;
     }
@@ -58,7 +56,6 @@ export component AppWindow inherits Window {
         root.apply-settings();
     }
     changed chosen-theme => { root.apply-settings(); }
-    changed qt => { root.apply-settings(); }
     changed font-scale => { root.apply-settings(); }
 
     callback back;
@@ -240,10 +237,7 @@ export component AppWindow inherits Window {
 
                 if Prefs.settings-open: SettingsPage {
                     horizontal-stretch: 1;
-                    qt: Prefs.qt;
                     theme <=> Prefs.theme;
-                    widget-style <=> Prefs.widget-style;
-                    style-note: Prefs.style-note;
                     text-size <=> Prefs.text-size;
                     animations <=> Prefs.animations;
                     show-avatars <=> Prefs.show-avatars;

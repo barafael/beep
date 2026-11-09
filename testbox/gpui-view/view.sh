@@ -7,7 +7,7 @@
 #   testbox/gpui-view/view.sh logs | stop
 #
 # VIEW_BIN: another binary to run (default target/debug/b33p-gpui; e.g. a b33p-slint build);
-# VIEW_IMAGE: another image (default b33p-gpui-view; b33p-bench-view has Qt and the Vulkan driver);
+# VIEW_IMAGE: another image (default b33p-gpui-view; b33p-bench-view has the Vulkan driver);
 # VIEW_GPU=1: draw on the host's GPU through its render node, as bench.py does.
 #
 # Needs: `cargo build -p b33p-gpui` (add `--features harness` to drive it through

@@ -27,14 +27,9 @@ qrcode = { version = "0.14", default-features = false }
 thiserror = "2"
 
 # Branch langis/integration of our Slint fork, which is upstream master now (1.20, as of
-# 2026-11-06), nothing more: slint-ui/slint#13985 (selecting text in a `StyledText`) and #14449
-# (the Qt backend drawing emoji itself: Qt 6.4's QRawFont overruns the heap on them) have landed.
-# Merge master in when it moves; go back to crates.io once a release carries them both.
+# 2026-11-06), nothing more: slint-ui/slint#13985 (selecting text in a `StyledText`) has landed.
+# Merge master in when it moves; go back to crates.io once a release carries it.
 slint = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221", default-features = false }
-# Slint's backend picker, for b33p-slint's `qt` feature: it turns the Qt backend on from a
-# dependency that only Linux has (see b33p-slint/Cargo.toml); `slint`'s own `backend-qt` can't be
-# limited to a platform by a feature.
-i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221", default-features = false }
 slint-build = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221" }
 # The internals b33p names directly. Its helper crates come with the fork.
 i-slint-core = { git = "https://github.com/barafael/slint", rev = "2a802138dc7f23f9a536675978b7224018af8221" }

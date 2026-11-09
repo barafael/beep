@@ -56,11 +56,6 @@ export global Account {
 export global Prefs {
     // Settings: indexes into the choices shown on the settings page.
     in-out property <int> theme;
-    in-out property <int> widget-style;
-    // Whether Qt draws the window; see `SettingsPage`.
-    in property <bool> qt;
-    // Explains a style change that waits for a restart; empty otherwise.
-    in property <string> style-note;
     in-out property <int> text-size: 1;
     in-out property <int> animations;
     in-out property <bool> show-avatars: true;

@@ -452,7 +452,6 @@ const EXPIRY_PATIENCE_MS: u64 = 90_000;
 fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
-        style: None,
         text_size: None,
         animations: None,
         show_avatars: None,
@@ -475,7 +474,6 @@ fn link_previews(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
 fn typing_indicators(b33p: &mut Harness, on: bool) -> Result<(), HarnessError> {
     b33p.act(Action::SetSettings {
         theme: None,
-        style: None,
         text_size: None,
         animations: None,
         show_avatars: None,

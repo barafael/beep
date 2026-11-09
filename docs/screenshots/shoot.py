@@ -2,15 +2,17 @@
 """Takes screenshots of b33p's window, for the README and for comparing changes to the look.
 
 It starts the mock (nothing is sent) with the agent harness, drives it the way a person would,
-and saves the window at each step as a PNG. Runs offscreen: nothing opens on the desktop.
+and saves the window at each step as a PNG.
+
+The window is Slint's own (winit, Skia), so it needs a display to open on: on the desktop it
+opens a window there. To keep the desktop out of it, run the script in a display of its own
+(`testbox/gpui-view/view.sh`: cage in a container, with VIEW_BIN set to the harness build).
 
     cargo build -p b33p-slint --features harness
     python3 docs/screenshots/shoot.py --out target/shots/light
     python3 docs/screenshots/shoot.py --out target/shots/dark --scheme dark
-    python3 docs/screenshots/shoot.py --out target/shots/fusion-dark --scheme dark --style fusion
 
-The colour scheme comes from KDE's platform theme with a scheme of Breeze's (BreezeLight or
-BreezeDark), so it needs KDE's Qt integration (plasma-integration); without it, Qt's defaults.
+The colour scheme is the Theme setting, set to light or dark.
 """
 
 import argparse
@@ -25,7 +27,6 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMES = Path("/usr/share/color-schemes")
 
 
 class Agent:
@@ -85,17 +86,10 @@ def has_message(snapshot, text: str) -> bool:
     return any(m["text"] == text for m in snapshot["messages"])
 
 
-def scratch_home(scheme: str) -> Path:
+def scratch_home() -> Path:
     home = Path(tempfile.mkdtemp(prefix="b33p-shots-"))
     for sub in ["config", "data", "cache", "runtime"]:
         (home / sub).mkdir()
-    colors = SCHEMES / ("BreezeDark.colors" if scheme == "dark" else "BreezeLight.colors")
-    if colors.exists():
-        text = colors.read_text()
-        name = "BreezeDark" if scheme == "dark" else "BreezeLight"
-        (home / "config" / "kdeglobals").write_text(
-            text + f"\n[General]\nColorScheme={name}\n\n[KDE]\nwidgetStyle=Breeze\n"
-        )
     return home
 
 
@@ -104,7 +98,6 @@ def main():
     parser.add_argument("--binary", default=str(ROOT / "target/debug/b33p"))
     parser.add_argument("--out", required=True)
     parser.add_argument("--scheme", choices=["light", "dark"], default="light")
-    parser.add_argument("--style", choices=["system", "fusion"], default="system")
     parser.add_argument("--only", help="comma-separated scene names")
     parser.add_argument("--width", type=float, default=1000)
     parser.add_argument("--height", type=float, default=680)
@@ -112,7 +105,7 @@ def main():
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    home = scratch_home(args.scheme)
+    home = scratch_home()
     sock = home / "runtime" / "agent.sock"
     env = dict(os.environ)
     env.update(
@@ -123,14 +116,8 @@ def main():
         XDG_CACHE_HOME=str(home / "cache"),
         XDG_RUNTIME_DIR=str(home / "runtime"),
         DBUS_SESSION_BUS_ADDRESS=f"unix:path={home / 'bus'}",
-        QT_QPA_PLATFORM="offscreen",
-        QT_QPA_PLATFORMTHEME="kde",
         LANG="en_US.UTF-8",
     )
-    if args.style == "fusion":
-        env["QT_STYLE_OVERRIDE"] = "Fusion"
-    else:
-        env.pop("QT_STYLE_OVERRIDE", None)
     app = subprocess.Popen(
         [args.binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -138,7 +125,7 @@ def main():
     try:
         agent = Agent(sock)
         # Still pictures: nothing caught halfway through fading in.
-        agent.act("set_settings", animations="off", show_calendar=True, show_activity=False)
+        agent.act("set_settings", theme=args.scheme, animations="off", show_calendar=True, show_activity=False)
         agent.act("resize", width=args.width, height=args.height)
         chats = agent.wait_for(
             "the mock's chats",

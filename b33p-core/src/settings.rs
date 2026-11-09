@@ -12,32 +12,6 @@ pub enum Theme {
     Dark,
 }
 
-/// The look of the widgets, for UIs that offer several.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WidgetStyle {
-    /// The platform's own (Qt on Linux, in the desktop's Qt style).
-    #[default]
-    Native,
-    /// Qt's Fusion style: the native widgets, but the same on every desktop.
-    Fusion,
-}
-
-impl WidgetStyle {
-    pub const ALL: [Self; 2] = [Self::Native, Self::Fusion];
-
-    /// Styles b33p no longer has ("fluent", …) aren't keys, so they read as the default.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Fusion => "fusion",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|style| style.key() == key)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextSize {
     Small,
@@ -153,7 +127,6 @@ impl Theme {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Theme,
-    pub style: WidgetStyle,
     pub text_size: TextSize,
     pub animations: Animations,
     /// Show profile and group pictures rather than only initials.
@@ -188,7 +161,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
-            style: WidgetStyle::default(),
             text_size: TextSize::default(),
             animations: Animations::default(),
             show_avatars: true,
@@ -302,11 +274,6 @@ impl Settings {
                         settings.theme = theme;
                     }
                 }
-                ("style", value) => {
-                    if let Some(style) = WidgetStyle::from_key(value) {
-                        settings.style = style;
-                    }
-                }
                 ("text_size", value) => {
                     if let Some(text_size) = TextSize::from_key(value) {
                         settings.text_size = text_size;
@@ -363,12 +330,11 @@ impl Settings {
 
     fn to_text(&self) -> String {
         format!(
-            "theme = {}\nstyle = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
+            "theme = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {}\nshow_activity = {}\nshow_calendar = {}\n\
              close_to_tray = {}\nscreen_security = {}\ncheck_updates = {}\n\
              read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
             self.theme.key(),
-            self.style.key(),
             self.text_size.key(),
             self.animations.key(),
             self.show_avatars,
@@ -486,31 +452,28 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        for style in WidgetStyle::ALL {
-            let settings = Settings {
-                theme: Theme::Dark,
-                style,
-                text_size: TextSize::Large,
-                animations: Animations::Off,
-                show_avatars: false,
-                notifications: false,
-                notification_content: NotificationContent::NameOnly,
-                show_activity: true,
-                show_calendar: true,
-                close_to_tray: false,
-                screen_security: false,
-                check_updates: true,
-                device_name: Some("Work = laptop".into()),
-                preferences: crate::Preferences {
-                    read_receipts: false,
-                    typing_indicators: false,
-                    link_previews: true,
-                    sync_to_phone: true,
-                },
-                recent_emoji: vec!["👍".into(), "👩‍💻".into(), "❤️".into()],
-            };
-            assert_eq!(Settings::parse(&settings.to_text()), settings);
-        }
+        let settings = Settings {
+            theme: Theme::Dark,
+            text_size: TextSize::Large,
+            animations: Animations::Off,
+            show_avatars: false,
+            notifications: false,
+            notification_content: NotificationContent::NameOnly,
+            show_activity: true,
+            show_calendar: true,
+            close_to_tray: false,
+            screen_security: false,
+            check_updates: true,
+            device_name: Some("Work = laptop".into()),
+            preferences: crate::Preferences {
+                read_receipts: false,
+                typing_indicators: false,
+                link_previews: true,
+                sync_to_phone: true,
+            },
+            recent_emoji: vec!["👍".into(), "👩‍💻".into(), "❤️".into()],
+        };
+        assert_eq!(Settings::parse(&settings.to_text()), settings);
         let unnamed = Settings::default();
         assert_eq!(Settings::parse(&unnamed.to_text()), unnamed);
     }
@@ -566,9 +529,6 @@ mod tests {
         for theme in Theme::ALL {
             assert_eq!(Theme::from_key(theme.key()), Some(theme));
         }
-        for style in WidgetStyle::ALL {
-            assert_eq!(WidgetStyle::from_key(style.key()), Some(style));
-        }
         for text_size in TextSize::ALL {
             assert_eq!(TextSize::from_key(text_size.key()), Some(text_size));
         }
@@ -583,9 +543,9 @@ mod tests {
     #[test]
     fn ignores_what_it_does_not_know() {
         let settings =
-            // `style = fluent`: a style earlier versions had.
+            // `style = fusion`: a setting earlier versions had.
             Settings::parse(
-                "theme = sepia\nfuture_option = 3\ngarbage\nstyle = fluent\ntext_size=small\n",
+                "theme = sepia\nfuture_option = 3\ngarbage\nstyle = fusion\ntext_size=small\n",
             );
         assert_eq!(
             settings,
