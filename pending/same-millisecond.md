@@ -1,7 +1,7 @@
 # Messages at one millisecond: what is still open
 
 As of 4 November 2026, on the uncommitted work that adds `b33p_collided`, with presage at
-`53fb55a` (now `c40361c`: its save guard and the store's `(ts, thread_id)` key are
+`53fb55a` (now `3de451c`: its save guard and the store's `(ts, thread_id)` key are
 unchanged). The history and the part that is fixed are in `pending/stress.md`, finding 8.
 
 **None of this has been reproduced.** Every finding comes from reading the code, so re-derive one
@@ -11,7 +11,7 @@ move.
 Set this first in bash or zsh; the commands below use it:
 
 ```sh
-P=$(ls -d ~/.cargo/git/checkouts/presage-*/c40361c)   # the rev in Cargo.toml
+P=$(ls -d ~/.cargo/git/checkouts/presage-*/3de451c)   # the rev in Cargo.toml
 ```
 
 ## Why any of this exists
