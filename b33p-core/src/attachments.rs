@@ -20,7 +20,7 @@ use presage::{
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Semaphore;
 
-use crate::signal::errors::{kind_of, service_kind, upload_kind};
+use crate::signal::errors::{closed_under_request, kind_of, service_kind, upload_kind};
 use crate::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, ErrorKind, Event, Events,
     FullPicture, Picture,
@@ -537,9 +537,7 @@ pub(crate) async fn upload_bytes(
     content_type: &str,
     data: Vec<u8>,
 ) -> Result<AttachmentPointer, UploadError> {
-    let spec = spec(name.to_owned(), content_type.to_owned(), &data);
-    manager
-        .upload_attachment(spec, data)
+    upload_retrying(manager, name, content_type, data)
         .await
         .map_err(UploadError::Upload)?
         .map_err(|source| UploadError::Attachment {
@@ -548,13 +546,38 @@ pub(crate) async fn upload_bytes(
         })
 }
 
+/// Uploads `data` as `name`; once more, on a new connection, if the first try went out on a
+/// kept-alive connection the CDN closed under it ([`closed_under_request`]): a CDN closes idle
+/// connections, and the next upload may come just as it does.
+async fn upload_retrying(
+    manager: &crate::signal::Mgr,
+    name: &str,
+    content_type: &str,
+    data: Vec<u8>,
+) -> Result<
+    Result<AttachmentPointer, AttachmentUploadError>,
+    presage::Error<presage_store_sqlite::SqliteStoreError>,
+> {
+    let first = spec(name.to_owned(), content_type.to_owned(), &data);
+    match manager.upload_attachment(first, data.clone()).await? {
+        Err(error) if closed_under_request(&error) => {
+            tracing::info!(
+                error = %crate::scrub::chain(&error),
+                "the CDN closed the connection under an upload; uploading it once more"
+            );
+            let again = spec(name.to_owned(), content_type.to_owned(), &data);
+            manager.upload_attachment(again, data).await
+        }
+        uploaded => Ok(uploaded),
+    }
+}
+
 /// Uploads `files` for sending, as the pointers to put in the message.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
     files: &[PathBuf],
 ) -> Result<Vec<AttachmentPointer>, UploadError> {
     let mut uploads = Vec::new();
-    let mut names = Vec::new();
     for path in files {
         let name = path
             .file_name()
@@ -584,18 +607,23 @@ pub(crate) async fn upload(
                     source,
                 })?
         };
-        let spec = spec(name.clone(), content_type, &data);
-        uploads.push((spec, data));
-        names.push(name);
+        uploads.push((name, content_type, data));
     }
-    let results = manager
-        .upload_attachments(uploads)
-        .await
-        .map_err(UploadError::Upload)?;
+    // All at once, as presage's `upload_attachments`, each with its own retry.
+    let results = futures::future::join_all(uploads.into_iter().map(
+        |(name, content_type, data)| async move {
+            let uploaded = upload_retrying(manager, &name, &content_type, data).await;
+            (name, uploaded)
+        },
+    ))
+    .await;
     results
         .into_iter()
-        .zip(names)
-        .map(|(result, name)| result.map_err(|source| UploadError::Attachment { name, source }))
+        .map(|(name, uploaded)| {
+            uploaded
+                .map_err(UploadError::Upload)?
+                .map_err(|source| UploadError::Attachment { name, source })
+        })
         .collect()
 }
 
