@@ -20,6 +20,22 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo fetch --locked --target x86_64-unknown-linux-gnu
+# Slint's Skia renderer: skia-bindings' build script downloads Skia's prebuilt binaries, which the
+# build below can't. They come with the crates instead, for the skia-bindings Cargo.lock names and
+# the features b33p builds it with (the key), and the build reads them from the file. A new
+# version or feature set fails here, or in the build with the key it wants in its URL.
+ARG SKIA_TAG=0.157.0
+ARG SKIA_KEY=30669978c3f39a73e8a7-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan
+ARG SKIA_SHA256=6e3dbc01dd725d31598513f24a3eb4cdd161eaf7530d355839f4447f01f94fbc
+RUN if ! grep -A1 '^name = "skia-bindings"' Cargo.lock | grep -qx "version = \"$SKIA_TAG\""; then \
+        echo "Cargo.lock's skia-bindings isn't $SKIA_TAG: update SKIA_TAG, SKIA_KEY and SKIA_SHA256"; \
+        exit 1; \
+    fi \
+    && mkdir -p "/opt/skia-binaries/$SKIA_TAG" \
+    && curl -fsSL -o "/opt/skia-binaries/$SKIA_TAG/skia-binaries-$SKIA_KEY.tar.gz" \
+        "https://github.com/rust-skia/skia-binaries/releases/download/$SKIA_TAG/skia-binaries-$SKIA_KEY.tar.gz" \
+    && echo "$SKIA_SHA256  /opt/skia-binaries/$SKIA_TAG/skia-binaries-$SKIA_KEY.tar.gz" | sha256sum -c -
+ENV SKIA_BINARIES_URL=file:///opt/skia-binaries/{tag}/skia-binaries-{key}.tar.gz
 # `dev` as the checks' own builds, or `testbox` (`cargo testbox up --optimized`): optimized as b33p
 # ships, with the debug assertions `test-servers` needs (Cargo.toml).
 ARG PROFILE=dev
