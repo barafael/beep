@@ -1067,6 +1067,7 @@ dependencies = [
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
+ "hyper",
  "image",
  "jiff",
  "keyring-core",
