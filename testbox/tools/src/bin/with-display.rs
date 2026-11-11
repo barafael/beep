@@ -7,6 +7,7 @@
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
 
+use std::os::fd::BorrowedFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -48,6 +49,8 @@ enum DisplayError {
     },
     #[error("finding with-display's own path")]
     OwnPath(#[source] std::io::Error),
+    #[error("keeping the descriptors cage gave the session from what the session starts")]
+    Descriptors(#[source] std::io::Error),
     #[error("starting {program}")]
     Start {
         program: String,
@@ -214,6 +217,7 @@ fn session(
     program: &str,
     program_arguments: &[String],
 ) -> Result<(), Failure> {
+    keep_descriptors_from_children()?;
     refuse_data_control()?;
     let mut wlr_randr = Command::new("wlr-randr");
     wlr_randr.args(["--output", OUTPUT, "--custom-mode", geometry]);
@@ -263,6 +267,39 @@ fn session(
         }
         .into())
     }
+}
+
+/// Marks the descriptors the session was given past the standard three close-on-exec, so that
+/// what it starts doesn't get them. Cage learns that the session ended when the pipe it gave the
+/// session hangs up (cage's `spawn_primary_client`), so every process holding the pipe's write
+/// end keeps cage, and the container, up. The session's own copy goes when it exits; a copy in an
+/// adb server the Android driver started (`adb start-server` forks one into a session of its own,
+/// beyond the application's process group, which the session kills) stayed: cage and the
+/// container then ran on after the driver failed, and what waited for the driver waited its whole
+/// patience, an hour. Called first, while the session has no other thread to open or close
+/// descriptors.
+fn keep_descriptors_from_children() -> Result<(), DisplayError> {
+    let failed = DisplayError::Descriptors;
+    for entry in std::fs::read_dir("/proc/self/fd").map_err(failed)? {
+        let name = entry.map_err(failed)?.file_name();
+        let Some(fd) = name.to_str().and_then(|name| name.parse::<i32>().ok()) else {
+            continue;
+        };
+        if fd <= 2 {
+            continue;
+        }
+        // SAFETY: `fd` was open as the listing read it, and nothing closes it while it is
+        // borrowed: this thread is the session's only one, and only `read_dir`'s own descriptor,
+        // listed too, may be closed by now, which `fcntl` answers with EBADF.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        match rustix::io::fcntl_getfd(borrowed) {
+            Ok(flags) => rustix::io::fcntl_setfd(borrowed, flags | rustix::io::FdFlags::CLOEXEC)
+                .map_err(|errno| failed(errno.into()))?,
+            Err(rustix::io::Errno::BADF) => {}
+            Err(errno) => return Err(failed(errno.into())),
+        }
+    }
+    Ok(())
 }
 
 /// The application's pid, as the session writes it while the application runs.
@@ -320,5 +357,23 @@ fn refuse_data_control() -> Result<(), DataControlError> {
     match offered {
         Some(protocol) => Err(DataControlError::Offered { protocol }),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A descriptor the session was given open across exec, as cage's pipe is, is closed in what
+    /// the session starts. The only test here, so no other thread opens or closes descriptors
+    /// meanwhile.
+    #[test]
+    fn what_the_session_was_given_stays_out_of_its_children() {
+        let (reader, _writer) = std::io::pipe().expect("a pipe");
+        rustix::io::fcntl_setfd(&reader, rustix::io::FdFlags::empty())
+            .expect("open across exec, as cage gives it");
+        keep_descriptors_from_children().expect("marked");
+        let flags = rustix::io::fcntl_getfd(&reader).expect("its flags");
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
     }
 }
