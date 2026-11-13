@@ -52,12 +52,11 @@ struct AccountSettings {
 /// The primary's account as the server stores it.
 fn account_settings(containers: &Pod, aci: &str) -> Result<(AccountSettings, String), Failure> {
     let text = containers.exec(Service::Server, &["provision", "account", aci], "")?;
-    let settings = serde_json::from_str(text.trim()).map_err(|source| {
-        CoreError::AccountUnread {
+    let settings =
+        serde_json::from_str(text.trim()).map_err(|source| CoreError::AccountUnread {
             text: text.clone(),
             source,
-        }
-    })?;
+        })?;
     Ok((settings, text.trim().to_owned()))
 }
 
