@@ -55,6 +55,7 @@ import (
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/protobuf/signalpb"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/store"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
@@ -478,6 +479,58 @@ func (s *session) handleChat(event *events.ChatEvent) bool {
 	return true
 }
 
+// sendReaction reacts with `emoji` to the message `author` sent at `target`, in the chat with `to`.
+func (s *session) sendReaction(to, author string, target uint64, emoji string) (uint64, error) {
+	aci, err := uuid.Parse(to)
+	if err != nil {
+		return 0, fmt.Errorf("%q: %w", to, err)
+	}
+	authorACI, err := uuid.Parse(author)
+	if err != nil {
+		return 0, fmt.Errorf("%q: %w", author, err)
+	}
+	ts := s.nextTimestamp()
+	content := signalmeow.WrapDataMessage(&signalpb.DataMessage{
+		Timestamp:               &ts,
+		RequiredProtocolVersion: proto.Uint32(uint32(signalpb.DataMessage_REACTIONS)),
+		Reaction: &signalpb.DataMessage_Reaction{
+			Emoji:                 proto.String(emoji),
+			Remove:                proto.Bool(false),
+			TargetAuthorAciBinary: authorACI[:],
+			TargetSentTimestamp:   proto.Uint64(target),
+		},
+	})
+	result := s.client.SendMessage(s.ctx, libsignalgo.NewACIServiceID(aci), content)
+	if !result.WasSuccessful {
+		if result.Error != nil {
+			return 0, fmt.Errorf("reacting to %s: %w", to, result.Error)
+		}
+		return 0, fmt.Errorf("reacting to %s failed", to)
+	}
+	return ts, nil
+}
+
+// sendEdit changes this account's message sent at `target`, in the chat with `to`, to `text`.
+func (s *session) sendEdit(to string, target uint64, text string) (uint64, error) {
+	aci, err := uuid.Parse(to)
+	if err != nil {
+		return 0, fmt.Errorf("%q: %w", to, err)
+	}
+	ts := s.nextTimestamp()
+	content := signalmeow.WrapEditMessage(&signalpb.EditMessage{
+		TargetSentTimestamp: proto.Uint64(target),
+		DataMessage:         &signalpb.DataMessage{Body: &text, Timestamp: &ts},
+	})
+	result := s.client.SendMessage(s.ctx, libsignalgo.NewACIServiceID(aci), content)
+	if !result.WasSuccessful {
+		if result.Error != nil {
+			return 0, fmt.Errorf("editing for %s: %w", to, result.Error)
+		}
+		return 0, fmt.Errorf("editing for %s failed", to)
+	}
+	return ts, nil
+}
+
 func (s *session) sendText(to, text string) (uint64, error) {
 	aci, err := uuid.Parse(to)
 	if err != nil {
@@ -584,6 +637,11 @@ type command struct {
 	Path       string          `json:"path"`
 	Text       string          `json:"text"`
 	Timestamps []uint64        `json:"timestamps"`
+
+	// A reaction's or an edit's target: the author's ACI, the time the message was sent at, the emoji.
+	Author string `json:"author"`
+	Target uint64 `json:"target"`
+	Emoji  string `json:"emoji"`
 }
 
 func (s *session) serve(ctx context.Context, in io.Reader) error {
@@ -640,6 +698,14 @@ func (s *session) answer(cmd command) {
 	case "send-group":
 		var ts uint64
 		ts, err = s.sendGroup(cmd.MasterKey, cmd.Text)
+		fields["timestamp"] = ts
+	case "react":
+		var ts uint64
+		ts, err = s.sendReaction(cmd.To, cmd.Author, cmd.Target, cmd.Emoji)
+		fields["timestamp"] = ts
+	case "edit":
+		var ts uint64
+		ts, err = s.sendEdit(cmd.To, cmd.Target, cmd.Text)
 		fields["timestamp"] = ts
 	case "read":
 		timestamps := make([]string, len(cmd.Timestamps))

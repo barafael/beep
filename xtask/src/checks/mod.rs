@@ -319,7 +319,7 @@ pub(crate) fn run(
                     b33ps,
                 )
             },
-            |checks| mixed::mixed(checks, containers, &sockets),
+            |checks| mixed::mixed(checks, containers, &sockets, &files),
         );
     }
     on_fixture(

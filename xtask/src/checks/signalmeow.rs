@@ -8,6 +8,8 @@
 //! what it received are presage-cli's ("From <aci> @ <timestamp>: <text>").
 
 use std::io::{BufRead, BufReader, Read};
+
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
@@ -71,12 +73,73 @@ struct Daemon {
     shared: std::sync::Arc<DaemonShared>,
 }
 
+/// A command line to the driver's `serve`: its `id` comes back in the answer.
+#[derive(Serialize)]
+struct Line<'a> {
+    id: u64,
+    #[serde(flatten)]
+    command: Command<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+enum Command<'a> {
+    Send {
+        to: &'a str,
+        text: &'a str,
+    },
+    SendFile {
+        to: &'a str,
+        path: &'a str,
+        text: &'a str,
+    },
+    SendGroup {
+        master_key: &'a str,
+        text: &'a str,
+    },
+    React {
+        to: &'a str,
+        author: &'a str,
+        target: u64,
+        emoji: &'a str,
+    },
+    Edit {
+        to: &'a str,
+        target: u64,
+        text: &'a str,
+    },
+    Quit,
+}
+
+/// A line the driver's `serve` writes (`emit` in its main.go): the event, and what the checks
+/// read of it.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Event {
+    event: String,
+    /// An answer's: the command's id, whether it worked, why not, and the time it was sent at.
+    id: Option<u64>,
+    ok: bool,
+    error: Option<String>,
+    timestamp: Option<u64>,
+    /// A message's, or a decryption failure's: the sender, and for a message its text and whether
+    /// this account's own other device wrote it.
+    from: Option<String>,
+    own: bool,
+    text: Option<String>,
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         use std::io::Write as _;
         if let Ok(mut stdin) = self.stdin.lock() {
-            let _ = writeln!(stdin, "{{\"op\":\"quit\"}}");
-            let _ = stdin.flush();
+            if let Ok(quit) = serde_json::to_string(&Line {
+                id: 0,
+                command: Command::Quit,
+            }) {
+                drop(writeln!(stdin, "{quit}"));
+            }
+            drop(stdin.flush());
         }
         if let Ok(mut child) = self.child.lock() {
             let until = std::time::Instant::now() + Duration::from_secs(15);
@@ -84,7 +147,7 @@ impl Drop for Daemon {
                 std::thread::sleep(Duration::from_millis(100));
             }
             if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
+                drop(child.kill());
             }
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -102,7 +165,7 @@ impl Drop for Daemon {
 
 #[derive(Default)]
 struct DaemonShared {
-    answers: std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>,
+    answers: std::sync::Mutex<std::collections::HashMap<u64, Event>>,
     answered: std::sync::Condvar,
     /// What the driver said it could not decrypt, for [`Signalmeow::noting_lost`].
     lost: std::sync::Mutex<Vec<String>>,
@@ -136,44 +199,46 @@ impl<'pod> Signalmeow<'pod> {
             let (shared, ready) = (shared.clone(), ready.clone());
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    let Ok(event) = serde_json::from_str::<Event>(&line) else {
                         continue;
                     };
-                    match value["event"].as_str() {
-                        Some("ready") => {
-                            *ready.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                true;
+                    match event.event.as_str() {
+                        "ready" => {
+                            *ready
+                                .0
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                             ready.1.notify_all();
                         }
-                        Some("answer") => {
-                            if let Some(id) = value["id"].as_u64() {
+                        "answer" => {
+                            if let Some(id) = event.id {
                                 shared
                                     .answers
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .insert(id, value);
+                                    .insert(id, event);
                                 shared.answered.notify_all();
                             }
                         }
-                        Some("message") if value["own"].as_bool() != Some(true) => shared
+                        "message" if !event.own => shared
                             .received
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!(
                                 "From {} @ {}: {}",
-                                value["from"].as_str().unwrap_or("?"),
-                                value["timestamp"],
-                                value["text"].as_str().unwrap_or("")
+                                event.from.as_deref().unwrap_or("?"),
+                                event.timestamp.unwrap_or_default(),
+                                event.text.as_deref().unwrap_or("")
                             )),
-                        Some("decryption-error") => shared
+                        "decryption-error" => shared
                             .lost
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!(
                                 "failed to decrypt a message from <ACI:{}> of {}: {}",
-                                value["from"].as_str().unwrap_or("?"),
-                                value["timestamp"],
-                                value["error"].as_str().unwrap_or("?")
+                                event.from.as_deref().unwrap_or("?"),
+                                event.timestamp.unwrap_or_default(),
+                                event.error.as_deref().unwrap_or("?")
                             )),
                         _ => {}
                     }
@@ -186,12 +251,17 @@ impl<'pod> Signalmeow<'pod> {
             let shared = shared.clone();
             std::thread::spawn(move || {
                 let mut log = String::new();
-                let _ = stderr.read_to_string(&mut log);
-                *shared.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = log;
+                drop(stderr.read_to_string(&mut log));
+                *shared
+                    .log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = log;
             });
         }
         let (flag, signal) = (&ready.0, &ready.1);
-        let guard = flag.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = flag
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (guard, timeout) = signal
             .wait_timeout_while(guard, Duration::from_secs(60), |ready| !*ready)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -208,18 +278,18 @@ impl<'pod> Signalmeow<'pod> {
         Ok(())
     }
 
-    /// One command to the `serve` process, and its answer.
-    fn ask(&self, daemon: &Daemon, command: serde_json::Value) -> Result<(), Failure> {
+    /// One command to the `serve` process, and the time it says it sent the message at, if it did.
+    fn ask(&self, daemon: &Daemon, command: Command<'_>) -> Result<Option<u64>, Failure> {
         use std::io::Write as _;
-        let id = daemon.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut command = command;
-        command["id"] = id.into();
+        let id = daemon
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut stdin = daemon
                 .stdin
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            writeln!(stdin, "{command}")?;
+            writeln!(stdin, "{}", serde_json::to_string(&Line { id, command })?)?;
             stdin.flush()?;
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
@@ -230,10 +300,14 @@ impl<'pod> Signalmeow<'pod> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(answer) = answers.remove(&id) {
-                return if answer["ok"].as_bool() == Some(true) {
-                    Ok(())
+                return if answer.ok {
+                    Ok(answer.timestamp)
                 } else {
-                    Err(format!("signalmeow-driver serve: {}", answer["error"]).into())
+                    Err(format!(
+                        "signalmeow-driver serve: {}",
+                        answer.error.unwrap_or_default()
+                    )
+                    .into())
                 };
             }
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -361,17 +435,67 @@ impl<'pod> Signalmeow<'pod> {
         output
     }
 
+    /// `command` to the `serve` process, and what it answers.
+    fn daemon_ask(&self, command: Command<'_>) -> Result<Option<u64>, SignalmeowError> {
+        let daemon = self
+            .daemon
+            .as_ref()
+            .ok_or_else(|| SignalmeowError::Serve("the serve process isn't running".to_owned()))?;
+        self.ask(daemon, command)
+            .map_err(|error| SignalmeowError::Serve(error.to_string()))
+    }
+
     pub(super) fn send(&self, recipient_aci: &str, text: &str) -> Result<(), SignalmeowError> {
-        if let Some(daemon) = &self.daemon {
-            return self
-                .ask(
-                    daemon,
-                    serde_json::json!({"op": "send", "to": recipient_aci, "text": text}),
-                )
-                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+        if self.daemon.is_some() {
+            return self.send_stamped(recipient_aci, text).map(drop);
         }
         self.driver("send", &[recipient_aci, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
+    }
+
+    /// [`Self::send`], through the `serve` process; the time the text was sent at.
+    pub(super) fn send_stamped(
+        &self,
+        recipient_aci: &str,
+        text: &str,
+    ) -> Result<u64, SignalmeowError> {
+        self.daemon_ask(Command::Send {
+            to: recipient_aci,
+            text,
+        })?
+        .ok_or_else(|| SignalmeowError::Serve("the answer to a send has no time".to_owned()))
+    }
+
+    /// Reacts with `emoji` to the message `author` sent at `target`, in the chat with `recipient_aci`.
+    pub(super) fn react(
+        &self,
+        recipient_aci: &str,
+        author: &str,
+        target: u64,
+        emoji: &str,
+    ) -> Result<(), SignalmeowError> {
+        self.daemon_ask(Command::React {
+            to: recipient_aci,
+            author,
+            target,
+            emoji,
+        })
+        .map(drop)
+    }
+
+    /// Changes this account's message sent at `target`, in the chat with `recipient_aci`, to `text`.
+    pub(super) fn edit(
+        &self,
+        recipient_aci: &str,
+        target: u64,
+        text: &str,
+    ) -> Result<(), SignalmeowError> {
+        self.daemon_ask(Command::Edit {
+            to: recipient_aci,
+            target,
+            text,
+        })
+        .map(drop)
     }
 
     /// Sends `text` with the file at `path` (in the container: `/files/…`) to `recipient_aci`.
@@ -381,13 +505,14 @@ impl<'pod> Signalmeow<'pod> {
         path: &str,
         text: &str,
     ) -> Result<(), SignalmeowError> {
-        if let Some(daemon) = &self.daemon {
+        if self.daemon.is_some() {
             return self
-                .ask(
-                    daemon,
-                    serde_json::json!({"op": "send-file", "to": recipient_aci, "path": path, "text": text}),
-                )
-                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+                .daemon_ask(Command::SendFile {
+                    to: recipient_aci,
+                    path,
+                    text,
+                })
+                .map(drop);
         }
         self.driver("send-file", &[recipient_aci, path, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
@@ -399,13 +524,10 @@ impl<'pod> Signalmeow<'pod> {
         master_key: &str,
         text: &str,
     ) -> Result<(), SignalmeowError> {
-        if let Some(daemon) = &self.daemon {
+        if self.daemon.is_some() {
             return self
-                .ask(
-                    daemon,
-                    serde_json::json!({"op": "send-group", "master_key": master_key, "text": text}),
-                )
-                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+                .daemon_ask(Command::SendGroup { master_key, text })
+                .map(drop);
         }
         self.driver("send-group", &[master_key, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
@@ -449,7 +571,7 @@ impl<'pod> Signalmeow<'pod> {
 }
 
 /// The lowercase hex of `bytes`' SHA-256, as the driver prints a received attachment's.
-fn sha256(bytes: &[u8]) -> String {
+pub(super) fn sha256(bytes: &[u8]) -> String {
     ring::digest::digest(&ring::digest::SHA256, bytes)
         .as_ref()
         .iter()

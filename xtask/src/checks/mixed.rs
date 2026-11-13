@@ -7,9 +7,12 @@
 //! `TESTBOX_MIXED_BURST` is how many messages each sender sends to each recipient in a burst
 //! (twenty by default), `TESTBOX_MIXED_ROUNDS` how many times the bursts repeat (two), and
 //! `TESTBOX_MIXED_ONLY` (`presage-cli`, `signal-cli`, `signalmeow`, `flare`, comma-separated) which
-//! of them play at all. `TESTBOX_MIXED_WARM` (1 by default; 0 for none) lets each pair of clients
-//! write to one another once, in turn, before the bursts.
+//! of them play at all, `TESTBOX_MIXED_FILES` and `TESTBOX_MIXED_AMEND` (1 by default; 0 for none)
+//! whether each round also sends files, and reactions and edits (`mixed/amend.rs`).
+//! `TESTBOX_MIXED_WARM` (1 by default; 0 for none) lets each pair of clients write to one another
+//! once, in turn, before the bursts.
 
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +30,10 @@ use super::stress::{
 use super::{Checks, Failure, PATIENCE, env_number};
 use crate::Sockets;
 use crate::pod::{B33P, Pod};
+
+mod amend;
+
+use amend::Learned;
 
 /// What every text of the phase starts with: the listings the clients keep are searched for it.
 const MARK: &str = "testbox mixed";
@@ -49,6 +56,8 @@ struct Peer<'pod> {
     /// by each side, take one place and the store holds one: the message is then received, and
     /// not held.
     printed: std::sync::Mutex<Vec<String>>,
+    /// What it reported of reactions, edits and files (`amend.rs`).
+    learned: std::sync::Mutex<Learned>,
 }
 
 impl Peer<'_> {
@@ -77,13 +86,20 @@ impl Peer<'_> {
             }
             Kind::SignalCli(client) => {
                 let received = client.sync()?;
+                // An edit's text is printed as a text, as the other clients print it.
                 self.note_printed(
                     &received
                         .iter()
-                        .filter_map(|message| message.text.as_deref())
+                        .filter_map(|message| {
+                            message
+                                .text
+                                .as_deref()
+                                .or_else(|| message.edit.as_ref().map(|(_, text)| text.as_str()))
+                        })
                         .map(|text| format!("{text}\n"))
                         .collect::<String>(),
                 );
+                self.learn_received(&received)?;
             }
             Kind::Signalmeow(client) => self.note_printed(&client.sync()?),
             Kind::Flare(client) => {
@@ -138,13 +154,17 @@ impl Peer<'_> {
     fn send_group(&self, group: &str, text: &str) -> Result<(), Failure> {
         match &self.kind {
             Kind::Presage(client) => Ok(client.send_to_group(group, text)?),
-            Kind::SignalCli(client) => client.send_to_group(group, text).map(drop).map_err(Into::into),
+            Kind::SignalCli(client) => client
+                .send_to_group(group, text)
+                .map(drop)
+                .map_err(Into::into),
             Kind::Signalmeow(client) => Ok(client.send_to_group(group, text)?),
             Kind::Flare(client) => Ok(client.send_group(group, text)?),
         }
     }
 
     fn note_printed(&self, output: &str) {
+        self.learn(output);
         self.printed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -255,6 +275,7 @@ pub(super) fn mixed(
     checks: &mut Checks,
     containers: &Pod,
     sockets: &Sockets,
+    files: &Path,
 ) -> Result<(), Failure> {
     let count = setting("TESTBOX_MIXED_BURST", 20)?;
     let rounds = setting("TESTBOX_MIXED_ROUNDS", 2)?;
@@ -285,24 +306,28 @@ pub(super) fn mixed(
             aci: peer_aci,
             kind: Kind::Presage(peer),
             printed: Default::default(),
+            learned: Default::default(),
         },
         Peer {
             label: "signal-cli",
             aci: cli_aci,
             kind: Kind::SignalCli(cli),
             printed: Default::default(),
+            learned: Default::default(),
         },
         Peer {
             label: "signalmeow",
             aci: meow_aci,
             kind: Kind::Signalmeow(meow),
             printed: Default::default(),
+            learned: Default::default(),
         },
         Peer {
             label: "flare",
             aci: flare_aci,
             kind: Kind::Flare(flare),
             printed: Default::default(),
+            learned: Default::default(),
         },
     ];
     // `TESTBOX_MIXED_ONLY=flare,signal-cli`: only those play, to find which pairing a failure needs.
@@ -341,25 +366,30 @@ pub(super) fn mixed(
     // signal-cli part ways (docs/testbox-clients-run-2026-11-13.md). `TESTBOX_MIXED_WARM=0` leaves
     // it to the bursts.
     if setting("TESTBOX_MIXED_WARM", 1)? != 0 {
-        checks.require("each pair of clients has written to one another once", || {
-            for (at, first) in peers.iter().enumerate() {
-                for second in &peers[at + 1..] {
-                    for (from, to) in [(first, second), (second, first)] {
-                        let text = format!("{MARK}: warm-up, {} to {}", from.label, to.label);
-                        from.send_many(&to.aci, std::slice::from_ref(&text))?;
-                        let deadline = Instant::now() + PATIENCE;
-                        while !to.texts_seen().contains(&text) {
-                            if Instant::now() > deadline {
-                                return Err(format!("{} never received {text:?}", to.label).into());
+        checks.require(
+            "each pair of clients has written to one another once",
+            || {
+                for (at, first) in peers.iter().enumerate() {
+                    for second in &peers[at + 1..] {
+                        for (from, to) in [(first, second), (second, first)] {
+                            let text = format!("{MARK}: warm-up, {} to {}", from.label, to.label);
+                            from.send_many(&to.aci, std::slice::from_ref(&text))?;
+                            let deadline = Instant::now() + PATIENCE;
+                            while !to.texts_seen().contains(&text) {
+                                if Instant::now() > deadline {
+                                    return Err(
+                                        format!("{} never received {text:?}", to.label).into()
+                                    );
+                                }
+                                to.pull()?;
+                                thread::sleep(Duration::from_millis(500));
                             }
-                            to.pull()?;
-                            thread::sleep(Duration::from_millis(500));
                         }
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
     }
 
     // A group of b33p's, of all of them: what each client calls it differs (a master key, a base64
@@ -411,6 +441,17 @@ pub(super) fn mixed(
             .position(|other| other.label == peer.label)
             .map_or("", |at| group_refs[at].as_str())
     };
+
+    let mix = amend::Mix {
+        peers: &peers,
+        chats: &chats,
+        primary_aci: &primary_aci,
+        containers,
+        files,
+    };
+    let mut kept = Vec::new();
+    let with_files = setting("TESTBOX_MIXED_FILES", 1)? != 0;
+    let with_amendments = setting("TESTBOX_MIXED_AMEND", 1)? != 0;
 
     // b33p's memory, open files and answering time after each round, for the check at the end.
     let mut samples: Vec<Sample> = Vec::new();
@@ -673,6 +714,13 @@ pub(super) fn mixed(
             },
         );
 
+        if with_files {
+            amend::files(checks, &mix, &mut b33p, round, &tag);
+        }
+        if with_amendments {
+            amend::amendments(checks, &mix, &mut b33p, round, &tag, count, &mut kept);
+        }
+
         match sample(containers, B33P, &mut b33p) {
             Ok(taken) => {
                 println!("  b33p after round {round}: {taken}");
@@ -683,9 +731,10 @@ pub(super) fn mixed(
     }
 
     if samples.len() >= 6 {
-        checks.record("b33p's memory, files and answering time don't keep growing", || {
-            Ok(growing(&samples)?)
-        });
+        checks.record(
+            "b33p's memory, files and answering time don't keep growing",
+            || Ok(growing(&samples)?),
+        );
     }
 
     checks.record(
@@ -711,6 +760,17 @@ pub(super) fn mixed(
             Ok(())
         },
     );
+    if !kept.is_empty() {
+        checks.record(
+            "b33p killed, started again: it still shows every edit and reaction, on their messages",
+            || {
+                for amended in &kept {
+                    amend::b33p_shows_amended(&mut b33p, amended)?;
+                }
+                Ok(())
+            },
+        );
+    }
     for peer in &peers {
         if let Kind::Signalmeow(meow) = &peer.kind {
             meow.flush_lost();

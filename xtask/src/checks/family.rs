@@ -154,7 +154,11 @@ impl<'pod> FlareBox<'pod> {
                 output: format!("{stdout}{stderr}"),
             });
         }
-        if what.starts_with("flare-box send") || what == "flare-box sync" {
+        if what.starts_with("flare-box send")
+            || what == "flare-box sync"
+            || what == "flare-box react"
+            || what == "flare-box edit"
+        {
             self.heard
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -209,6 +213,47 @@ impl<'pod> FlareBox<'pod> {
         self.cli(&["send", aci, text]).map(drop)
     }
 
+    /// Sends `text` to `aci`; the time it was sent at (the "To <thread> @ <ms>: <text>" line the
+    /// command prints for it).
+    pub(super) fn send_stamped(&self, aci: &str, text: &str) -> Result<u64, FamilyError> {
+        let printed = self.cli(&["send", aci, text])?;
+        printed
+            .lines()
+            .filter(|line| line.starts_with("To "))
+            .find_map(|line| {
+                let (head, said) = line.split_once(": ")?;
+                (said == text).then_some(head)?;
+                head.rsplit_once(" @ ")?.1.parse().ok()
+            })
+            .ok_or(FamilyError::NotShown {
+                client: "flare-box",
+                expected: format!("To … @ <ms>: {text}"),
+                seen: printed,
+            })
+    }
+
+    /// Sends `text` with the file at `path` (in the container: `/files/…`).
+    pub(super) fn send_file(&self, aci: &str, path: &str, text: &str) -> Result<(), FamilyError> {
+        self.cli(&["send-file", aci, path, text]).map(drop)
+    }
+
+    /// Reacts with `emoji` to the message `author` sent at `at` (milliseconds), in the chat with `aci`.
+    pub(super) fn react(
+        &self,
+        aci: &str,
+        author: &str,
+        at: u64,
+        emoji: &str,
+    ) -> Result<(), FamilyError> {
+        self.cli(&["react", aci, author, &at.to_string(), emoji])
+            .map(drop)
+    }
+
+    /// Changes this account's message sent at `at` (milliseconds), in the chat with `aci`, to `text`.
+    pub(super) fn edit(&self, aci: &str, at: u64, text: &str) -> Result<(), FamilyError> {
+        self.cli(&["edit", aci, &at.to_string(), text]).map(drop)
+    }
+
     /// `texts` one after another in one process, as presage-cli's `send_all` does: one process
     /// has the connection open all through, where one a text has only its own few milliseconds.
     pub(super) fn send_many(&self, aci: &str, texts: &[String]) -> Result<(), FamilyError> {
@@ -254,7 +299,11 @@ impl<'pod> FlareBox<'pod> {
     }
 
     /// The id of the group named `title`, once flare-box knows it.
-    pub(super) fn group_titled(&self, title: &str, patience: Duration) -> Result<String, FamilyError> {
+    pub(super) fn group_titled(
+        &self,
+        title: &str,
+        patience: Duration,
+    ) -> Result<String, FamilyError> {
         let started = Instant::now();
         loop {
             let listed = self.groups()?;

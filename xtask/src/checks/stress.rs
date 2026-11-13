@@ -1305,7 +1305,7 @@ fn fetched(b33p: &mut Harness, text: &str, count: usize) -> Result<Vec<String>, 
 }
 
 /// Saves the attachment `id`: where to, or why it wasn't.
-fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure> {
+pub(super) fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure> {
     if !b33p.act(Action::SaveAttachment { id: id.to_owned() })? {
         return Err(StressError::NotSaving {
             id: id.to_owned(),

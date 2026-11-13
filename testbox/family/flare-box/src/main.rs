@@ -8,11 +8,16 @@
 //!     flare-box <db> send <aci> <text>
 //!     flare-box <db> send-many <aci> <text>...      one after another, in one process
 //!     flare-box <db> send-group <group-id-hex> <text>
+//!     flare-box <db> send-file <aci> <path> <text>   the file at <path>, with <text>
+//!     flare-box <db> react <aci> <author-aci> <ms> <emoji>   to the message of <author-aci> at <ms>
+//!     flare-box <db> edit <aci> <ms> <text>          this account's message at <ms> to <text>
 //!     flare-box <db> groups
 //!
 //! What it prints mirrors presage-cli's, so that the testbox reads both alike: "From <aci> @
 //! <ms>: <text>" for a text received, "To <thread> @ <ms>: <text>" for one this account sent (also
-//! from another of its devices), "Delivery receipt from <aci>" for a receipt.
+//! from another of its devices), "Delivery receipt from <aci>" for a receipt, "Attachment of <ms>:
+//! <name> <type> <n> bytes sha256:<hex>" for each file of a message (downloaded and decrypted),
+//! "Reaction <emoji> from <aci> to <ms>" and "Edit from <aci> of <ms>: <text>".
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,7 +27,7 @@ use std::time::Duration;
 use fmanager::{LinkSetup, Manager, ManagerHandle, RegisterSetup, SetupDecision, SignalClient};
 use fstore::DirectPresageWrapperStore;
 use ftypes::{
-    AmendmentMessageContent, Error, MainMessageContent, ReceiptKind, ReceivedMessage,
+    AmendmentMessageContent, Attachment, AttachmentOrPointer, AttachmentProperties, Error, MainMessageContent, ReceiptKind, ReceivedMessage,
     ReceivedMessageContent, SignalServers, TextMessage, ThreadId,
 };
 use tokio::sync::Notify;
@@ -42,6 +47,9 @@ enum Command {
     Send { to: String, text: String },
     SendMany { to: String, texts: Vec<String> },
     SendGroup { group: String, text: String },
+    SendFile { to: String, path: String, text: String },
+    React { to: String, author: String, at: i64, emoji: String },
+    Edit { to: String, at: i64, text: String },
     Groups,
     /// What the store holds of a thread: an ACI, or a group's id.
     Messages { thread: String },
@@ -163,19 +171,27 @@ impl SignalClient<DirectPresageWrapperStore> for Box_ {
         let ms = message.id.timestamp.timestamp_millis();
         let from_me = Some(message.id.sender) == me;
         let who = message.id.sender.0.raw_uuid();
+        if from_me {
+            // The echo of what this account sent (whatever it was): the send is done.
+            self.0.own.borrow_mut().push(ms);
+            self.0.echoed.notify_waiters();
+        }
         match &message.content {
             ReceivedMessageContent::Main(MainMessageContent::Text(text)) => {
                 let body = text.body.as_deref().unwrap_or_default();
                 if from_me {
                     println!("To {} @ {ms}: {body}", aci(&message.thread));
-                    self.0.own.borrow_mut().push(ms);
-                    self.0.echoed.notify_waiters();
                 } else {
                     match message.thread {
                         ThreadId::Group(_) => {
                             println!("From {who} in {} @ {ms}: {body}", aci(&message.thread))
                         }
                         ThreadId::Contact(_) => println!("From {who} @ {ms}: {body}"),
+                    }
+                }
+                if !from_me {
+                    if let Some(handle) = &handle {
+                        self.print_attachments(handle, ms, &text.attachments).await;
                     }
                 }
             }
@@ -188,14 +204,72 @@ impl SignalClient<DirectPresageWrapperStore> for Box_ {
                 println!("{kind} receipt from {who}");
             }
             ReceivedMessageContent::Amendment(AmendmentMessageContent::Reaction(reaction)) => {
-                println!("Reaction {} from {who}", reaction.emoji);
+                println!(
+                    "Reaction {} from {who} to {}",
+                    reaction.emoji,
+                    reaction.reaction_to_message.timestamp.timestamp_millis()
+                );
+            }
+            ReceivedMessageContent::Amendment(AmendmentMessageContent::EditMessage(edit)) => {
+                println!(
+                    "Edit from {who} of {}: {}",
+                    edit.edited_message.timestamp.timestamp_millis(),
+                    edit.updated.body.as_deref().unwrap_or_default()
+                );
             }
             _ => {}
         }
     }
 }
 
+fn plain(text: &str, attachments: Vec<AttachmentOrPointer>) -> TextMessage {
+    TextMessage {
+        body: Some(text.to_owned()),
+        attachments,
+        quote: None,
+        body_ranges: vec![],
+        previews: vec![],
+        contacts: vec![],
+        is_view_once: false,
+    }
+}
+
+fn contact(aci: &str) -> ThreadId {
+    ThreadId::Contact(ftypes::AccountId::from_raw(uuid::Uuid::from_str(aci).expect("an ACI")))
+}
+
+fn message_at(author: &str, ms: i64) -> ftypes::MessageId {
+    ftypes::MessageId {
+        sender: ftypes::AccountId::from_raw(uuid::Uuid::from_str(author).expect("an ACI")),
+        timestamp: chrono::DateTime::from_timestamp_millis(ms).expect("a time"),
+        sub_id: ftypes::MessageSubId::Primary,
+    }
+}
+
 impl Box_ {
+    /// Each file of a message received, downloaded and decrypted: what arrived is its size and hash.
+    async fn print_attachments(&self, handle: &Handle, ms: i64, attachments: &[AttachmentOrPointer]) {
+        use sha2::{Digest as _, Sha256};
+        for attachment in attachments {
+            match attachment {
+                AttachmentOrPointer::Pointer(pointer) => match handle.attachment(pointer.clone()).await {
+                    Ok(data) => println!(
+                        "Attachment of {ms}: {} {} {} bytes sha256:{:x}",
+                        pointer.properties.file_name.as_deref().unwrap_or("-"),
+                        pointer.properties.content_type.as_deref().unwrap_or("-"),
+                        data.len(),
+                        Sha256::digest(&data)
+                    ),
+                    Err(error) => {
+                        eprintln!("ERROR: failed to download an attachment of {ms}: {error}");
+                        self.0.failed.set(true);
+                    }
+                },
+                AttachmentOrPointer::Attachment(_) => {}
+            }
+        }
+    }
+
     /// The command, once the manager is set up; the process's exit status.
     async fn run(&self, handle: Handle) -> i32 {
         let ok = match &self.0.command {
@@ -226,6 +300,52 @@ impl Box_ {
                     }
                 }
                 all
+            }
+            Command::SendFile { to, path, text } => {
+                self.0.queue_empty.notified().await;
+                let content = std::fs::read(path).expect("the file");
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                let attachment = AttachmentOrPointer::Attachment(Attachment {
+                    properties: AttachmentProperties {
+                        content_type: Some("application/octet-stream".to_owned()),
+                        size: Some(content.len() as u32),
+                        file_name: name,
+                        width: None,
+                        height: None,
+                        caption: None,
+                        blur_hash: None,
+                        uploaded: None,
+                        thumbnail: None,
+                    },
+                    content,
+                });
+                self.send_message(&handle, contact(to), plain(text, vec![attachment]))
+                    .await
+            }
+            Command::React { to, author, at, emoji } => {
+                self.0.queue_empty.notified().await;
+                let message = handle
+                    .send_reaction(contact(to), message_at(author, *at), emoji)
+                    .await;
+                self.echoed_send(message.id.timestamp.timestamp_millis()).await
+            }
+            Command::Edit { to, at, text } => {
+                self.0.queue_empty.notified().await;
+                let own = handle.own_account_id().0.raw_uuid().to_string();
+                let message = handle
+                    .send_message(
+                        contact(to),
+                        ReceivedMessageContent::Amendment(AmendmentMessageContent::EditMessage(
+                            ftypes::EditMessage {
+                                edited_message: message_at(&own, *at),
+                                updated: plain(text, vec![]),
+                            },
+                        )),
+                    )
+                    .await;
+                self.echoed_send(message.id.timestamp.timestamp_millis()).await
             }
             Command::SendGroup { group, text } => {
                 self.0.queue_empty.notified().await;
@@ -304,20 +424,16 @@ impl Box_ {
     }
 
     async fn send(&self, handle: &Handle, thread: ThreadId, text: &str) -> bool {
-        let message = handle
-            .send_text_message(
-                thread,
-                TextMessage {
-                    body: Some(text.to_owned()),
-                    attachments: vec![],
-                    quote: None,
-                    body_ranges: vec![],
-                    previews: vec![],
-                    contacts: vec![],
-                    is_view_once: false,
-                },
-            );
-        let ms = message.await.id.timestamp.timestamp_millis();
+        self.send_message(handle, thread, plain(text, vec![])).await
+    }
+
+    async fn send_message(&self, handle: &Handle, thread: ThreadId, text: TextMessage) -> bool {
+        let message = handle.send_text_message(thread, text);
+        self.echoed_send(message.await.id.timestamp.timestamp_millis()).await
+    }
+
+    /// Done when the manager echoes the send of the time `ms`.
+    async fn echoed_send(&self, ms: i64) -> bool {
         // The manager stores what it sent and tells the client, after the server took it; a send
         // that failed says ERROR instead.
         let waiting = async {
@@ -417,6 +533,22 @@ fn main() {
         },
         ("send-group", [group, text]) => Command::SendGroup {
             group: group.clone(),
+            text: text.clone(),
+        },
+        ("send-file", [to, path, text]) => Command::SendFile {
+            to: to.clone(),
+            path: path.clone(),
+            text: text.clone(),
+        },
+        ("react", [to, author, at, emoji]) => Command::React {
+            to: to.clone(),
+            author: author.clone(),
+            at: at.parse().expect("milliseconds"),
+            emoji: emoji.clone(),
+        },
+        ("edit", [to, at, text]) => Command::Edit {
+            to: to.clone(),
+            at: at.parse().expect("milliseconds"),
             text: text.clone(),
         },
         ("groups", []) => Command::Groups,

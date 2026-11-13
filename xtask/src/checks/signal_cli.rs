@@ -157,6 +157,10 @@ pub(super) struct Received {
     pub(super) attachments: Vec<ReceivedAttachment>,
     /// Why signal-cli couldn't handle it: its `exception`'s message.
     pub(super) exception: Option<String>,
+    /// A reaction: its emoji, and the time of the message it is to.
+    pub(super) reaction: Option<(String, u64)>,
+    /// An edit: the time of the message it changes, and the text that replaces it.
+    pub(super) edit: Option<(u64, String)>,
 }
 
 /// An attachment of a received data message, as `receive` prints it.
@@ -194,6 +198,7 @@ mod json {
         pub(super) source_uuid: Option<String>,
         pub(super) timestamp: u64,
         pub(super) data_message: Option<Data>,
+        pub(super) edit_message: Option<EditMessage>,
         pub(super) sync_message: Option<Sync>,
         pub(super) receipt_message: Option<Receipt>,
     }
@@ -204,6 +209,21 @@ mod json {
         pub(super) message: Option<String>,
         pub(super) group_info: Option<GroupInfo>,
         pub(super) attachments: Vec<Attachment>,
+        pub(super) reaction: Option<Reaction>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct Reaction {
+        pub(super) emoji: Option<String>,
+        pub(super) target_sent_timestamp: Option<u64>,
+    }
+
+    #[derive(Default, Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    pub(super) struct EditMessage {
+        pub(super) target_sent_timestamp: u64,
+        pub(super) data_message: Option<Data>,
     }
 
     #[derive(Default, Deserialize)]
@@ -258,6 +278,18 @@ impl Received {
         let line: json::Line = serde_json::from_str(line)?;
         let envelope = line.envelope.unwrap_or_default();
         let data = envelope.data_message.unwrap_or_default();
+        let reaction = data
+            .reaction
+            .as_ref()
+            .and_then(|reaction| Some((reaction.emoji.clone()?, reaction.target_sent_timestamp?)));
+        let edit = envelope.edit_message.map(|edit| {
+            (
+                edit.target_sent_timestamp,
+                edit.data_message
+                    .and_then(|data| data.message)
+                    .unwrap_or_default(),
+            )
+        });
         // What the account's own other device wrote shows as a sent transcript.
         let sent = envelope
             .sync_message
@@ -292,6 +324,8 @@ impl Received {
                     size: attachment.size,
                 })
                 .collect(),
+            reaction,
+            edit,
             exception: line.exception.map(|exception| {
                 format!(
                     "{} ({})",
@@ -511,6 +545,47 @@ for text; do signal-cli --config "$config" --log-file "$config/log.txt" -a "$num
                 command: "send",
                 source,
             })
+    }
+
+    /// Reacts with `emoji` to the message `author` sent at `target`, in the chat with `recipient_aci`.
+    pub(super) fn react(
+        &self,
+        recipient_aci: &str,
+        author: &str,
+        target: u64,
+        emoji: &str,
+    ) -> Result<(), SignalCliError> {
+        self.cli(
+            &[],
+            "sendReaction",
+            &[
+                "-e",
+                emoji,
+                "-a",
+                author,
+                "-t",
+                &target.to_string(),
+                recipient_aci,
+            ],
+        )
+        .map(drop)
+    }
+
+    /// Changes this account's message sent at `target`, in the chat with `recipient_aci`, to `text`.
+    pub(super) fn edit(
+        &self,
+        recipient_aci: &str,
+        target: u64,
+        text: &str,
+    ) -> Result<(), SignalCliError> {
+        self.sending(&[
+            recipient_aci,
+            "--edit-timestamp",
+            &target.to_string(),
+            "-m",
+            text,
+        ])
+        .map(drop)
     }
 
     /// Sends `text` with the file at `path`.
@@ -992,6 +1067,8 @@ mod tests {
                 receipt_for: Vec::new(),
                 exception: None,
                 attachments: Vec::new(),
+                reaction: None,
+                edit: None,
             }
         );
     }
