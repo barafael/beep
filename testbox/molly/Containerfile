@@ -161,7 +161,7 @@ RUN --mount=type=cache,target=/root/.gradle \
     ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
         :app:assembleLocalWebsiteDebug -PsignalLocalConfig=/opt/testbox/molly.apk.json \
     && ls app/build/outputs/apk/localWebsite/debug/ \
-    && cp app/build/outputs/apk/localWebsite/debug/*x86_64*.apk /opt/testbox/signal.apk \
+    && cp app/build/outputs/apk/localWebsite/debug/app-local-website-debug.apk /opt/testbox/signal.apk \
     && cp /opt/testbox/molly.apk.json /opt/testbox/signal.apk.json
 
 # The agent protocol's Kotlin side, generated from its Rust (testbox/tools/src/agent.rs) by

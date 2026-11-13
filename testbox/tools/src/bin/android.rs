@@ -406,6 +406,8 @@ enum UiError {
     NoButton { button: String, message: String },
     #[error("{number}: only +1 numbers, the default country")]
     NotPlusOne { number: String },
+    #[error("neither one nor two editable fields on the phone number's screen: {count}")]
+    PhoneFields { count: usize },
     #[error("not one switch for ANR crashes: {count}")]
     Switches { count: usize },
     #[error("no message field")]
@@ -1898,25 +1900,87 @@ impl Driver {
             self.tap_at(&first.node)?;
         }
         self.tap("Continue", PATIENCE)?;
-        self.element("Phone number", PATIENCE)?;
-        let field = self
-            .first_shown(vec![agent::Wanted::Editable], PATIENCE)?
-            .node;
+        let shown = self.element("Phone number", PATIENCE)?;
+        let fields: Vec<agent::Node> = shown
+            .screen
+            .iter()
+            .filter(|node| node.editable)
+            .cloned()
+            .collect();
+        let field = match fields.as_slice() {
+            // Signal-Android: the default country's code is filled in already.
+            [number] => number.clone(),
+            // Molly (8.19): the emulator has no SIM to give it a country, so the code field is
+            // empty, before the number's.
+            [code, _] => {
+                self.fill(code, "1", agent::Echo::Digits("1".to_owned()))?;
+                let shown = self.element("Phone number", PATIENCE)?;
+                let number = shown.screen.iter().rfind(|node| node.editable).cloned();
+                number.ok_or(UiError::PhoneFields { count: 0 })?
+            }
+            other => return Err(UiError::PhoneFields { count: other.len() }),
+        };
         self.fill(&field, national, agent::Echo::Digits(national.to_owned()))?;
         self.tap("Next", PATIENCE)?;
         self.tap("OK", PATIENCE)?;
-        self.element("Verification code", SLOW)?;
-        self.type_text(testbox_tools::VERIFICATION_CODE, agent::Echo::Anything)?;
-        self.tap("Open menu", SLOW)?;
-        self.tap("Disable PIN", PATIENCE)?;
-        // The warning's own button has the menu item's label.
-        self.element("Warning", PATIENCE)?;
-        self.tap("Disable PIN", PATIENCE)?;
+        let code = self.first_shown(
+            vec![
+                agent::Wanted::label("Verification code"),
+                agent::Wanted::label("Verification Code"),
+            ],
+            SLOW,
+        )?;
+        if code.which == 0 {
+            self.type_text(testbox_tools::VERIFICATION_CODE, agent::Echo::Anything)?;
+        } else {
+            // Molly (8.19): the code goes in on the screen's own number pad, digit by digit.
+            for digit in testbox_tools::VERIFICATION_CODE.chars() {
+                self.tap(&digit.to_string(), PATIENCE)?;
+            }
+        }
+        // Signal-Android asks for a PIN before the profile; Molly (8.19) after it.
+        let after = self.first_shown(
+            vec![
+                agent::Wanted::control("Open menu"),
+                agent::Wanted::label("First name (required)"),
+            ],
+            SLOW,
+        )?;
+        if after.which == 0 {
+            self.disable_pin()?;
+        }
         self.tap("First name (required)", SLOW)?;
         self.type_text(name, agent::Echo::Exact(name.to_owned()))?;
         self.tap("Next", PATIENCE)?;
-        self.element("Chats", SLOW)?;
+        let done = self.first_shown(
+            vec![
+                agent::Wanted::label("Chats"),
+                agent::Wanted::label("Create your PIN"),
+            ],
+            SLOW,
+        )?;
+        if done.which == 1 {
+            self.disable_pin()?;
+            self.element("Chats", SLOW)?;
+        }
         self.disable_anr_crashes()
+    }
+
+    /// On the PIN's screen: its menu's "Disable PIN" (no SVR in the box), and the warning's.
+    fn disable_pin(&mut self) -> Result<(), UiError> {
+        // Its menu is "Open menu" in Signal-Android, "More options" in Molly (8.19).
+        let menu = self.first_shown(
+            vec![
+                agent::Wanted::control("Open menu"),
+                agent::Wanted::control("More options"),
+            ],
+            SLOW,
+        )?;
+        self.tap_at(&menu.node)?;
+        self.tap("Disable PIN", PATIENCE)?;
+        // The warning's own button has the menu item's label.
+        self.element("Warning", PATIENCE)?;
+        self.tap("Disable PIN", PATIENCE)
     }
 
     /// A debug build is an internal user (RemoteConfig.kt `internalUser`, Environment.isInternal),
@@ -1966,11 +2030,23 @@ impl Driver {
         } else {
             "Don't transfer"
         };
-        // The camera's explanation comes first, once.
-        let shown = self.first_shown(
-            vec![agent::Wanted::label("Okay"), agent::Wanted::label(choice)],
+        // Molly (8.19) has a screen of its own first, with the scanner's button.
+        let mut shown = self.first_shown(
+            vec![
+                agent::Wanted::label("Okay"),
+                agent::Wanted::label(choice),
+                agent::Wanted::control("Scan QR code"),
+            ],
             SLOW,
         )?;
+        if shown.which == 2 {
+            self.tap_at(&shown.node)?;
+            shown = self.first_shown(
+                vec![agent::Wanted::label("Okay"), agent::Wanted::label(choice)],
+                SLOW,
+            )?;
+        }
+        // The camera's explanation comes first, once.
         self.tap_at(&shown.node)?;
         if shown.which == 0 {
             self.tap(choice, SLOW)?;
