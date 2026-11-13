@@ -1,0 +1,19 @@
+diff --git a/pkg/signalmeow/receiving.go b/pkg/signalmeow/receiving.go
+index dcc748a..5b7907d 100644
+--- a/pkg/signalmeow/receiving.go
++++ b/pkg/signalmeow/receiving.go
+@@ -391,7 +391,14 @@ func (cli *Client) incomingAPIMessageHandler(ctx context.Context, req *signalpb.
+ 		return &web.SimpleResponse{Status: 200}, nil
+ 	}
+ 
++	// One step on a session at a time: a send builds or steps a session under encryptionLock
++	// (sending.go), and a decryption does the same to the same records. Two at once each start from
++	// what the store held, and the later write takes the earlier step back: a session a pre-key
++	// message made, lost to a send that began before it, whose later pre-key messages then name a
++	// one-time key already spent ("invalid Kyber prekey identifier").
++	cli.encryptionLock.Lock()
+ 	result := cli.decryptEnvelope(ctx, envelope, sourceServiceID, destinationServiceID)
++	cli.encryptionLock.Unlock()
+ 
+ 	err = cli.handleDecryptedResult(ctx, result, envelope, destinationServiceID)
+ 	if err != nil {

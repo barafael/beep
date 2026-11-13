@@ -34,8 +34,8 @@ WORKDIR /src/mautrix-signal
 RUN git init -q . \
     && git fetch -q --depth 1 https://github.com/mautrix/signal "$MAUTRIX_SIGNAL_REV" \
     && git checkout -q FETCH_HEAD
-COPY testbox/patches/signalmeow-local.patch /tmp/
-RUN git apply /tmp/signalmeow-local.patch
+COPY testbox/patches/signalmeow-local.patch testbox/patches/signalmeow-session-lock.patch /tmp/
+RUN git apply /tmp/signalmeow-local.patch /tmp/signalmeow-session-lock.patch
 COPY --from=libsignal /out/libsignal_ffi.a /usr/local/lib/
 # The driver has a module of its own, on the patched source (its go.mod's `replace`), so that the
 # modules it needs are the ones go.sum names: `-mod=readonly` refuses any other.
