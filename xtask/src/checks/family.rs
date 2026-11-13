@@ -20,7 +20,7 @@ use testbox_tools::keys::KeyFile;
 
 /// What the family's checks find wrong of their own, besides the steps' errors.
 #[derive(Debug, thiserror::Error)]
-enum FamilyError {
+pub(super) enum FamilyError {
     #[error("flare-box printed no ACI: {printed}")]
     NoAci { printed: String },
     /// A sync or screen that should have shown `expected`.
@@ -99,7 +99,7 @@ fn once_in_order(client: &'static str, shown: &str, texts: &[String]) -> Result<
 
 /// Flare's backend, one command at a time: `flare-box` on the account's store in the `family`
 /// container. Registers as an account of its own, as Flare does when it isn't linked.
-struct FlareBox<'pod> {
+pub(super) struct FlareBox<'pod> {
     containers: &'pod Pod,
 }
 
@@ -107,6 +107,10 @@ const FLARE_DB: &str = "/presage/family-flare.db";
 const FLARE_PHONE: &str = "+15555550450";
 
 impl<'pod> FlareBox<'pod> {
+    pub(super) fn new(containers: &'pod Pod) -> Self {
+        Self { containers }
+    }
+
     fn cli(&self, arguments: &[&str]) -> Result<String, FamilyError> {
         let argv = [&["flare-box", FLARE_DB][..], arguments].concat();
         self.containers
@@ -118,7 +122,7 @@ impl<'pod> FlareBox<'pod> {
     }
 
     /// Registers afresh against the box's servers; the account's ACI.
-    fn register(&self) -> Result<String, FamilyError> {
+    pub(super) fn register(&self) -> Result<String, FamilyError> {
         let servers = KeyFile::Servers.path();
         let printed = self.cli(&[
             "register",
@@ -136,7 +140,7 @@ impl<'pod> FlareBox<'pod> {
     }
 
     /// Receives what is queued and a second more; what it printed.
-    fn sync(&self) -> Result<String, FamilyError> {
+    pub(super) fn sync(&self) -> Result<String, FamilyError> {
         self.cli(&["sync"])
     }
 
@@ -153,12 +157,12 @@ impl<'pod> FlareBox<'pod> {
         }
     }
 
-    fn send(&self, aci: &str, text: &str) -> Result<(), FamilyError> {
+    pub(super) fn send(&self, aci: &str, text: &str) -> Result<(), FamilyError> {
         self.cli(&["send", aci, text]).map(drop)
     }
 
     /// What the store holds of the thread with `aci`, as `Stored <ms> by <aci> ...: <text>` lines.
-    fn messages(&self, aci: &str) -> Result<String, FamilyError> {
+    pub(super) fn messages(&self, aci: &str) -> Result<String, FamilyError> {
         Ok(oldest_first(&self.cli(&["messages", aci])?))
     }
 

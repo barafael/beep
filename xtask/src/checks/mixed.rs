@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use b33p_harness::{Action, Delivery};
 
 use super::b33p::{accept_request, chat_previewing, select};
+use super::family::FlareBox;
 use super::presage::{Account, Presage};
 use super::setup::{PlainBox, plain_box};
 use super::signal_cli::{Account as CliAccount, SignalCli};
@@ -30,6 +31,7 @@ enum Kind<'pod> {
     Presage(Presage<'pod>),
     SignalCli(SignalCli<'pod>),
     Signalmeow(Signalmeow<'pod>),
+    Flare(FlareBox<'pod>),
 }
 
 struct Peer<'pod> {
@@ -50,6 +52,12 @@ impl Peer<'_> {
                 }
                 Ok(())
             }
+            Kind::Flare(client) => {
+                for text in texts {
+                    client.send(to, text)?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -59,6 +67,7 @@ impl Peer<'_> {
             Kind::Presage(client) => client.sync().map(drop)?,
             Kind::SignalCli(client) => client.sync().map(drop)?,
             Kind::Signalmeow(client) => client.sync().map(drop)?,
+            Kind::Flare(client) => client.sync().map(drop)?,
         }
         Ok(())
     }
@@ -70,6 +79,7 @@ impl Peer<'_> {
             Kind::Presage(client) => (client.messages_with(from)?, true),
             Kind::SignalCli(client) => (client.messages_with(from), false),
             Kind::Signalmeow(client) => (client.messages_with(from)?, false),
+            Kind::Flare(client) => (client.messages(from)?, false),
         };
         let mut texts = texts_in(&listing);
         if newest_first {
@@ -146,6 +156,8 @@ pub(super) fn mixed(
         Ok(meow_account.register()?)
     })?;
     let meow_aci = checks.require("signalmeow links to it", || meow.link(&meow_account))?;
+    let flare = FlareBox::new(containers);
+    let flare_aci = checks.require("Flare's backend registers", || Ok(flare.register()?))?;
     let peers = [
         Peer {
             label: "presage-cli",
@@ -161,6 +173,11 @@ pub(super) fn mixed(
             label: "signalmeow",
             aci: meow_aci,
             kind: Kind::Signalmeow(meow),
+        },
+        Peer {
+            label: "flare",
+            aci: flare_aci,
+            kind: Kind::Flare(flare),
         },
     ];
 

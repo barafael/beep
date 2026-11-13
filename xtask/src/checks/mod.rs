@@ -198,6 +198,7 @@ pub(crate) fn run(
     }
     if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
         built.push(Client::SignalCli);
+        built.push(Client::Family);
     }
     if !family.is_empty() {
         built.push(Client::Family);
@@ -311,7 +312,12 @@ pub(crate) fn run(
         on_own_box(
             &mut tally,
             InteropPhase::Mixed.into(),
-            || play(&[Client::SignalCli, Client::Signalmeow], b33ps),
+            || {
+                play(
+                    &[Client::SignalCli, Client::Signalmeow, Client::Family],
+                    b33ps,
+                )
+            },
             |checks| mixed::mixed(checks, containers, &sockets),
         );
     }
