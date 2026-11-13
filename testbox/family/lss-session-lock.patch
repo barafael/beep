@@ -1,0 +1,46 @@
+diff --git a/src/cipher.rs b/src/cipher.rs
+index 5c55ead..e3bff4b 100644
+--- a/src/cipher.rs
++++ b/src/cipher.rs
+@@ -30,6 +30,14 @@ use crate::{
+     ServiceIdExt,
+ };
+ 
++/// A session is read, stepped and written back by one decryption or one encryption at a time:
++/// two at once (an envelope arriving as a message goes out) each start from the same state and the
++/// later write takes the earlier step back, so the sender's next message reuses a counter and the
++/// receiver's fails ("Key already requested", "MAC verification failed").
++pub(crate) static SESSION_LOCK: std::sync::LazyLock<futures::lock::Mutex<()>> =
++    std::sync::LazyLock::new(|| futures::lock::Mutex::new(()));
++
++
+ /// Decrypts incoming messages and encrypts outgoing messages.
+ ///
+ /// Equivalent of SignalServiceCipher in Java.
+@@ -113,7 +121,11 @@ where
+                 .expect("valid protocol address name");
+ 
+         if envelope.content.is_some() {
+-            let plaintext = self.decrypt(&envelope, csprng).await?;
++            let plaintext = {
++                // One step on a session at a time (see `SESSION_LOCK`).
++                let _step = SESSION_LOCK.lock().await;
++                self.decrypt(&envelope, csprng).await?
++            };
+             let was_plaintext = plaintext.metadata.was_plaintext;
+ 
+             tracing::Span::current()
+diff --git a/src/sender.rs b/src/sender.rs
+index 7a8e401..0bdd3c2 100644
+--- a/src/sender.rs
++++ b/src/sender.rs
+@@ -1031,6 +1031,9 @@ where
+         let recipient_protocol_address =
+             recipient.to_protocol_address(device_id);
+ 
++        // One step on a session at a time (`SESSION_LOCK`).
++        let _step = crate::cipher::SESSION_LOCK.lock().await;
++
+         tracing::trace!(
+             "encrypting message for {}",
+             recipient_protocol_address
