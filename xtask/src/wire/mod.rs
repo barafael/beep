@@ -499,6 +499,12 @@ impl Identities {
         } else if agent.starts_with("b33p/") || agent == "b33p" {
             // `b33p` alone: b33p's own downloads (b33p-core transfer.rs) before it had an agent.
             "b33p".to_owned()
+        } else if agent.starts_with("gurk/") {
+            // The presage family (testbox/family) says its own agent, as it'd be taken for b33p
+            // (a linked device of presage's) or presage-cli otherwise.
+            "gurk".to_owned()
+        } else if agent.starts_with("flare-box/") {
+            "flare".to_owned()
         } else if agent.starts_with("presage") {
             match self.user.as_deref().and_then(|user| user.rsplit_once('.')) {
                 Some((_, device)) if device != "1" => "b33p".to_owned(),

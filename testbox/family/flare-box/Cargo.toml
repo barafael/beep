@@ -1,0 +1,19 @@
+[package]
+name = "flare-box"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "The testbox's one-shot driver for flare-manager"
+
+[dependencies]
+fstore = { package = "flare-store", path = "../flare-store" }
+fmanager = { package = "flare-manager", path = "../flare-manager" }
+ftypes = { package = "flare-types", path = "../flare-types" }
+tokio = { workspace = true }
+futures = { workspace = true }
+presage = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+phonenumber = { workspace = true }
+env_logger = "0.11.11"
+toml = "1"

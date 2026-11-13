@@ -1,0 +1,49 @@
+--- a/src/signal/mod.rs
++++ b/src/signal/mod.rs
+@@ -92,10 +92,22 @@
+ 
+     let (tx, rx) = oneshot::channel();
+ 
++    // testbox patch: servers of one's own, from a TOML file (libsignal-service's serialized
++    // `ServiceConfiguration`), when `GURK_SIGNAL_SERVERS_FILE` names one.
++    let servers = match std::env::var_os("GURK_SIGNAL_SERVERS_FILE") {
++        Some(path) => {
++            let text = std::fs::read_to_string(&path)
++                .with_context(|| format!("reading {}", Path::new(&path).display()))?;
++            SignalServers::Custom(Box::new(
++                toml::from_str(&text).context("parsing the servers file")?,
++            ))
++        }
++        None => SignalServers::Production,
++    };
+     let link_task = async move {
+         presage::Manager::link_secondary_device(
+             store,
+-            SignalServers::Production,
++            servers,
+             device_name.clone(),
+             tx,
+         )
+@@ -121,6 +133,8 @@
+ async fn gen_qr_code(rx: oneshot::Receiver<Url>, path: &Path) -> anyhow::Result<()> {
+     let url = rx.await.map_err(|e| anyhow!("error linking device {e}"))?;
+ 
++    // testbox patch: the link itself, for a driver that has no camera.
++    println!("LINK-URL {url}");
+     let qr = qrcode::QrCode::new(url.to_string())?;
+ 
+     // Save QR code as PNG
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -128,6 +128,11 @@
+ }
+ 
+ async fn is_online() -> bool {
++    // testbox patch: the box has no internet, so gurk's probe of Mozilla's captive-portal host
++    // could never say yes (and gurk would never connect to the servers it is told to use).
++    if std::env::var_os("GURK_SIGNAL_SERVERS_FILE").is_some() {
++        return true;
++    }
+     tokio::net::TcpStream::connect("detectportal.firefox.com:80")
+         .await
+         .is_ok()
