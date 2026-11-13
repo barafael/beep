@@ -166,6 +166,74 @@ burst, which its store held, because a `send-to-group` process printed it and th
 output). A group's id is a master key for presage-cli and signalmeow, a base64 id for
 signal-cli and a hex id for Flare.
 
+## Files, reactions and edits in the mix
+
+Each round now also sends **files** (every client to b33p and to every other client at once, and b33p
+to each: 3 KB to 150 KB, incompressible, off the padding's edges), and **reactions and edits** (b33p
+reacts to and edits a message of each client; the clients that can react to b33p's message and edit
+their own; all of it under a burst of texts from every client). `mixed/amend.rs`;
+`TESTBOX_MIXED_FILES=0` and `TESTBOX_MIXED_AMEND=0` leave them out.
+
+What each client can do (the check holds each to what it can):
+
+| | sends files | tells what it received of a file | sends reactions | sends edits | receives reactions and edits |
+|---|---|---|---|---|---|
+| b33p | yes | saved file's SHA-256 (read in its container) | yes | yes | yes |
+| signal-cli | yes | the saved attachment's hash | yes (`sendReaction`) | yes (`--edit-timestamp`) | yes (JSON) |
+| signalmeow | yes | hash printed by the driver | yes (driver `react`, new) | yes (driver `edit`, new) | yes |
+| Flare | yes (`send-file`, new) | hash printed (new) | yes (`react`, new) | **no**: see below | yes |
+| presage-cli | yes (`--attach`) | no: its attachment directory is deleted at exit | no | no | yes (prints the text) |
+
+**Flare's backend cannot send an edit.** `flare-types/src/convert/to_presage.rs:32` converts only a text,
+a reaction and a deletion to presage's content; any other message is `_ => todo!()`, and the process
+panicked there ("not yet implemented", then "no echo of the send in 60 s"). Flare receives edits. Not
+b33p's; the driver has no `edit` command for it.
+
+### What the runs found
+
+- **My own harness, twice.** The `serve` daemon forwarded only text events to the check, so a file's
+  hash, an edit and a reaction signalmeow had received were never seen (the first file check failed
+  with "never received": the message was in the driver's store with `files:1`). Fixed in the driver
+  (the message event carries the reaction) and in the reader. And the daemon's lines are now typed
+  (xtask's clippy forbids `serde_json::Value`; CI would have failed the branch).
+- **signal-cli sends a reaction's emoji as U+FFFD.** The image's locale is POSIX, so the JVM decodes its
+  arguments as ASCII (`sun.jnu.encoding = ANSI_X3.4-1968`) and `sendReaction -e 👍` goes out as four
+  replacement characters. b33p showed exactly that, correctly. Any text with a non-ASCII character given
+  to `signal-cli send` on that image had the same fate; no earlier check sent one. `LC_ALL=C.utf8` in the
+  image.
+- **A loaded machine.** Run 4 (4 rounds, burst 20, `--capture`) had a window, 11:13 to 11:25, in which
+  b33p logged `database is locked` (SQLite code 5; `failed to unarchive a conversation` four times,
+  `command failed … failed to keep the chat's change` once, a delivery receipt not sent) and Flare's own
+  store failed a send with `database error: failed to send the message to a contact`. At that time
+  another build on this machine (a `cargo` of an unrelated project) wrote about 260 MB/s: host load
+  average above 100 on 32 cores, tasks stalled on IO 47% of the five minutes (`/proc/pressure/io`,
+  btrfs endio workers busy). b33p opens its database with `synchronous=FULL` and a 10 s busy timeout
+  (`b33p-core/src/signal/lifecycle.rs`), presage's store 30 s; an fsync stalled longer than that fails
+  whoever waits. The failures: the first check of round 3 (message 020 of presage-cli's burst not shown
+  within 120 s: it was shown later, the restart check found it), a Flare `send-many` that died at its
+  twelfth text (the restart check lists exactly 012 to 020 as missing: never sent), and the
+  unexpected-error check. Nothing sent to b33p was lost; its screen was minutes late. The phase now
+  prints the host's load and IO stall after each round (`host after round N`).
+  - What it shows of b33p: a write that fails on a busy database is not retried. The
+    unarchive-on-incoming-message is logged and dropped (the conversation stays archived), and a user's
+    command fails with an error. Only reachable with a disk that stalls for ten seconds.
+
+### The wire, for the files (run 4's capture, 620,216 frames, 4,216 connections, none undecoded)
+
+Every client uploaded 16 files and downloaded 16 (4 rounds, 4 files each), through the CDN on 8446.
+
+- **Four clients upload with three requests; signalmeow with one.** b33p, Flare, presage-cli and
+  signal-cli: `POST /upload/attachments` (tus, `Upload-Defer-Length`, empty body, 201), then
+  `HEAD /upload/attachments/{id}` (200), then `PATCH` with the body (204). signalmeow: one
+  `POST /upload/attachments` with `Upload-Length` and the body in it (tus "creation-with-upload"), 201.
+  The server accepts both. Median request times in the capture: b33p's POST, HEAD and PATCH took 15, 2 and
+  54 ms on a quiet box. Over a real link the two extra round trips per attachment are what b33p could save
+  by uploading in the one request. The `HEAD` is lss's (the `libsignal-service-java` client, signal-cli,
+  does the same), so it is the reference client's shape, and not removed here; worth testing against
+  the real CDN before changing it.
+- signal-cli asks for the upload form over gRPC (`Attachments/GetUploadForm`, 16); the others over
+  `GET /v4/attachments/form/upload?uploadLength=…` (16 each).
+
 ## What the other clients say about b33p's behaviours
 
 Each held up in this run against a client without it, so it is shown needed, or not shown unneeded:
