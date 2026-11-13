@@ -218,6 +218,31 @@ b33p's; the driver has no `edit` command for it.
     unarchive-on-incoming-message is logged and dropped (the conversation stays archived), and a user's
     command fails with an error. Only reachable with a disk that stalls for ten seconds.
 
+### Run 5 (4 rounds, burst 20, `--capture`): 51 passed, 4 failed
+
+Three failures in the group check of rounds 1, 3 and 4, and "no client lost a message". Host load was
+7.8 after round 1 (IO stalled 7.8% of the minute), 2.4 after round 2, 21 after round 3 (14.7%).
+
+- **Round 1: presage-cli "lacked" Flare's group message 003.** It did not: presage-cli's store lists all
+  twenty (`list-messages -k <master key>`, 003 at 1794571456960). A one-shot presage-cli process can store a
+  message and end before printing it, and the group check read only what was printed. The 1:1 checks
+  read the store, which is why they never showed it. The harness's: the group checks now read the store
+  for presage-cli and Flare (`held_in_group`).
+- **Round 3: `presage-cli send-to-group` exited 101,** `Store(Db(Database(SqliteError { code: 5, message:
+  "database is locked" })))`, after trivial statements (`INSERT INTO sender_keys`, `DELETE FROM
+  decrypted_contents`) had taken 1.5 to 2.6 s each (sqlx's slow-statement warnings in its output). The
+  disk was stalled (above), the same window as the ones in run 4.
+- **Round 4: Flare lacked presage-cli's group message 019**: not printed and not in its store
+  (`flare-box messages <group>`: 19 of 20; round 1 has 19 of presage-cli's and 19 of signal-cli's, too).
+  And the end check had one lost message: `flare-box send-group … error opening envelope, message will
+  be skipped! error=Sealed sender decryption error: … database is locked`. Flare's libsignal-service
+  acknowledges an envelope when it reads it, before it is decrypted and stored (see above), so one it
+  could not store, or had read as the process ended, is the server's as delivered and Flare's never. With
+  the disk stalling, the 400 ms the driver stays after its last message is not long enough. Flare's, and
+  already known; b33p's fork acknowledges after storing.
+- **Reporting.** `together` reported only the first failing client, so round 1's other failures
+  (Flare's) were hidden behind presage-cli's. It now reports all.
+
 ### The wire, for the files (run 4's capture, 620,216 frames, 4,216 connections, none undecoded)
 
 Every client uploaded 16 files and downloaded 16 (4 rounds, 4 files each), through the CDN on 8446.
