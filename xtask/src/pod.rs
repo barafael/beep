@@ -252,6 +252,8 @@ pub enum Service {
     B33p(u8),
     Desktop,
     Android,
+    /// signalmeow's driver (`Client::Signalmeow`), which `podman exec` runs as it does presage-cli.
+    Signalmeow,
     /// With `--capture`, the packet capture (testbox/capture).
     Capture,
     /// Where the clients' link is impaired from ([`Pod::impair`]).
@@ -274,6 +276,7 @@ impl Service {
             Self::B33p(n) => format!("b33p-{n}"),
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
+            Self::Signalmeow => "signalmeow".to_owned(),
             Self::Capture => "capture".to_owned(),
             Self::Netem => "netem".to_owned(),
         }
@@ -343,6 +346,8 @@ pub enum Client {
     Android,
     #[strum(serialize = "signal-cli")]
     SignalCli,
+    /// mautrix-signal's signalmeow, in Go, driven by testbox/signalmeow/driver.
+    Signalmeow,
 }
 
 impl Client {
@@ -417,7 +422,7 @@ enum Priority {
     Lower,
 }
 
-const IMAGES: [Image; 11] = [
+const IMAGES: [Image; 12] = [
     Image {
         name: SERVER,
         containerfile: "testbox/server/Containerfile",
@@ -480,6 +485,12 @@ const IMAGES: [Image; 11] = [
         name: "signal-cli",
         containerfile: "testbox/signal-cli/Containerfile",
         client: Some(Client::SignalCli),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "signalmeow",
+        containerfile: "testbox/signalmeow/Containerfile",
+        client: Some(Client::Signalmeow),
         ..Image::REPOSITORY
     },
 ];
@@ -1248,6 +1259,22 @@ impl Pod {
         process::output(exec, stdin)
     }
 
+    /// Starts `argv` in `service` without a shell, its stdout and stderr piped, and returns it
+    /// running: for a command that talks while it runs (signalmeow's `link` prints the URL a
+    /// primary adds, then waits for it to).
+    pub fn spawn_exec(&self, service: Service, argv: &[&str]) -> Result<Child, PodError> {
+        let mut exec = podman(&["exec", "-i", &self.container(service)]);
+        exec.args(argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        exec.spawn().map_err(|source| PodError::StartExec {
+            service,
+            argv: argv.iter().map(|&arg| arg.to_owned()).collect(),
+            source,
+        })
+    }
+
     /// Runs `argv` in `service` without a shell, and returns how it ended, whatever that was.
     pub fn exec_status(
         &self,
@@ -1637,6 +1664,23 @@ mod tests {
         assert!(rendered.contains(r#"name: "b33p-testbox","#), "{rendered}");
         assert!(rendered.contains(r#"image: "localhost/b33p-testbox-b33p","#));
         assert!(rendered.contains(&format!(r#"path: "{}/target/testbox-run""#, repo.display())));
+    }
+
+    /// signalmeow's container is in the pod only when asked for, with its own volume claim and
+    /// its image under the pod's name.
+    #[test]
+    fn signalmeow_is_in_the_pod_when_asked_for() {
+        let pod = Pod::new(&repo(), Some("two")).expect("an instance");
+        let without = pod.render(&[], 1).expect("pod.yaml");
+        let image = r#"image: "localhost/b33p-testbox.two-signalmeow","#;
+        assert!(!without.contains(image), "{without}");
+        let with = pod.render(&[Client::Signalmeow], 1).expect("pod.yaml");
+        assert!(with.contains(image), "{with}");
+        assert!(with.contains(r#"claimName: "b33p-testbox.two-signalmeow""#));
+        assert_eq!(
+            pod.container(Service::Signalmeow),
+            "b33p-testbox.two-signalmeow"
+        );
     }
 
     /// An instance's names and directories are its own, and pod.yaml leaves none of the

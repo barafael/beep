@@ -25,6 +25,7 @@ pub(crate) mod record;
 mod rng;
 mod setup;
 mod signal_cli;
+mod signalmeow;
 mod storage;
 mod stress;
 mod tour;
@@ -164,10 +165,12 @@ pub(crate) fn run(
     let desktop = !linked.is_empty()
         || !android.is_empty()
         || phases.contains(&Phase::Stress(StressPhase::Concurrency));
-    // Only when named, as the stress phases.
+    // Only when named, as the stress phases: signal-cli's on the shared interop box, signalmeow's
+    // on a box of its own.
     let interop: Vec<InteropPhase> = InteropPhase::VARIANTS
         .iter()
         .copied()
+        .filter(|&phase| phase == InteropPhase::SignalCli)
         .filter(|&phase| phases.contains(&Phase::Interop(phase)))
         .collect();
     let mut built: Vec<Client> = if desktop {
@@ -177,6 +180,9 @@ pub(crate) fn run(
     };
     if interop.contains(&InteropPhase::SignalCli) {
         built.push(Client::SignalCli);
+    }
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow)) {
+        built.push(Client::Signalmeow);
     }
     containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
@@ -275,6 +281,14 @@ pub(crate) fn run(
             },
         );
     }
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow)) {
+        on_own_box(
+            &mut tally,
+            InteropPhase::Signalmeow.into(),
+            || play(&[Client::Signalmeow], b33ps),
+            |checks| signalmeow::signalmeow(checks, containers, &sockets, &files),
+        );
+    }
     on_fixture(
         &mut tally,
         "mesh",
@@ -299,6 +313,9 @@ pub(crate) fn run(
         || play(&[Client::SignalCli], b33ps),
         |checks| setup::interop_box(checks, containers, &sockets),
         |phase, checks, fixture| match phase {
+            InteropPhase::Signalmeow => {
+                Err("signalmeow runs on a box of its own, not the interop box".into())
+            }
             InteropPhase::SignalCli => signal_cli::signal_cli(
                 checks,
                 fixture,

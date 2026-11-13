@@ -76,6 +76,10 @@ pub(crate) enum InteropPhase {
     // groups too, with b33p and presage-cli.
     #[strum(serialize = "signal-cli")]
     SignalCli,
+    /// mautrix-signal's signalmeow, in Go (xtask/src/checks/signalmeow.rs): text with a presage-cli
+    /// account and with b33p, files, and a group. On a box of its own, set up by the phase itself.
+    #[strum(serialize = "signalmeow")]
+    Signalmeow,
 }
 
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,

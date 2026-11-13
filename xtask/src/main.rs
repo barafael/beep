@@ -81,6 +81,9 @@ enum Command {
         /// signal-cli (Java, libsignal-service-java), which the checks run in its container.
         #[arg(long)]
         signal_cli: bool,
+        /// mautrix-signal's signalmeow (Go), driven by `podman exec` of its driver.
+        #[arg(long)]
+        signalmeow: bool,
         #[command(flatten)]
         b33p: B33pOptions,
     },
@@ -217,12 +220,14 @@ fn main() -> ExitCode {
             desktop,
             android,
             signal_cli,
+            signalmeow,
             b33p,
         } => {
             let clients = [
                 (desktop, Client::Desktop),
                 (android, Client::Android),
                 (signal_cli, Client::SignalCli),
+                (signalmeow, Client::Signalmeow),
             ];
             let clients: Vec<Client> = clients
                 .into_iter()

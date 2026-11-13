@@ -1,0 +1,152 @@
+signalmeow (mautrix-signal's pkg/signalmeow at 01626c1) pointed at a Signal-Server test box.
+
+Its hosts, TLS roots, gRPC target, zkgroup server public parameters and unidentified-sender
+trust roots are compiled in (pkg/signalmeow/web/web.go, grpc.go, misc.go, and
+pkg/libsignalgo/sendercertificate.go). The hosts and the gRPC target become variables, and
+web/box.go reads the box's /keys/desktop-config.json, which SIGNALMEOW_BOX_CONFIG names, in
+init(): the hosts with their ports, the box's CA as the only TLS root, its zkgroup parameters and
+its trust roots. Without the variable nothing changes.
+
+Chat is signalmeow's own websocket and gRPC, not libsignal-net, so libsignal needs no patch
+(unlike Signal-Android's: testbox/patches/libsignal-local.patch).
+
+diff --color -ruN a/pkg/signalmeow/misc.go b/pkg/signalmeow/misc.go
+--- a/pkg/signalmeow/misc.go
++++ b/pkg/signalmeow/misc.go
+@@ -26,6 +26,7 @@
+ 	"go.mau.fi/util/exerrors"
+ 
+ 	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
++	"go.mau.fi/mautrix-signal/pkg/signalmeow/web"
+ )
+ 
+ var loggingSetup = false
+@@ -79,7 +80,7 @@
+ var prodServerPublicParams *libsignalgo.ServerPublicParams
+ 
+ func init() {
+-	prodServerPublicParams = exerrors.Must(libsignalgo.DeserializeServerPublicParams(prodServerPublicParamsSlice))
++	prodServerPublicParams = exerrors.Must(libsignalgo.DeserializeServerPublicParams(web.BoxServerPublicParams(prodServerPublicParamsSlice)))
+ }
+ 
+ var ErrEmptyUUIDInput = errors.New("both input variables are empty")
+diff --color -ruN a/pkg/signalmeow/web/box.go b/pkg/signalmeow/web/box.go
+--- a/pkg/signalmeow/web/box.go
++++ b/pkg/signalmeow/web/box.go
+@@ -0,0 +1,91 @@
++package web
++
++// testbox: points signalmeow at a Signal-Server test box instead of Signal's. When the
++// environment variable SIGNALMEOW_BOX_CONFIG names a file (the box's /keys/desktop-config.json),
++// the hosts, the TLS roots, the zkgroup server public parameters and the unidentified-sender
++// trust roots are the box's. Without it nothing changes.
++
++import (
++	"crypto/x509"
++	"encoding/base64"
++	"encoding/json"
++	"net/url"
++	"os"
++
++	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
++)
++
++type boxConfig struct {
++	ServerURL            string            `json:"serverUrl"`
++	StorageURL           string            `json:"storageUrl"`
++	ResourcesURL         string            `json:"resourcesUrl"`
++	CDN                  map[string]string `json:"cdn"`
++	CertificateAuthority string            `json:"certificateAuthority"`
++	ServerPublicParams   string            `json:"serverPublicParams"`
++	ServerTrustRoots     []string          `json:"serverTrustRoots"`
++}
++
++var box *boxConfig
++
++// ResourcesHostname is the box's HTTP/2 REST port (Signal-Server's, beside the chat's omnibus one).
++var ResourcesHostname = ""
++
++func hostOf(raw string) string {
++	u, err := url.Parse(raw)
++	if err != nil || u.Host == "" {
++		panic("box config: bad URL " + raw)
++	}
++	return u.Host
++}
++
++func init() {
++	path := os.Getenv("SIGNALMEOW_BOX_CONFIG")
++	if path == "" {
++		return
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		panic(err)
++	}
++	box = &boxConfig{}
++	if err = json.Unmarshal(data, box); err != nil {
++		panic(err)
++	}
++	// The chat's websocket is HTTP/1.1 (RFC 6455's upgrade, which coder/websocket does), and the
++	// box's omnibus port, desktop-config.json's serverUrl, answers only HTTP/2 (libsignal-net's
++	// websockets, gRPC): Jetty's HTTP/1.1 port is the one libsignal-service uses, and the pod
++	// names it in SIGNALMEOW_BOX_CHAT_HOST (testbox/signalmeow/pod.yaml). gRPC stays on the
++	// omnibus port.
++	APIHostname = hostOf(box.ServerURL)
++	if chat := os.Getenv("SIGNALMEOW_BOX_CHAT_HOST"); chat != "" {
++		APIHostname = chat
++	}
++	StorageHostname = hostOf(box.StorageURL)
++	ResourcesHostname = hostOf(box.ResourcesURL)
++	CDN1Hostname = hostOf(box.CDN["0"])
++	CDN2Hostname = hostOf(box.CDN["2"])
++	CDN3Hostname = hostOf(box.CDN["3"])
++	CDNHosts = []string{CDN1Hostname, CDN1Hostname, CDN2Hostname, CDN3Hostname}
++	GRPCTarget = "dns:///" + hostOf(box.ServerURL)
++	// Only the box's CA: nothing else is reachable anyway.
++	pool := x509.NewCertPool()
++	if !pool.AppendCertsFromPEM([]byte(box.CertificateAuthority)) {
++		panic("box config: no certificate in certificateAuthority")
++	}
++	SignalCertPool = pool
++	SignalTLSConfig.RootCAs = pool
++	libsignalgo.ProdTrustRoots = libsignalgo.NewTrustRoots(box.ServerTrustRoots)
++}
++
++// BoxServerPublicParams is the zkgroup server public parameters: the box's when
++// SIGNALMEOW_BOX_CONFIG is set, `prod` otherwise.
++func BoxServerPublicParams(prod []byte) []byte {
++	if box == nil {
++		return prod
++	}
++	params, err := base64.StdEncoding.DecodeString(box.ServerPublicParams)
++	if err != nil {
++		panic(err)
++	}
++	return params
++}
+diff --color -ruN a/pkg/signalmeow/web/grpc.go b/pkg/signalmeow/web/grpc.go
+--- a/pkg/signalmeow/web/grpc.go
++++ b/pkg/signalmeow/web/grpc.go
+@@ -114,7 +114,7 @@
+ 	gc.UnauthConn.ResetConnectBackoff()
+ }
+ 
+-const GRPCTarget = "dns:///grpc.chat.signal.org:443"
++var GRPCTarget = "dns:///grpc.chat.signal.org:443"
+ 
+ func NewGRPCClient(username, password string) (*GRPCClient, error) {
+ 	grpcTLSConfig := credentials.NewTLS(SignalTLSConfig)
+diff --color -ruN a/pkg/signalmeow/web/web.go b/pkg/signalmeow/web/web.go
+--- a/pkg/signalmeow/web/web.go
++++ b/pkg/signalmeow/web/web.go
+@@ -42,7 +42,8 @@
+ var UserAgent = "signalmeow/0.1.0 " + BaseUserAgent
+ var SignalAgent = "MAU"
+ 
+-const (
++// Variables, not constants, so that testbox's box.go can point them at the box.
++var (
+ 	APIHostname     = "chat.signal.org"
+ 	StorageHostname = "storage.signal.org"
+ 	CDN1Hostname    = "cdn.signal.org"
