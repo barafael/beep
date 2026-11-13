@@ -316,7 +316,7 @@ Each held up in this run against a client without it, so it is shown needed, or 
   found that a client without b33p's guards could not show.
 - **Not shown either way**: the 30 s keepalive (the other clients' connections last under 8 s, so
   nothing here says whether it is needed; the Desktop and Android captures can), the picture
-  metadata stripping, the tus upload shape. The mixed phase has no attachments or groups yet.
+  metadata stripping (the mix sends files byte for byte; b33p strips only pictures'), the tus upload shape (now compared: see "The wire, for the files").
 - **Removable or simplifiable**: nothing found in this run. Nothing was removed to see whether the
   testbox noticed; the earlier mutation run (`docs/testbox-sceptical-run-2026-11-11-mutations`) is the
   method for that.
@@ -356,6 +356,14 @@ Each held up in this run against a client without it, so it is shown needed, or 
   response shape without it where gurk and presage-cli got one).
 - signal-cli's NPE after a link.
 - Molly: reaction label, the "Deleting is now synced" dialog, the timer check (`docs/onboarding-molly.md`).
+- A reaction displaced from presage's store by another content of the same sender and millisecond (run 6):
+  two ways to close it, neither done.
+- Not in the mix yet: Desktop and Android as peers, gurk, a seeded random mix, a signal-cli daemon, groups'
+  reactions and edits, file sizes beyond 150 KB, latency and throughput kept as numbers.
+- Flare sends no edits (`todo!()`), and acknowledges before it stores; the group and 1:1 checks tolerate
+  neither beyond what the store shows. A pins test for `testbox/family/*.lock` (flare-box gained two
+  dependencies in the lock this session).
+- The upload in one request (signalmeow's) against the three of the others, tried against the real CDN.
 
 ## Soaks
 
