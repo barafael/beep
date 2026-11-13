@@ -231,6 +231,7 @@
       { name: "presage", persistentVolumeClaim: { claimName: "@POD@-presage" } },
       # @B33P_VOLUMES@
       { name: "desktop-home", persistentVolumeClaim: { claimName: "@POD@-desktop-home" } },
+      { name: "signalmeow", persistentVolumeClaim: { claimName: "@POD@-signalmeow" } },
       { name: "tus-data", persistentVolumeClaim: { claimName: "@POD@-tus-data" } },
       { name: "cdn0-data", persistentVolumeClaim: { claimName: "@POD@-cdn0-data" } },
       # The harness's and the drivers' sockets, on the host.

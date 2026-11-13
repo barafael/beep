@@ -164,6 +164,13 @@ sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a s
 which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
 ([pending/stress.md](../pending/stress.md)).
 
+`signalmeow` runs only when named, on a box of its own: mautrix-signal's Go implementation of
+Signal's client protocol (no presage, no libsignal-service; only libsignal's cryptography through
+its FFI) linked to a presage-cli account, writing text, files and a group message with a
+presage-cli peer and with b33p, and the other way round
+([docs/onboarding-signalmeow.md](../docs/onboarding-signalmeow.md)). It is built at the first run,
+which takes a while (libsignal's FFI, then Go).
+
 `tour` runs only when named, on a box of several b33ps (`--b33ps <N>`, three by default), each
 linked to a presage-cli primary of its own and writing to the others: every feature b33p has,
 each `TESTBOX_TOUR_REPEAT` times (two), in an order drawn from a seed it prints, which
@@ -234,6 +241,7 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |
 | `vnc/`, `viewer/`, `web/`, `shot/` | The displays: the VNC client, the window, the page, the screenshots |
 | `presage/`, `stickers/` | presage-cli at b33p's pin, and the tool that seeds a sticker pack |
+| `signalmeow/`, `patches/signalmeow-local.patch` | mautrix-signal's Go client, built from source with a driver on top, for the `signalmeow` phase |
 | `nightly/` | A tour run on main in a worktree and box of its own, and the systemd units to run it nightly |
 | `logexp/` | The log-driver measurements behind `container-logs.md` |
 | `../xtask` | `cargo testbox` itself: bringing the pod up and down, and the phases' checks |

@@ -14,6 +14,8 @@ pub(super) enum Account {
     Primary,
     /// The account b33p writes to, and Desktop links to.
     Peer,
+    /// The account signalmeow links to (`signalmeow`).
+    Meow,
     /// A group's member besides the peer (`groups`).
     Member,
     /// The `n`th of the large group's members (`large-group`).
@@ -27,6 +29,7 @@ impl Account {
         match self {
             Self::Primary => "/presage/primary.db".into(),
             Self::Peer => "/presage/peer.db".into(),
+            Self::Meow => "/presage/meow.db".into(),
             Self::Member => "/presage/member.db".into(),
             Self::Crowd(n) => format!("/presage/crowd-{n}.db").into(),
             Self::Mesh(n) => format!("/presage/mesh-{n}.db").into(),
@@ -37,6 +40,7 @@ impl Account {
         match self {
             Self::Primary => "+15555550101".into(),
             Self::Peer => "+15555550102".into(),
+            Self::Meow => "+15555550105".into(),
             Self::Member => "+15555550104".into(),
             Self::Crowd(n) => format!("+1555555{:04}", 300 + u16::from(n)).into(),
             Self::Mesh(n) => format!("+1555555{:04}", 200 + u16::from(n)).into(),
@@ -48,6 +52,7 @@ impl Account {
         match self {
             Self::Primary => "Primary".into(),
             Self::Peer => "Peer".into(),
+            Self::Meow => "Meow".into(),
             Self::Member => "Member".into(),
             Self::Crowd(n) => format!("Crowd {n}").into(),
             Self::Mesh(n) => format!("Mesh {n}").into(),
@@ -211,7 +216,7 @@ impl<'pod> Presage<'pod> {
     }
 
     /// The account's ACI, from presage-cli's `whoami` (`WhoAmIResponse { aci: <uuid>, ... }`).
-    fn aci(&self) -> Result<String, PresageError> {
+    pub(super) fn aci(&self) -> Result<String, PresageError> {
         let whoami = self.cli("whoami", &[], "")?;
         whoami
             .split_once("aci: ")

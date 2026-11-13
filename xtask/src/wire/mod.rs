@@ -499,6 +499,10 @@ impl Identities {
         } else if agent.starts_with("b33p/") || agent == "b33p" {
             // `b33p` alone: b33p's own downloads (b33p-core transfer.rs) before it had an agent.
             "b33p".to_owned()
+        } else if agent.starts_with("signalmeow/") {
+            // mautrix-signal's Go client (testbox/signalmeow): "signalmeow/0.1.0 libsignal/v…
+            // go/…", on its websocket, REST and gRPC alike.
+            "signalmeow".to_owned()
         } else if agent.starts_with("presage") {
             match self.user.as_deref().and_then(|user| user.rsplit_once('.')) {
                 Some((_, device)) if device != "1" => "b33p".to_owned(),

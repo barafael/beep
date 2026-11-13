@@ -78,6 +78,9 @@ enum Command {
         /// Signal-Android on an emulator.
         #[arg(long)]
         android: bool,
+        /// mautrix-signal's signalmeow (Go), driven by `podman exec` of its driver.
+        #[arg(long)]
+        signalmeow: bool,
         #[command(flatten)]
         b33p: B33pOptions,
     },
@@ -213,9 +216,14 @@ fn main() -> ExitCode {
         Command::Up {
             desktop,
             android,
+            signalmeow,
             b33p,
         } => {
-            let clients = [(desktop, Client::Desktop), (android, Client::Android)];
+            let clients = [
+                (desktop, Client::Desktop),
+                (android, Client::Android),
+                (signalmeow, Client::Signalmeow),
+            ];
             let clients: Vec<Client> = clients
                 .into_iter()
                 .filter_map(|(asked, client)| asked.then_some(client))

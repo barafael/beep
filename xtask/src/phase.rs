@@ -67,6 +67,17 @@ pub(crate) enum MeshPhase {
     Tour,
 }
 
+/// The phases against another implementation of Signal's client protocol, each on a box of its
+/// own, and only when named (docs/onboarding-signalmeow.md): their images are built from source
+/// and take a while.
+#[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
+#[strum(serialize_all = "lowercase")]
+pub(crate) enum InteropPhase {
+    // mautrix-signal's signalmeow, in Go: text with a presage-cli account and with b33p, and a
+    // group (xtask/src/checks/signalmeow.rs).
+    Signalmeow,
+}
+
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,
 /// or with `--fresh` one per phase), then the stress phases', each on a box of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -75,6 +86,7 @@ pub(crate) enum Phase {
     Android(AndroidPhase),
     Stress(StressPhase),
     Mesh(MeshPhase),
+    Interop(InteropPhase),
 }
 
 /// Every phase, in the order they run.
@@ -86,6 +98,7 @@ static PHASES: LazyLock<Vec<Phase>> = LazyLock::new(|| {
         .chain(AndroidPhase::VARIANTS.iter().copied().map(Phase::Android))
         .chain(StressPhase::VARIANTS.iter().copied().map(Phase::Stress))
         .chain(MeshPhase::VARIANTS.iter().copied().map(Phase::Mesh))
+        .chain(InteropPhase::VARIANTS.iter().copied().map(Phase::Interop))
         .collect()
 });
 
@@ -100,6 +113,7 @@ impl ValueEnum for Phase {
             Self::Android(phase) => phase.into(),
             Self::Stress(phase) => phase.into(),
             Self::Mesh(phase) => phase.into(),
+            Self::Interop(phase) => phase.into(),
         };
         Some(PossibleValue::new(name))
     }

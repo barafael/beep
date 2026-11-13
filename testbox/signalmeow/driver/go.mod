@@ -1,0 +1,37 @@
+module testbox/signalmeow-driver
+
+go 1.26.0
+
+toolchain go1.27.2
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/rs/zerolog v1.35.1
+	go.mau.fi/mautrix-signal v0.0.0
+	go.mau.fi/util v0.11.0
+)
+
+require (
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-pointer v0.0.1 // indirect
+	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
+	github.com/tidwall/gjson v1.20.0 // indirect
+	github.com/tidwall/match v1.2.0 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
+	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
+	google.golang.org/grpc v1.84.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
+)
+
+// The patched source (testbox/patches/signalmeow-local.patch) at the pin: the Containerfile
+// puts it here.
+replace go.mau.fi/mautrix-signal => /src/mautrix-signal

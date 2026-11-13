@@ -24,6 +24,7 @@ mod presage;
 pub(crate) mod record;
 mod rng;
 mod setup;
+mod signalmeow;
 mod storage;
 mod stress;
 mod tour;
@@ -34,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
-use crate::phase::{AndroidPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
+use crate::phase::{AndroidPhase, InteropPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
 use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
@@ -163,8 +164,16 @@ pub(crate) fn run(
     let desktop = !linked.is_empty()
         || !android.is_empty()
         || phases.contains(&Phase::Stress(StressPhase::Concurrency));
-    let built: &[Client] = if desktop { &linked_clients } else { &[] };
-    containers.build_others(built, b33p.optimized)?;
+    let mut built: Vec<Client> = if desktop {
+        linked_clients.to_vec()
+    } else {
+        Vec::new()
+    };
+    // Each interop phase's client, only for a run that names the phase.
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow)) {
+        built.push(Client::Signalmeow);
+    }
+    containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
         containers.fresh(clients, b33ps)?;
         Ok(b33p.limit_memory(containers, b33ps)?)
@@ -258,6 +267,25 @@ pub(crate) fn run(
                 StressPhase::Content => stress::content(checks, containers, &sockets, &files),
                 StressPhase::Concurrency => stress::concurrency(checks, containers, &sockets),
                 StressPhase::Soak => stress::soak(checks, containers, &sockets, &files),
+            },
+        );
+    }
+    for phase in InteropPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phases.contains(&Phase::Interop(phase)))
+    {
+        let clients: &[Client] = match phase {
+            InteropPhase::Signalmeow => &[Client::Signalmeow],
+        };
+        on_own_box(
+            &mut tally,
+            phase.into(),
+            || play(clients, b33ps),
+            |checks| match phase {
+                InteropPhase::Signalmeow => {
+                    signalmeow::signalmeow(checks, containers, &sockets, &files)
+                }
             },
         );
     }
