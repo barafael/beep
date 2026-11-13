@@ -65,12 +65,17 @@ impl Peer<'_> {
 
     /// The texts of the phase the client holds from `from`, in the order it holds them.
     fn held_from(&self, from: &str) -> Result<Vec<String>, Failure> {
-        let listing = match &self.kind {
-            Kind::Presage(client) => client.messages_with(from)?,
-            Kind::SignalCli(client) => client.messages_with(from),
-            Kind::Signalmeow(client) => client.messages_with(from)?,
+        let (listing, newest_first) = match &self.kind {
+            // presage-cli's `list-messages` lists the newest first.
+            Kind::Presage(client) => (client.messages_with(from)?, true),
+            Kind::SignalCli(client) => (client.messages_with(from), false),
+            Kind::Signalmeow(client) => (client.messages_with(from)?, false),
         };
-        Ok(texts_in(&listing))
+        let mut texts = texts_in(&listing);
+        if newest_first {
+            texts.reverse();
+        }
+        Ok(texts)
     }
 }
 
