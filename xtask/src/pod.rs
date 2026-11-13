@@ -254,6 +254,8 @@ pub enum Service {
     Android,
     /// signalmeow's driver (`Client::Signalmeow`), which `podman exec` runs as it does presage-cli.
     Signalmeow,
+    /// With `--family`, gurk-rs and Flare's backend (testbox/family).
+    Family,
     /// With `--capture`, the packet capture (testbox/capture).
     Capture,
     /// Where the clients' link is impaired from ([`Pod::impair`]).
@@ -277,6 +279,7 @@ impl Service {
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
             Self::Signalmeow => "signalmeow".to_owned(),
+            Self::Family => "family".to_owned(),
             Self::Capture => "capture".to_owned(),
             Self::Netem => "netem".to_owned(),
         }
@@ -348,6 +351,8 @@ pub enum Client {
     SignalCli,
     /// mautrix-signal's signalmeow, in Go, driven by testbox/signalmeow/driver.
     Signalmeow,
+    /// gurk-rs and Flare's backend, on the presage and libsignal-service they ship with.
+    Family,
 }
 
 impl Client {
@@ -422,7 +427,7 @@ enum Priority {
     Lower,
 }
 
-const IMAGES: [Image; 12] = [
+const IMAGES: [Image; 13] = [
     Image {
         name: SERVER,
         containerfile: "testbox/server/Containerfile",
@@ -491,6 +496,12 @@ const IMAGES: [Image; 12] = [
         name: "signalmeow",
         containerfile: "testbox/signalmeow/Containerfile",
         client: Some(Client::Signalmeow),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "family",
+        containerfile: "testbox/family/Containerfile",
+        client: Some(Client::Family),
         ..Image::REPOSITORY
     },
 ];

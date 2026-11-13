@@ -87,6 +87,18 @@ pub(crate) enum InteropPhase {
     Mixed,
 }
 
+/// The presage family's clients (testbox/family), each on a box of its own, and only when named:
+/// the box has b33p, a presage-cli peer and the client, which writes to both.
+#[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
+pub(crate) enum FamilyPhase {
+    // gurk-rs, the terminal client, linked to a presage-cli primary; run in tmux.
+    #[strum(serialize = "family-gurk")]
+    Gurk,
+    // Flare's backend (flare-manager), registered as an account of its own; one command at a time.
+    #[strum(serialize = "family-flare")]
+    Flare,
+}
+
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,
 /// or with `--fresh` one per phase), then the stress phases', each on a box of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +108,7 @@ pub(crate) enum Phase {
     Stress(StressPhase),
     Mesh(MeshPhase),
     Interop(InteropPhase),
+    Family(FamilyPhase),
 }
 
 /// Every phase, in the order they run.
@@ -108,6 +121,7 @@ static PHASES: LazyLock<Vec<Phase>> = LazyLock::new(|| {
         .chain(StressPhase::VARIANTS.iter().copied().map(Phase::Stress))
         .chain(MeshPhase::VARIANTS.iter().copied().map(Phase::Mesh))
         .chain(InteropPhase::VARIANTS.iter().copied().map(Phase::Interop))
+        .chain(FamilyPhase::VARIANTS.iter().copied().map(Phase::Family))
         .collect()
 });
 
@@ -123,6 +137,7 @@ impl ValueEnum for Phase {
             Self::Stress(phase) => phase.into(),
             Self::Mesh(phase) => phase.into(),
             Self::Interop(phase) => phase.into(),
+            Self::Family(phase) => phase.into(),
         };
         Some(PossibleValue::new(name))
     }

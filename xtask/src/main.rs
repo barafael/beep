@@ -84,6 +84,9 @@ enum Command {
         /// mautrix-signal's signalmeow (Go), driven by `podman exec` of its driver.
         #[arg(long)]
         signalmeow: bool,
+        /// gurk-rs and Flare's backend, the presage family (testbox/family).
+        #[arg(long)]
+        family: bool,
         #[command(flatten)]
         b33p: B33pOptions,
     },
@@ -221,6 +224,7 @@ fn main() -> ExitCode {
             android,
             signal_cli,
             signalmeow,
+            family,
             b33p,
         } => {
             let clients = [
@@ -228,6 +232,7 @@ fn main() -> ExitCode {
                 (android, Client::Android),
                 (signal_cli, Client::SignalCli),
                 (signalmeow, Client::Signalmeow),
+                (family, Client::Family),
             ];
             let clients: Vec<Client> = clients
                 .into_iter()

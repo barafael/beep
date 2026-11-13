@@ -1,0 +1,20 @@
+# The presage family's clients (testbox/family/Containerfile): gurk-rs, run in tmux, and flare-box,
+# Flare's backend driven one command at a time (`cargo testbox up --family`). A container for
+# testbox/pod.yaml's list, in its @CLIENTS@ line. Idle until the checks exec in: like presage, it
+# is where the accounts' stores are (the `presage` volume, under /presage/family-*), and where
+# their processes run, in the pod's localhost as the servers' certificate names it.
+      {
+        name: "family",
+        image: "localhost/@POD@-family",
+        command: ["sleep", "infinity"],
+        env: [
+          { name: "HOME", value: "/presage/family-home" },
+          { name: "TERM", value: "xterm-256color" },
+        ],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "presage", mountPath: "/presage" },
+          { name: "files", mountPath: "/files", readOnly: true },
+        ],
+      },

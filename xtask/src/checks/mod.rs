@@ -16,6 +16,7 @@ mod core;
 mod crashed;
 mod desktop;
 mod errors;
+mod family;
 mod groups;
 mod large_group;
 mod lost;
@@ -37,7 +38,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
-use crate::phase::{AndroidPhase, InteropPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
+use crate::phase::{
+    AndroidPhase, FamilyPhase, InteropPhase, LinkedPhase, MeshPhase, Phase, StressPhase,
+};
 use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
@@ -174,6 +177,12 @@ pub(crate) fn run(
         .filter(|&phase| phase == InteropPhase::SignalCli)
         .filter(|&phase| phases.contains(&Phase::Interop(phase)))
         .collect();
+    // Only when named, as the stress phases: the presage family's image is a long build.
+    let family: Vec<FamilyPhase> = FamilyPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phases.contains(&Phase::Family(phase)))
+        .collect();
     let mut built: Vec<Client> = if desktop {
         linked_clients.to_vec()
     } else {
@@ -189,6 +198,9 @@ pub(crate) fn run(
     }
     if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
         built.push(Client::SignalCli);
+    }
+    if !family.is_empty() {
+        built.push(Client::Family);
     }
     containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
@@ -340,6 +352,17 @@ pub(crate) fn run(
             ),
         },
     );
+    for phase in family {
+        on_own_box(
+            &mut tally,
+            phase.into(),
+            || play(&[Client::Family], b33ps),
+            |checks| match phase {
+                FamilyPhase::Gurk => family::gurk(checks, containers, &sockets),
+                FamilyPhase::Flare => family::flare(checks, containers, &sockets),
+            },
+        );
+    }
     Ok(tally.finish()?)
 }
 

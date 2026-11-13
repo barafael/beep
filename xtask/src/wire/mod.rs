@@ -507,6 +507,12 @@ impl Identities {
             // mautrix-signal's Go client (testbox/signalmeow): "signalmeow/0.1.0 libsignal/v…
             // go/…", on its websocket, REST and gRPC alike.
             "signalmeow".to_owned()
+        } else if agent.starts_with("gurk/") {
+            // The presage family (testbox/family) says its own agent, as it'd be taken for b33p
+            // (a linked device of presage's) or presage-cli otherwise.
+            "gurk".to_owned()
+        } else if agent.starts_with("flare-box/") {
+            "flare".to_owned()
         } else if agent.starts_with("presage") {
             match self.user.as_deref().and_then(|user| user.rsplit_once('.')) {
                 Some((_, device)) if device != "1" => "b33p".to_owned(),

@@ -1,0 +1,98 @@
+# The presage family: Rust clients that are not b33p's presage-cli, each at the revisions it ships
+# with, made to talk to the box's servers by one commit of b33p's libsignal-service fork and nothing
+# else of it (`SignalServers::Custom`, testbox/family/lss-custom-servers.patch) and the three
+# `.clone()`s that the commit makes presage need (presage-servers-not-copy.patch). What differs from
+# b33p is the point: the clients keep their own presage and libsignal-service, which are older
+# than b33p's fork's by 31 and 27 commits (docs/onboarding-presage-family.md).
+#
+#   gurk-rs   the terminal client, whole (ratatui); linked to a presage-cli primary, run in tmux
+#   flare-box testbox/family/flare-box, a one-shot driver on Flare's backend (flare-manager, the
+#             crate Flare's GTK application is built on), in presage-cli's manner
+#
+# The build context is the repository (testbox/family's patches and flare-box).
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang cmake git pkg-config protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# One revision of a repository into a directory of its own, as presage's Containerfile does.
+RUN printf '%s\n' '#!/bin/sh' 'set -eu' \
+        'git init -q "$1" && cd "$1" && git fetch -q --depth 1 "$2" "$3" && git checkout -q FETCH_HEAD' \
+        > /usr/local/bin/pin && chmod +x /usr/local/bin/pin
+
+# gurk-rs 49f4295, on presage 94b3978 and libsignal-service fb92b13 (its Cargo.lock's).
+ARG GURK_REV=49f4295b132c2a8a4c999308bdfbb4e2974ab894
+ARG GURK_PRESAGE_REV=94b3978f5456469cfd4d9f72351a5eff93715f81
+ARG GURK_LSS_REV=fb92b13c82fde40ba4d10696cf79aa4f36ce25f1
+# Flare's backend 93a6331 (the revision Flare 0.22.8 pins), on presage 290effe and
+# libsignal-service 7a75267.
+ARG FLARE_BACKEND_REV=93a6331dd6a488ae9c4f1af3f08a5402d110dee6
+ARG FLARE_PRESAGE_REV=290effe47721332357ba5ec143e1a3630b07c3fe
+ARG FLARE_LSS_REV=7a7526741dfd9ad4c4894717f22651eb0506fb7e
+
+COPY testbox/family/lss-custom-servers.patch testbox/family/presage-servers-not-copy.patch \
+     testbox/family/gurk-testbox.patch /opt/patches/
+RUN pin /opt/gurk https://github.com/boxdot/gurk-rs "$GURK_REV" \
+    && pin /opt/presage-gurk https://github.com/whisperfish/presage "$GURK_PRESAGE_REV" \
+    && pin /opt/lss-gurk https://github.com/whisperfish/libsignal-service-rs "$GURK_LSS_REV" \
+    && pin /opt/flare-backend https://gitlab.com/schmiddi-on-mobile/flare-backend.git "$FLARE_BACKEND_REV" \
+    && pin /opt/presage-flare https://github.com/whisperfish/presage "$FLARE_PRESAGE_REV" \
+    && pin /opt/lss-flare https://github.com/whisperfish/libsignal-service-rs "$FLARE_LSS_REV" \
+    && for lss in /opt/lss-gurk /opt/lss-flare; do \
+         (cd "$lss" && git apply /opt/patches/lss-custom-servers.patch) || exit 1; done \
+    && for presage in /opt/presage-gurk /opt/presage-flare; do \
+         (cd "$presage" && git apply /opt/patches/presage-servers-not-copy.patch) || exit 1; done \
+    && (cd /opt/gurk && git apply /opt/patches/gurk-testbox.patch)
+# What each client says of itself to the servers, as the wire's decoding (xtask/src/wire) tells
+# them apart: presage's own agent ("presage-rs-<version>") is every presage client's, b33p's
+# among them until it set its own, and a linked device of presage's would be taken for b33p.
+RUN sed -i 's|^const USER_AGENT: &str = .*|const USER_AGENT: \&str = "gurk/0.10.2 presage-rs";|' \
+        /opt/presage-gurk/presage/src/lib.rs \
+    && sed -i 's|^const USER_AGENT: &str = .*|const USER_AGENT: \&str = "flare-box/0.1 presage-rs";|' \
+        /opt/presage-flare/presage/src/lib.rs \
+    && grep -q '"gurk/0.10.2 presage-rs"' /opt/presage-gurk/presage/src/lib.rs \
+    && grep -q '"flare-box/0.1 presage-rs"' /opt/presage-flare/presage/src/lib.rs
+
+# Each client's workspace builds on its own copies, through a Cargo configuration of its own (the
+# clients' manifests name Whisperfish's presage and libsignal-service by revision), with the lock
+# as that patch has it (testbox/family/*.lock), so that the builds are `--locked`.
+RUN mkdir -p /opt/gurk/.cargo /opt/flare-backend/.cargo \
+    && printf '%s\n' \
+        '[patch."https://github.com/whisperfish/presage"]' \
+        'presage = { path = "/opt/presage-gurk/presage" }' \
+        'presage-store-sqlite = { path = "/opt/presage-gurk/presage-store-sqlite" }' \
+        '[patch."https://github.com/whisperfish/libsignal-service-rs"]' \
+        'libsignal-service = { path = "/opt/lss-gurk" }' > /opt/gurk/.cargo/config.toml \
+    && printf '%s\n' \
+        '[patch."https://github.com/whisperfish/presage"]' \
+        'presage = { path = "/opt/presage-flare/presage" }' \
+        'presage-store-sqlite = { path = "/opt/presage-flare/presage-store-sqlite" }' \
+        '[patch."https://github.com/whisperfish/libsignal-service-rs"]' \
+        'libsignal-service = { path = "/opt/lss-flare" }' > /opt/flare-backend/.cargo/config.toml
+COPY testbox/family/gurk.lock /opt/gurk/Cargo.lock
+COPY testbox/family/flare-backend.lock /opt/flare-backend/Cargo.lock
+COPY testbox/family/flare-box /opt/flare-backend/flare-box
+RUN sed -i 's/^members = \[\(.*\)\]$/members = [\1, "flare-box"]/' /opt/flare-backend/Cargo.toml \
+    && grep -q '"flare-box"' /opt/flare-backend/Cargo.toml
+
+# The target caches are the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/opt/gurk/target,sharing=locked \
+    cd /opt/gurk \
+    && cargo build --release --locked \
+    && cp target/release/gurk /usr/local/bin/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/opt/flare-backend/target,sharing=locked \
+    cd /opt/flare-backend \
+    && cargo build --release --locked -p flare-box \
+    && cp target/release/flare-box /usr/local/bin/
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# libssl for libcrypto (the stores); tmux to run gurk's terminal in, where the checks type to it
+# and read its screen.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3t64 tmux \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /usr/local/bin/gurk /usr/local/bin/flare-box /usr/local/bin/

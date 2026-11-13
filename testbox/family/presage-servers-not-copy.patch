@@ -1,0 +1,39 @@
+diff --git a/presage/src/manager/linking.rs b/presage/src/manager/linking.rs
+index 27ea4c30c..2284cd68d 100644
+--- a/presage/src/manager/linking.rs
++++ b/presage/src/manager/linking.rs
+@@ -77,7 +77,7 @@ impl<S: Store> Manager<S, Linking> {
+         let mut signaling_key = [0u8; 52];
+         rng.fill_bytes(&mut signaling_key);
+ 
+-        let push_service = PushService::new(signal_servers, None, crate::USER_AGENT);
++        let push_service = PushService::new(signal_servers.clone(), None, crate::USER_AGENT);
+ 
+         let (tx, mut rx) = mpsc::channel(1);
+ 
+diff --git a/presage/src/manager/registered.rs b/presage/src/manager/registered.rs
+index 52fa53044..d9c59a845 100644
+--- a/presage/src/manager/registered.rs
++++ b/presage/src/manager/registered.rs
+@@ -104,7 +104,7 @@ impl Registered {
+     }
+ 
+     fn servers(&self) -> SignalServers {
+-        self.data.signal_servers
++        self.data.signal_servers.clone()
+     }
+ 
+     fn service_configuration(&self) -> ServiceConfiguration {
+diff --git a/presage/src/manager/registration.rs b/presage/src/manager/registration.rs
+index 684d26877..1f1645870 100644
+--- a/presage/src/manager/registration.rs
++++ b/presage/src/manager/registration.rs
+@@ -92,7 +92,7 @@ impl<S: Store> Manager<S, Registration> {
+         let password = Alphanumeric.sample_string(&mut rng, 24);
+ 
+         let mut unidentified_push_service =
+-            PushService::new(signal_servers, None, crate::USER_AGENT);
++            PushService::new(signal_servers.clone(), None, crate::USER_AGENT);
+         let mut unidentified_websocket = unidentified_push_service
+             .ws("/v1/websocket/", "/v1/keepalive", &[], None)
+             .await?;

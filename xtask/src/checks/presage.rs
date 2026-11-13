@@ -22,6 +22,8 @@ pub(super) enum Account {
     Crowd(u8),
     /// The account the `n`th b33p of a mesh links to (`tour`).
     Mesh(u8),
+    /// The account a client of the presage family links to as a secondary device (gurk-rs).
+    Family(u8),
 }
 
 impl Account {
@@ -33,6 +35,7 @@ impl Account {
             Self::Member => "/presage/member.db".into(),
             Self::Crowd(n) => format!("/presage/crowd-{n}.db").into(),
             Self::Mesh(n) => format!("/presage/mesh-{n}.db").into(),
+            Self::Family(n) => format!("/presage/family-host-{n}.db").into(),
         }
     }
 
@@ -44,6 +47,7 @@ impl Account {
             Self::Member => "+15555550104".into(),
             Self::Crowd(n) => format!("+1555555{:04}", 300 + u16::from(n)).into(),
             Self::Mesh(n) => format!("+1555555{:04}", 200 + u16::from(n)).into(),
+            Self::Family(n) => format!("+1555555{:04}", 400 + u16::from(n)).into(),
         }
     }
 
@@ -56,6 +60,7 @@ impl Account {
             Self::Member => "Member".into(),
             Self::Crowd(n) => format!("Crowd {n}").into(),
             Self::Mesh(n) => format!("Mesh {n}").into(),
+            Self::Family(n) => format!("Family {n}").into(),
         }
     }
 }
