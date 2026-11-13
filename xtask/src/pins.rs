@@ -92,4 +92,31 @@ mod tests {
         );
         assert_eq!(sticker_tool, b33p, "testbox/stickers/Cargo.toml");
     }
+
+    /// signal-cli's image builds the libsignal that signal-cli takes (its `libsignal-version`,
+    /// which the Containerfile checks at the revision it fetches), patched and published under a
+    /// version of its own: the Containerfile, the patch and the jar the image names agree on it.
+    #[test]
+    fn signal_clis_image_builds_the_libsignal_it_takes() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let containerfile = read(repo, "testbox/signal-cli/Containerfile");
+        let patch = read(repo, "testbox/patches/libsignal-cli-local.patch");
+        let version = containerfile
+            .split_once("= 0.106.1")
+            .map(|_| "0.106.1")
+            .expect("the Containerfile checks signal-cli's libsignal-version");
+        let testbox = format!("{version}-testbox");
+        assert!(
+            patch.contains(&format!("+    version = \"{testbox}\"")),
+            "libsignal-cli-local.patch publishes libsignal {testbox}"
+        );
+        assert_eq!(
+            containerfile
+                .matches(&format!("libsignal-client-{testbox}.jar"))
+                .count(),
+            // The build's copy out, the Gradle step's and the build stage's: all the same jar.
+            containerfile.matches("libsignal-client-").count(),
+            "every jar the Containerfile names is libsignal-client-{testbox}.jar"
+        );
+    }
 }

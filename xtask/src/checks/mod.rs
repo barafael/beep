@@ -24,6 +24,7 @@ mod presage;
 pub(crate) mod record;
 mod rng;
 mod setup;
+mod signal_cli;
 mod storage;
 mod stress;
 mod tour;
@@ -34,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
-use crate::phase::{AndroidPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
+use crate::phase::{AndroidPhase, InteropPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
 use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
@@ -163,8 +164,21 @@ pub(crate) fn run(
     let desktop = !linked.is_empty()
         || !android.is_empty()
         || phases.contains(&Phase::Stress(StressPhase::Concurrency));
-    let built: &[Client] = if desktop { &linked_clients } else { &[] };
-    containers.build_others(built, b33p.optimized)?;
+    // Only when named, as the stress phases.
+    let interop: Vec<InteropPhase> = InteropPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phases.contains(&Phase::Interop(phase)))
+        .collect();
+    let mut built: Vec<Client> = if desktop {
+        linked_clients.to_vec()
+    } else {
+        Vec::new()
+    };
+    if interop.contains(&InteropPhase::SignalCli) {
+        built.push(Client::SignalCli);
+    }
+    containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
         containers.fresh(clients, b33ps)?;
         Ok(b33p.limit_memory(containers, b33ps)?)
@@ -274,6 +288,23 @@ pub(crate) fn run(
                 containers,
                 &sockets,
                 &files,
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
+        },
+    );
+    on_fixture(
+        &mut tally,
+        "interop",
+        &interop,
+        || play(&[Client::SignalCli], b33ps),
+        |checks| setup::interop_box(checks, containers, &sockets),
+        |phase, checks, fixture| match phase {
+            InteropPhase::SignalCli => signal_cli::signal_cli(
+                checks,
+                fixture,
+                containers,
+                &files,
+                // Any picture will do; this one is in the repository already.
                 &repo.join("docs/screenshots/01-chats.png"),
             ),
         },

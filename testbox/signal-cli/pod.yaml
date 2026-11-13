@@ -1,0 +1,14 @@
+# signal-cli, which `cargo testbox` runs in here (`podman exec`), registering accounts of its own
+# and linking to others (`cargo testbox up --signal-cli`, or the `signal-cli` phase). A container
+# for testbox/pod.yaml's list, in its @CLIENTS@ line: in the box's pod, as libsignal-net's local
+# override reaches the server on localhost only. Idle (`sleep infinity`) until a check runs it.
+      {
+        name: "signal-cli",
+        image: "localhost/@POD@-signal-cli",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "signal-cli", mountPath: "/signal-cli" },
+          { name: "files", mountPath: "/files", readOnly: true },
+        ],
+      },

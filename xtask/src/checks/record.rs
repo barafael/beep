@@ -299,6 +299,17 @@ impl Record {
                 &logs.unwrap_or_else(|error| Report(&error).to_string()),
             );
         }
+        if pod.running(Service::SignalCli) {
+            let logs = pod.exec(
+                Service::SignalCli,
+                &["sh", "-c", super::signal_cli::LOG_FILES],
+                "",
+            );
+            self.write(
+                "signal-cli-app.log",
+                &logs.unwrap_or_else(|error| Report(&error).to_string()),
+            );
+        }
         if pod.running(Service::Android) {
             let logcat = pod.exec(Service::Android, &["cat", LOGCAT], "");
             self.write(

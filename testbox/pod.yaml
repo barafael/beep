@@ -231,6 +231,8 @@
       { name: "presage", persistentVolumeClaim: { claimName: "@POD@-presage" } },
       # @B33P_VOLUMES@
       { name: "desktop-home", persistentVolumeClaim: { claimName: "@POD@-desktop-home" } },
+      # signal-cli's accounts (testbox/signal-cli/pod.yaml), when the box has it.
+      { name: "signal-cli", persistentVolumeClaim: { claimName: "@POD@-signal-cli" } },
       { name: "tus-data", persistentVolumeClaim: { claimName: "@POD@-tus-data" } },
       { name: "cdn0-data", persistentVolumeClaim: { claimName: "@POD@-cdn0-data" } },
       # The harness's and the drivers' sockets, on the host.
