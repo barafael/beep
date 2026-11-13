@@ -297,7 +297,11 @@ type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
-    let outcome = match testbox_tools::argument("provision [keys]") {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("account") {
+        return testbox_tools::exit("provision account", account::run(&arguments[1..]).await);
+    }
+    let outcome = match testbox_tools::argument("provision [keys] | account <aci> [protect]") {
         Ok(None) => run(false).await,
         Ok(Some(argument)) if argument == "keys" => run(true).await,
         Ok(Some(argument)) => Err(ArgumentError { argument }.into()),
@@ -1286,4 +1290,203 @@ async fn run_server(http: &reqwest::Client) -> Result<(), Failure> {
     write_remote_config(http).await?;
     eprintln!("{}", testbox_tools::SERVER_READY);
     Ok(supervise(&mut server, "Signal-Server").await?)
+}
+
+/// `provision account <aci>` prints the two account-wide settings a linked device must leave
+/// alone, as the server stores them: the registration lock and being found by number.
+/// `provision account <aci> protect` turns the lock on and hides the number, as the primary
+/// would, and drops the server's cached copy of the account so its next read sees that. No
+/// client of the box can set them: presage-cli's primary clears both whenever it connects, and
+/// Signal-Android's registration lock needs the PIN service the box doesn't run.
+mod account {
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use serde::{Deserialize, Serialize};
+    use serde_json::value::RawValue;
+
+    use super::{REDIS_PATIENCE, StoreError, dynamodb};
+
+    /// Signal-Server's test.yml (`dynamoDbTables.accounts.tableName`).
+    const ACCOUNTS_TABLE: &str = "accounts_test";
+    /// The cluster's nodes (pod.yaml `REDIS_NODES`); the cached account is on one of them.
+    const REDIS_NODES: [&str; 3] = ["redis-0:7000", "redis-1:7001", "redis-2:7002"];
+    /// A registration lock as the server keeps one: a salted hash (`SaltedTokenHash`), here of
+    /// nothing anyone needs to know.
+    const LOCK: &str = "testbox-registration-lock-hash";
+    const LOCK_SALT: &str = "testbox-registration-lock-salt";
+
+    #[derive(Debug, thiserror::Error)]
+    pub(super) enum AccountError {
+        #[error("usage: provision account <aci> [protect]")]
+        Usage,
+        #[error("{aci:?} isn't an ACI")]
+        Aci { aci: String },
+        #[error("no account {aci}")]
+        Missing { aci: String },
+        #[error("the account's data")]
+        Data(#[source] serde_json::Error),
+        #[error(transparent)]
+        Store(#[from] StoreError),
+        #[error("dropping the cached account on {node}")]
+        Redis {
+            node: &'static str,
+            #[source]
+            source: std::io::Error,
+        },
+    }
+
+    /// What `provision account <aci>` prints (Signal-Server `Account`'s JSON names).
+    #[derive(Serialize, Deserialize)]
+    struct Settings {
+        #[serde(rename = "registrationLock", default)]
+        registration_lock: Option<String>,
+        #[serde(rename = "inCds", default = "found")]
+        found_by_number: bool,
+    }
+
+    /// The server's default for `inCds`.
+    fn found() -> bool {
+        true
+    }
+
+    #[derive(Serialize, Clone)]
+    struct Key {
+        #[serde(rename = "U")]
+        aci: Binary,
+    }
+
+    #[derive(Serialize, Deserialize, Clone)]
+    struct Binary {
+        #[serde(rename = "B")]
+        base64: String,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct GetItem {
+        table_name: &'static str,
+        key: Key,
+        consistent_read: bool,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Got {
+        item: Option<Item>,
+    }
+
+    #[derive(Deserialize)]
+    struct Item {
+        #[serde(rename = "D")]
+        data: Binary,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct UpdateItem {
+        table_name: &'static str,
+        key: Key,
+        update_expression: &'static str,
+        expression_attribute_values: Values,
+    }
+
+    #[derive(Serialize)]
+    struct Values {
+        #[serde(rename = ":d")]
+        data: Binary,
+    }
+
+    pub(super) async fn run(arguments: &[String]) -> Result<(), AccountError> {
+        let (aci, protect) = match arguments {
+            [aci] => (aci, false),
+            [aci, protect] if protect == "protect" => (aci, true),
+            _ => return Err(AccountError::Usage),
+        };
+        let key = Key {
+            aci: Binary {
+                base64: BASE64.encode(parse_aci(aci)?),
+            },
+        };
+        let http = reqwest::Client::new();
+        let got: Got = dynamodb(
+            &http,
+            "GetItem",
+            &GetItem {
+                table_name: ACCOUNTS_TABLE,
+                key: key.clone(),
+                consistent_read: true,
+            },
+        )
+        .await?;
+        let data = got
+            .item
+            .and_then(|item| BASE64.decode(item.data.base64).ok())
+            .ok_or_else(|| AccountError::Missing { aci: aci.clone() })?;
+        if !protect {
+            let settings: Settings = serde_json::from_slice(&data).map_err(AccountError::Data)?;
+            let printed = serde_json::to_string(&settings).map_err(AccountError::Data)?;
+            println!("{printed}");
+            return Ok(());
+        }
+        // Every other field of the account goes back as it was.
+        let mut account: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(&data).map_err(AccountError::Data)?;
+        for (name, value) in [
+            ("registrationLock", format!("{LOCK:?}")),
+            ("registrationLockSalt", format!("{LOCK_SALT:?}")),
+            ("inCds", "false".to_owned()),
+        ] {
+            account.insert(
+                name.to_owned(),
+                RawValue::from_string(value).map_err(AccountError::Data)?,
+            );
+        }
+        let data = serde_json::to_vec(&account).map_err(AccountError::Data)?;
+        dynamodb::<serde::de::IgnoredAny>(
+            &http,
+            "UpdateItem",
+            &UpdateItem {
+                table_name: ACCOUNTS_TABLE,
+                key,
+                update_expression: "SET D = :d",
+                expression_attribute_values: Values {
+                    data: Binary {
+                        base64: BASE64.encode(data),
+                    },
+                },
+            },
+        )
+        .await?;
+        // Signal-Server reads an account from its cache first (AccountsManager
+        // `getAccountEntityKey`); a node that doesn't hold the key answers MOVED, which is fine.
+        let cached = format!("Account3::{}", aci.to_lowercase());
+        for node in REDIS_NODES {
+            drop_cached(node, &cached).map_err(|source| AccountError::Redis { node, source })?;
+        }
+        Ok(())
+    }
+
+    fn parse_aci(aci: &str) -> Result<[u8; 16], AccountError> {
+        let hex: String = aci.chars().filter(|c| *c != '-').collect();
+        hex::decode(&hex)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| AccountError::Aci {
+                aci: aci.to_owned(),
+            })
+    }
+
+    fn drop_cached(node: &str, key: &str) -> std::io::Result<()> {
+        let mut stream = TcpStream::connect(node)?;
+        stream.set_read_timeout(Some(REDIS_PATIENCE))?;
+        stream.write_all(format!("DEL {key}\r\n").as_bytes())?;
+        let mut answer = [0u8; 256];
+        // The answer (`:1`, `:0` or a MOVED error) only says the command arrived.
+        let _answered: usize = stream.read(&mut answer)?;
+        Ok(())
+    }
 }

@@ -16,12 +16,49 @@ use crate::process;
 /// one retry on a new connection.
 const SILENT_SERVER: Duration = Duration::from_secs(5 * 60);
 
+/// How long the account is watched after b33p has connected and caught up: its account
+/// attributes went out, if at all, right as it connected (presage's receive task).
+const ACCOUNT_WATCH: Duration = Duration::from_secs(15);
+
 /// What the core checks find b33p showing that it shouldn't.
 #[derive(Debug, thiserror::Error)]
 enum CoreError {
     /// A send that failed shows in b33p's banner as the library's error, not in words.
     #[error("the banner reads {banner:?}, the library's error")]
     BannerUnworded { banner: String },
+    /// A linked device changed what only the primary sets for the whole account.
+    #[error(
+        "after b33p connected, the account reads {settings}: the registration lock or the \
+         hidden number was undone"
+    )]
+    AccountReset { settings: String },
+    #[error("the server's account record: {text:?}")]
+    AccountUnread {
+        text: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+/// The account-wide settings `provision account` prints (testbox/tools).
+#[derive(serde::Deserialize)]
+struct AccountSettings {
+    #[serde(rename = "registrationLock")]
+    registration_lock: Option<String>,
+    #[serde(rename = "inCds")]
+    found_by_number: bool,
+}
+
+/// The primary's account as the server stores it.
+fn account_settings(containers: &Pod, aci: &str) -> Result<(AccountSettings, String), Failure> {
+    let text = containers.exec(Service::Server, &["provision", "account", aci], "")?;
+    let settings = serde_json::from_str(text.trim()).map_err(|source| {
+        CoreError::AccountUnread {
+            text: text.clone(),
+            source,
+        }
+    })?;
+    Ok((settings, text.trim().to_owned()))
 }
 
 /// Text, reconnecting, and a send to a server that doesn't answer, between b33p and the
@@ -70,6 +107,42 @@ pub(super) fn core(
             *b33p = started_b33p(containers, &sockets.b33p, since)?;
             chat_previewing(b33p, text)?;
             Ok(select(b33p, conversation)?)
+        },
+    );
+
+    // A linked device sends no account attributes: they set the account's registration lock
+    // and whether it is found by number for every device, and Signal-Desktop sends them only as
+    // the primary (ts/util/assembleAccountAttributes.preload.ts). presage sent them on every
+    // connect, which turned the lock off and the number findable again.
+    checks.record(
+        "b33p leaves the account's registration lock and hidden number alone",
+        || {
+            containers.exec(
+                Service::Server,
+                &["provision", "account", primary_aci, "protect"],
+                "",
+            )?;
+            let since = process::now()?;
+            containers.kill(B33P)?;
+            containers.start(B33P)?;
+            *b33p = started_b33p(containers, &sockets.b33p, since)?;
+            b33p.wait_for("b33p caught up", PATIENCE, |snapshot| {
+                snapshot.synced.then_some(())
+            })?;
+            // Before anything can fail: the next checks write in this chat.
+            select(b33p, conversation)?;
+            let watched = std::time::Instant::now();
+            loop {
+                let (settings, text) = account_settings(containers, primary_aci)?;
+                if settings.registration_lock.is_none() || settings.found_by_number {
+                    return Err(CoreError::AccountReset { settings: text }.into());
+                }
+                if watched.elapsed() > ACCOUNT_WATCH {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            Ok(())
         },
     );
 
