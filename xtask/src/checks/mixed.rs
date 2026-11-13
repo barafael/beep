@@ -120,11 +120,24 @@ fn together(
                 .join()
                 .unwrap_or_else(|_| Err(format!("the thread of {label} panicked").into()));
             if let Err(error) = outcome {
-                first.get_or_insert_with(|| format!("{label}: {error}"));
+                first.get_or_insert_with(|| format!("{label}: {}", chain(error.as_ref())));
             }
         }
         first.map_or(Ok(()), |error| Err(error.into()))
     })
+}
+
+/// An error and what caused it, one after the other: a step's own text says which step, its
+/// source says what the container printed.
+fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 /// The texts `sender` sends in `round`, to `to`: told apart by sender, recipient and round, in

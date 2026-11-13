@@ -55,6 +55,11 @@ struct Shared {
     /// The times of the texts this account sent, as the manager told the client of them.
     own: RefCell<Vec<i64>>,
     failed: Cell<bool>,
+    /// The exit status the command ended with. The process ends only when the runtime has: an
+    /// `exit` from inside it runs the C library's exit handlers beside the threads still using
+    /// the heap, and one run in sixty aborted there ("double free or corruption") after it had
+    /// done its work.
+    status: Cell<i32>,
 }
 
 #[derive(Clone)]
@@ -114,8 +119,8 @@ impl SignalClient<DirectPresageWrapperStore> for Box_ {
         // Not awaited here: the manager takes requests only once this returns.
         tokio::task::spawn_local(async move {
             let status = this.run(handle.clone()).await;
+            this.0.status.set(status);
             handle.shutdown_receive().await;
-            std::process::exit(status);
         });
         std::future::ready(())
     }
@@ -403,17 +408,20 @@ fn main() {
             echoed: Notify::new(),
             own: RefCell::new(Vec::new()),
             failed: Cell::new(false),
+            status: Cell::new(0),
         }));
-        let manager = Manager::new(store, client);
+        let manager = Manager::new(store, client.clone());
         let local = tokio::task::LocalSet::new();
         match local.run_until(manager.receive()).await {
-            Ok(()) => 0,
+            Ok(()) => client.0.status.get(),
             Err(error) => {
                 eprintln!("ERROR: {error}");
                 1
             }
         }
     });
+    // The runtime's threads end before the process does.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(10));
     std::process::exit(status);
 }
 
