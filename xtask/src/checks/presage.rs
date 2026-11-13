@@ -168,13 +168,22 @@ impl<'pod> Presage<'pod> {
             arguments,
         ]
         .concat();
-        self.containers
+        let output = self
+            .containers
             .exec(Service::Presage, &argv, stdin)
             .map_err(|source| PresageError::Command {
                 account: self.account,
                 command,
                 source,
-            })
+            })?;
+        // What a send received while it sent is printed to it (see `heard`).
+        if matches!(command, "send" | "send-to-group") {
+            self.heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&output);
+        }
+        Ok(output)
     }
 
     /// `output`, after noting each message it says presage-cli lost (its
