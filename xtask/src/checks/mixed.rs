@@ -7,7 +7,8 @@
 //! `TESTBOX_MIXED_BURST` is how many messages each sender sends to each recipient in a burst
 //! (twenty by default), `TESTBOX_MIXED_ROUNDS` how many times the bursts repeat (two), and
 //! `TESTBOX_MIXED_ONLY` (`presage-cli`, `signal-cli`, `signalmeow`, `flare`, comma-separated) which
-//! of them play at all.
+//! of them play at all. `TESTBOX_MIXED_WARM` (1 by default; 0 for none) lets each pair of clients
+//! write to one another once, in turn, before the bursts.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -333,6 +334,32 @@ pub(super) fn mixed(
             || Ok(accept_request(&mut b33p, &chat)?),
         )?;
         chats.push(chat);
+    }
+
+    // Sessions between the clients before the bursts, each pair in turn: the clients' first
+    // contact is a moment of its own, and two sides making it at once is where signalmeow and
+    // signal-cli part ways (docs/testbox-clients-run-2026-11-13.md). `TESTBOX_MIXED_WARM=0` leaves
+    // it to the bursts.
+    if setting("TESTBOX_MIXED_WARM", 1)? != 0 {
+        checks.require("each pair of clients has written to one another once", || {
+            for (at, first) in peers.iter().enumerate() {
+                for second in &peers[at + 1..] {
+                    for (from, to) in [(first, second), (second, first)] {
+                        let text = format!("{MARK}: warm-up, {} to {}", from.label, to.label);
+                        from.send_many(&to.aci, std::slice::from_ref(&text))?;
+                        let deadline = Instant::now() + PATIENCE;
+                        while !to.texts_seen().contains(&text) {
+                            if Instant::now() > deadline {
+                                return Err(format!("{} never received {text:?}", to.label).into());
+                            }
+                            to.pull()?;
+                            thread::sleep(Duration::from_millis(500));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })?;
     }
 
     // A group of b33p's, of all of them: what each client calls it differs (a master key, a base64
