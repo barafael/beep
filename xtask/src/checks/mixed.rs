@@ -40,6 +40,12 @@ struct Peer<'pod> {
     label: &'static str,
     aci: String,
     kind: Kind<'pod>,
+    /// What the client printed of the texts it received, as it received them (presage-cli's and
+    /// Flare's `sync` print each message before the store keeps it). Their stores key a message by
+    /// thread and time alone, so two messages of one conversation sent in the same millisecond, one
+    /// by each side, take one place and the store holds one: the message is then received, and
+    /// not held.
+    printed: std::sync::Mutex<Vec<String>>,
 }
 
 impl Peer<'_> {
@@ -61,12 +67,45 @@ impl Peer<'_> {
     /// Receives what the server has queued for it.
     fn pull(&self) -> Result<(), Failure> {
         match &self.kind {
-            Kind::Presage(client) => client.sync().map(drop)?,
-            Kind::SignalCli(client) => client.sync().map(drop)?,
-            Kind::Signalmeow(client) => client.sync().map(drop)?,
-            Kind::Flare(client) => client.sync().map(drop)?,
+            Kind::Presage(client) => self.note_printed(&client.sync()?),
+            Kind::SignalCli(client) => drop(client.sync()?),
+            Kind::Signalmeow(client) => drop(client.sync()?),
+            Kind::Flare(client) => self.note_printed(&client.sync()?),
         }
         Ok(())
+    }
+
+    fn note_printed(&self, output: &str) {
+        self.printed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(texts_in(output));
+    }
+
+    /// What `held` is held against: `expected` without the texts that it lacks only because the
+    /// client's store keeps one message of two sent at the same millisecond (see
+    /// [`Self::printed`]): a text the client printed exactly once, and the store doesn't hold. A
+    /// text it never printed stays: that one was lost. Then the texts left out.
+    fn owed(&self, held: &[String], expected: &[String]) -> (Vec<String>, Vec<String>) {
+        let printed = self
+            .printed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        expected.iter().cloned().partition(|text| {
+            held.contains(text)
+                || !matches!(self.kind, Kind::Presage(_) | Kind::Flare(_))
+                || printed.iter().filter(|seen| *seen == text).count() != 1
+        })
+    }
+
+    /// Tells of the texts [`Self::owed`] left out.
+    fn say_collided(&self, collided: &[String]) {
+        for text in collided {
+            println!(
+                "  {}'s store lacks {text:?}, which it received: one place for two messages of one millisecond",
+                self.label
+            );
+        }
     }
 
     /// The texts of the phase the client holds from `from`, in the order it holds them.
@@ -173,21 +212,25 @@ pub(super) fn mixed(
             label: "presage-cli",
             aci: peer_aci,
             kind: Kind::Presage(peer),
+            printed: Default::default(),
         },
         Peer {
             label: "signal-cli",
             aci: cli_aci,
             kind: Kind::SignalCli(cli),
+            printed: Default::default(),
         },
         Peer {
             label: "signalmeow",
             aci: meow_aci,
             kind: Kind::Signalmeow(meow),
+            printed: Default::default(),
         },
         Peer {
             label: "flare",
             aci: flare_aci,
             kind: Kind::Flare(flare),
+            printed: Default::default(),
         },
     ];
     // `TESTBOX_MIXED_ONLY=flare,signal-cli`: only those play, to find which pairing a failure needs.
@@ -315,8 +358,12 @@ pub(super) fn mixed(
                             .into_iter()
                             .filter(|text| text.starts_with(&format!("{MARK}: r{round} b33p to ")))
                             .collect();
-                        if held.len() >= expected.len() || Instant::now() > deadline {
-                            return in_order_once(&held, &expected).map_err(Into::into);
+                        let (owed, collided) = peer.owed(&held, &expected);
+                        if held.len() >= owed.len() || Instant::now() > deadline {
+                            peer.say_collided(&collided);
+                            let held: Vec<String> =
+                                held.into_iter().filter(|text| owed.contains(text)).collect();
+                            return in_order_once(&held, &owed).map_err(Into::into);
                         }
                         thread::sleep(Duration::from_secs(1));
                     }
@@ -356,8 +403,10 @@ pub(super) fn mixed(
                                     ))
                                 })
                                 .collect();
-                            if held.len() >= expected.len() || Instant::now() > deadline {
-                                in_order_once(&held, &expected).map_err(|error| -> Failure {
+                            let (owed, collided) = peer.owed(&held, &expected);
+                            if held.len() >= owed.len() || Instant::now() > deadline {
+                                peer.say_collided(&collided);
+                                in_order_once(&held, &owed).map_err(|error| -> Failure {
                                     format!("{} from {}: {error}", peer.label, sender.label).into()
                                 })?;
                                 break;
