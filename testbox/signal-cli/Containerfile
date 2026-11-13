@@ -68,6 +68,10 @@ RUN --mount=type=cache,target=/root/.gradle \
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 COPY --from=jre /opt/java/openjdk /opt/java/openjdk
 ENV JAVA_HOME=/opt/java/openjdk PATH=/opt/java/openjdk/bin:/opt/signal-cli/bin:$PATH
+# The JVM decodes its arguments in the locale's charset (sun.jnu.encoding): under the image's
+# POSIX locale that is ASCII, and an emoji given to `sendReaction -e`, or any text with a
+# non-ASCII character, reached the server as replacement characters. UTF-8, as a user's is.
+ENV LC_ALL=C.utf8
 COPY --from=build /opt/signal-cli-src/build/install/signal-cli /opt/signal-cli
 # The box's configuration for the patched signal-cli (testbox/patches/signal-cli-local.patch).
 ENV SIGNAL_CLI_TESTBOX_CONFIG=/keys/desktop-config.json
