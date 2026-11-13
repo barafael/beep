@@ -80,6 +80,11 @@ pub(crate) enum InteropPhase {
     /// account and with b33p, files, and a group. On a box of its own, set up by the phase itself.
     #[strum(serialize = "signalmeow")]
     Signalmeow,
+    /// Every implementation at once (xtask/src/checks/mixed.rs): bursts that overlap between b33p,
+    /// presage-cli, signal-cli and signalmeow, each side held to once and in order. On a box of
+    /// its own, set up by the phase itself.
+    #[strum(serialize = "mixed")]
+    Mixed,
 }
 
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,

@@ -19,6 +19,7 @@ mod errors;
 mod groups;
 mod large_group;
 mod lost;
+mod mixed;
 mod network;
 mod presage;
 pub(crate) mod record;
@@ -181,8 +182,13 @@ pub(crate) fn run(
     if interop.contains(&InteropPhase::SignalCli) {
         built.push(Client::SignalCli);
     }
-    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow)) {
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow))
+        || phases.contains(&Phase::Interop(InteropPhase::Mixed))
+    {
         built.push(Client::Signalmeow);
+    }
+    if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
+        built.push(Client::SignalCli);
     }
     containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
@@ -289,6 +295,14 @@ pub(crate) fn run(
             |checks| signalmeow::signalmeow(checks, containers, &sockets, &files),
         );
     }
+    if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
+        on_own_box(
+            &mut tally,
+            InteropPhase::Mixed.into(),
+            || play(&[Client::SignalCli, Client::Signalmeow], b33ps),
+            |checks| mixed::mixed(checks, containers, &sockets),
+        );
+    }
     on_fixture(
         &mut tally,
         "mesh",
@@ -313,8 +327,8 @@ pub(crate) fn run(
         || play(&[Client::SignalCli], b33ps),
         |checks| setup::interop_box(checks, containers, &sockets),
         |phase, checks, fixture| match phase {
-            InteropPhase::Signalmeow => {
-                Err("signalmeow runs on a box of its own, not the interop box".into())
+            InteropPhase::Signalmeow | InteropPhase::Mixed => {
+                Err("this phase runs on a box of its own, not the interop box".into())
             }
             InteropPhase::SignalCli => signal_cli::signal_cli(
                 checks,
