@@ -20,10 +20,12 @@ use super::presage::{Account, Presage};
 use super::setup::{PlainBox, plain_box};
 use super::signal_cli::{Account as CliAccount, SignalCli};
 use super::signalmeow::Signalmeow;
-use super::stress::{all_texts, in_order_once, kill_and_start, numbered, settled};
+use super::stress::{
+    Sample, all_texts, growing, in_order_once, kill_and_start, numbered, sample, settled,
+};
 use super::{Checks, Failure, PATIENCE, env_number};
 use crate::Sockets;
-use crate::pod::Pod;
+use crate::pod::{B33P, Pod};
 
 /// What every text of the phase starts with: the listings the clients keep are searched for it.
 const MARK: &str = "testbox mixed";
@@ -267,6 +269,8 @@ pub(super) fn mixed(
         chats.push(chat);
     }
 
+    // b33p's memory, open files and answering time after each round, for the check at the end.
+    let mut samples: Vec<Sample> = Vec::new();
     for round in 1..=rounds {
         let tag = format!("round {round} of {rounds}");
 
@@ -427,6 +431,20 @@ pub(super) fn mixed(
                 Ok(())
             },
         );
+
+        match sample(containers, B33P, &mut b33p) {
+            Ok(taken) => {
+                println!("  b33p after round {round}: {taken}");
+                samples.push(taken);
+            }
+            Err(error) => println!("  b33p after round {round}: not sampled: {error}"),
+        }
+    }
+
+    if samples.len() >= 6 {
+        checks.record("b33p's memory, files and answering time don't keep growing", || {
+            Ok(growing(&samples)?)
+        });
     }
 
     checks.record(
