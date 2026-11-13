@@ -565,6 +565,21 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
     }
 }
 
+/// Takes `key`, from a message our phone sent, as our profile key.
+async fn take_own_profile_key(manager: &Mgr, key: &[u8]) {
+    let Ok(key) = <[u8; 32]>::try_from(key) else {
+        return;
+    };
+    let key = presage::libsignal_service::prelude::ProfileKey::create(key);
+    match manager.clone().set_profile_key(key).await {
+        Ok(true) => info!("took our new profile key from a message the phone sent"),
+        Ok(false) => {}
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to take our new profile key")
+        }
+    }
+}
+
 /// Returns `false` once the UI has gone away.
 async fn handle_content(
     manager: &Mgr,
@@ -600,6 +615,20 @@ async fn handle_content(
     {
         forget_stored(manager, content).await;
         return true;
+    }
+    // What we sent from the phone carries our profile key as it is now: after the phone made
+    // a new one, b33p takes it, as Signal-Desktop does when linked.
+    if let ContentBody::SynchronizeMessage(SyncMessage {
+        content:
+            Some(SyncContent::Sent(Sent {
+                message: Some(sent),
+                ..
+            })),
+        ..
+    }) = &content.body
+        && let Some(key) = sent.profile_key.as_deref()
+    {
+        take_own_profile_key(manager, key).await;
     }
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
