@@ -15,6 +15,8 @@ mod client;
 #[cfg(feature = "test-servers")]
 mod content_log;
 mod error;
+#[cfg(feature = "signal")]
+mod expiry;
 pub mod format;
 #[cfg(feature = "signal")]
 mod import;

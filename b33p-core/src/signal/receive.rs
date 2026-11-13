@@ -65,6 +65,20 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
     }
 }
 
+/// Whether Signal calls this version too old (499, on a request or on connecting), as it does
+/// a client it no longer works with: trying again can't help, a new version can.
+fn too_old(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
+    use presage::libsignal_service::push_service::ServiceError;
+    use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+    match error {
+        PresageError::ServiceError(ServiceError::DeprecatedVersion) => true,
+        PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+            HandshakeError::UnexpectedStatusCode(status),
+        ))) => status.as_u16() == 499,
+        _ => false,
+    }
+}
+
 /// What was done to mend sessions, kept for as long as we are linked (across restarts of
 /// receiving), so that a peer can't have it done over and over: when we last reset the
 /// session with each sender (see `SESSION_RESET_INTERVAL`), and which messages were sent
@@ -89,6 +103,8 @@ pub(super) enum Incoming {
     },
     /// Signal no longer accepts this device; receiving has stopped.
     Removed,
+    /// Signal no longer works with this version of b33p; receiving has stopped.
+    Expired,
 }
 
 /// Keeps the connection to Signal open for the rest of the session, and hands on what comes
@@ -159,6 +175,11 @@ impl Receiver {
                         // Cancelled, as `done` is dropped rather than sent on, once it is handled.
                         handled.await.ok();
                     }
+                }
+                Err(error) if too_old(&error) => {
+                    warn!(error = %crate::scrub::chain(&error), "Signal calls this version too old");
+                    incoming.send(Incoming::Expired).await.ok();
+                    return;
                 }
                 Err(error) if removed_from_account(&error) => {
                     warn!(error = %crate::scrub::chain(&error), "Signal no longer accepts this device");
@@ -255,7 +276,8 @@ pub(super) async fn handle_incoming(
             handled
         }
         // The session sees to it.
-        Incoming::Removed => true,
+        // The session takes these itself.
+        Incoming::Removed | Incoming::Expired => true,
     }
 }
 
@@ -1470,5 +1492,26 @@ mod tests {
         assert!(!removed_from_account(&PresageError::ServiceError(
             ServiceError::Timeout { attempts: 3 }
         )));
+    }
+
+    /// 499, on connecting or on a request, is Signal calling this version too old; nothing
+    /// else is.
+    #[test]
+    fn only_499_means_this_version_is_too_old() {
+        use presage::libsignal_service::push_service::ServiceError;
+        use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+        let refused = |status: u16| {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+                HandshakeError::UnexpectedStatusCode(status),
+            )))
+        };
+        assert!(too_old(&refused(499)));
+        assert!(!too_old(&refused(403)));
+        assert!(!too_old(&refused(500)));
+        assert!(too_old(&PresageError::ServiceError(
+            ServiceError::DeprecatedVersion
+        )));
+        assert!(!removed_from_account(&refused(499)));
     }
 }

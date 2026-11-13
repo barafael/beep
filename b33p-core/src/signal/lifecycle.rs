@@ -199,6 +199,11 @@ pub(super) enum Notice {
     Removed,
     #[error("Receiving messages failed; trying again.")]
     ReceivingFailed,
+    #[error(
+        "This version of b33p has expired: Signal no longer works with it. Install the newest \
+         version to send and receive again; the messages here can still be read."
+    )]
+    Expired,
     #[error("The linking code couldn't be drawn. Restart b33p to try again.")]
     QrNotDrawn,
     #[error("the task sending messages in order has stopped")]
@@ -211,7 +216,7 @@ impl crate::Classified for Notice {
         match self {
             Self::TransferInterrupted | Self::ReceivingFailed => Unreachable,
             Self::TransferFailed { kind } => *kind,
-            Self::Removed | Self::QrNotDrawn => Refused,
+            Self::Removed | Self::QrNotDrawn | Self::Expired => Refused,
             Self::OrderedSendingStopped => Storage,
         }
     }
