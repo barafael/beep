@@ -49,6 +49,13 @@ pub(super) enum FamilyError {
     Stuck { what: String },
     #[error("gurk logged:\n{lines}")]
     Logged { lines: String },
+    /// A flare-box command that exited with a failure: what it printed.
+    #[error("{what} failed ({status}):\n{output}")]
+    Exited {
+        what: String,
+        status: std::process::ExitStatus,
+        output: String,
+    },
     #[error("{what}")]
     Step {
         what: String,
@@ -103,6 +110,8 @@ pub(super) struct FlareBox<'pod> {
     containers: &'pod Pod,
 }
 
+/// What presage logs (at ERROR) of an envelope it could not open.
+const OPENING_FAILED: &str = "error opening envelope";
 const FLARE_DB: &str = "/presage/family-flare.db";
 const FLARE_PHONE: &str = "+15555550450";
 
@@ -113,12 +122,30 @@ impl<'pod> FlareBox<'pod> {
 
     fn cli(&self, arguments: &[&str]) -> Result<String, FamilyError> {
         let argv = [&["flare-box", FLARE_DB][..], arguments].concat();
-        self.containers
-            .exec(Service::Family, &argv, "")
+        let what = format!("flare-box {}", arguments.first().copied().unwrap_or(""));
+        let output = self
+            .containers
+            .exec_status(Service::Family, &argv)
             .map_err(|source| FamilyError::Step {
-                what: format!("flare-box {}", arguments.first().copied().unwrap_or("")),
+                what: what.clone(),
                 source,
-            })
+            })?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            return Err(FamilyError::Exited {
+                what,
+                status: output.status,
+                output: format!("{stdout}{stderr}"),
+            });
+        }
+        // presage logs a message it can't open and goes on, so the command succeeds: what it
+        // couldn't open is a message lost, which the check every phase ends with reports.
+        for line in stderr.lines().filter(|line| line.contains(OPENING_FAILED)) {
+            self.containers
+                .note_lost(format!("flare-box ({what}): {}", line.trim()));
+        }
+        Ok(stdout)
     }
 
     /// Registers afresh against the box's servers; the account's ACI.
