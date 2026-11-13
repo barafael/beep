@@ -106,6 +106,8 @@ struct DaemonShared {
     answered: std::sync::Condvar,
     /// What the driver said it could not decrypt, for [`Signalmeow::noting_lost`].
     lost: std::sync::Mutex<Vec<String>>,
+    /// The texts it received since they were last taken, a line each as `sync` prints them.
+    received: std::sync::Mutex<Vec<String>>,
     log: std::sync::Mutex<String>,
 }
 
@@ -153,6 +155,16 @@ impl<'pod> Signalmeow<'pod> {
                                 shared.answered.notify_all();
                             }
                         }
+                        Some("message") if value["own"].as_bool() != Some(true) => shared
+                            .received
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!(
+                                "From {} @ {}: {}",
+                                value["from"].as_str().unwrap_or("?"),
+                                value["timestamp"],
+                                value["text"].as_str().unwrap_or("")
+                            )),
                         Some("decryption-error") => shared
                             .lost
                             .lock()
@@ -390,10 +402,17 @@ impl<'pod> Signalmeow<'pod> {
 
     /// Receives what is queued; what it printed.
     pub(super) fn sync(&self) -> Result<String, SignalmeowError> {
-        if self.daemon.is_some() {
-            // Receiving is the `serve` process's, all the time.
+        if let Some(daemon) = &self.daemon {
+            // Receiving is the `serve` process's, all the time: what it received since.
             self.flush_lost();
-            return Ok(String::new());
+            let lines = std::mem::take(
+                &mut *daemon
+                    .shared
+                    .received
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            return Ok(lines.iter().map(|line| format!("{line}\n")).collect());
         }
         self.driver("sync", &[], "")
             .map(|received| self.noting_lost(received))

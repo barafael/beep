@@ -223,7 +223,7 @@ impl<'pod> FlareBox<'pod> {
             })
     }
 
-    fn send_group(&self, group: &str, text: &str) -> Result<(), FamilyError> {
+    pub(super) fn send_group(&self, group: &str, text: &str) -> Result<(), FamilyError> {
         self.cli(&["send-group", group, text]).map(drop)
     }
 
@@ -233,7 +233,7 @@ impl<'pod> FlareBox<'pod> {
     }
 
     /// The id of the group named `title`, once flare-box knows it.
-    fn group_titled(&self, title: &str, patience: Duration) -> Result<String, FamilyError> {
+    pub(super) fn group_titled(&self, title: &str, patience: Duration) -> Result<String, FamilyError> {
         let started = Instant::now();
         loop {
             let listed = self.groups()?;

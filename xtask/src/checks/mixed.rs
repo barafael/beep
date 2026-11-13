@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{Action, Delivery};
 
-use super::b33p::{accept_request, chat_previewing, select};
+use super::b33p::{accept_request, b33p_shows, chat_previewing, select, type_and_send};
 use super::family::FlareBox;
 use super::presage::{Account, Presage};
 use super::setup::{PlainBox, plain_box};
@@ -70,11 +70,70 @@ impl Peer<'_> {
     fn pull(&self) -> Result<(), Failure> {
         match &self.kind {
             Kind::Presage(client) => self.note_printed(&client.sync()?),
-            Kind::SignalCli(client) => drop(client.sync()?),
-            Kind::Signalmeow(client) => drop(client.sync()?),
+            Kind::SignalCli(client) => {
+                let received = client.sync()?;
+                self.note_printed(
+                    &received
+                        .iter()
+                        .filter_map(|message| message.text.as_deref())
+                        .map(|text| format!("{text}\n"))
+                        .collect::<String>(),
+                );
+            }
+            Kind::Signalmeow(client) => self.note_printed(&client.sync()?),
             Kind::Flare(client) => self.note_printed(&client.sync()?),
         }
         Ok(())
+    }
+
+    /// The texts the client reported receiving, each once, in the order it first did: a
+    /// redelivery (a message acknowledged late, after the process ended) is no second message.
+    fn texts_seen(&self) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for text in self
+            .printed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            if !seen.contains(text) {
+                seen.push(text.clone());
+            }
+        }
+        seen
+    }
+
+    /// What this client calls the group `title` (b33p's, with `master_key`), once it has received
+    /// `hello` in it: presage-cli and signalmeow take the master key, signal-cli its base64 id
+    /// (listed by title), Flare its hex id.
+    fn group_ref(&self, title: &str, master_key: &str, hello: &str) -> Result<String, Failure> {
+        let deadline = Instant::now() + PATIENCE;
+        while !self.texts_seen().iter().any(|text| text == hello) {
+            if Instant::now() > deadline {
+                return Err(format!("{} never received {hello:?}", self.label).into());
+            }
+            self.pull()?;
+            thread::sleep(Duration::from_secs(1));
+        }
+        match &self.kind {
+            Kind::Presage(_) | Kind::Signalmeow(_) => Ok(master_key.to_owned()),
+            Kind::SignalCli(client) => client
+                .groups()?
+                .into_iter()
+                .find(|(_, name)| name == title)
+                .map(|(id, _)| id)
+                .ok_or_else(|| format!("signal-cli lists no group {title:?}").into()),
+            Kind::Flare(client) => Ok(client.group_titled(title, PATIENCE)?),
+        }
+    }
+
+    fn send_group(&self, group: &str, text: &str) -> Result<(), Failure> {
+        match &self.kind {
+            Kind::Presage(client) => Ok(client.send_to_group(group, text)?),
+            Kind::SignalCli(client) => client.send_to_group(group, text).map(drop).map_err(Into::into),
+            Kind::Signalmeow(client) => Ok(client.send_to_group(group, text)?),
+            Kind::Flare(client) => Ok(client.send_group(group, text)?),
+        }
     }
 
     fn note_printed(&self, output: &str) {
@@ -269,6 +328,56 @@ pub(super) fn mixed(
         chats.push(chat);
     }
 
+    // A group of b33p's, of all of them: what each client calls it differs (a master key, a base64
+    // id, a hex id), and each learns it from what b33p writes in it.
+    let title = "testbox mixed group";
+    let group = checks.require("b33p makes a group of all the clients", || {
+        b33p.act(Action::CreateGroup {
+            title: title.to_owned(),
+            members: chats.clone(),
+        })?;
+        Ok(b33p.wait_for("the group in b33p", PATIENCE, |snapshot| {
+            snapshot
+                .conversations
+                .iter()
+                .find(|chat| chat.group && chat.title == title && !chat.request)
+                .map(|chat| chat.id.clone())
+        })?)
+    })?;
+    let master_key = b33p_core::ConversationId(group.clone())
+        .group_key()
+        .ok_or_else(|| format!("{group} isn't a group's id"))?
+        .to_owned();
+    let group_refs: Vec<String> = checks.require("every client learns of the group", || {
+        let hello = format!("{MARK}: hello, group");
+        select(&mut b33p, &group)?;
+        type_and_send(&mut b33p, &hello)?;
+        let learned: Vec<Result<String, Failure>> = thread::scope(|scope| {
+            let running: Vec<_> = peers
+                .iter()
+                .map(|peer| {
+                    let (title, master_key, hello) = (title, &master_key, &hello);
+                    scope.spawn(move || peer.group_ref(title, master_key, hello))
+                })
+                .collect();
+            running
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("a thread panicked".into()))
+                })
+                .collect()
+        });
+        learned.into_iter().collect()
+    })?;
+    let group_of = |peer: &Peer<'_>| -> &str {
+        peers
+            .iter()
+            .position(|other| other.label == peer.label)
+            .map_or("", |at| group_refs[at].as_str())
+    };
+
     // b33p's memory, open files and answering time after each round, for the check at the end.
     let mut samples: Vec<Sample> = Vec::new();
     for round in 1..=rounds {
@@ -428,6 +537,104 @@ pub(super) fn mixed(
                     peers.len(),
                     started.elapsed().as_secs_f64()
                 );
+                Ok(())
+            },
+        );
+
+        checks.record(
+            &format!("{tag}: every client writes to the group at once, each holds every burst once, in order"),
+            || {
+                let started = Instant::now();
+                together(&peers, |peer| {
+                    for text in burst(peer.label, "group", round, count) {
+                        peer.send_group(group_of(peer), &text)?;
+                    }
+                    Ok(())
+                })?;
+                select(&mut b33p, &group)?;
+                for peer in &peers {
+                    let texts = burst(peer.label, "group", round, count);
+                    let last = texts.last().cloned().unwrap_or_default();
+                    b33p_shows(&mut b33p, &format!("{last:?}"), |message| message.text == last)?;
+                }
+                settled(&mut b33p)?;
+                for peer in &peers {
+                    let prefix = format!("{MARK}: r{round} {} to group ", peer.label);
+                    in_order_once(
+                        &all_texts(&mut b33p, &prefix)?,
+                        &burst(peer.label, "group", round, count),
+                    )?;
+                }
+                let deadline = Instant::now() + PATIENCE;
+                together(&peers, |peer| {
+                    loop {
+                        peer.pull()?;
+                        let seen = peer.texts_seen();
+                        let mut missing = None;
+                        for sender in peers.iter().filter(|other| other.label != peer.label) {
+                            let expected = burst(sender.label, "group", round, count);
+                            let got: Vec<String> = seen
+                                .iter()
+                                .filter(|text| {
+                                    text.starts_with(&format!(
+                                        "{MARK}: r{round} {} to group ",
+                                        sender.label
+                                    ))
+                                })
+                                .cloned()
+                                .collect();
+                            if got != expected {
+                                missing = Some((sender.label, got, expected));
+                                break;
+                            }
+                        }
+                        let Some((from, got, expected)) = missing else {
+                            return Ok(());
+                        };
+                        if Instant::now() > deadline {
+                            return in_order_once(&got, &expected).map_err(|error| -> Failure {
+                                format!("{} from {from} in the group: {error}", peer.label).into()
+                            });
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                })?;
+                println!(
+                    "  {} clients wrote {count} each to the group; all held after {:.1} s",
+                    peers.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                Ok(())
+            },
+        );
+
+        checks.record(
+            &format!("{tag}: b33p writes to the group, each client holds it once, in order"),
+            || {
+                select(&mut b33p, &group)?;
+                let texts = burst("b33p", "group", round, count);
+                for text in &texts {
+                    type_and_send(&mut b33p, text)?;
+                }
+                let deadline = Instant::now() + PATIENCE;
+                together(&peers, |peer| {
+                    loop {
+                        peer.pull()?;
+                        let got: Vec<String> = peer
+                            .texts_seen()
+                            .into_iter()
+                            .filter(|text| {
+                                text.starts_with(&format!("{MARK}: r{round} b33p to group "))
+                            })
+                            .collect();
+                        if got.len() >= texts.len() || Instant::now() > deadline {
+                            return in_order_once(&got, &texts).map_err(|error| -> Failure {
+                                format!("{} in the group: {error}", peer.label).into()
+                            });
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                })?;
                 Ok(())
             },
         );
