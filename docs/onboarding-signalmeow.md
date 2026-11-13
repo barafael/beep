@@ -13,8 +13,11 @@ its own; `cargo testbox up --signalmeow` plays the container beside the others.
 
 ## Result
 
-27 checks, all passing (the phase took 24 s once the images were built). The runs before it each
-failed on a check of mine, root-caused below, none on signalmeow or b33p:
+27 checks, all passing, four runs in a row (one `test`, then `run --rounds 3`, each round on a box
+from nothing; the phase takes 23 s once the images are built). The runs before them each failed on
+a check of mine, root-caused below, none on signalmeow or b33p. `serve` was driven by hand against
+the box afterwards: `whoami`, an unknown op and a malformed ACI answered as JSON errors, and a
+text from the presage-cli peer arrived as a `message` event.
 
 | Check | What it shows |
 |---|---|
