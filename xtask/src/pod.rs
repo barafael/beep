@@ -1315,6 +1315,25 @@ impl Pod {
         })
     }
 
+    /// [`Self::spawn_exec`] with its stdin piped, for a command that takes commands as it runs
+    /// (signalmeow's `serve`).
+    pub fn spawn_exec_interactive(
+        &self,
+        service: Service,
+        argv: &[&str],
+    ) -> Result<Child, PodError> {
+        let mut exec = podman(&["exec", "-i", &self.container(service)]);
+        exec.args(argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        exec.spawn().map_err(|source| PodError::StartExec {
+            service,
+            argv: argv.iter().map(|&arg| arg.to_owned()).collect(),
+            source,
+        })
+    }
+
     /// Runs `argv` in `service` without a shell, and returns how it ended, whatever that was.
     pub fn exec_status(
         &self,

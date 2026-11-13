@@ -9,6 +9,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::time::Duration;
 
 use super::attachments::{incoming_attachment, saved};
 use super::b33p::{accept_request, b33p_shows, chat_previewing, delivered, select, type_and_send};
@@ -43,6 +44,9 @@ pub(super) enum SignalmeowError {
     /// A sync that should have received `expected` didn't print it.
     #[error("signalmeow's sync printed no {expected:?}:\n{received}")]
     NotPrinted { expected: String, received: String },
+    /// The `serve` process refused or didn't answer a command.
+    #[error("{0}")]
+    Serve(String),
     /// The thread that drained the driver's log panicked.
     #[error("the thread reading signalmeow's log panicked")]
     LogThread,
@@ -51,11 +55,202 @@ pub(super) enum SignalmeowError {
 /// signalmeow's one account of the box, in the `signalmeow` container.
 pub(super) struct Signalmeow<'pod> {
     containers: &'pod Pod,
+    /// The driver's `serve`, when the account stays connected (see [`Self::serve`]).
+    daemon: Option<Daemon>,
+}
+
+/// The driver's `serve` in the container: one process that stays connected and takes its commands
+/// as JSON lines, as a client of its own does. Receiving goes on all the while, so that nothing
+/// arrives as a short-lived process ends (a pre-key message handled as the process exits leaves
+/// its one-time key spent and its session unsaved: the sender's whole burst then fails with
+/// "invalid Kyber prekey identifier", and what was written down before it is written down again).
+struct Daemon {
+    child: std::sync::Mutex<std::process::Child>,
+    stdin: std::sync::Mutex<std::process::ChildStdin>,
+    next: std::sync::atomic::AtomicU64,
+    shared: std::sync::Arc<DaemonShared>,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        use std::io::Write as _;
+        if let Ok(mut stdin) = self.stdin.lock() {
+            let _ = writeln!(stdin, "{{\"op\":\"quit\"}}");
+            let _ = stdin.flush();
+        }
+        if let Ok(mut child) = self.child.lock() {
+            let until = std::time::Instant::now() + Duration::from_secs(15);
+            while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let log = self
+            .shared
+            .log
+            .lock()
+            .map(|log| log.clone())
+            .unwrap_or_default();
+        if !log.trim().is_empty() {
+            eprintln!("  signalmeow-driver serve's log:\n{log}");
+        }
+    }
+}
+
+#[derive(Default)]
+struct DaemonShared {
+    answers: std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>,
+    answered: std::sync::Condvar,
+    /// What the driver said it could not decrypt, for [`Signalmeow::noting_lost`].
+    lost: std::sync::Mutex<Vec<String>>,
+    log: std::sync::Mutex<String>,
 }
 
 impl<'pod> Signalmeow<'pod> {
     pub(super) fn new(containers: &'pod Pod) -> Self {
-        Self { containers }
+        Self {
+            containers,
+            daemon: None,
+        }
+    }
+
+    /// Keeps the account connected from now on, in one `serve` process: sends go to it, and receiving
+    /// is its own. Once the account is linked.
+    pub(super) fn serve(&mut self) -> Result<(), Failure> {
+        use std::io::BufRead as _;
+        let mut child = self.containers.spawn_exec_interactive(
+            Service::Signalmeow,
+            &["signalmeow-driver", "--db", DB, "serve"],
+        )?;
+        let stdin = child.stdin.take().expect("piped");
+        let stdout = child.stdout.take().expect("piped");
+        let mut stderr = child.stderr.take().expect("piped");
+        let shared = std::sync::Arc::new(DaemonShared::default());
+        let ready = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        {
+            let (shared, ready) = (shared.clone(), ready.clone());
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    match value["event"].as_str() {
+                        Some("ready") => {
+                            *ready.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                true;
+                            ready.1.notify_all();
+                        }
+                        Some("answer") => {
+                            if let Some(id) = value["id"].as_u64() {
+                                shared
+                                    .answers
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .insert(id, value);
+                                shared.answered.notify_all();
+                            }
+                        }
+                        Some("decryption-error") => shared
+                            .lost
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!(
+                                "failed to decrypt a message from <ACI:{}> of {}: {}",
+                                value["from"].as_str().unwrap_or("?"),
+                                value["timestamp"],
+                                value["error"].as_str().unwrap_or("?")
+                            )),
+                        _ => {}
+                    }
+                }
+                // The driver ended: whoever waits for an answer must not wait for ever.
+                shared.answered.notify_all();
+            });
+        }
+        {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                let mut log = String::new();
+                let _ = stderr.read_to_string(&mut log);
+                *shared.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = log;
+            });
+        }
+        let (flag, signal) = (&ready.0, &ready.1);
+        let guard = flag.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (guard, timeout) = signal
+            .wait_timeout_while(guard, Duration::from_secs(60), |ready| !*ready)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if timeout.timed_out() && !*guard {
+            return Err("signalmeow-driver serve was not ready in 60 s".into());
+        }
+        drop(guard);
+        self.daemon = Some(Daemon {
+            child: std::sync::Mutex::new(child),
+            stdin: std::sync::Mutex::new(stdin),
+            next: std::sync::atomic::AtomicU64::new(1),
+            shared,
+        });
+        Ok(())
+    }
+
+    /// One command to the `serve` process, and its answer.
+    fn ask(&self, daemon: &Daemon, command: serde_json::Value) -> Result<(), Failure> {
+        use std::io::Write as _;
+        let id = daemon.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut command = command;
+        command["id"] = id.into();
+        {
+            let mut stdin = daemon
+                .stdin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            writeln!(stdin, "{command}")?;
+            stdin.flush()?;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        let mut answers = daemon
+            .shared
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some(answer) = answers.remove(&id) {
+                return if answer["ok"].as_bool() == Some(true) {
+                    Ok(())
+                } else {
+                    Err(format!("signalmeow-driver serve: {}", answer["error"]).into())
+                };
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err("signalmeow-driver serve gave no answer in 90 s".into());
+            }
+            answers = daemon
+                .shared
+                .answered
+                .wait_timeout(answers, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// What the `serve` process could not decrypt, noted as lost ([`Pod::note_lost`]).
+    pub(super) fn flush_lost(&self) {
+        if let Some(daemon) = &self.daemon {
+            let lost = std::mem::take(
+                &mut *daemon
+                    .shared
+                    .lost
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for line in lost {
+                self.containers.note_lost(format!("signalmeow: {line}"));
+            }
+        }
     }
 
     /// Runs the driver's `command` with `arguments`; what it printed.
@@ -155,6 +350,14 @@ impl<'pod> Signalmeow<'pod> {
     }
 
     pub(super) fn send(&self, recipient_aci: &str, text: &str) -> Result<(), SignalmeowError> {
+        if let Some(daemon) = &self.daemon {
+            return self
+                .ask(
+                    daemon,
+                    serde_json::json!({"op": "send", "to": recipient_aci, "text": text}),
+                )
+                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+        }
         self.driver("send", &[recipient_aci, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
     }
@@ -187,6 +390,11 @@ impl<'pod> Signalmeow<'pod> {
 
     /// Receives what is queued; what it printed.
     pub(super) fn sync(&self) -> Result<String, SignalmeowError> {
+        if self.daemon.is_some() {
+            // Receiving is the `serve` process's, all the time.
+            self.flush_lost();
+            return Ok(String::new());
+        }
         self.driver("sync", &[], "")
             .map(|received| self.noting_lost(received))
     }

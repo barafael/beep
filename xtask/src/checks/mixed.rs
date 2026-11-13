@@ -200,11 +200,14 @@ pub(super) fn mixed(
     let cli = SignalCli::new(containers, CliAccount::Cli);
     let cli_aci = checks.require("signal-cli registers", || Ok(cli.register()?))?;
     let meow_account = Presage::new(containers, Account::Meow);
-    let meow = Signalmeow::new(containers);
+    let mut meow = Signalmeow::new(containers);
     checks.require("a presage-cli account registers for signalmeow", || {
         Ok(meow_account.register()?)
     })?;
     let meow_aci = checks.require("signalmeow links to it", || meow.link(&meow_account))?;
+    // Connected all the time, as a client of its own is: a process per command ends as a message
+    // arrives, now and then, and what it was handling is spent (see signalmeow.rs `Daemon`).
+    checks.require("signalmeow stays connected", || meow.serve())?;
     let flare = FlareBox::new(containers);
     let flare_aci = checks.require("Flare's backend registers", || Ok(flare.register()?))?;
     let mut peers = vec![
@@ -449,5 +452,10 @@ pub(super) fn mixed(
             Ok(())
         },
     );
+    for peer in &peers {
+        if let Kind::Signalmeow(meow) = &peer.kind {
+            meow.flush_lost();
+        }
+    }
     Ok(())
 }
