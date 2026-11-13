@@ -1,11 +1,13 @@
 //! Clients of every implementation at once (docs/onboarding-*.md): b33p, a presage-cli account,
-//! signal-cli and signalmeow write to one another in bursts that overlap, and each side is held to
+//! signal-cli, signalmeow and Flare's backend write to one another in bursts that overlap, and each side is held to
 //! what it must hold: every message once, from each sender in the order it was sent. Seen from the
 //! clients themselves, not only from b33p: each client's own record of what it received is read
 //! back and checked too, so a message the others lost or doubled shows on the side that kept it.
 //!
 //! `TESTBOX_MIXED_BURST` is how many messages each sender sends to each recipient in a burst
-//! (twenty by default), `TESTBOX_MIXED_ROUNDS` how many times the bursts repeat (two).
+//! (twenty by default), `TESTBOX_MIXED_ROUNDS` how many times the bursts repeat (two), and
+//! `TESTBOX_MIXED_ONLY` (`presage-cli`, `signal-cli`, `signalmeow`, `flare`, comma-separated) which
+//! of them play at all.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -171,7 +173,7 @@ pub(super) fn mixed(
     let meow_aci = checks.require("signalmeow links to it", || meow.link(&meow_account))?;
     let flare = FlareBox::new(containers);
     let flare_aci = checks.require("Flare's backend registers", || Ok(flare.register()?))?;
-    let peers = [
+    let mut peers = vec![
         Peer {
             label: "presage-cli",
             aci: peer_aci,
@@ -193,6 +195,21 @@ pub(super) fn mixed(
             kind: Kind::Flare(flare),
         },
     ];
+    // `TESTBOX_MIXED_ONLY=flare,signal-cli`: only those play, to find which pairing a failure needs.
+    // The others are registered all the same, so that the box is as it is for all of them.
+    if let Some(only) = std::env::var("TESTBOX_MIXED_ONLY")
+        .ok()
+        .filter(|only| !only.is_empty())
+    {
+        let wanted: Vec<&str> = only.split(',').map(str::trim).collect();
+        if let Some(unknown) = wanted
+            .iter()
+            .find(|name| !peers.iter().any(|peer| peer.label == **name))
+        {
+            return Err(format!("TESTBOX_MIXED_ONLY names {unknown:?}, which is no peer").into());
+        }
+        peers.retain(|peer| wanted.contains(&peer.label));
+    }
 
     // Each writes to b33p's account first: b33p takes it as a message request and accepts it.
     let mut chats = Vec::new();
