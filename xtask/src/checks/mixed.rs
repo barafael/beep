@@ -54,12 +54,7 @@ impl Peer<'_> {
                 }
                 Ok(())
             }
-            Kind::Flare(client) => {
-                for text in texts {
-                    client.send(to, text)?;
-                }
-                Ok(())
-            }
+            Kind::Flare(client) => Ok(client.send_many(to, texts)?),
         }
     }
 

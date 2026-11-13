@@ -188,6 +188,14 @@ impl<'pod> FlareBox<'pod> {
         self.cli(&["send", aci, text]).map(drop)
     }
 
+    /// `texts` one after another in one process, as presage-cli's `send_all` does: one process
+    /// has the connection open all through, where one a text has only its own few milliseconds.
+    pub(super) fn send_many(&self, aci: &str, texts: &[String]) -> Result<(), FamilyError> {
+        let mut arguments = vec!["send-many", aci];
+        arguments.extend(texts.iter().map(String::as_str));
+        self.cli(&arguments).map(drop)
+    }
+
     /// What the store holds of the thread with `aci`, as `Stored <ms> by <aci> ...: <text>` lines.
     pub(super) fn messages(&self, aci: &str) -> Result<String, FamilyError> {
         Ok(oldest_first(&self.cli(&["messages", aci])?))

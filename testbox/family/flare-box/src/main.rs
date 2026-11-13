@@ -6,6 +6,7 @@
 //!     flare-box <db> whoami
 //!     flare-box <db> sync [idle-ms]
 //!     flare-box <db> send <aci> <text>
+//!     flare-box <db> send-many <aci> <text>...      one after another, in one process
 //!     flare-box <db> send-group <group-id-hex> <text>
 //!     flare-box <db> groups
 //!
@@ -39,6 +40,7 @@ enum Command {
     Whoami,
     Sync { idle: Duration },
     Send { to: String, text: String },
+    SendMany { to: String, texts: Vec<String> },
     SendGroup { group: String, text: String },
     Groups,
     /// What the store holds of a thread: an ACI, or a group's id.
@@ -60,7 +62,15 @@ struct Shared {
     /// the heap, and one run in sixty aborted there ("double free or corruption") after it had
     /// done its work.
     status: Cell<i32>,
+    /// When a message last came out of the manager (stored and told to the client): the process
+    /// ends only after [`LINGER`] without one. Flare's libsignal-service acknowledges an envelope
+    /// when it reads it, before it is decrypted and stored, so one that is read as the process
+    /// ends is lost: the server has it as delivered.
+    last_message: Cell<std::time::Instant>,
 }
+
+/// How long the process stays after its command, and after each message, for what is on its way.
+const LINGER: Duration = Duration::from_millis(400);
 
 #[derive(Clone)]
 struct Box_(Rc<Shared>);
@@ -120,6 +130,15 @@ impl SignalClient<DirectPresageWrapperStore> for Box_ {
         tokio::task::spawn_local(async move {
             let status = this.run(handle.clone()).await;
             this.0.status.set(status);
+            // What is on its way, after the last thing that came or was done.
+            this.0.last_message.set(this.0.last_message.get().max(std::time::Instant::now()));
+            loop {
+                let quiet = this.0.last_message.get().elapsed();
+                if quiet >= LINGER {
+                    break;
+                }
+                tokio::time::sleep(LINGER - quiet).await;
+            }
             handle.shutdown_receive().await;
         });
         std::future::ready(())
@@ -140,6 +159,7 @@ impl SignalClient<DirectPresageWrapperStore> for Box_ {
     async fn on_message(&self, message: ReceivedMessage) {
         let handle = self.0.handle.borrow().clone();
         let me = handle.as_ref().map(|handle| handle.own_account_id());
+        self.0.last_message.set(std::time::Instant::now());
         let ms = message.id.timestamp.timestamp_millis();
         let from_me = Some(message.id.sender) == me;
         let who = message.id.sender.0.raw_uuid();
@@ -193,6 +213,19 @@ impl Box_ {
                 let to = uuid::Uuid::from_str(to).expect("an ACI");
                 self.send(&handle, ThreadId::Contact(ftypes::AccountId::from_raw(to)), text)
                     .await
+            }
+            Command::SendMany { to, texts } => {
+                self.0.queue_empty.notified().await;
+                let to = uuid::Uuid::from_str(to).expect("an ACI");
+                let thread = ThreadId::Contact(ftypes::AccountId::from_raw(to));
+                let mut all = true;
+                for text in texts {
+                    if !self.send(&handle, thread.clone(), text).await {
+                        all = false;
+                        break;
+                    }
+                }
+                all
             }
             Command::SendGroup { group, text } => {
                 self.0.queue_empty.notified().await;
@@ -378,6 +411,10 @@ fn main() {
             to: to.clone(),
             text: text.clone(),
         },
+        ("send-many", [to, texts @ ..]) if !texts.is_empty() => Command::SendMany {
+            to: to.clone(),
+            texts: texts.to_vec(),
+        },
         ("send-group", [group, text]) => Command::SendGroup {
             group: group.clone(),
             text: text.clone(),
@@ -409,6 +446,7 @@ fn main() {
             own: RefCell::new(Vec::new()),
             failed: Cell::new(false),
             status: Cell::new(0),
+            last_message: Cell::new(std::time::Instant::now()),
         }));
         let manager = Manager::new(store, client.clone());
         let local = tokio::task::LocalSet::new();
