@@ -66,6 +66,14 @@ fn numbered(prefix: &str, count: usize) -> Vec<String> {
     (1..=count).map(|n| format!("{prefix} {n:03}")).collect()
 }
 
+/// A store's listing of a thread (presage-cli's `list-messages`, flare-box's `messages`) is
+/// newest first: the lines the other way round.
+fn oldest_first(listed: &str) -> String {
+    let mut lines: Vec<&str> = listed.lines().collect();
+    lines.reverse();
+    lines.join("\n")
+}
+
 /// Fails unless each of `texts` is in `shown` exactly once, each after the one before.
 fn once_in_order(client: &'static str, shown: &str, texts: &[String]) -> Result<(), FamilyError> {
     let mut after = 0;
@@ -147,6 +155,33 @@ impl<'pod> FlareBox<'pod> {
 
     fn send(&self, aci: &str, text: &str) -> Result<(), FamilyError> {
         self.cli(&["send", aci, text]).map(drop)
+    }
+
+    /// What the store holds of the thread with `aci`, as `Stored <ms> by <aci> ...: <text>` lines.
+    fn messages(&self, aci: &str) -> Result<String, FamilyError> {
+        Ok(oldest_first(&self.cli(&["messages", aci])?))
+    }
+
+    /// `sync`, killed (SIGKILL) after `seconds`, wherever that gets it: a crash, in the middle of
+    /// receiving. Its output is whatever came before.
+    fn sync_killed(&self, seconds: &str) -> Result<String, FamilyError> {
+        let argv = [
+            "timeout",
+            "-s",
+            "KILL",
+            seconds,
+            "flare-box",
+            FLARE_DB,
+            "sync",
+            "20000",
+        ];
+        self.containers
+            .exec_status(Service::Family, &argv)
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .map_err(|source| FamilyError::Step {
+                what: "a killed flare-box sync".to_owned(),
+                source,
+            })
     }
 
     fn send_group(&self, group: &str, text: &str) -> Result<(), FamilyError> {
@@ -318,6 +353,63 @@ pub(super) fn flare(
             Ok(())
         },
     );
+    // Each side's send while it receives what the other sends: a one-shot flare-box receives as
+    // it sends, as the receive loop of Flare's manager does, and so does the peer's presage-cli.
+    checks.record(
+        "texts Flare and the peer send each other at once arrive, once each",
+        || {
+            let rounds = numbered("testbox flare: race", 6);
+            for round in &rounds {
+                let (to_flare, to_peer) =
+                    (format!("{round} to Flare"), format!("{round} to the peer"));
+                std::thread::scope(|scope| -> Result<(), Failure> {
+                    let sending = scope.spawn(|| peer.send(&flare_aci, &to_flare));
+                    flare.send(&peer_aci, &to_peer)?;
+                    sending.join().map_err(|_| FamilyError::Stuck {
+                        what: "the peer's send panicked".to_owned(),
+                    })??;
+                    Ok(())
+                })?;
+            }
+            // What each one's store holds: a send receives too, and prints what it received, so
+            // what a sync printed is only some of it.
+            flare.sync()?;
+            peer.sync()?;
+            let to_flare: Vec<String> = rounds.iter().map(|r| format!("{r} to Flare")).collect();
+            let to_peer: Vec<String> = rounds.iter().map(|r| format!("{r} to the peer")).collect();
+            let (at_flare, at_peer) = (
+                flare.messages(&peer_aci)?,
+                oldest_first(&peer.messages_with(&flare_aci)?),
+            );
+            for (client, stored) in [
+                ("flare-box's store", &at_flare),
+                ("presage-cli's store", &at_peer),
+            ] {
+                once_in_order(client, stored, &to_flare)?;
+                once_in_order(client, stored, &to_peer)?;
+            }
+            Ok(())
+        },
+    );
+    // A crash in the middle of receiving a burst: what was read and not acknowledged comes again,
+    // and the store has each message once, in order.
+    checks.record(
+        "Flare killed while it receives a burst loses and repeats nothing",
+        || {
+            let texts = numbered("testbox flare: kill", BURST);
+            std::thread::scope(|scope| -> Result<(), Failure> {
+                let sending = scope.spawn(|| peer.send_all(&flare_aci, &texts));
+                flare.sync_killed("4")?;
+                sending.join().map_err(|_| FamilyError::Stuck {
+                    what: "the peer's burst panicked".to_owned(),
+                })??;
+                Ok(())
+            })?;
+            flare.sync()?;
+            let stored = flare.messages(&peer_aci)?;
+            Ok(once_in_order("flare-box's store", &stored, &texts)?)
+        },
+    );
     Ok(())
 }
 
@@ -460,8 +552,12 @@ impl<'pod> Gurk<'pod> {
     /// Ends gurk's session, and waits for the process to go: a terminal closed on it.
     fn stop(&self) -> Result<(), FamilyError> {
         self.tmux(&["kill-session", "-t", GURK_SESSION])?;
-        // By /proc: the image has no ps. A process's `comm` is its executable's name.
-        let gone = "for p in /proc/[0-9]*; do [ \"$(cat $p/comm 2>/dev/null)\" = gurk ] && exit 1; done; exit 0";
+        // By /proc: the image has no ps. A process's `comm` is its executable's name. A zombie
+        // is gone: tmux's server ends with its last session, and gurk, its child, is then the
+        // container's first process's (`sleep infinity`, which reaps nothing).
+        let gone = "for p in /proc/[0-9]*; do \
+            [ \"$(cat $p/comm 2>/dev/null)\" = gurk ] || continue; \
+            case \"$(grep State: $p/status)\" in *zombie*) ;; *) exit 1 ;; esac; done; exit 0";
         let started = Instant::now();
         while self
             .containers
@@ -583,6 +679,58 @@ pub(super) fn gurk(
             gurk.shows(last, PATIENCE)?;
             let screen = gurk.screen()?;
             Ok(once_in_order("gurk", &screen, &texts)?)
+        },
+    );
+    checks.record(
+        "texts gurk and the peer send each other at once arrive, once each",
+        || {
+            let from_peer = numbered("testbox gurk: race, peer", 10);
+            let from_gurk = numbered("testbox gurk: race, gurk", 10);
+            let name = peer.name().to_string();
+            gurk.open(&name)?;
+            std::thread::scope(|scope| -> Result<(), Failure> {
+                let sending = scope.spawn(|| peer.send_all(&host_aci, &from_peer));
+                for text in &from_gurk {
+                    gurk.send(text)?;
+                }
+                sending.join().map_err(|_| FamilyError::Stuck {
+                    what: "the peer's burst panicked".to_owned(),
+                })??;
+                Ok(())
+            })?;
+            let last = from_peer.last().map(String::as_str).unwrap_or_default();
+            gurk.shows(last, PATIENCE)?;
+            once_in_order("gurk", &gurk.screen()?, &from_peer)?;
+            once_in_order("gurk", &gurk.screen()?, &from_gurk)?;
+            // The peer's store, not what it printed: its sends receive too, and print it there.
+            peer.sync()?;
+            let stored = oldest_first(&peer.messages_with(&host_aci)?);
+            Ok(once_in_order("presage-cli's store", &stored, &from_gurk)?)
+        },
+    );
+    checks.record(
+        "gurk killed while it receives a burst loses and repeats nothing",
+        || {
+            let texts = numbered("testbox gurk: kill", BURST);
+            let name = peer.name().to_string();
+            gurk.open(&name)?;
+            std::thread::scope(|scope| -> Result<(), Failure> {
+                let sending = scope.spawn(|| peer.send_all(&host_aci, &texts));
+                // In the middle of it: a few messages in.
+                std::thread::sleep(Duration::from_secs(4));
+                gurk.stop()?;
+                sending.join().map_err(|_| FamilyError::Stuck {
+                    what: "the peer's burst panicked".to_owned(),
+                })??;
+                Ok(())
+            })?;
+            gurk.start(false)?;
+            gurk.await_ui()?;
+            gurk.wait(PATIENCE, |screen| screen.contains(&name).then_some(()))?;
+            gurk.open(&name)?;
+            let last = texts.last().map(String::as_str).unwrap_or_default();
+            gurk.shows(last, PATIENCE)?;
+            Ok(once_in_order("gurk", &gurk.screen()?, &texts)?)
         },
     );
     checks.record("gurk is still running and logged no error", || {
