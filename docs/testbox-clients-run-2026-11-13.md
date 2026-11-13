@@ -66,8 +66,30 @@ store's lookups by thread and time taking the author), in presage's store, for e
 reactions and receipts, which all name an author and a time already.
 
 (The last check there, "b33p killed, started again", failed with "b33p shows 0 of 20" for round 1:
-b33p's chat shows its newest page after a restart, and twelve rounds are more than that; to be
-checked against the check's own paging before it counts.)
+the check's own: `all_texts` stopped loading older pages once the count of *matching* messages stopped
+growing, which twelve rounds of other bursts in front of round 1 do. It now counts every message
+loaded.)
+
+**flare only, four runs of 3 to 12 rounds; two causes, both in Flare's old libsignal-service
+(7a75267), neither in b33p:**
+
+1. *A session race inside one process.* b33p kept failing on flare's messages:
+   `post-quantum ratchet error: Key already requested: N`, then `MAC verification failed` for 242
+   messages after b33p's one reset (the reset is at most hourly per sender). The flare process that
+   sent the first failing message received a live envelope from b33p in the same millisecond as its
+   own send (capture: server push at +10 ms, PUT at +10 ms on one connection). That lss has no session
+   lock (b33p's fork has one, #488): the decrypt and the encrypt each start from the stored session and
+   the later write takes the earlier step back, so the sender's next message reuses a counter. With a
+   global lock added to its `cipher.rs`/`sender.rs` (`testbox/family/lss-session-lock.patch`): 0
+   decrypt failures in 12 rounds (before: 2 in 3).
+2. *A message acknowledged and lost at exit.* With the lock, 7 of 12 rounds lacked one message of b33p's at
+   Flare. Not the timestamp collision (b33p's send 1794541466642, the neighbour at 649). The wire: that
+   envelope was pushed to a flare process 1 ms before the process closed, and acknowledged (200). Flare's
+   lss acknowledges when it reads, before decrypting and storing; a one-shot process that ends then has
+   lost it and the server has it as delivered. This is what b33p's fork's ack handle (#442) is for.
+   Mitigation in the driver (not in Flare): the process stays until 400 ms after the last message the
+   manager handed out, and a burst is sent by one process (`send-many`). Result: 52 of 52 checks, 12
+   rounds, flare only.
 
 ## Wire observations (run 2, `--capture`)
 
