@@ -10,7 +10,6 @@
 //!     flare-box <db> send-group <group-id-hex> <text>
 //!     flare-box <db> send-file <aci> <path> <text>   the file at <path>, with <text>
 //!     flare-box <db> react <aci> <author-aci> <ms> <emoji>   to the message of <author-aci> at <ms>
-//!     flare-box <db> edit <aci> <ms> <text>          this account's message at <ms> to <text>
 //!     flare-box <db> groups
 //!
 //! What it prints mirrors presage-cli's, so that the testbox reads both alike: "From <aci> @
@@ -49,7 +48,6 @@ enum Command {
     SendGroup { group: String, text: String },
     SendFile { to: String, path: String, text: String },
     React { to: String, author: String, at: i64, emoji: String },
-    Edit { to: String, at: i64, text: String },
     Groups,
     /// What the store holds of a thread: an ACI, or a group's id.
     Messages { thread: String },
@@ -331,22 +329,6 @@ impl Box_ {
                     .await;
                 self.echoed_send(message.id.timestamp.timestamp_millis()).await
             }
-            Command::Edit { to, at, text } => {
-                self.0.queue_empty.notified().await;
-                let own = handle.own_account_id().0.raw_uuid().to_string();
-                let message = handle
-                    .send_message(
-                        contact(to),
-                        ReceivedMessageContent::Amendment(AmendmentMessageContent::EditMessage(
-                            ftypes::EditMessage {
-                                edited_message: message_at(&own, *at),
-                                updated: plain(text, vec![]),
-                            },
-                        )),
-                    )
-                    .await;
-                self.echoed_send(message.id.timestamp.timestamp_millis()).await
-            }
             Command::SendGroup { group, text } => {
                 self.0.queue_empty.notified().await;
                 let found = handle
@@ -545,11 +527,6 @@ fn main() {
             author: author.clone(),
             at: at.parse().expect("milliseconds"),
             emoji: emoji.clone(),
-        },
-        ("edit", [to, at, text]) => Command::Edit {
-            to: to.clone(),
-            at: at.parse().expect("milliseconds"),
-            text: text.clone(),
         },
         ("groups", []) => Command::Groups,
         ("messages", [thread]) => Command::Messages {

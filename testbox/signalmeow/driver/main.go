@@ -449,10 +449,15 @@ func (s *session) handleChat(event *events.ChatEvent) bool {
 		if r := content.GetReaction(); r != nil {
 			files += fmt.Sprintf(" [reaction %s to %d]", r.GetEmoji(), r.GetTargetSentTimestamp())
 		}
-		s.emit("message", map[string]any{
+		fields := map[string]any{
 			"from": event.Info.Sender.String(), "chat": event.Info.ChatID, "group": group, "own": own,
 			"timestamp": ts, "text": text, "attachments": len(content.GetAttachments()),
-		}, "%s %s @ %d: %s%s%s", label, who, ts, oneLine(text), where, files)
+		}
+		if r := content.GetReaction(); r != nil {
+			fields["reaction"] = r.GetEmoji()
+			fields["reaction_target"] = r.GetTargetSentTimestamp()
+		}
+		s.emit("message", fields, "%s %s @ %d: %s%s%s", label, who, ts, oneLine(text), where, files)
 		// Downloaded and decrypted here, which checks the CDN and the digest and MAC: what
 		// arrived is its size and hash.
 		for _, pointer := range content.GetAttachments() {

@@ -127,6 +127,17 @@ struct Event {
     from: Option<String>,
     own: bool,
     text: Option<String>,
+    /// A message that is a reaction: its emoji, and the time of the message it is to.
+    reaction: Option<String>,
+    reaction_target: Option<u64>,
+    /// An edit's: the time of the message it changes. An attachment's: its name, type, size and
+    /// the SHA-256 of what was downloaded and decrypted.
+    target: Option<u64>,
+    name: Option<String>,
+    #[serde(rename = "type")]
+    content_type: Option<String>,
+    size: Option<u64>,
+    sha256: Option<String>,
 }
 
 impl Drop for Daemon {
@@ -172,6 +183,15 @@ struct DaemonShared {
     /// The texts it received since they were last taken, a line each as `sync` prints them.
     received: std::sync::Mutex<Vec<String>>,
     log: std::sync::Mutex<String>,
+}
+
+impl DaemonShared {
+    fn push_received(&self, line: String) {
+        self.received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(line);
+    }
 }
 
 impl<'pod> Signalmeow<'pod> {
@@ -220,16 +240,34 @@ impl<'pod> Signalmeow<'pod> {
                                 shared.answered.notify_all();
                             }
                         }
-                        "message" if !event.own => shared
-                            .received
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(format!(
-                                "From {} @ {}: {}",
+                        "message" if !event.own => {
+                            let reaction = match (&event.reaction, event.reaction_target) {
+                                (Some(emoji), Some(target)) => {
+                                    format!(" [reaction {emoji} to {target}]")
+                                }
+                                _ => String::new(),
+                            };
+                            shared.push_received(format!(
+                                "From {} @ {}: {}{reaction}",
                                 event.from.as_deref().unwrap_or("?"),
                                 event.timestamp.unwrap_or_default(),
                                 event.text.as_deref().unwrap_or("")
-                            )),
+                            ));
+                        }
+                        "edit" => shared.push_received(format!(
+                            "Edit from {} of {}: {}",
+                            event.from.as_deref().unwrap_or("?"),
+                            event.target.unwrap_or_default(),
+                            event.text.as_deref().unwrap_or("")
+                        )),
+                        "attachment" => shared.push_received(format!(
+                            "Attachment of {}: {} {} {} bytes sha256:{}",
+                            event.timestamp.unwrap_or_default(),
+                            event.name.as_deref().unwrap_or("-"),
+                            event.content_type.as_deref().unwrap_or("-"),
+                            event.size.unwrap_or_default(),
+                            event.sha256.as_deref().unwrap_or("")
+                        )),
                         "decryption-error" => shared
                             .lost
                             .lock()

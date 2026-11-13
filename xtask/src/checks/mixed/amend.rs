@@ -210,12 +210,20 @@ impl Peer<'_> {
         }
     }
 
+    /// Whether this client sends edits: presage-cli's driver has no command for it, and Flare's
+    /// backend panics on one (`todo!()` in flare-types `convert/to_presage.rs`: it converts
+    /// only texts, reactions and deletions to send). Both receive them.
+    fn can_edit(&self) -> bool {
+        matches!(self.kind, Kind::SignalCli(_) | Kind::Signalmeow(_))
+    }
+
     fn edit(&self, to: &str, target: u64, text: &str) -> Result<(), Failure> {
         match &self.kind {
-            Kind::Presage(_) => Err("presage-cli doesn't edit".into()),
             Kind::SignalCli(client) => Ok(client.edit(to, target, text)?),
             Kind::Signalmeow(client) => Ok(client.edit(to, target, text)?),
-            Kind::Flare(client) => Ok(client.edit(to, target, text)?),
+            Kind::Presage(_) | Kind::Flare(_) => {
+                Err(format!("{} sends no edits", self.label).into())
+            }
         }
     }
 
@@ -670,7 +678,10 @@ pub(super) fn amendments(
                         };
                         // b33p's account is the author: b33p is the primary's linked device.
                         peer.react(mix.primary_aci, mix.primary_aci, mine[peer.label], emoji)?;
-                        peer.edit(mix.primary_aci, theirs[peer.label], &their_new(peer))
+                        if peer.can_edit() {
+                            peer.edit(mix.primary_aci, theirs[peer.label], &their_new(peer))?;
+                        }
+                        Ok(())
                     })
                 });
                 let ours = (|| -> Result<(), Failure> {
@@ -700,7 +711,7 @@ pub(super) fn amendments(
                     chat: chat.clone(),
                     label: peer.label,
                     their_old: their_old(peer),
-                    their_new: peer.can_amend().then(|| their_new(peer)),
+                    their_new: peer.can_edit().then(|| their_new(peer)),
                     my_old: my_old(peer),
                     my_new: my_new(peer),
                 };

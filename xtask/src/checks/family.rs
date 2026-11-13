@@ -157,7 +157,6 @@ impl<'pod> FlareBox<'pod> {
         if what.starts_with("flare-box send")
             || what == "flare-box sync"
             || what == "flare-box react"
-            || what == "flare-box edit"
         {
             self.heard
                 .lock()
@@ -247,11 +246,6 @@ impl<'pod> FlareBox<'pod> {
     ) -> Result<(), FamilyError> {
         self.cli(&["react", aci, author, &at.to_string(), emoji])
             .map(drop)
-    }
-
-    /// Changes this account's message sent at `at` (milliseconds), in the chat with `aci`, to `text`.
-    pub(super) fn edit(&self, aci: &str, at: u64, text: &str) -> Result<(), FamilyError> {
-        self.cli(&["edit", aci, &at.to_string(), text]).map(drop)
     }
 
     /// `texts` one after another in one process, as presage-cli's `send_all` does: one process
