@@ -243,6 +243,49 @@ Three failures in the group check of rounds 1, 3 and 4, and "no client lost a me
 - **Reporting.** `together` reported only the first failing client, so round 1's other failures
   (Flare's) were hidden behind presage-cli's. It now reports all.
 
+### Run 6 (same settings, quiet host): 54 passed, 1 failed, 2,219 s
+
+Host load 3 to 7 and IO stalled under 0.4% of every minute. Everything passed (4 rounds of bursts, the
+group, files, reactions and edits) but one check, after b33p was killed and started again:
+
+> b33p's "testbox mixed: r3 target of b33p to flare, edited" to flare carries the reactions [], not [🎉]
+
+**A real gap in b33p, root-caused.** Asked directly (the harness socket, after the run), b33p showed
+Flare's 🎉 on that message in rounds 1, 2 and 4, and none in round 3, though the round's own check, minutes
+before, had seen it. b33p's content log has all four reactions as received, each naming its message by
+author and time correctly (the round 3 one: `targetSentTimestamp` 1794576231472, which is that message).
+It also has this:
+
+    received dc5ecd31… 1794576239017  a DataMessage with a reaction (🎉)
+    received dc5ecd31… 1794576239017  a DataMessage "testbox mixed: r3 flare to b33p-amid 006"
+
+Two contents of one sender, in one thread, at one millisecond. Flare's driver runs a process a command,
+and the reaction (`flare-box react`) and the burst (`flare-box send-many`) ran at once, each stamping with
+its own clock. presage keeps one content per thread and millisecond (`thread_messages`' key) and refuses
+a message only at a time **someone else's** holds (`presage/src/manager/keep.rs`: `existing.metadata.sender
+!= stored.metadata.sender`); the same sender's second content is saved in the first's place (that is
+how a redelivery is idempotent). b33p logged both as `Stored`, showed both (the reaction from memory), and
+the store kept the later one: the reaction was lost to the next load. b33p's own guard for a collision
+(`keep_if_dropped`, the `b33p_collided` table) runs after presage has saved and only asks whether the
+holder is someone else's, so it never sees a displaced content of the same sender.
+
+How likely: it needs one account to send two contents to one chat in the same millisecond: two
+devices of one person (a phone and a desktop), or a script like this. The reaction and the message take
+different roles in Signal's own clients (a reaction is not a message there, and has no slot of its own
+to lose); here a reaction is a stored content in the message's key space. A text displaced by a text is the
+same loss but an app can't tell two messages of one author and one millisecond apart anyway (Signal names
+a message by author and time).
+
+Two ways to close it, neither done here (they change the presage fork's pin or add state):
+1. In presage's `keep`, refuse to replace a content of the same sender that is a different content (compare
+   the bodies; a redelivery is equal) as it already refuses someone else's, and let `keep_if_dropped` keep
+   the refused one beside the store when the holder differs in content, not only in sender.
+2. In b33p alone: a small bounded record of the contents just received (thread, time, sender, content),
+   and the earlier one kept beside the store when a different content of the same key arrives.
+
+The testbox's check stays as it is: it fails when this happens, with the message and the reactions
+b33p shows, and the content log has the two contents.
+
 ### The wire, for the files (run 4's capture, 620,216 frames, 4,216 connections, none undecoded)
 
 Every client uploaded 16 files and downloaded 16 (4 rounds, 4 files each), through the CDN on 8446.
@@ -269,6 +312,8 @@ Each held up in this run against a client without it, so it is shown needed, or 
   and went away with the lock, and with the process outliving its last message.
 - **`b33p_collided`**: nine messages in three runs (4, 2 and 3) were lost by presage-cli's store to a
   same-millisecond collision; b33p lost none (its log shows the guard at each).
+- **Shown by the mix, in b33p**: the store's slot for a reaction (above, run 6): it is the one gap in b33p
+  found that a client without b33p's guards could not show.
 - **Not shown either way**: the 30 s keepalive (the other clients' connections last under 8 s, so
   nothing here says whether it is needed; the Desktop and Android captures can), the picture
   metadata stripping, the tus upload shape. The mixed phase has no attachments or groups yet.
