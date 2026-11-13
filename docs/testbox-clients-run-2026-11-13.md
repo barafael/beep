@@ -58,12 +58,16 @@ and two messages of one conversation, one from each side, sent in the same milli
 b33p's own log has exactly four `not saving a message in the place of someone else's`
 (presage `manager/keep.rs`), at the millisecond of each missing message (e.g. ts 1794538240615: the
 peer's "b33p-too" message and b33p's 007), and the peer's store, with the same key, lacks b33p's.
-Signal's own definition of a message's identity is (author, sent time); Desktop and Android key by
-both. So with presage's store a message is silently lost when both sides send in one millisecond:
-rare for people, once in about 60 messages here because the bursts are tight. Not flaky: a gap.
-Fix needs the author in the key (`PRIMARY KEY (ts, thread_id, sender_service_id)`, a migration, and the
-store's lookups by thread and time taking the author), in presage's store, for edits, deletes,
-reactions and receipts, which all name an author and a time already.
+b33p itself is covered: it keeps the content presage's store has no place for in its own
+`b33p_collided` table (`b33p-core/src/local.rs`), and the warning is that guard working. The loss
+is in the *peer's* store: presage-cli (and any presage client: gurk, Flare) keeps one of the two. Signal's own
+definition of a message's identity is (author, sent time); Desktop and Android key by both. So the
+check's "the peer holds every message b33p sent" fails through the peer's store, once in about 60
+messages here because the bursts are tight; not flaky: a limit of the test client. Open: whether
+the check should read b33p's side of the exchange for the peer's loss (b33p's own record of what it
+sent is complete), and whether presage's store should take the author into its key
+(`PRIMARY KEY (ts, thread_id, sender_service_id)`, a migration, lookups by author) for the other
+clients' sake.
 
 (The last check there, "b33p killed, started again", failed with "b33p shows 0 of 20" for round 1:
 the check's own: `all_texts` stopped loading older pages once the count of *matching* messages stopped
