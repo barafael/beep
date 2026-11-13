@@ -179,6 +179,10 @@ pub(crate) struct B33pOptions {
     /// GPUI. A GPUI b33p's screenshots are its display's, not its harness's.
     #[arg(long, value_enum, default_value_t = pod::Ui::Slint, env = "TESTBOX_UI")]
     pub(crate) ui: pod::Ui,
+    /// The app on the Android emulator: Signal-Android, or Molly (a hardened fork of it, on an
+    /// older release: docs/onboarding-molly.md), which the phases that drive Android then drive.
+    #[arg(long, value_enum, default_value_t = pod::AndroidApp::Signal, env = "TESTBOX_ANDROID_APP")]
+    pub(crate) android_app: pod::AndroidApp,
     /// The most memory b33p's container may take, in MiB; the kernel kills b33p past it, as
     /// on a small machine or under a desktop's own limits.
     #[arg(long, value_name = "MIB")]
@@ -229,7 +233,7 @@ fn main() -> ExitCode {
         } => {
             let clients = [
                 (desktop, Client::Desktop),
-                (android, Client::Android),
+                (android, b33p.android_app.client()),
                 (signal_cli, Client::SignalCli),
                 (signalmeow, Client::Signalmeow),
                 (family, Client::Family),

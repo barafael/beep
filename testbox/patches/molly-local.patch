@@ -1,0 +1,127 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 8a60cd3..f8cf8fd 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -34,6 +34,7 @@ val selectableVariants = listOf(
+   "prodWebsiteInstrumentation",
+   "stagingWebsiteDebug",
+   "stagingWebsiteRelease",
++  "localWebsiteDebug",
+ )
+ 
+ // Override build config via env vars when project property 'CI' is set
+@@ -211,6 +212,9 @@ android {
+     buildConfigField("String", "SIGNAL_CAPTCHA_URL", "\"https://signalcaptchas.org/registration/generate.html\"")
+     buildConfigField("String", "RECAPTCHA_PROOF_URL", "\"https://signalcaptchas.org/challenge/generate.html\"")
+     buildConfigField("org.signal.libsignal.net.Network.Environment", "LIBSIGNAL_NET_ENV", "org.signal.libsignal.net.Network.Environment.PRODUCTION")
++    // Set by the local flavor: libsignal-net then talks to localhost:LIBSIGNAL_LOCAL_PORT.
++    buildConfigField("String", "LIBSIGNAL_LOCAL_ROOT_CERT", "null")
++    buildConfigField("int", "LIBSIGNAL_LOCAL_PORT", "0")
+     buildConfigField("int", "LIBSIGNAL_LOG_LEVEL", "org.signal.libsignal.protocol.logging.SignalProtocolLogger.INFO")
+ 
+     // MOLLY: Rely on the built-in variables FLAVOR and BUILD_TYPE instead of BUILD_*_TYPE
+@@ -316,6 +320,51 @@ android {
+       buildConfigField("int", "LIBSIGNAL_LOG_LEVEL", "org.signal.libsignal.protocol.logging.SignalProtocolLogger.DEBUG")
+       buildConfigField("String", "STRIPE_PUBLISHABLE_KEY", "\"pk_test_sngOd8FnXNkpce9nPXawKrJD00kIDngZkD\"")
+     }
++
++    // A server on the device's localhost, such as Signal-Server's test mode: its values from the
++    // JSON file the property signalLocalConfig names. The trust store is the flavor's own
++    // res/raw/whisper.store, with the password "whisper".
++    create("local") {
++      dimension = "environment"
++
++      applicationIdSuffix = ".local"
++
++      resValue("string", "app_name", "$baseAppTitle Local")
++      resValue("string", "package_name", "$basePackageId.local")
++      buildConfigField("String", "BACKUP_BASE_NAME", "\"$baseAppFileName-local\"")
++
++      // Read through fileContents, so that the configuration cache sees a change to the file.
++      val local = providers.gradleProperty("signalLocalConfig").orNull
++        ?.let { groovy.json.JsonSlurper().parseText(providers.fileContents(layout.projectDirectory.file(it)).asText.get()) as Map<*, *> }
++        ?: emptyMap<String, Any>()
++      fun quoted(key: String): String {
++        val value = local[key]?.toString() ?: ""
++        require('"' !in value && '\\' !in value) { "signalLocalConfig: $key needs escaping" }
++        return "\"$value\""
++      }
++      // Each service at its own URL where the server has one; the rest at the chat server.
++      val urls = mapOf(
++        "SIGNAL_URL" to "service_url",
++        "STORAGE_URL" to "storage_url",
++        "SIGNAL_CDN_URL" to "cdn0_url",
++        "SIGNAL_CDN2_URL" to "cdn2_url",
++        "SIGNAL_CDN3_URL" to "cdn3_url",
++        "SIGNAL_CDSI_URL" to "service_url",
++        "SIGNAL_SVR2_URL" to "service_url"
++      )
++      for ((field, key) in urls) {
++        buildConfigField("String", field, quoted(if (local[key] != null) key else "service_url"))
++      }
++      buildConfigField("String[]", "UNIDENTIFIED_SENDER_TRUST_ROOTS", "new String[]{${quoted("unidentified_sender_trust_root")}}")
++      buildConfigField("String", "ZKGROUP_SERVER_PUBLIC_PARAMS", quoted("zkgroup_server_public_params"))
++      buildConfigField("String", "GENERIC_SERVER_PUBLIC_PARAMS", quoted("generic_server_public_params"))
++      buildConfigField("String", "BACKUP_SERVER_PUBLIC_PARAMS", quoted("backup_server_public_params"))
++      buildConfigField("String", "SIGNAL_CAPTCHA_URL", quoted("captcha_url"))
++      buildConfigField("String", "RECAPTCHA_PROOF_URL", quoted("captcha_url"))
++      buildConfigField("String", "LIBSIGNAL_LOCAL_ROOT_CERT", quoted("root_certificate_der"))
++      buildConfigField("int", "LIBSIGNAL_LOCAL_PORT", local["chat_port"]?.toString() ?: "0")
++      buildConfigField("int", "LIBSIGNAL_LOG_LEVEL", "org.signal.libsignal.protocol.logging.SignalProtocolLogger.DEBUG")
++    }
+   }
+ 
+   lint {
+diff --git a/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java b/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
+index d6c131b..01e7929 100644
+--- a/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
++++ b/app/src/main/java/org/thoughtcrime/securesms/dependencies/ApplicationDependencyProvider.java
+@@ -14,6 +14,7 @@ import org.signal.billing.BillingFactory;
+ import org.signal.core.models.ServiceId.ACI;
+ import org.signal.core.models.ServiceId.PNI;
+ import org.signal.core.util.AppForegroundObserver;
++import org.signal.core.util.Base64;
+ import org.signal.core.util.ByteUnit;
+ import org.signal.core.util.SleepTimer;
+ import org.signal.core.util.ThreadUtil;
+@@ -339,7 +340,13 @@ public class ApplicationDependencyProvider implements AppDependencies.Provider {
+ 
+   @Override
+   public @NonNull Network provideLibsignalNetwork(@NonNull SignalServiceConfiguration config, @NonNull NetworkProxyState proxyState) {
+-    Network network = new Network(BuildConfig.LIBSIGNAL_NET_ENV, StandardUserAgentInterceptor.USER_AGENT, RemoteConfig.getLibsignalConfigs(), Network.BuildVariant.PRODUCTION);
++    Network network;
++    if (BuildConfig.LIBSIGNAL_LOCAL_ROOT_CERT != null) {
++      int port = BuildConfig.LIBSIGNAL_LOCAL_PORT;
++      network = Network.localTestServer(StandardUserAgentInterceptor.USER_AGENT, port, port, port, port, Base64.decodeOrThrow(BuildConfig.LIBSIGNAL_LOCAL_ROOT_CERT), 2);
++    } else {
++      network = new Network(BuildConfig.LIBSIGNAL_NET_ENV, StandardUserAgentInterceptor.USER_AGENT, RemoteConfig.getLibsignalConfigs(), Network.BuildVariant.PRODUCTION);
++    }
+     LibSignalNetworkExtensions.applyConfiguration(network, config);
+ 
+     ProxyConfig proxyConfig = NetworkProxyKt.resolveProxyConfig();
+diff --git a/app/src/main/java/org/thoughtcrime/securesms/net/SequentialDns.java b/app/src/main/java/org/thoughtcrime/securesms/net/SequentialDns.java
+index e83b0a8..6c425a2 100644
+--- a/app/src/main/java/org/thoughtcrime/securesms/net/SequentialDns.java
++++ b/app/src/main/java/org/thoughtcrime/securesms/net/SequentialDns.java
+@@ -38,7 +38,7 @@ public class SequentialDns implements Dns {
+       try {
+         LinkedList<InetAddress> addresses = new LinkedList<>(dns.lookup(hostname));
+         // MOLLY: Filter out invalid addresses for Signal service hosts, except in the Dev environment
+-        if (isServiceHost && !Environment.IS_DEV) {
++        if (isServiceHost && !Environment.IS_DEV && !Environment.IS_LOCAL) {
+           if (addresses.removeIf(InetAddress::isAnyLocalAddress)) {
+             Log.w(TAG, "Ignore invalid address 0.0.0.0 while resolving hostname " + hostname);
+           }
+diff --git a/app/src/main/java/org/thoughtcrime/securesms/util/Environment.kt b/app/src/main/java/org/thoughtcrime/securesms/util/Environment.kt
+index 31ace05..045ba53 100644
+--- a/app/src/main/java/org/thoughtcrime/securesms/util/Environment.kt
++++ b/app/src/main/java/org/thoughtcrime/securesms/util/Environment.kt
+@@ -8,6 +8,8 @@ object Environment {
+ 
+   const val IS_STAGING: Boolean = BuildConfig.FLAVOR_environment == "staging"
+   const val IS_DEV: Boolean = BuildConfig.FLAVOR_environment == "dev"
++  // The testbox's server is on the device's own localhost.
++  const val IS_LOCAL: Boolean = BuildConfig.FLAVOR_environment == "local"
+ 
+   @JvmField
+   var IS_INSTRUMENTATION: Boolean = false

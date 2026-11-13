@@ -353,6 +353,28 @@ pub enum Client {
     Signalmeow,
     /// gurk-rs and Flare's backend, on the presage and libsignal-service they ship with.
     Family,
+    /// Molly, in the place of [`Client::Android`]: its container is `android` too
+    /// (testbox/molly/pod.yaml), so the box has one of the two ([`AndroidApp`]).
+    Molly,
+}
+
+/// The app on the box's Android emulator: Signal-Android, or Molly (testbox/molly,
+/// docs/onboarding-molly.md), a hardened fork of it at an older release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum AndroidApp {
+    #[default]
+    Signal,
+    Molly,
+}
+
+impl AndroidApp {
+    /// The client that puts it in the pod.
+    pub fn client(self) -> Client {
+        match self {
+            Self::Signal => Client::Android,
+            Self::Molly => Client::Molly,
+        }
+    }
 }
 
 impl Client {
@@ -427,7 +449,7 @@ enum Priority {
     Lower,
 }
 
-const IMAGES: [Image; 13] = [
+const IMAGES: [Image; 14] = [
     Image {
         name: SERVER,
         containerfile: "testbox/server/Containerfile",
@@ -502,6 +524,13 @@ const IMAGES: [Image; 13] = [
         name: "family",
         containerfile: "testbox/family/Containerfile",
         client: Some(Client::Family),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "molly",
+        containerfile: "testbox/molly/Containerfile",
+        client: Some(Client::Molly),
+        from_server: true,
         ..Image::REPOSITORY
     },
 ];
