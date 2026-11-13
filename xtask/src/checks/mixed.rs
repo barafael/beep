@@ -330,7 +330,7 @@ pub(super) fn mixed(
 
     // A group of b33p's, of all of them: what each client calls it differs (a master key, a base64
     // id, a hex id), and each learns it from what b33p writes in it.
-    let title = "testbox mixed group";
+    let title = "everyone in the mix"; // not starting with MARK: the listings are searched for it
     let group = checks.require("b33p makes a group of all the clients", || {
         b33p.act(Action::CreateGroup {
             title: title.to_owned(),
