@@ -128,9 +128,9 @@ Not measured here: b33p's memory (the earlier runs' finding 2, 2026-11-11, is un
 When signalmeow and signal-cli make first contact with each other with both bursts at once (round 1
 of the "every client writes to every other" scenario), signalmeow cannot decrypt signal-cli's
 messages from the 13th on: `failed to decrypt prekey message: 70: invalid Kyber prekey identifier`,
-8 messages (13 to 20) in each box that showed it, 2.1 s apart (signal-cli's pace). Seen in 4 of 7 fresh boxes
-without a warm-up (run 4, the 24-round soak, the group run, one of three signalmeow-only boxes; run
-5 and two of the three passed); signal-cli's resends (retry receipts, `content_hint=Resendable`)
+8 messages (13 to 20) in each box that showed it, 2.1 s apart (signal-cli's pace). Seen in 4 of 8 fresh boxes
+without a warm-up (run 4, the 24-round soak, the third group run, one of three signalmeow-only boxes;
+run 5, the second group run and two of the three signalmeow-only boxes passed); signal-cli's resends (retry receipts, `content_hint=Resendable`)
 sometimes bring them later and out of order. With each pair writing once, in turn, before the bursts
 (`TESTBOX_MIXED_WARM`, on by default): 0 of 3 signalmeow-and-signal-cli boxes, and every full run since.
 What was tried and did not hold: a lock on signalmeow's decryption, as its sends have
