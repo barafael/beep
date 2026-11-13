@@ -70,6 +70,17 @@ pub(super) async fn group_conversation(
         access.attributes == presage::libsignal_service::groups_v2::AccessRequired::Member
     });
     conversation.left = left;
+    // As Signal's apps: an ended group takes nothing more, and in an announcements-only one
+    // they drop what a non-admin sends.
+    conversation.closed = if left {
+        None
+    } else if group.terminated {
+        Some("This group was ended. It can be read, not written to.".into())
+    } else if group.announcements_only && !admin {
+        Some("Only admins can send messages to this group.".into())
+    } else {
+        None
+    };
     conversation.invited = invited;
     conversation.requested = requested;
     conversation
@@ -877,6 +888,13 @@ pub(super) async fn group_notice(
             GroupChange::InviteLinkPassword(_) if !sets_link_access => {
                 format!("{editor} reset the invite link.")
             }
+            GroupChange::AnnouncementOnly(true) => {
+                format!("{editor} let only admins send messages.")
+            }
+            GroupChange::AnnouncementOnly(false) => {
+                format!("{editor} let all members send messages.")
+            }
+            GroupChange::TerminateGroup => format!("{editor} ended the group."),
             _ => continue,
         };
         lines.push(line);

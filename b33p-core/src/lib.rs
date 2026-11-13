@@ -119,6 +119,9 @@ pub struct Conversation {
     pub members_edit_details: bool,
     /// A group we are no longer in: it can be read, not written to.
     pub left: bool,
+    /// Why nobody here may write in this group, though we are in it: an admin ended it, or only
+    /// admins may send and we aren't one. Shown where the composer would be.
+    pub closed: Option<String>,
     /// A group we are invited to (and not in yet): it can be accepted or declined.
     pub invited: bool,
     /// A group we asked to join through its invite link, waiting for an administrator.

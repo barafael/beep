@@ -616,6 +616,29 @@ async fn handle_content(
         forget_stored(manager, content).await;
         return true;
     }
+    // As Signal's apps: in a group only admins may send to, what another member sends is
+    // dropped, and so is anything sent to a group that was ended (Signal-Desktop
+    // `handleDataMessage`). A message telling of a change still counts.
+    if let ContentBody::DataMessage(data) = &content.body
+        && let Some(group) = &data.group_v2
+        && group.group_change.is_none()
+        && let Some(key) = group
+            .master_key
+            .as_deref()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        && let Ok(Some(stored)) = manager.store().group(key).await
+    {
+        use presage::libsignal_service::groups_v2::Role;
+        let admin = stored
+            .members
+            .iter()
+            .any(|m| ServiceId::Aci(m.aci) == sender && m.role == Role::Administrator);
+        if stored.terminated || (stored.announcements_only && !admin) {
+            debug!("dropped a message to a group that takes none from its sender");
+            forget_stored(manager, content).await;
+            return true;
+        }
+    }
     // What we sent from the phone carries our profile key as it is now: after the phone made
     // a new one, b33p takes it, as Signal-Desktop does when linked.
     if let ContentBody::SynchronizeMessage(SyncMessage {

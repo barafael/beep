@@ -276,6 +276,8 @@ impl Importer {
             requesting_members: Vec::new(),
             invite_link_password: snapshot.inviteLinkPassword.clone(),
             description: (!description.is_empty()).then_some(description),
+            announcements_only: snapshot.announcementsOnly,
+            terminated: snapshot.terminated,
         }
     }
 

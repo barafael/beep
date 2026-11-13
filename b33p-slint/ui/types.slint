@@ -25,6 +25,9 @@ export struct ConversationItem {
     blocked: bool,
     // A group we're no longer in.
     left: bool,
+    // Why nobody here may write in this group though we're in it (ended; only admins send), or
+    // empty.
+    closed: string,
     // A group we're invited to (and not in yet): Accept or Decline.
     invited: bool,
     // A group we asked to join through its link, waiting for an admin.
