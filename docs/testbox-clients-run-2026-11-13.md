@@ -95,6 +95,22 @@ loaded.)
    manager handed out, and a burst is sent by one process (`send-many`). Result: 52 of 52 checks, 12
    rounds, flare only.
 
+### Run 4 (all five, 8 rounds, Flare mitigated): 41 passed, 5 failed
+
+- b33p: no decrypt failure, no loss, no unexpected ERROR line. The two presage-cli losses (r5, r8) are
+  the store collision again: one `not saving a message in the place of someone else's` in b33p's log at
+  each (ts 1794544276514, 1794545198431).
+- signalmeow, at first contact in round 1: 8 messages of signal-cli's burst failed with
+  `failed to decrypt prekey message: 70: invalid Kyber prekey identifier`, and one of presage-cli's
+  burst was written down twice. Cause, from the wire and the driver: each signalmeow command was a
+  process of its own, ending a few hundred milliseconds after its work, and the first messages of a new
+  session (pre-key messages) arrived live in those processes. One handled as the process ended spent its
+  one-time Kyber key (the store deleted it) without saving the session; the sender, which has no
+  acknowledgement of its session, goes on sending pre-key messages that name that key, and each fails;
+  or, if the envelope was not acknowledged, it is delivered again and the driver's record, which is only
+  appended to, has it twice. The same family as Flare's. The driver's `serve` mode (one process, connected
+  all the time) is now what the mixed phase uses for signalmeow.
+
 ## Wire observations (run 2, `--capture`)
 
 - **The 409 on `PUT /v1/messages/{aci}`** is each sender's first send to an account that has a linked
