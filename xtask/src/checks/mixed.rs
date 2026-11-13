@@ -223,6 +223,34 @@ fn texts_in(listing: &str) -> Vec<String> {
         .collect()
 }
 
+/// How hard the machine the box runs on is pressed, as the kernel counts it: the load average,
+/// and the share of the last minute that tasks stalled on IO ("some") and that every task did
+/// ("full"). A run that shares the machine with a build is slowed by it; a database that waits on
+/// the disk longer than its busy timeout says "database is locked". This is what to read before
+/// calling such a failure the box's.
+fn host_strain() -> String {
+    let load = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|text| text.split_whitespace().next().map(str::to_owned))
+        .unwrap_or_else(|| "?".to_owned());
+    let io = std::fs::read_to_string("/proc/pressure/io").unwrap_or_default();
+    let avg60 = |kind: &str| {
+        io.lines()
+            .find(|line| line.starts_with(kind))
+            .and_then(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("avg60="))
+            })
+            .unwrap_or("?")
+            .to_owned()
+    };
+    format!(
+        "load {load} (1 min), IO stalled {}% of the last minute for some tasks, {}% for all",
+        avg60("some"),
+        avg60("full")
+    )
+}
+
 fn setting(name: &str, default: usize) -> Result<usize, Failure> {
     Ok(env_number::<usize>(name)?.unwrap_or(default))
 }
@@ -721,6 +749,7 @@ pub(super) fn mixed(
             amend::amendments(checks, &mix, &mut b33p, round, &tag, count, &mut kept);
         }
 
+        println!("  host after round {round}: {}", host_strain());
         match sample(containers, B33P, &mut b33p) {
             Ok(taken) => {
                 println!("  b33p after round {round}: {taken}");
