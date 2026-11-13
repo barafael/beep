@@ -381,6 +381,14 @@ impl<'pod> Signalmeow<'pod> {
         path: &str,
         text: &str,
     ) -> Result<(), SignalmeowError> {
+        if let Some(daemon) = &self.daemon {
+            return self
+                .ask(
+                    daemon,
+                    serde_json::json!({"op": "send-file", "to": recipient_aci, "path": path, "text": text}),
+                )
+                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+        }
         self.driver("send-file", &[recipient_aci, path, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
     }
@@ -391,6 +399,14 @@ impl<'pod> Signalmeow<'pod> {
         master_key: &str,
         text: &str,
     ) -> Result<(), SignalmeowError> {
+        if let Some(daemon) = &self.daemon {
+            return self
+                .ask(
+                    daemon,
+                    serde_json::json!({"op": "send-group", "master_key": master_key, "text": text}),
+                )
+                .map_err(|error| SignalmeowError::Serve(error.to_string()));
+        }
         self.driver("send-group", &[master_key, text], "")
             .map(|printed| drop(self.noting_lost(printed)))
     }

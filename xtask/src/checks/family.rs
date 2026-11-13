@@ -108,6 +108,8 @@ fn once_in_order(client: &'static str, shown: &str, texts: &[String]) -> Result<
 /// container. Registers as an account of its own, as Flare does when it isn't linked.
 pub(super) struct FlareBox<'pod> {
     containers: &'pod Pod,
+    /// What the commands that receive (`send`, `sync`) printed since [`Self::take_heard`].
+    heard: std::sync::Mutex<String>,
 }
 
 /// What presage logs (at ERROR) of an envelope it could not open.
@@ -117,7 +119,20 @@ const FLARE_PHONE: &str = "+15555550450";
 
 impl<'pod> FlareBox<'pod> {
     pub(super) fn new(containers: &'pod Pod) -> Self {
-        Self { containers }
+        Self {
+            containers,
+            heard: std::sync::Mutex::default(),
+        }
+    }
+
+    /// What the commands that received printed since this was last called.
+    pub(super) fn take_heard(&self) -> String {
+        std::mem::take(
+            &mut *self
+                .heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn cli(&self, arguments: &[&str]) -> Result<String, FamilyError> {
@@ -138,6 +153,12 @@ impl<'pod> FlareBox<'pod> {
                 status: output.status,
                 output: format!("{stdout}{stderr}"),
             });
+        }
+        if what.starts_with("flare-box send") || what == "flare-box sync" {
+            self.heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&stdout);
         }
         // presage logs a message it can't open and goes on, so the command succeeds: what it
         // couldn't open is a message lost, which the check every phase ends with reports.
@@ -280,7 +301,7 @@ pub(super) fn flare(
         primary_aci,
         mut b33p,
     } = plain_box(checks, containers, sockets)?;
-    let flare = FlareBox { containers };
+    let flare = FlareBox::new(containers);
     let peer_aci = peer.aci()?;
     let flare_aci = checks.require("Flare's backend registers as an account of its own", || {
         Ok(flare.register()?)

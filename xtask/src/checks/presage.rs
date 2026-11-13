@@ -113,6 +113,9 @@ pub(super) enum PresageError {
 pub(super) struct Presage<'pod> {
     pub(super) containers: &'pod Pod,
     account: Account,
+    /// What the commands that receive (`send`, `sync`) printed since [`Self::take_heard`]: a send
+    /// receives while it sends, and what arrives then is printed to it, not to a later `sync`.
+    heard: std::sync::Mutex<String>,
 }
 
 /// The time of the message a line of presage-cli's says it received or sent ("From <who> @ 1793…:
@@ -133,7 +136,18 @@ impl<'pod> Presage<'pod> {
         Self {
             containers,
             account,
+            heard: std::sync::Mutex::default(),
         }
+    }
+
+    /// What the commands that received printed since this was last called.
+    pub(super) fn take_heard(&self) -> String {
+        std::mem::take(
+            &mut *self
+                .heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// The account's name, as the clients show it.
@@ -169,6 +183,10 @@ impl<'pod> Presage<'pod> {
     /// got to. One that is stored is no loss but a redelivery: presage-cli exited after storing
     /// it and before acknowledging it.
     fn noting_lost(&self, output: String) -> String {
+        self.heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_str(&output);
         let account = self.account.name();
         for timestamp in output.lines().filter_map(printed_at) {
             self.containers.note_printed(&account, timestamp);

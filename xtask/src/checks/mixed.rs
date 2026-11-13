@@ -69,7 +69,11 @@ impl Peer<'_> {
     /// Receives what the server has queued for it.
     fn pull(&self) -> Result<(), Failure> {
         match &self.kind {
-            Kind::Presage(client) => self.note_printed(&client.sync()?),
+            Kind::Presage(client) => {
+                client.sync()?;
+                // The sync's, and what the sends since received (see `Presage::heard`).
+                self.note_printed(&client.take_heard());
+            }
             Kind::SignalCli(client) => {
                 let received = client.sync()?;
                 self.note_printed(
@@ -81,7 +85,10 @@ impl Peer<'_> {
                 );
             }
             Kind::Signalmeow(client) => self.note_printed(&client.sync()?),
-            Kind::Flare(client) => self.note_printed(&client.sync()?),
+            Kind::Flare(client) => {
+                client.sync()?;
+                self.note_printed(&client.take_heard());
+            }
         }
         Ok(())
     }
@@ -145,7 +152,7 @@ impl Peer<'_> {
 
     /// What `held` is held against: `expected` without the texts that it lacks only because the
     /// client's store keeps one message of two sent at the same millisecond (see
-    /// [`Self::printed`]): a text the client printed exactly once, and the store doesn't hold. A
+    /// [`Self::printed`]): a text the client printed (received), and the store doesn't hold. A
     /// text it never printed stays: that one was lost. Then the texts left out.
     fn owed(&self, held: &[String], expected: &[String]) -> (Vec<String>, Vec<String>) {
         let printed = self
@@ -155,7 +162,7 @@ impl Peer<'_> {
         expected.iter().cloned().partition(|text| {
             held.contains(text)
                 || !matches!(self.kind, Kind::Presage(_) | Kind::Flare(_))
-                || printed.iter().filter(|seen| *seen == text).count() != 1
+                || !printed.contains(text)
         })
     }
 
