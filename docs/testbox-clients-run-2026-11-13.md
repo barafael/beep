@@ -102,7 +102,7 @@ loaded.)
   each (ts 1794544276514, 1794545198431).
 - signalmeow, at first contact in round 1: 8 messages of signal-cli's burst failed with
   `failed to decrypt prekey message: 70: invalid Kyber prekey identifier`, and one of presage-cli's
-  burst was written down twice. Cause, from the wire and the driver: each signalmeow command was a
+  burst was written down twice. Probable cause (the mechanism is inferred, not seen; run 5 with `serve` tests it): each signalmeow command was a
   process of its own, ending a few hundred milliseconds after its work, and the first messages of a new
   session (pre-key messages) arrived live in those processes. One handled as the process ended spent its
   one-time Kyber key (the store deleted it) without saving the session; the sender, which has no
