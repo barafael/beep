@@ -123,6 +123,32 @@ one before (the three bursts: 58.0, 66.2 and 144.2 s in every round from the sec
 signal-cli's one-shot `send` is a JVM start, about 1.5 s a message; b33p's own typing is not the limit.
 Not measured here: b33p's memory (the earlier runs' finding 2, 2026-11-11, is untouched by this).
 
+### The first contact of signal-cli and signalmeow (not b33p; not root-caused)
+
+When signalmeow and signal-cli make first contact with each other with both bursts at once (round 1
+of the "every client writes to every other" scenario), signalmeow cannot decrypt signal-cli's
+messages from the 13th on: `failed to decrypt prekey message: 70: invalid Kyber prekey identifier`,
+8 messages (13 to 20) in each box that showed it, 2.1 s apart (signal-cli's pace). Seen in 4 of 7 fresh boxes
+without a warm-up (run 4, the 24-round soak, the group run, one of three signalmeow-only boxes; run
+5 and two of the three passed); signal-cli's resends (retry receipts, `content_hint=Resendable`)
+sometimes bring them later and out of order. With each pair writing once, in turn, before the bursts
+(`TESTBOX_MIXED_WARM`, on by default): 0 of 3 signalmeow-and-signal-cli boxes, and every full run since.
+What was tried and did not hold: a lock on signalmeow's decryption, as its sends have
+(`encryptionLock`; sending.go takes it, receiving.go's `decryptEnvelope` does not): 1 of 3 boxes
+still failed, so the patch is not kept. Not looked at: signal-cli's own log of what it sent
+(its store is the JVM's), and why the key is the same id (70) in every box. The count 8 is
+constant, which a race would not give.
+
+### Groups
+
+The group scenarios (b33p makes a group of all four clients; each writes a burst to it at once; b33p
+writes a burst) passed in the full run: 41 of 41 over 3 rounds, with the clients holding each other's
+bursts once and in order (each client's own account of what it received; a sender process that
+also received counts: presage-cli seemed to lack signal-cli's first group message of each
+burst, which its store held, because a `send-to-group` process printed it and the check dropped that
+output). A group's id is a master key for presage-cli and signalmeow, a base64 id for
+signal-cli and a hex id for Flare.
+
 ## What the other clients say about b33p's behaviours
 
 Each held up in this run against a client without it, so it is shown needed, or not shown unneeded:
