@@ -8,8 +8,8 @@ b33p, so code may be ported, not only ideas. A ported commit says so in its body
 b33p is far ahead on the protocol: groups, stories, sender keys, history transfer, storage service.
 sigwin is ahead on the **conversation's feel**, **memory** and **Windows integration**. Its fixes
 live as `// sigwin patch` hunks under `vendor/` (listed in its `vendor/PATCHES.md`); where we take
-one, it goes to our Slint fork's `langis/integration` and upstream as a draft PR, not into a
-vendor directory.
+one, it goes to our Slint fork's `slint/integration-branch` (a line in its `integration.sh`) and
+upstream as a draft PR, not into a vendor directory.
 
 ## Already in b33p (nothing to do)
 
@@ -48,7 +48,7 @@ Each is a test before it is a change: if b33p doesn't have the bug, record that 
    same rows and the view never moves up (sigwin `vendor/i-slint-core/model/repeater.rs:404`). It is
    still unfixed on Slint master, at our pin `f0c244a`, `internal/core/model/repeater.rs:510`. First
    find out whether b33p hits it: switch to a short chat after a long one, and shrink the window at
-   the bottom of a chat. Either way, add a Slint test, merge the fix into `langis/integration`, and
+   the bottom of a chat. Either way, add a Slint test, add the fix's branch to `slint/integration-branch`, and
    open an upstream draft PR crediting sigwin.
 2. **Ctrl shortcuts with Caps Lock on, or during IME composition** (`e3055df`). Slint's key text is
    `"C"` with Caps Lock on, so a check against `"c"` misses. Go through b33p's `FocusScope` handlers

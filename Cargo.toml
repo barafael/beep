@@ -26,16 +26,15 @@ crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 thiserror = "2"
 
-# Branch langis/integration of our Slint fork, which is upstream master now (as of 2026-11-09,
-# master `d600063` merged in), nothing more: slint-ui/slint#13985 (selecting text in a
-# `StyledText`) has landed.
-# Merge master in when it moves; go back to crates.io once a release carries it.
-slint = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
+# Branch slint/integration-branch of our Slint fork: upstream master plus our open pull requests
+# (and edualc's `edualc-text`); the branch's `integration.sh` lists them and rebuilds it.
+# Go back to crates.io once a release carries what b33p uses.
+slint = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "badd8ea1d1d067cfb279e4606b5822fa08197ced" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
 # requests, rebuilt 2026-11-09 as one commit per theme, new code in modules of their own

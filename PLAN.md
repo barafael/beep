@@ -118,8 +118,8 @@ By how much they matter, most first:
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart
   (presage overwrites the stored message first); a group counts as read once any member read a
   message; pinned chats move by menu, not by dragging.
-- **Selecting text in messages:** done through our Slint fork (barafael/slint, branch
-  `langis/integration`: master plus slint-ui/slint#13985, a `selectable` `StyledText` with
+- **Selecting text in messages:** done through Slint master since slint-ui/slint#13985
+  landed (pinned from our fork's `slint/integration-branch` until a release has it): a `selectable` `StyledText` with
   selection colours, `has-selection`, `set-selection-offsets`, `select-all`, `clear-selection`
   and `copy()`, the read-only subset of what `TextEdit` exposes; a click that doesn't drag still
   follows a link, and a selecting press takes the focus, as in a `TextInput`), pinned as a git

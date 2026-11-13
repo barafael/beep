@@ -40,7 +40,7 @@ Both are fixed in Slint, and the app has nothing of its own for it:
 2. slint-ui/slint#14841: the thumb of the Fluent, Cupertino and Cosmic scrollbars no longer animates
    its width and height. Fluent and Cupertino animate the thickness through `size` / `pad` already.
 
-Both are merged into our fork's `langis/integration` (`2a802138d`), which the workspace pins.
+Both are merged into our fork's integration branch (`2a802138d`), which the workspace pins.
 (First attempt: a scrollbar drawn by the app over a `ListView` with `always-off`, see commit
 `0c81f02`; reverted once the Slint change measured as well.)
 
@@ -109,7 +109,7 @@ batches in FemtoVG), not app work.
 ## Left open
 
 - Both Slint PRs are drafts upstream; until they are merged and released, the fork's
-  `langis/integration` carries them.
+  `slint/integration-branch` carries them.
 - Other lists with the Fluent bar (chat list, media panels, emoji and sticker pickers) had the same
   animation but did not grow while the window was idle.
 - Panels were not profiled separately (they are full-window renders like the rest).
