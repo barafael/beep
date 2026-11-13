@@ -123,6 +123,23 @@ one before (the three bursts: 58.0, 66.2 and 144.2 s in every round from the sec
 signal-cli's one-shot `send` is a JVM start, about 1.5 s a message; b33p's own typing is not the limit.
 Not measured here: b33p's memory (the earlier runs' finding 2, 2026-11-11, is untouched by this).
 
+### The 24-round soak: 93 passed, 3 failed, 7,260 s (2 hours)
+
+All five clients (signalmeow on `serve`, Flare's driver mitigated, no warm-up, no groups: the binary
+before those), 24 rounds of the three bursts, 8,160 messages sent among the six.
+The three failures are explained: round 1's signalmeow first contact (below), which also fails "no
+client lost a message" by its 8 decryption errors; and round 14, b33p's 004 to presage-cli lost to
+the same-millisecond store collision (one guard warning in b33p's log; the binary did not yet tell
+collisions). b33p: no decrypt failure, no unexpected ERROR line, "b33p killed, started again: it still
+shows every burst, each in order, once" passed over all 24 rounds (450 s), and the growth check
+passed. After each round (`RssAnon`): 81 MiB after round 1; 85 after 3; 91 after 5; 90 to 91 through
+round 17; 113 to 115 from round 18 to 24 (steps, no slope: +10 MiB at rounds 3 to 5, +23 at 18);
+46 open files all the way; the harness's snapshot answered in 2.6 ms after round 1 and 32 ms after
+round 24, about 1.2 ms for each round's 340 messages stored (a harness snapshot, which reads the open chat's
+loaded messages and the conversation list; whether the app's own list loads slow down the same way is not
+measured). The earlier soak's finding 2 (memory growth, 0.7 MiB a minute) is not seen at this rate of
+messages: about 3.4 messages a second here, flat apart from two steps.
+
 ### The first contact of signal-cli and signalmeow (not b33p; not root-caused)
 
 When signalmeow and signal-cli make first contact with each other with both bursts at once (round 1
