@@ -164,6 +164,16 @@ sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a s
 which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
 ([pending/stress.md](../pending/stress.md)).
 
+`signal-cli` runs only when named, on a box of its own: b33p linked to a presage-cli primary, with
+a presage-cli peer and [signal-cli](https://github.com/AsamK/signal-cli), registered as an account
+of its own. signal-cli is Java on Turasa's libsignal-service-java and libsignal-net, neither
+presage nor libsignal-service-rs, so it checks b33p against a third implementation: text both ways
+with b33p and with presage-cli, delivery receipts, a picture both ways (the bytes compared), ten
+texts in a row, a group b33p makes of it and the peer, and signal-cli linked to the primary b33p is
+linked to. Its image builds libsignal and signal-cli from source
+([docs/onboarding-signal-cli.md](../docs/onboarding-signal-cli.md)), a long build the first time;
+`up --signal-cli` plays a box with its container.
+
 `tour` runs only when named, on a box of several b33ps (`--b33ps <N>`, three by default), each
 linked to a presage-cli primary of its own and writing to the others: every feature b33p has,
 each `TESTBOX_TOUR_REPEAT` times (two), in an order drawn from a seed it prints, which
@@ -234,6 +244,7 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |
 | `vnc/`, `viewer/`, `web/`, `shot/` | The displays: the VNC client, the window, the page, the screenshots |
 | `presage/`, `stickers/` | presage-cli at b33p's pin, and the tool that seeds a sticker pack |
+| `signal-cli/` | signal-cli at a release, built with `patches/signal-cli-local.patch` on libsignal with `patches/libsignal-cli-local.patch` |
 | `nightly/` | A tour run on main in a worktree and box of its own, and the systemd units to run it nightly |
 | `logexp/` | The log-driver measurements behind `container-logs.md` |
 | `../xtask` | `cargo testbox` itself: bringing the pod up and down, and the phases' checks |

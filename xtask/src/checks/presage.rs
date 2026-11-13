@@ -211,7 +211,7 @@ impl<'pod> Presage<'pod> {
     }
 
     /// The account's ACI, from presage-cli's `whoami` (`WhoAmIResponse { aci: <uuid>, ... }`).
-    fn aci(&self) -> Result<String, PresageError> {
+    pub(super) fn aci(&self) -> Result<String, PresageError> {
         let whoami = self.cli("whoami", &[], "")?;
         whoami
             .split_once("aci: ")

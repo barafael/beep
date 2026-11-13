@@ -245,6 +245,9 @@ pub enum Service {
     Storage,
     Cdn0,
     Presage,
+    /// signal-cli, with `--signal-cli` (testbox/signal-cli): a client of neither presage's nor
+    /// libsignal-service-rs's making.
+    SignalCli,
     /// The `n`th b33p of [`Pod::play`]'s: every box has the first, a mesh several.
     B33p(u8),
     Desktop,
@@ -266,6 +269,7 @@ impl Service {
             Self::Storage => "storage".to_owned(),
             Self::Cdn0 => "cdn0".to_owned(),
             Self::Presage => "presage".to_owned(),
+            Self::SignalCli => "signal-cli".to_owned(),
             Self::B33p(0) => "b33p".to_owned(),
             Self::B33p(n) => format!("b33p-{n}"),
             Self::Desktop => "desktop".to_owned(),
@@ -337,6 +341,8 @@ impl Ready {
 pub enum Client {
     Desktop,
     Android,
+    #[strum(serialize = "signal-cli")]
+    SignalCli,
 }
 
 impl Client {
@@ -411,7 +417,7 @@ enum Priority {
     Lower,
 }
 
-const IMAGES: [Image; 10] = [
+const IMAGES: [Image; 11] = [
     Image {
         name: SERVER,
         containerfile: "testbox/server/Containerfile",
@@ -468,6 +474,12 @@ const IMAGES: [Image; 10] = [
         containerfile: "testbox/android/Containerfile",
         client: Some(Client::Android),
         from_server: true,
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "signal-cli",
+        containerfile: "testbox/signal-cli/Containerfile",
+        client: Some(Client::SignalCli),
         ..Image::REPOSITORY
     },
 ];
@@ -1681,6 +1693,22 @@ mod tests {
         assert!(default.iter().all(|claim| !two.contains(claim)));
         // What an older xtask's wipe takes, `name=^b33p-testbox-`, is none of an instance's.
         assert!(two.iter().all(|claim| !claim.starts_with("b33p-testbox-")));
+    }
+
+    /// signal-cli's container is in the pod only when asked for, its volume in every box's (so
+    /// that a wipe takes it).
+    #[test]
+    fn signal_cli_is_there_only_when_asked_for() {
+        let pod = Pod::new(&repo(), Some("cli")).unwrap();
+        let without = pod.render(&[Client::Desktop], 1).unwrap();
+        let with = pod.render(&[Client::SignalCli], 1).unwrap();
+        assert!(!without.contains("name: \"signal-cli\",\n        image"));
+        assert!(with.contains("image: \"localhost/b33p-testbox.cli-signal-cli\""));
+        for rendered in [&without, &with] {
+            assert!(claims(rendered).contains(&"b33p-testbox.cli-signal-cli".to_owned()));
+        }
+        assert_eq!(Service::SignalCli.name(), "signal-cli");
+        assert!(<Client as std::str::FromStr>::from_str("signal-cli").is_ok());
     }
 
     #[test]

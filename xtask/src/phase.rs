@@ -1,6 +1,6 @@
 //! `cargo testbox test`'s phases, by the box they run on: their names and the order they run in
-//! are those of [`LinkedPhase`]'s, [`AndroidPhase`]'s, [`StressPhase`]'s and [`MeshPhase`]'s
-//! variants.
+//! are those of [`LinkedPhase`]'s, [`AndroidPhase`]'s, [`StressPhase`]'s, [`MeshPhase`]'s and
+//! [`InteropPhase`]'s variants.
 
 use std::sync::LazyLock;
 
@@ -67,6 +67,17 @@ pub(crate) enum MeshPhase {
     Tour,
 }
 
+/// The phases on the box of the clients that are not presage-cli, Desktop or Android (xtask/src/
+/// checks/setup.rs `InteropBox`), and only when named: each client is another implementation of
+/// Signal's protocol, built from its own source, and its image is a long build.
+#[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
+pub(crate) enum InteropPhase {
+    // signal-cli (Java, libsignal-service-java): registers, links, sends and receives, in
+    // groups too, with b33p and presage-cli.
+    #[strum(serialize = "signal-cli")]
+    SignalCli,
+}
+
 /// `test`'s phases, by the fixture they run on: the linked box's, the Android box's (one box each,
 /// or with `--fresh` one per phase), then the stress phases', each on a box of its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -75,6 +86,7 @@ pub(crate) enum Phase {
     Android(AndroidPhase),
     Stress(StressPhase),
     Mesh(MeshPhase),
+    Interop(InteropPhase),
 }
 
 /// Every phase, in the order they run.
@@ -86,6 +98,7 @@ static PHASES: LazyLock<Vec<Phase>> = LazyLock::new(|| {
         .chain(AndroidPhase::VARIANTS.iter().copied().map(Phase::Android))
         .chain(StressPhase::VARIANTS.iter().copied().map(Phase::Stress))
         .chain(MeshPhase::VARIANTS.iter().copied().map(Phase::Mesh))
+        .chain(InteropPhase::VARIANTS.iter().copied().map(Phase::Interop))
         .collect()
 });
 
@@ -100,6 +113,7 @@ impl ValueEnum for Phase {
             Self::Android(phase) => phase.into(),
             Self::Stress(phase) => phase.into(),
             Self::Mesh(phase) => phase.into(),
+            Self::Interop(phase) => phase.into(),
         };
         Some(PossibleValue::new(name))
     }

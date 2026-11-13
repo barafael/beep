@@ -8,10 +8,12 @@ use std::time::{Duration, Instant};
 use b33p_harness::{Action, ScreenSnapshot};
 
 use super::b33p::{
-    REQUEST_ACCEPTED, accept_request, b33p_chat, own_aci, peer_text_reaches, unlock, wait_for_chats,
+    REQUEST_ACCEPTED, accept_request, b33p_chat, chat_previewing, own_aci, peer_text_reaches,
+    unlock, wait_for_chats,
 };
 use super::clients::{Android, Desktop, android_shows};
 use super::presage::{Account, Presage};
+use super::signal_cli::{self, SignalCli};
 use super::{Checks, Failure, HISTORY_PATIENCE, PATIENCE, START};
 use crate::Sockets;
 use crate::harness::{Harness, HarnessError};
@@ -120,6 +122,70 @@ pub(super) fn plain_box<'pod>(
         peer,
         primary_aci,
         b33p,
+    })
+}
+
+/// The first messages that make signal-cli's and the peer's accounts known to b33p, which then
+/// accepts them as message requests.
+pub(super) const CLI_FIRST: &str = "testbox interop: signal-cli's first message";
+const PEER_FIRST: &str = "testbox interop: the peer's first message";
+
+/// b33p linked to a presage-cli primary, a presage-cli peer and a signal-cli account of its own
+/// (registered, a primary device), each of the two accepted as a chat in b33p after writing to the
+/// primary's account first (contact discovery isn't in the box).
+pub(super) struct InteropBox<'pod> {
+    pub(super) primary: Presage<'pod>,
+    pub(super) peer: Presage<'pod>,
+    pub(super) primary_aci: String,
+    pub(super) peer_aci: String,
+    pub(super) b33p: Harness,
+    pub(super) cli: SignalCli<'pod>,
+    pub(super) cli_aci: String,
+    /// b33p's chats with the two.
+    pub(super) cli_chat: String,
+    pub(super) peer_chat: String,
+}
+
+pub(super) fn interop_box<'pod>(
+    checks: &mut Checks,
+    containers: &'pod Pod,
+    sockets: &Sockets,
+) -> Result<InteropBox<'pod>, Failure> {
+    let PlainBox {
+        primary,
+        peer,
+        primary_aci,
+        mut b33p,
+    } = plain_box(checks, containers, sockets)?;
+    let cli = SignalCli::new(containers, signal_cli::Account::Cli);
+    let cli_aci = checks.require("signal-cli registers", || Ok(cli.register()?))?;
+    let peer_aci = peer.aci()?;
+    let cli_chat = checks.require("text from signal-cli reaches b33p", || {
+        cli.send(&primary_aci, CLI_FIRST)?;
+        Ok(chat_previewing(&mut b33p, CLI_FIRST)?)
+    })?;
+    checks.require(
+        "signal-cli's first message is a message request, accepted",
+        || Ok(accept_request(&mut b33p, &cli_chat)?),
+    )?;
+    let peer_chat = checks.require("text from the peer reaches b33p", || {
+        peer.send(&primary_aci, PEER_FIRST)?;
+        Ok(chat_previewing(&mut b33p, PEER_FIRST)?)
+    })?;
+    checks.require(
+        "the peer's first message is a message request, accepted",
+        || Ok(accept_request(&mut b33p, &peer_chat)?),
+    )?;
+    Ok(InteropBox {
+        primary,
+        peer,
+        primary_aci,
+        peer_aci,
+        b33p,
+        cli,
+        cli_aci,
+        cli_chat,
+        peer_chat,
     })
 }
 

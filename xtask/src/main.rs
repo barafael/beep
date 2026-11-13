@@ -78,10 +78,13 @@ enum Command {
         /// Signal-Android on an emulator.
         #[arg(long)]
         android: bool,
+        /// signal-cli (Java, libsignal-service-java), which the checks run in its container.
+        #[arg(long)]
+        signal_cli: bool,
         #[command(flatten)]
         b33p: B33pOptions,
     },
-    /// Runs the phases' checks, every phase's if none is named but the stress and mesh phases'.
+    /// Runs the phases' checks, every phase's if none is named but the stress, mesh and interop phases'.
     ///
     /// Builds the images, the Android image while the linked box runs, each build's output in
     /// target/testbox-build. The phases on one setup share a box (without `--fresh`): the pod
@@ -139,7 +142,7 @@ enum Command {
 /// What `test` and `run` run, and how.
 #[derive(clap::Args)]
 pub(crate) struct TestOptions {
-    /// The phases; all but the stress and mesh phases if none.
+    /// The phases; all but the stress, mesh and interop phases if none.
     pub(crate) phases: Vec<Phase>,
     /// Also takes each client's display after each check, into the record beside the
     /// containers' logs.
@@ -213,9 +216,14 @@ fn main() -> ExitCode {
         Command::Up {
             desktop,
             android,
+            signal_cli,
             b33p,
         } => {
-            let clients = [(desktop, Client::Desktop), (android, Client::Android)];
+            let clients = [
+                (desktop, Client::Desktop),
+                (android, Client::Android),
+                (signal_cli, Client::SignalCli),
+            ];
             let clients: Vec<Client> = clients
                 .into_iter()
                 .filter_map(|(asked, client)| asked.then_some(client))
