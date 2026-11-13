@@ -111,7 +111,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # presage's integration branch follows) and #490 (idle connections dropped before the servers drop
 # them, and a GET that meets one closing under it sent again (a group fetch failed so, 30 s after
 # the last)) and #491 (a replenishment's pre-keys handed to the store at once, so that it can save
-# them in one transaction) and #492 (the account's read-receipt setting in the provision message, and a linked device's registration IDs from the whole range, not 1..256),
+# them in one transaction, and the signed and last-resort keys made anew every day and a half) and #492 (the account's read-receipt setting in the provision message, and a linked device's registration IDs from the whole range, not 1..256),
 # #493 (stories sent as stories, `?story=true`, and only sealed), #494 (a keepalive every 30 s,
 # as Signal's apps send), #495 (`Accept-Language` on every request), #496 (a group change
 # decrypted once the server's signature shows it), #497 (a group's changes read from the
@@ -130,7 +130,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "bec18f450b49c7c8ac3ed3003a6e1f2bb1987557" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "1cc8f8358d0b3db246d9ff7821764e97101ffdee" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when

@@ -29,4 +29,4 @@ png = "0.18"
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "bec18f450b49c7c8ac3ed3003a6e1f2bb1987557" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "1cc8f8358d0b3db246d9ff7821764e97101ffdee" }
