@@ -200,6 +200,11 @@ pub(super) enum Notice {
     #[error("Receiving messages failed; trying again.")]
     ReceivingFailed,
     #[error(
+        "Your phone hasn't been connected to Signal for a while. Open Signal on it, or this \
+         device may be unlinked."
+    )]
+    IdlePhone,
+    #[error(
         "This version of b33p has expired: Signal no longer works with it. Install the newest \
          version to send and receive again; the messages here can still be read."
     )]
@@ -214,7 +219,7 @@ impl crate::Classified for Notice {
     fn kind(&self) -> crate::ErrorKind {
         use crate::ErrorKind::{Refused, Storage, Unreachable};
         match self {
-            Self::TransferInterrupted | Self::ReceivingFailed => Unreachable,
+            Self::TransferInterrupted | Self::ReceivingFailed | Self::IdlePhone => Unreachable,
             Self::TransferFailed { kind } => *kind,
             Self::Removed | Self::QrNotDrawn | Self::Expired => Refused,
             Self::OrderedSendingStopped => Storage,

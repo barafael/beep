@@ -76,13 +76,14 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d2
 #        sealed and with the group's sender key (#448); our own profile key replaceable as the
 #        primary changes it, `Manager::set_profile_key` (#503)
 #   a group's "only admins send" and "ended" kept, from its state and its changes (#493)
+#   what the server warned of on connecting, `Manager::server_alerts` (no PR yet)
 # The branch before the rebuild is langis/integration-2026-11-09.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "2b2a14786b4a49519a9624d32b781d5485961c6b" }
+presage = { git = "https://github.com/barafael/presage", rev = "ad2441ba6f7b7a8f5e949567e95bcd77241fd98d" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "2b2a14786b4a49519a9624d32b781d5485961c6b", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "ad2441ba6f7b7a8f5e949567e95bcd77241fd98d", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -124,13 +125,14 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # carrying only a decryption error message (branch fix/sealed-plaintext, no PR yet), #476 also
 # sends a transcript only for a message that reached someone, and doesn't fail a delivered message
 # when the transcript fails, and,
-# without a PR yet, a group send with a sender key in one request.
+# without a PR yet, a group send with a sender key in one request, and what the server warns of
+# on connecting (`SignalWebSocket::alerts`, `X-Signal-Alert`).
 # Landed upstream and dropped from the branch: #474 (drop sync messages from other
 # accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
 # history download isn't cut off).
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "1cc8f8358d0b3db246d9ff7821764e97101ffdee" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "4cad93e8990b97ebf0d585185cb401d7639951ba" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when

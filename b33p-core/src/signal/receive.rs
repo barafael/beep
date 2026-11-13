@@ -267,6 +267,18 @@ pub(super) async fn handle_incoming(
     match incoming {
         Incoming::Connected => {
             kept.receipts.live = false;
+            // The server warns when the phone hasn't been seen for a while: it may then remove
+            // this device, and Signal's apps tell their user before.
+            if manager
+                .server_alerts()
+                .await
+                .iter()
+                .any(|alert| alert == "idle-primary-device")
+            {
+                warn!("Signal says the phone hasn't been seen for a while");
+                ctx.events
+                    .send(Event::Error(super::lifecycle::Notice::IdlePhone.into()));
+            }
             ctx.events.sent(Event::Connected)
         }
         Incoming::Reconnecting => ctx.events.sent(Event::Reconnecting),
