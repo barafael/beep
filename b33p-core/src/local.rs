@@ -383,6 +383,12 @@ const SCHEMA: &[&str] = &[
         key TEXT PRIMARY KEY NOT NULL,
         value INTEGER NOT NULL
     )",
+    // The whole list of whom we block, as our devices last said it (an encoded
+    // `SyncMessage.Blocked`): what b33p has no chat for is kept in it, and sent back.
+    "CREATE TABLE IF NOT EXISTS b33p_blocked_list (
+        id INTEGER PRIMARY KEY CHECK (id = 0),
+        list BLOB NOT NULL
+    )",
 ];
 
 /// Columns added to tables after they first shipped: table, column, and how to add it.
@@ -665,6 +671,25 @@ impl LocalStore {
     /// Remembers that the server called `build` too old.
     pub(crate) async fn set_expired_build(&self, build: i64) -> Result<(), sqlx::Error> {
         set_meta(&self.db, "expired_build", build).await
+    }
+
+    /// The whole list of whom we block, as our devices last said it, encoded.
+    pub(crate) async fn blocked_list(&self) -> Result<Option<Vec<u8>>, sqlx::Error> {
+        sqlx::query_scalar("SELECT list FROM b33p_blocked_list WHERE id = 0")
+            .fetch_optional(&self.db)
+            .await
+    }
+
+    /// Replaces the whole list of whom we block.
+    pub(crate) async fn set_blocked_list(&self, list: &[u8]) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO b33p_blocked_list (id, list) VALUES (0, ?)
+             ON CONFLICT(id) DO UPDATE SET list = excluded.list",
+        )
+        .bind(list)
+        .execute(&self.db)
+        .await
+        .map(drop)
     }
 
     /// Blocks or unblocks conversations, changing nothing else about them; their settings.
