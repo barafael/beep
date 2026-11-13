@@ -380,6 +380,11 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
         self.cli("list-messages", &["-u", aci], "")
     }
 
+    /// What the store holds of the group with `master_key` (hex), as [`Self::messages_with`] lists.
+    pub(super) fn messages_in_group(&self, master_key: &str) -> Result<String, PresageError> {
+        self.cli("list-messages", &["-k", master_key], "")
+    }
+
     pub(super) fn sync(&self) -> Result<String, PresageError> {
         self.cli("sync", &["--stop-after-empty-queue"], "")
             .map(|received| self.noting_lost(received))

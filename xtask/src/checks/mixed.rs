@@ -197,6 +197,24 @@ impl Peer<'_> {
         }
     }
 
+    /// The texts of the phase the client holds in the group `group` (as [`Self::group_ref`] gave
+    /// it), in the order it holds them. presage-cli and Flare run a process a command, which can
+    /// end after storing a message and before printing it, so theirs is their store's listing;
+    /// what signal-cli and signalmeow printed is what they received (one process that stays, and
+    /// one whose record is of what it handled).
+    fn held_in_group(&self, group: &str) -> Result<Vec<String>, Failure> {
+        match &self.kind {
+            Kind::Presage(client) => {
+                // presage-cli's `list-messages` lists the newest first.
+                let mut texts = texts_in(&client.messages_in_group(group)?);
+                texts.reverse();
+                Ok(texts)
+            }
+            Kind::Flare(client) => Ok(texts_in(&client.messages(group)?)),
+            Kind::SignalCli(_) | Kind::Signalmeow(_) => Ok(self.texts_seen()),
+        }
+    }
+
     /// The texts of the phase the client holds from `from`, in the order it holds them.
     fn held_from(&self, from: &str) -> Result<Vec<String>, Failure> {
         let (listing, newest_first) = match &self.kind {
@@ -267,16 +285,22 @@ fn together(
             .iter()
             .map(|peer| (peer.label, scope.spawn(move || work(peer))))
             .collect();
-        let mut first = None;
+        // Every peer's failure, not the first's: a client's loss is another's, and each says
+        // what it lacked.
+        let mut failures = Vec::new();
         for (label, handle) in running {
             let outcome = handle
                 .join()
                 .unwrap_or_else(|_| Err(format!("the thread of {label} panicked").into()));
             if let Err(error) = outcome {
-                first.get_or_insert_with(|| format!("{label}: {}", chain(error.as_ref())));
+                failures.push(format!("{label}: {}", chain(error.as_ref())));
             }
         }
-        first.map_or(Ok(()), |error| Err(error.into()))
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("\n  and ").into())
+        }
     })
 }
 
@@ -672,26 +696,28 @@ pub(super) fn mixed(
                 together(&peers, |peer| {
                     loop {
                         peer.pull()?;
-                        let seen = peer.texts_seen();
+                        let held = peer.held_in_group(group_of(peer))?;
                         let mut missing = None;
+                        let mut collided = Vec::new();
                         for sender in peers.iter().filter(|other| other.label != peer.label) {
                             let expected = burst(sender.label, "group", round, count);
-                            let got: Vec<String> = seen
+                            let prefix = format!("{MARK}: r{round} {} to group ", sender.label);
+                            let got: Vec<String> = held
                                 .iter()
-                                .filter(|text| {
-                                    text.starts_with(&format!(
-                                        "{MARK}: r{round} {} to group ",
-                                        sender.label
-                                    ))
-                                })
+                                .filter(|text| text.starts_with(&prefix))
                                 .cloned()
                                 .collect();
-                            if got != expected {
-                                missing = Some((sender.label, got, expected));
+                            let (owed, lacking) = peer.owed(&got, &expected);
+                            let got: Vec<String> =
+                                got.into_iter().filter(|text| owed.contains(text)).collect();
+                            collided.extend(lacking);
+                            if got != owed {
+                                missing = Some((sender.label, got, owed));
                                 break;
                             }
                         }
                         let Some((from, got, expected)) = missing else {
+                            peer.say_collided(&collided);
                             return Ok(());
                         };
                         if Instant::now() > deadline {
@@ -723,15 +749,18 @@ pub(super) fn mixed(
                 together(&peers, |peer| {
                     loop {
                         peer.pull()?;
+                        let prefix = format!("{MARK}: r{round} b33p to group ");
                         let got: Vec<String> = peer
-                            .texts_seen()
+                            .held_in_group(group_of(peer))?
                             .into_iter()
-                            .filter(|text| {
-                                text.starts_with(&format!("{MARK}: r{round} b33p to group "))
-                            })
+                            .filter(|text| text.starts_with(&prefix))
                             .collect();
-                        if got.len() >= texts.len() || Instant::now() > deadline {
-                            return in_order_once(&got, &texts).map_err(|error| -> Failure {
+                        let (owed, collided) = peer.owed(&got, &texts);
+                        if got.len() >= owed.len() || Instant::now() > deadline {
+                            peer.say_collided(&collided);
+                            let got: Vec<String> =
+                                got.into_iter().filter(|text| owed.contains(text)).collect();
+                            return in_order_once(&got, &owed).map_err(|error| -> Failure {
                                 format!("{} in the group: {error}", peer.label).into()
                             });
                         }
