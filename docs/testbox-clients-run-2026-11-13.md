@@ -113,10 +113,10 @@ loaded.)
 
 ### Run 5 (all five, 8 rounds; signalmeow on `serve`, Flare mitigated): 47 passed, 0 failed
 
-2,294 s. b33p: no decrypt failure, no loss, no unexpected ERROR. Each round, 20 messages from each of 4
-clients to b33p, 20 from b33p to each, and 20 from each client to each other (240 messages to b33p's
-account and 240 from it, plus 960 among the clients, over the eight rounds), every one once and in
-order. Three presage-cli store collisions told (r3 013, r3 020, r5 009), each matching one
+2,294 s. b33p: no decrypt failure, no loss, no unexpected ERROR. Each round, 2 x 20 messages from each of 4
+clients to b33p, 20 from b33p to each, and 20 from each client to each of the other three (160 to b33p,
+80 from it and 240 among the clients a round; 1,280, 640 and 1,920 over the eight), every one once and
+in order. Three presage-cli store collisions told (r3 013, r3 020, r5 009), each matching one
 `not saving a message in the place of someone else's` in b33p's log (3 of 3). No round slower than the
 one before (the three bursts: 58.0, 66.2 and 144.2 s in every round from the second on; the first took
 51.5, 59.6 and 126.6 s), so no slowdown with history within 8 rounds. The times are the slowest sender's:
@@ -131,8 +131,8 @@ Each held up in this run against a client without it, so it is shown needed, or 
   has neither, and the two causes above are their absence: a counter reused, and a message the
   server has as delivered that the client never stored. Both reproduced in about one message in sixty
   and went away with the lock, and with the process outliving its last message.
-- **`b33p_collided`**: three, four and eight messages in the runs were lost by other clients' stores to
-  a same-millisecond collision; b33p lost none (it kept 3 of 3 in run 5).
+- **`b33p_collided`**: nine messages in three runs (4, 2 and 3) were lost by presage-cli's store to a
+  same-millisecond collision; b33p lost none (its log shows the guard at each).
 - **Not shown either way**: the 30 s keepalive (the other clients' connections last under 8 s, so
   nothing here says whether it is needed; the Desktop and Android captures can), the picture
   metadata stripping, the tus upload shape. The mixed phase has no attachments or groups yet.
