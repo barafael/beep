@@ -41,6 +41,34 @@ its first failed send, so one abort at message 14 left b33p holding 14 of 20 aft
 Ending the process after the runtime (`shutdown_timeout`, then `exit`): 0 of 1,200 sends aborted (the
 original: 3 of 360; at that rate about 10 would have). It is the driver's, not Flare's or b33p's.
 
+### Run 3 (flare's driver fixed): 22 passed, 6 failed
+
+A real loss: b33p logged `invalid Whisper message: decryption failed` for flare's first message of
+round 2: `post-quantum ratchet error: Key already requested: 2` (SPQR 1.5.3 in libsignal 0.99, the
+same on both sides). One session reset by b33p, and bursts from other peers missing one message each
+afterwards. Not reproduced between presage-cli and Flare alone (8 rounds of crossing sends). Followed up
+below with runs of one peer at a time (`TESTBOX_MIXED_ONLY`).
+
+### Single-peer runs, 12 rounds each
+
+**presage-cli only: 47 passed, 5 failed.** Four rounds, b33p's burst to presage-cli lacked one message at
+the peer (r4 007, r8 004, r9 011, r11 005). Root cause, found: the store keys a message by
+`(thread, timestamp)` (`presage-store-sqlite` migration `thread_messages`: `PRIMARY KEY (ts, thread_id)`),
+and two messages of one conversation, one from each side, sent in the same millisecond, take one key.
+b33p's own log has exactly four `not saving a message in the place of someone else's`
+(presage `manager/keep.rs`), at the millisecond of each missing message (e.g. ts 1794538240615: the
+peer's "b33p-too" message and b33p's 007), and the peer's store, with the same key, lacks b33p's.
+Signal's own definition of a message's identity is (author, sent time); Desktop and Android key by
+both. So with presage's store a message is silently lost when both sides send in one millisecond:
+rare for people, once in about 60 messages here because the bursts are tight. Not flaky: a gap.
+Fix needs the author in the key (`PRIMARY KEY (ts, thread_id, sender_service_id)`, a migration, and the
+store's lookups by thread and time taking the author), in presage's store, for edits, deletes,
+reactions and receipts, which all name an author and a time already.
+
+(The last check there, "b33p killed, started again", failed with "b33p shows 0 of 20" for round 1:
+b33p's chat shows its newest page after a restart, and twelve rounds are more than that; to be
+checked against the check's own paging before it counts.)
+
 ## Wire observations (run 2, `--capture`)
 
 - **The 409 on `PUT /v1/messages/{aci}`** is each sender's first send to an account that has a linked
