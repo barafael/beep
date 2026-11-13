@@ -1,0 +1,216 @@
+# Molly's `local` flavor on an emulator, in the place of Signal-Android's (testbox/android): the
+# same image but for the app, which is mollyim-android at a pin, patched
+# (testbox/patches/molly-local.patch), on Molly's libsignal fork at its pin, patched
+# (testbox/patches/libsignal-molly-local.patch: Signal-Android's libsignal patch, rebased). The
+# image keeps only what runs: the emulator, its system image and AVD, adb, the APK the `app` stage
+# builds for the box's keys (the server image's), the agent's APK and the driver. The build context
+# is the repository, for the patches and the tools. docs/onboarding-molly.md.
+
+# The version Molly's libsignal fork publishes under (java/build.gradle: group im.molly), which
+# Molly's own build asks for: the patched build goes to ~/.m2, where Molly's repositories look
+# first (settings.gradle.kts `mavenLocal`, before its own Maven), under the same coordinates.
+ARG LIBSIGNAL_VERSION=0.96.3-1
+# The server's image, which `cargo testbox` builds first, of its box (`--build-arg SERVER`).
+ARG SERVER=localhost/b33p-testbox-server
+FROM ${SERVER} AS server
+
+# The SDK as Signal-Android's reproducible build installs it (reproducible-builds/Dockerfile):
+# the same command-line tools, build tools and NDK, on Debian's JDK 21.
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS sdk
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git unzip openjdk-21-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/bin:${ANDROID_HOME}/platform-tools
+# Not `ADD <url>`: buildah fetched this archive again on every build, 20 s for its 170 MB.
+RUN curl -fsSL -o /tmp/cmdline-tools.zip \
+        https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip \
+    && echo "04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7  /tmp/cmdline-tools.zip" \
+        | sha256sum -c - \
+    && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME" && rm /tmp/cmdline-tools.zip \
+    && yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null \
+    && sdkmanager --sdk_root="$ANDROID_HOME" \
+        "platform-tools" "platforms;android-37.0" "platforms;android-36.1" "build-tools;36.0.0" "ndk;28.0.13004108"
+
+# Molly's libsignal fork (upstream v0.96.3 and build plumbing) with
+# testbox/patches/libsignal-molly-local.patch, for x86_64 only (the emulator's ABI), as
+# java/build_jni.sh builds it, published to ~/.m2 as Molly's build asks for it.
+FROM sdk AS libsignal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang cmake make libclang-dev protobuf-compiler libprotobuf-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+# rustup as libsignal's java/Dockerfile pins it; the toolchain its rust-toolchain names (a nightly).
+ADD --chmod=755 --checksum=sha256:20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c \
+    https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init /tmp/rustup-init
+ENV PATH=/root/.cargo/bin:${PATH}
+# v0.96.3-1 of github.com/mollyim/libsignal (an annotated tag: this is the commit it points at).
+ARG MOLLY_LIBSIGNAL_REV=08f983695763b817b1226b62498ff43fc48e3c0f
+WORKDIR /opt/libsignal
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/mollyim/libsignal "$MOLLY_LIBSIGNAL_REV" \
+    && git checkout -q FETCH_HEAD
+RUN /tmp/rustup-init -y --profile minimal --default-toolchain "$(cat rust-toolchain)" --target x86_64-linux-android \
+    && rm /tmp/rustup-init
+COPY testbox/patches/libsignal-molly-local.patch /tmp/
+RUN git apply /tmp/libsignal-molly-local.patch
+# No desktop library: it goes into libsignal-client's jar, which Android doesn't load. Kotlin
+# compiles in Gradle's own process, here and in the `app` and `agent` stages: stages that build
+# at once share /root/.gradle, where a Kotlin compile finds a daemon to use, and one stage's
+# daemon can't read another's files.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.gradle \
+    --mount=type=cache,target=/opt/libsignal/target \
+    cd java && ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        -PandroidArchs=x86_64 -x makeJniLibrariesDesktop \
+        :client:publishToMavenLocal :android:publishToMavenLocal
+
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS tools
+WORKDIR /src
+COPY testbox/tools testbox/tools
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built; the sources touched first, as
+# cargo goes by modification times, and another tree's later build would look newer than these.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/testbox/tools/target,sharing=locked \
+    find testbox/tools -path testbox/tools/target -prune -o -type f -exec touch {} + \
+    && cargo build --release --locked --manifest-path testbox/tools/Cargo.toml \
+        --features android --bin android \
+    && cp testbox/tools/target/release/android /usr/local/bin/
+
+# The emulator and its system image without Google Play services: Signal then uses its websocket
+# instead of FCM, which the box can't reach.
+FROM sdk AS emulator
+# sdkmanager takes no version and installs the newest, so what it installed is checked. Here, where
+# the image takes platform-tools from: in the SDK stage, a changed check would rebuild every later
+# stage. The emulator is the archive of its revision instead, with the package.xml sdkmanager wrote
+# for the one the system image brought (avdmanager wants one): it moves every few weeks, and this
+# step's text is then what says which one a cached layer has. With only `sdkmanager emulator`, a
+# layer from before a move matches the step as well as one from after, and the store picks.
+RUN sdkmanager --sdk_root="$ANDROID_HOME" "system-images;android-35;default;x86_64" \
+    && mv "$ANDROID_HOME/emulator/package.xml" /tmp/ \
+    && rm -rf "$ANDROID_HOME/emulator" \
+    && curl -fsSL -o /tmp/emulator.zip https://dl.google.com/android/repository/emulator-linux_x64-16740729.zip \
+    && echo "f41f9e31eb5ca64926603c03265c50bbc0ff4172  /tmp/emulator.zip" | sha1sum -c - \
+    && unzip -q /tmp/emulator.zip -d "$ANDROID_HOME" \
+    && mv /tmp/package.xml "$ANDROID_HOME/emulator/" \
+    && rm /tmp/emulator.zip
+RUN { grep -qx "Pkg.Revision=37.0.1" "$ANDROID_HOME/platform-tools/source.properties" \
+    && grep -qx "Pkg.Revision=37.2.13" "$ANDROID_HOME/emulator/source.properties" \
+    && grep -qx "Pkg.Revision=2" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties"; } \
+    || { echo "a revision moved; found:"; grep -H "^Pkg.Revision=" "$ANDROID_HOME/platform-tools/source.properties" \
+        "$ANDROID_HOME/emulator/source.properties" "$ANDROID_HOME/system-images/android-35/default/x86_64/source.properties"; exit 1; }
+RUN echo no | avdmanager create avd -n box -k "system-images;android-35;default;x86_64" -d pixel_5
+
+# Molly at the pin, patched: the app's sources.
+FROM sdk AS molly
+ARG MOLLY_REV=892d6264ba007b5458a8b74cf9183c665f1f17a1
+WORKDIR /opt/molly
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/mollyim/mollyim-android "$MOLLY_REV" \
+    && git checkout -q FETCH_HEAD
+COPY testbox/patches/molly-local.patch /tmp/
+RUN git apply /tmp/molly-local.patch \
+    && mkdir -p app/src/local/res/raw /opt/testbox
+
+# Signal-Android's Gradle wrapper and Android Gradle plugin, which the driver's agent builds with
+# (as testbox/android/Containerfile has it): only its wrapper, nothing of its app is built.
+FROM sdk AS signal
+ARG SIGNAL_ANDROID_REV=e9b569edd6b64f24d2a782deb60ac88b70471ded
+WORKDIR /opt/signal-android
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/Signal-Android "$SIGNAL_ANDROID_REV" \
+    && git checkout -q FETCH_HEAD \
+    && mkdir -p /opt/testbox
+
+# The local flavor's values (`android config`, the same bytes for the same keys), from the keys
+# alone: a change to the driver's code doesn't rebuild Signal-Android, new keys do.
+FROM sdk AS config
+COPY --from=server /opt/testbox/keys /keys
+COPY --from=tools /usr/local/bin/android /usr/local/bin/android
+RUN android config
+
+# The CA as the BKS trust store BlacklistingTrustManager.java opens (`KeyStore.getInstance("BKS")`),
+# with keytool and Bouncy Castle. A stage of its own that takes only the CA: keytool writes a
+# random salt each time.
+FROM sdk AS truststore
+RUN apt-get update && apt-get install -y --no-install-recommends libbcprov-java \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=server /opt/testbox/keys/tls-ca.pem /tmp/tls-ca.pem
+RUN mkdir /out && keytool -importcert -noprompt -alias box -file /tmp/tls-ca.pem \
+        -keystore /out/whisper.store -storepass whisper -storetype BKS \
+        -providerclass org.bouncycastle.jce.provider.BouncyCastleProvider \
+        -providerpath /usr/share/java/bcprov.jar
+
+# Molly's gradle/verification-metadata.xml with the checksums of the patched libsignal in the
+# place of the published ones for the same coordinates (im.molly:libsignal-client and
+# libsignal-android at LIBSIGNAL_VERSION): every other dependency is still checked by Molly's own.
+FROM libsignal AS verification
+COPY --from=molly /opt/molly/gradle/verification-metadata.xml /in/verification-metadata.xml
+ARG LIBSIGNAL_VERSION
+COPY testbox/molly/verification.py /tmp/verification.py
+RUN mkdir /out && python3 /tmp/verification.py "$LIBSIGNAL_VERSION" \
+        /in/verification-metadata.xml /root/.m2/repository /out/verification-metadata.xml
+
+FROM molly AS app
+COPY --from=libsignal /root/.m2 /root/.m2
+COPY --from=verification /out/verification-metadata.xml gradle/verification-metadata.xml
+COPY --from=truststore /out/whisper.store app/src/local/res/raw/whisper.store
+COPY --from=config /out/local.json /opt/testbox/molly.apk.json
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        :app:assembleLocalWebsiteDebug -PsignalLocalConfig=/opt/testbox/molly.apk.json \
+    && ls app/build/outputs/apk/localWebsite/debug/ \
+    && cp app/build/outputs/apk/localWebsite/debug/*x86_64*.apk /opt/testbox/signal.apk \
+    && cp /opt/testbox/molly.apk.json /opt/testbox/signal.apk.json
+
+# The agent protocol's Kotlin side, generated from its Rust (testbox/tools/src/agent.rs) by
+# typeshare: only that file goes in, so only a change to it generates again.
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS protocol
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install --locked typeshare-cli@1.13.4
+COPY testbox/tools/src/agent.rs testbox/android/agent/typeshare.toml /src/
+RUN typeshare /src/agent.rs --config-file /src/typeshare.toml --lang=kotlin \
+        --output-file=/out/Protocol.kt
+
+# The driver's on-device agent, with Signal-Android's Gradle wrapper and its Android Gradle
+# plugin, so that the two builds share a Gradle cache.
+FROM signal AS agent
+COPY testbox/android/agent /opt/agent
+COPY --from=protocol /out/Protocol.kt \
+    /opt/agent/src/main/kotlin/org/b33p/testbox/agent/protocol/Protocol.kt
+RUN --mount=type=cache,target=/root/.gradle \
+    /opt/signal-android/gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process \
+        -p /opt/agent assembleDebug \
+    && cp /opt/agent/build/outputs/apk/debug/testbox-agent-debug.apk /opt/testbox/agent.apk
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# What the emulator loads; qrencode for the QR the driver shows the scanner; cage, wayvnc and
+# wlr-randr for its display (testbox/tools `with-display`).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpulse0 libnss3 libxcomposite1 libxcursor1 libxi6 libxtst6 libgl1 libdrm2 libxkbfile1 \
+        libbsd0 libxdamage1 libxrandr2 libgbm1 libasound2t64 libdbus-1-3 qrencode \
+        cage wayvnc wlr-randr \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk
+# The emulator looks for system images under ANDROID_SDK_ROOT ("Cannot find AVD system path"
+# without it).
+ENV ANDROID_SDK_ROOT=${ANDROID_HOME}
+ENV PATH=${PATH}:${ANDROID_HOME}/emulator:${ANDROID_HOME}/platform-tools
+COPY --from=emulator /opt/android-sdk/emulator /opt/android-sdk/emulator
+COPY --from=emulator /opt/android-sdk/system-images /opt/android-sdk/system-images
+COPY --from=emulator /opt/android-sdk/platform-tools /opt/android-sdk/platform-tools
+COPY --from=emulator /root/.android /root/.android
+# The camera's scene with its wall poster moved from behind the camera's starting view (the
+# stock file's position -0.807 0.320 5.316, rotation 0 -150 0) to in front of it, small enough to
+# be whole in the scanner's frame: the camera turns only from the Extended controls window or
+# gRPC. The driver puts the QR on it (`virtualscene-image wall`).
+COPY testbox/android/Toren1BD.posters /opt/android-sdk/emulator/resources/Toren1BD.posters
+COPY --from=app /opt/testbox /opt/testbox
+COPY --from=agent /opt/testbox/agent.apk /opt/testbox/agent.apk
+COPY --from=tools /usr/local/bin/android /usr/local/bin/android
+COPY --from=server /usr/local/bin/with-display /usr/local/bin/with-display
+# The device's size: the driver sets the AVD's screen to it (testbox/tools `avd`). 720x1560
+# rather than the Pixel 5's 1080x2340: the emulator draws on the CPU, and half the pixels take it
+# half the CPU at the same frame rate.
+ENTRYPOINT ["with-display", "/run/view", "720x1560", "--", "android"]

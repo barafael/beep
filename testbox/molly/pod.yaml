@@ -1,0 +1,23 @@
+# Molly's local flavor on an emulator (`cargo testbox up --molly`), in the place of Signal-Android's
+# (testbox/android/pod.yaml): the container is still `android`, and so are the driver, its socket and
+# its display, so that the phases that drive Android drive Molly. A
+# container for testbox/pod.yaml's list, in its @CLIENTS@ line: in the box's pod, as the
+# emulator reaches the server through `adb reverse` on localhost. The image holds the APK, built
+# for the box's keys.
+      {
+        name: "android",
+        image: "localhost/@POD@-molly",
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "ANDROID_DRIVER_SOCKET", value: "/run/b33p/android.sock" },
+          # Molly's applicationId (app/gradle.properties basePackageId), the flavor's `.local` after it.
+          { name: "ANDROID_PACKAGE_PREFIX", value: "im.molly.app" },
+        ],
+        # KVM, as `--device` would pass it (kube play's CDI selector).
+        resources: { limits: { "podman.io/device=/dev/kvm": 1 } },
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "run", mountPath: "/run/b33p" },
+          { name: "view-android", mountPath: "/run/view" },
+        ],
+      },

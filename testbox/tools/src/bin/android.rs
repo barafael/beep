@@ -47,7 +47,10 @@ const HW_TIMEOUT_MULTIPLIER: u32 = 6;
 /// tag 30072): before it, the screen is on but the user locked, and Signal's activities don't
 /// resolve ("No activity found").
 const FRAMEWORK_STARTED: &str = "uc_finish_user_unlocked_completed";
+/// The prefix of the app's package name: Signal-Android's; the image of another build of it
+/// (Molly's, testbox/molly) says its own in `ANDROID_PACKAGE_PREFIX`.
 const PACKAGE_PREFIX: &str = "org.thoughtcrime.securesms";
+const PACKAGE_PREFIX_VARIABLE: &str = "ANDROID_PACKAGE_PREFIX";
 /// How long a step waits for what it wants, unless it takes [`SLOW`].
 const PATIENCE: Duration = Duration::from_secs(30);
 const SLOW: Duration = Duration::from_secs(60);
@@ -1052,8 +1055,10 @@ fn install(apk: &Path) -> Result<String, InstallError> {
         apk: apk.to_owned(),
         source,
     })?;
-    let packages = adb(&["shell", "pm", "list", "packages", PACKAGE_PREFIX])
-        .map_err(InstallError::Packages)?;
+    let prefix =
+        std::env::var(PACKAGE_PREFIX_VARIABLE).unwrap_or_else(|_| PACKAGE_PREFIX.to_owned());
+    let packages =
+        adb(&["shell", "pm", "list", "packages", &prefix]).map_err(InstallError::Packages)?;
     let local: Vec<&str> = packages
         .split_whitespace()
         .filter_map(|line| line.strip_prefix("package:"))
@@ -1880,6 +1885,18 @@ impl Driver {
                 number: number.to_owned(),
             })?;
         self.launch()?;
+        // Molly asks first whether to lock its database with a passphrase
+        // (PassphraseCreateActivity: "No thanks"); Signal-Android starts at its welcome screen.
+        let first = self.first_shown(
+            vec![
+                agent::Wanted::control("No thanks"),
+                agent::Wanted::control("Continue"),
+            ],
+            PATIENCE,
+        )?;
+        if first.which == 0 {
+            self.tap_at(&first.node)?;
+        }
         self.tap("Continue", PATIENCE)?;
         self.element("Phone number", PATIENCE)?;
         let field = self

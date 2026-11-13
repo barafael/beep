@@ -145,7 +145,8 @@ pub(crate) fn run(
     let linked = chosen(phases, Phase::Linked);
     let android = chosen(phases, Phase::Android);
     let linked_clients = [Client::Desktop];
-    let android_clients = [Client::Desktop, Client::Android];
+    let android_app = b33p.android_app.client();
+    let android_clients = [Client::Desktop, android_app];
     containers.build_server()?;
 
     // The Android image's build takes longest, most of an hour when Signal-Android changed: it
@@ -154,7 +155,7 @@ pub(crate) fn run(
     let mut android_image = if android.is_empty() {
         None
     } else {
-        Some(containers.build_beside(Client::Android)?)
+        Some(containers.build_beside(android_app)?)
     };
     // Once it failed, every box that needs it fails (with `--fresh`, each Android phase has one):
     // the image there is an earlier build's.
