@@ -272,14 +272,7 @@ pub(crate) async fn sync(
                     pins = account
                         .pinned_conversations
                         .iter()
-                        .filter_map(|pinned| match pinned.identifier.as_ref()? {
-                            Pinned::Contact(contact) => contact_conversation(
-                                &contact.service_id,
-                                &contact.service_id_binary,
-                            ),
-                            Pinned::GroupMasterKey(key) => Some(ConversationId::group(key)),
-                            _ => None,
-                        })
+                        .filter_map(pinned_conversation)
                         .collect();
                 }
                 Record::ChatFolder(folder) => {
@@ -542,8 +535,14 @@ fn merge(
         if old.is_none_or(|old| old.blocked != remote.blocked) {
             settings.blocked = remote.blocked;
         }
-        // Accepted on the phone; un-accepting isn't a thing.
-        settings.accepted |= remote.accepted;
+        // b33p never un-accepts on its own, but the phone does: blocking someone, or
+        // deleting their request, ends sharing our profile with them (Signal-Android
+        // `RecipientUtil.block`).
+        if old.is_some_and(|old| old.accepted != remote.accepted) {
+            settings.accepted = remote.accepted;
+        } else {
+            settings.accepted |= remote.accepted;
+        }
     }
     // Pins: the phone's in its order if they changed there, then those only pinned here.
     let (before_pins, now_pins) = (pinned_order(before), pinned_order(now));
@@ -682,8 +681,8 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
                         Some(edited)
                     })
                 }
-                Some(Record::Account(_)) if pins_changed => {
-                    let entries: Vec<Vec<u8>> = pins.iter().filter_map(pinned_entry).collect();
+                Some(Record::Account(account)) if pins_changed => {
+                    let entries = pinned_entries(&account.pinned_conversations, &pins);
                     crate::wire::edit_message(&plaintext, 4, |account| {
                         crate::wire::set_repeated(account, 14, &entries)
                     })
@@ -775,14 +774,15 @@ fn next_manifest(
 }
 
 /// What the storage service should say for a chat: what b33p says, except that b33p
-/// never takes back what the phone accepted (`accepted` only adds).
+/// never takes back what the phone accepted (`accepted` only adds), and that whom we block
+/// we share our profile with no more, as Signal's apps write it.
 fn wanted(local: &ChatSettings, remote: &ChatSettings) -> ChatSettings {
     ChatSettings {
         archived: local.archived,
         marked_unread: local.marked_unread,
         muted_until: local.muted_until,
         blocked: local.blocked,
-        accepted: local.accepted || remote.accepted,
+        accepted: !local.blocked && (local.accepted || remote.accepted),
         ..ChatSettings::default()
     }
 }
@@ -821,6 +821,45 @@ fn pinned_order(map: &HashMap<ConversationId, ChatSettings>) -> Vec<Conversation
 }
 
 /// An account record's entry for a pinned chat, encoded.
+/// The chat a pinned conversation of the account record names, if b33p has such chats: not
+/// the release notes, legacy groups, or contacts known only by number.
+fn pinned_conversation(
+    pinned: &presage::proto::account_record::PinnedConversation,
+) -> Option<ConversationId> {
+    match pinned.identifier.as_ref()? {
+        Pinned::Contact(contact) => {
+            contact_conversation(&contact.service_id, &contact.service_id_binary)
+        }
+        Pinned::GroupMasterKey(key) => Some(ConversationId::group(key)),
+        _ => None,
+    }
+}
+
+/// The account record's pins as b33p writes them: its own, and the phone's that b33p can't
+/// name, kept where they were (the list is replaced whole, so leaving them out would unpin
+/// them).
+fn pinned_entries(
+    phone: &[presage::proto::account_record::PinnedConversation],
+    ours: &[ConversationId],
+) -> Vec<Vec<u8>> {
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    let kept: Vec<(usize, Vec<u8>)> = phone
+        .iter()
+        .enumerate()
+        .filter(|(_, pinned)| pinned_conversation(pinned).is_none())
+        .map(|(at, pinned)| (at, pinned.encode_to_vec()))
+        .collect();
+    let mut entries: Vec<Vec<u8>> = ours
+        .iter()
+        .take(MAX_PINS.saturating_sub(kept.len()))
+        .filter_map(pinned_entry)
+        .collect();
+    for (at, entry) in kept {
+        entries.insert(at.min(entries.len()), entry);
+    }
+    entries
+}
+
 fn pinned_entry(id: &ConversationId) -> Option<Vec<u8>> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     use presage::proto::account_record::{PinnedConversation, pinned_conversation};
@@ -1214,6 +1253,73 @@ mod tests {
         let changed = merge(&local, &HashMap::new(), &map(&[("b", archived)]));
         assert_eq!(changed[0].1.last_read, 7);
         assert!(changed[0].1.archived);
+    }
+
+    /// The phone un-accepts when it blocks someone or deletes their request; b33p takes
+    /// that, and writes no blocked chat as accepted, but never un-accepts on its own.
+    #[test]
+    fn the_phone_un_accepts_and_whom_we_block_isnt_accepted() {
+        let accepted = ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        };
+        let blocked = ChatSettings {
+            blocked: true,
+            ..ChatSettings::default()
+        };
+        let local = map(&[("a", accepted.clone())]);
+        // Blocked on the phone, which ended sharing our profile.
+        let changed = merge(
+            &local,
+            &map(&[("a", accepted.clone())]),
+            &map(&[("a", blocked.clone())]),
+        );
+        assert_eq!(changed, [(id("a"), blocked.clone())]);
+        // Not accepted on the phone, never was: b33p's acceptance stays.
+        assert!(
+            merge(
+                &local,
+                &map(&[("a", ChatSettings::default())]),
+                &map(&[("a", ChatSettings::default())])
+            )
+            .is_empty()
+        );
+        // Blocked here: written as not accepted, whatever the phone said.
+        let blocked_here = ChatSettings {
+            accepted: true,
+            ..blocked
+        };
+        assert!(!wanted(&blocked_here, &accepted).accepted);
+    }
+
+    /// The phone's pins b33p can't name (the release notes, say) stay where they were.
+    #[test]
+    fn pins_b33p_cant_name_stay() {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        use presage::proto::account_record::{PinnedConversation, pinned_conversation};
+        let release_notes = PinnedConversation {
+            identifier: Some(Pinned::ReleaseNotes(Default::default())),
+        };
+        let contact = |service_id: &str| PinnedConversation {
+            identifier: Some(Pinned::Contact(pinned_conversation::Contact {
+                service_id: service_id.into(),
+                ..Default::default()
+            })),
+        };
+        let a = "9d0652a3-dcc3-4d11-975f-74d61598733f";
+        let b = "1c3e0d3a-7a5f-4f6b-9a0e-2b8f0c7d6e5a";
+        let phone = [contact(a), release_notes.clone()];
+        let ours = [ConversationId::contact(b), ConversationId::contact(a)];
+        let entries = pinned_entries(&phone, &ours);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1], release_notes.encode_to_vec());
+        // Room for the phone's first: ours are cut, not theirs.
+        let many: Vec<_> = (0..5)
+            .map(|n| ConversationId::contact(&format!("9d0652a3-dcc3-4d11-975f-74d6159873{n:02}")))
+            .collect();
+        let entries = pinned_entries(&phone, &many);
+        assert_eq!(entries.len(), MAX_PINS);
+        assert!(entries.contains(&release_notes.encode_to_vec()));
     }
 
     #[test]
