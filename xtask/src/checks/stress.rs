@@ -1456,20 +1456,21 @@ pub(super) fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>,
     let mut quiet = 0;
     let mut seen = 0;
     loop {
-        let texts: Vec<String> = b33p
-            .snapshot()?
-            .messages
-            .into_iter()
-            .filter(|message| message.text.starts_with(prefix))
-            .map(|message| message.text)
-            .collect();
-        if texts.len() == seen {
+        // Counted over every message loaded, not only those that match: a page of other
+        // messages (an earlier burst's, say) is progress towards the matching ones.
+        let messages = b33p.snapshot()?.messages;
+        let loaded = messages.len();
+        if loaded == seen {
             quiet += 1;
             if quiet == QUIET_LOADS {
-                return Ok(texts);
+                return Ok(messages
+                    .into_iter()
+                    .filter(|message| message.text.starts_with(prefix))
+                    .map(|message| message.text)
+                    .collect());
             }
         } else {
-            seen = texts.len();
+            seen = loaded;
             quiet = 0;
         }
         b33p.act(Action::LoadOlder)?;
