@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use b33p_harness::{
     Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
-    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme, Trust,
+    Pushed, Reply, Request, Saved, ScreenSnapshot, SettingsChange, Snapshot, Subscribed, TextSize,
+    Theme, Trust,
 };
 use gpui::TestAppContext;
 use serde::Deserialize;
@@ -267,21 +268,11 @@ fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
 
 /// Changes only the theme and the text size.
 fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
-    Action::SetSettings {
+    Action::SetSettings(SettingsChange {
         theme: Some(theme),
         text_size: Some(text_size),
-        animations: None,
-        show_avatars: None,
-        notifications: None,
-        notification_content: None,
-        show_activity: None,
-        show_calendar: None,
-        close_to_tray: None,
-        read_receipts: None,
-        typing_indicators: None,
-        link_previews: None,
-        sync_to_phone: None,
-    }
+        ..SettingsChange::default()
+    })
 }
 
 /// Starting, connecting, and reading are the test; also that nonsense is refused.

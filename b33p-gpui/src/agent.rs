@@ -41,8 +41,9 @@ use b33p_harness::{
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
     LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
     PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
-    ScreenSnapshot, SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
-    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
+    ScreenSnapshot, SearchResultSnapshot, SettingsChange, SettingsSnapshot, Shot, Snapshot,
+    StickerPackSnapshot, StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed,
+    Unsubscribed, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -805,7 +806,7 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             });
             false
         }
-        Action::SetSettings {
+        Action::SetSettings(SettingsChange {
             theme,
             text_size,
             animations,
@@ -819,7 +820,7 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
             typing_indicators,
             link_previews,
             sync_to_phone,
-        } => {
+        }) => {
             let mut settings = shared.settings.borrow().clone();
             if let Some(value) = theme {
                 settings.theme = value.into();
