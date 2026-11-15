@@ -24,5 +24,12 @@ Once they land, or to take them from the fork first:
   selection queries each look every picked message up. Keeping counts on pick and unpick fixes it.
 - `storage_sync` could retry an `Unreachable` write later rather than wait for the next change.
 - `RateLimitExceeded` carries `retry_after`, which could tell the user when to try.
+- An upload copies its data before the first try, retry or not (`attachments::upload_retrying`,
+  #164: `upload_attachment(first, data.clone())`), so every upload holds its file twice for its
+  length, files sent together each twice at once. Only the retry, on the CDN closing the
+  connection under the request, needs the second copy. Avoidable if presage's
+  `upload_attachment` took shared bytes (`Bytes` or `Arc<[u8]>`) instead of a `Vec<u8>`, or for
+  files by reading the file again for the retry. Pictures arriving together once took b33p past
+  2 GiB (pending/stress.md finding 4), so the peak matters.
 - Regenerate the README screenshots and the demo GIF on a real desktop
   (`docs/screenshots/shoot.py`).
