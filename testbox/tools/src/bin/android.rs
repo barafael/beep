@@ -632,33 +632,39 @@ fn print_device_state() {
     }
 }
 
-/// How often `adb root` is tried, each time once the device is back.
+/// How often `adb root` or `adb unroot` is tried, each time once the device is back.
 const ROOT_TRIES: u32 = 5;
 
-/// `adb root`, once adb reaches the device. Right after boot the emulator's transport can go
-/// offline for a moment (`adb devices`: `offline`; the emulator's own `adb shell` fails then too),
-/// and `adb root` answers "unable to connect for root: closed": tried again once it is back.
-fn root() -> Result<(), BootError> {
+/// `adb root` (`switch` "root") or `adb unroot`, once adb reaches the device. Right after boot,
+/// and right after the framework restarts ([`raise_anr_timeouts`]), the emulator's transport can
+/// go offline for a moment (`adb devices`: `offline`; the emulator's own `adb shell` fails then
+/// too), and adb answers "unable to connect for root: closed" (or "for unroot"): tried again
+/// once it is back.
+fn switch_root(switch: &str) -> Result<(), CommandError> {
     let mut tries = 0;
     loop {
         // `wait-for-device` waits for the `device` state, past `offline`.
-        adb(&["wait-for-device"]).map_err(BootError::Root)?;
-        match adb(&["root"]) {
+        adb(&["wait-for-device"])?;
+        match adb(&[switch]) {
             Ok(_) => return Ok(()),
             Err(error) if tries + 1 < ROOT_TRIES => {
                 tries += 1;
                 println!(
-                    "android: adb root: {}; again once the device is back",
+                    "android: adb {switch}: {}; again once the device is back",
                     testbox_tools::Report(&error)
                 );
             }
             Err(error) => {
                 // What the device says, for the next time.
                 print_device_state();
-                return Err(BootError::Root(error));
+                return Err(error);
             }
         }
     }
+}
+
+fn root() -> Result<(), BootError> {
+    switch_root("root").map_err(BootError::Root)
 }
 
 fn adb(args: &[&str]) -> Result<String, CommandError> {
@@ -809,7 +815,8 @@ fn raise_anr_timeouts() -> Result<(), BootError> {
     events.kill().map_err(stopped)?;
     events.wait().map_err(stopped)?;
     heard?;
-    adb(&["unroot"])?;
+    // The framework just started again, and the transport with it: as `root`, once it is back.
+    switch_root("unroot").map_err(BootError::Timeouts)?;
     adb(&["wait-for-device"]).map(drop)
 }
 
