@@ -1,8 +1,21 @@
-# Messages at one millisecond: what is still open
+# Messages at one millisecond: the findings, and what became of them
 
-As of 4 November 2026, on the uncommitted work that adds `b33p_collided`, with presage at
-`53fb55a` (now `3de451c`: its save guard and the store's `(ts, thread_id)` key are
-unchanged). The history and the part that is fixed are in `pending/stress.md`, finding 8.
+Written 4 November 2026 on the work that added `b33p_collided`. On 15 November presage's store
+took the sender into its key (`langis/message-author-rebased` `01734ae`; `pending/stress.md`,
+finding 8), which settled findings 1 and 2 at the root and made `b33p_collided` unnecessary.
+
+| # | Finding | Now |
+|---|---|---|
+| 1 | One account's two devices: the message read replaced after a restart | Fixed in presage: the first stays, in the store as in the list |
+| 2 | A delete-for-me from elsewhere leaves a kept message | Fixed: nothing is kept apart any more, and presage deletes by author; b33p also takes it out of the open chat |
+| 3 | `on_missed_changes` saves past the guard | Fixed: a millisecond the editor holds nothing at |
+| 4 | A collision on a sender's last text fails as a timeout | Fixed: the content log is asked before failing |
+| 5 | "Reach the peer as sent" proves only a long text's inline part | Named so; the desktop phase sends a long emoji text cut mid-character, wanted whole |
+| 6 | `moments_in` fails on a half-written line | Fixed on both sides: one write per line, and an unfinished last line is left |
+| 7 | The fix has not met a real collision | Still open: on 15 November, `cargo testbox run --rounds 5 --optimized --b33p-memory 768 stress-concurrency` on the image with this change passed rounds 2 to 5, none with two received messages at one millisecond (round 1 failed before its checks, cause not kept) |
+
+What follows is the note as written, kept for its re-derivation hints; where it says presage
+keeps one content per thread and millisecond, that was true up to `8057f23`.
 
 **None of this has been reproduced.** Every finding comes from reading the code, so re-derive one
 before acting on it. The hints name symbols and log strings rather than line numbers, as the lines

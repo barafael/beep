@@ -91,8 +91,11 @@ The release workflow takes a version's notes from here (the section headed with 
 - Changing a chat's settings no longer goes back on another change made at the same moment.
 - Esc also closes the join dialog, the calendar and the dialogs that ask first.
 - Two messages you send within the same millisecond no longer take each other's place.
-- A message that arrives at the same millisecond as someone else's in the same chat, or goes out
-  at the millisecond of one that came, is no longer lost when b33p restarts.
+- Two messages at the same millisecond in one chat are both kept: one that arrived at the moment
+  someone else's did, or went out at the moment one came, is no longer lost when b33p restarts.
+  Of two sent from one person's two devices at the same moment, the first stays, and is still
+  the one shown after a restart.
+- A message deleted for yourself on another device goes from the open chat at once.
 - Reactions, replies, deletes and further edits to an edited message work; they were dropped,
   and replies quoted the text before the edit.
 - b33p no longer crashes drawing emoji on Debian 12 with Noto Color Emoji installed.

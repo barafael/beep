@@ -9,7 +9,7 @@ use futures::{StreamExt, future};
 use presage::{
     Error as PresageError,
     libsignal_service::{
-        content::{Content, ContentBody, DataMessage, GroupContextV2, Metadata},
+        content::{ContentBody, DataMessage, GroupContextV2},
         protocol::ServiceId,
     },
     proto::{
@@ -33,11 +33,11 @@ use crate::{
 use super::{
     Ctx, Mgr, Ports,
     conversations::{
-        Names, accepted, conversation_id, e164_of, expire_timer, is_blocked, or_logged, own_id,
-        sender_name, thread_of, wrote_to,
+        Names, accepted, e164_of, expire_timer, is_blocked, or_logged, own_id, sender_name,
+        thread_of, wrote_to,
     },
     groups::{group_identifier, member_aci},
-    history::{checkpoint, keep_edit_if_dropped, keep_if_dropped, start_timers},
+    history::{checkpoint, start_timers},
     trust::{announce_identity_change, hold_changed},
 };
 
@@ -215,62 +215,11 @@ async fn deliver(
             return Err(SendError::MembersHeld { names });
         }
     }
-    let sent = send_to(&ctx.outbox, thread, body.clone(), timestamp).await;
-    match &sent {
-        Err(SendError::Untrusted { who }) => hold_changed(manager, ctx, *who).await,
-        Ok(()) => keep_sent_if_dropped(manager, ctx, thread, body, timestamp).await,
-        Err(_) => {}
+    let sent = send_to(&ctx.outbox, thread, body, timestamp).await;
+    if let Err(SendError::Untrusted { who }) = &sent {
+        hold_changed(manager, ctx, *who).await;
     }
     sent
-}
-
-/// Keeps what we just sent beside the store if presage had no place for it: an incoming message
-/// holds its millisecond. As presage has what we send.
-async fn keep_sent_if_dropped(
-    manager: &Mgr,
-    ctx: &Ctx,
-    thread: &Thread,
-    body: ContentBody,
-    timestamp: u64,
-) {
-    let edit = match &body {
-        ContentBody::EditMessage(edit) => edit.target_sent_timestamp,
-        ContentBody::DataMessage(_) => None,
-        _ => return,
-    };
-    let Some(at) = chrono::DateTime::from_timestamp_millis(timestamp as i64) else {
-        return;
-    };
-    let own = own_id(manager);
-    let content = Content {
-        metadata: Metadata {
-            sender: own,
-            destination: match thread {
-                Thread::Contact(who) => *who,
-                Thread::Group(_) => own,
-            },
-            sender_device: manager.device_id(),
-            client_timestamp: at,
-            server_timestamp: at,
-            needs_receipt: false,
-            unidentified_sender: false,
-            was_plaintext: false,
-            server_guid: None,
-            pni_verified: None,
-        },
-        body,
-    };
-    match edit {
-        Some(target) => {
-            let target = MessageRef {
-                author_id: own.service_id_string(),
-                timestamp: target,
-            };
-            let conversation = conversation_id(thread);
-            keep_edit_if_dropped(&ctx.tables, &conversation, &target, &content).await;
-        }
-        None => keep_if_dropped(manager.store(), &ctx.tables, thread, &content).await,
-    }
 }
 
 /// The names of the members of group `key` whose verified safety number changed and isn't
@@ -738,9 +687,6 @@ pub(super) async fn respond(
                     conversation: conversation.clone(),
                     source,
                 })?;
-            if let Err(error) = ctx.tables.forget_collided_chat(conversation).await {
-                warn!(error = %crate::scrub::chain(&error), "failed to forget what was kept of a deleted chat");
-            }
             checkpoint(ctx).await;
             ctx.events.send(Event::Cleared(conversation.clone()));
             Type::Delete

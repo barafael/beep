@@ -13,6 +13,7 @@ use presage::{
         content::{Content, ContentBody},
         protocol::{DeviceId, ProtocolAddress, PublicKey, ServiceId, SignalProtocolError},
     },
+    manager::Kept as Stored,
     model::messages::Received,
     proto::{
         DecryptionErrorMessage, ReceiptMessage, SyncMessage, TypingMessage,
@@ -42,9 +43,8 @@ use super::{
         own_membership_change, refresh_group, signed_group_change, told_changes,
     },
     history::{
-        author_of, checkpoint, data_of, erase_deleted, is_outgoing, keep_edit_if_dropped,
-        keep_if_dropped, original, start_timers, stored_at, stored_timers, to_chat_message,
-        to_reaction,
+        author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
+        stored_at, stored_timers, to_chat_message, to_reaction,
     },
     pins::{PinOutcome, on_pin_change, pin_change},
     stories::on_story,
@@ -309,11 +309,6 @@ async fn handle_received(
                         .thread_for_sender_and_timestamp(&sender, timestamp)
                         .await
                         .is_ok_and(|thread| thread.is_some())
-                        || ctx
-                            .tables
-                            .collided_conversation(&sender.service_id_string(), timestamp)
-                            .await
-                            .is_ok_and(|conversation| conversation.is_some())
                 };
                 if decrypted.contains(&(sender, sender_device, timestamp)) || stored().await {
                     debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
@@ -398,7 +393,7 @@ async fn handle_received(
             debug!(?kept, "presage kept");
             let metadata = &content.metadata;
             decrypted.note((metadata.sender, metadata.sender_device, stored_at(&content)));
-            let handled = handle_content(manager, ctx, names, receipts, &content).await;
+            let handled = handle_content(manager, ctx, names, receipts, &content, &kept).await;
             if receipts.live {
                 receipts.send(&ctx.outbox).await;
             }
@@ -493,8 +488,12 @@ async fn on_retry_receipt(
         return;
     };
     let thread = Thread::Contact(sender);
-    let stored = match manager.store().message(&thread, timestamp).await {
-        Ok(Some(content)) if content.metadata.sender == own_id(manager) => content,
+    let stored = match manager
+        .store()
+        .message(&thread, &own_id(manager), timestamp)
+        .await
+    {
+        Ok(Some(content)) => content,
         _ => return,
     };
     let ContentBody::DataMessage(mut data) = stored.body else {
@@ -550,6 +549,7 @@ async fn handle_content(
     names: &mut Names,
     receipts: &mut Receipts,
     content: &Content,
+    kept: &Stored,
 ) -> bool {
     #[cfg(feature = "test-servers")]
     crate::content_log::received(
@@ -611,6 +611,13 @@ async fn handle_content(
         }) => {
             let at = timestamp.unwrap_or_else(|| content.timestamp());
             on_story(manager, ctx, own_id(manager), at, story, true).await;
+            return true;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::DeleteForMe(delete)),
+            ..
+        }) => {
+            on_deleted_for_me_elsewhere(ctx, delete).await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
@@ -779,8 +786,6 @@ async fn handle_content(
     {
         receipts.owe(content.metadata.sender, stored_at(content));
     }
-    // Past what b33p drops above: what it doesn't show isn't worth keeping.
-    keep_if_dropped(manager.store(), &ctx.tables, &thread, content).await;
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         let target = original(ctx, &id, target).await;
         return events.sent(Event::Reaction {
@@ -810,9 +815,11 @@ async fn handle_content(
             timestamp,
         };
         let target = original(ctx, &id, target).await;
-        // Only a message that was there, and by that author (presage checks too): a delete
-        // of anything else would leave a "deleted" marker where nothing was.
-        match erase_deleted(manager, ctx, &id, &thread, &target).await {
+        // Only a message that was there, and by that author: a delete of anything else would
+        // leave a "deleted" marker where nothing was. presage has taken one it kept the delete
+        // of out of the store already.
+        let taken = matches!(kept, Stored::Deleted { .. });
+        match erase_deleted(manager, ctx, &id, &thread, &target, taken).await {
             Ok(true) => {}
             Ok(false) => {
                 debug!("ignored a delete of a message that isn't there");
@@ -853,7 +860,10 @@ async fn handle_content(
         if told.iter().any(|(_, at)| *at != own) {
             debug!(revision, "a group change told already");
             let mut store = manager.store().clone();
-            if let Err(error) = store.delete_message(&thread, own).await {
+            if let Err(error) = store
+                .delete_message(&thread, &content.metadata.sender, own)
+                .await
+            {
                 warn!(error = %crate::scrub::chain(&error), "failed to drop a group change told already");
             }
             return true;
@@ -892,7 +902,6 @@ async fn handle_content(
     if edit {
         // An edit of an edit names the one before; what it edits is the message first sent.
         let target = original(ctx, &id, message.reference()).await;
-        keep_edit_if_dropped(&ctx.tables, &id, &target, content).await;
         if let Some(edited_at) = message.edited_at
             && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
         {
@@ -933,9 +942,9 @@ async fn forget_stored(manager: &Mgr, content: &Content) {
     };
     let at = stored_at(content);
     let mut store = manager.store().clone();
-    if let Ok(Some(stored)) = store.message(&thread, at).await
-        && stored.metadata.sender == content.metadata.sender
-        && let Err(error) = store.delete_message(&thread, at).await
+    if let Err(error) = store
+        .delete_message(&thread, &content.metadata.sender, at)
+        .await
     {
         warn!(error = %crate::scrub::chain(&error), "failed to forget a message from someone blocked");
     }
@@ -956,6 +965,65 @@ fn named_conversation(
     }
     let thread = ctx.group_ids.find(&ctx.threads, group_id?)?;
     Some(conversation_id(&thread))
+}
+
+/// Messages another of our devices deleted for itself alone: presage has taken them out of the
+/// store by now (by author and time, as named), so they go from the list and from what b33p
+/// keeps about them.
+async fn on_deleted_for_me_elsewhere(ctx: &Ctx, delete: &sync_message::DeleteForMe) {
+    use presage::proto::{addressable_message::Author, conversation_identifier::Identifier};
+    for deletes in &delete.message_deletes {
+        let conversation = match deletes
+            .conversation
+            .as_ref()
+            .and_then(|c| c.identifier.as_ref())
+        {
+            Some(Identifier::ThreadServiceId(aci)) => {
+                named_conversation(ctx, Some(aci), None, None)
+            }
+            Some(Identifier::ThreadServiceIdBinary(aci)) => {
+                named_conversation(ctx, None, Some(aci), None)
+            }
+            Some(Identifier::ThreadGroupId(id)) => named_conversation(ctx, None, None, Some(id)),
+            Some(Identifier::ThreadE164(_)) | None => None,
+        };
+        let Some(conversation) = conversation else {
+            debug!("a delete-for-me names no conversation b33p knows");
+            continue;
+        };
+        let targets: Vec<MessageRef> = deletes
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let author = match message.author.as_ref()? {
+                    Author::AuthorServiceId(id) => ServiceId::parse_from_service_id_string(id),
+                    Author::AuthorServiceIdBinary(id) => {
+                        ServiceId::parse_from_service_id_binary(id)
+                    }
+                    Author::AuthorE164(_) => None,
+                }?;
+                Some(MessageRef {
+                    author_id: author.service_id_string(),
+                    timestamp: message.sent_timestamp?,
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        let forgotten: Vec<_> = targets
+            .iter()
+            .map(|target| (conversation.clone(), target.clone()))
+            .collect();
+        if let Err(error) = ctx.tables.forget(&forgotten).await {
+            warn!(error = %crate::scrub::chain(&error), "failed to forget messages deleted elsewhere");
+        }
+        checkpoint(ctx).await;
+        ctx.events.send(Event::Expired {
+            conversation,
+            targets,
+        });
+    }
 }
 
 /// The phone's whole list of whom we block: everything else is unblocked.
@@ -1047,9 +1115,6 @@ async fn on_answered_elsewhere(
         let mut store = manager.store().clone();
         match store.clear_thread(&thread).await {
             Ok(()) => {
-                if let Err(error) = ctx.tables.forget_collided_chat(&id).await {
-                    warn!(error = %crate::scrub::chain(&error), "failed to forget what was kept of a deleted chat");
-                }
                 checkpoint(ctx).await;
                 ctx.events.send(Event::Cleared(id));
             }
@@ -1206,14 +1271,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                     .await;
                 match stored {
                     Ok(Some(thread)) => conversation_id(&thread),
-                    _ => match ctx
-                        .tables
-                        .collided_conversation(&message.author_id, timestamp)
-                        .await
-                    {
-                        Ok(Some(conversation)) => conversation,
-                        _ => continue,
-                    },
+                    _ => continue,
                 }
             }
         };
@@ -1237,7 +1295,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                 warn!(error = %crate::scrub::chain(&error), "failed to remember what was read")
             }
         }
-        let timers = stored_timers(manager, &ctx.tables, &conversation, &messages).await;
+        let timers = stored_timers(manager, &conversation, &messages).await;
         start_timers(ctx, &conversation, &timers, now).await;
     }
 }

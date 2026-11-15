@@ -111,7 +111,7 @@ pub(super) async fn on_pin_change(
         timestamp,
     };
     let target = original(ctx, id, named).await;
-    if !is_stored(manager, ctx, id, &thread, &target).await {
+    if !is_stored(manager, &thread, &target).await {
         debug!("ignored a pin of a message that isn't here");
         return PinOutcome::Refused;
     }
@@ -167,31 +167,18 @@ async fn may_change_pins(manager: &Mgr, thread: &Thread, who: ServiceId) -> bool
             .is_some_and(|access| access.attributes == AccessRequired::Member)
 }
 
-/// Whether `message` is stored, by its author: kept beside the store, or in it.
-async fn is_stored(
-    manager: &Mgr,
-    ctx: &Ctx,
-    id: &ConversationId,
-    thread: &Thread,
-    message: &MessageRef,
-) -> bool {
-    let kept = or_logged(
-        ctx.tables.collided_message(id, message).await,
-        "messages kept beside the store",
-    );
-    if kept.is_some() {
-        return true;
-    }
+/// Whether `message` is stored: its author's, at its time.
+async fn is_stored(manager: &Mgr, thread: &Thread, message: &MessageRef) -> bool {
+    let Some(author) = ServiceId::parse_from_service_id_string(&message.author_id) else {
+        return false;
+    };
     manager
         .store()
-        .message_sent_or_edited_at(thread, message.timestamp)
+        .message_sent_or_edited_at(thread, &author, message.timestamp)
         .await
         .ok()
         .flatten()
-        .is_some_and(|stored| {
-            stored.metadata.sender.service_id_string() == message.author_id
-                && stored.timestamp() == message.timestamp
-        })
+        .is_some_and(|stored| stored.timestamp() == message.timestamp)
 }
 
 /// Pins `target` in `conversation` for everyone in it (`Some(seconds)`, `seconds` as in
@@ -295,9 +282,7 @@ pub(super) async fn tell_pins(manager: &Mgr, ctx: &Ctx, id: &ConversationId) {
     });
 }
 
-/// `target` in the version a pin shows, its latest: kept beside the store, where its edits
-/// take its place, or else the store's, under its latest edit's time. Not the store's at
-/// `target`'s time alone: that can be someone else's message, from the same millisecond.
+/// `target` in the version a pin shows, its latest: its author's, under its latest edit's time.
 pub(super) async fn pinned_content(
     store: &SqliteStore,
     tables: &LocalStore,
@@ -305,17 +290,11 @@ pub(super) async fn pinned_content(
     thread: &Thread,
     target: &MessageRef,
 ) -> Option<Content> {
-    let kept = or_logged(
-        tables.collided_message(id, target).await,
-        "messages kept beside the store",
-    );
-    if kept.is_some() {
-        return kept;
-    }
+    let author = ServiceId::parse_from_service_id_string(&target.author_id)?;
     let at =
         or_logged(tables.latest_edit(id, target).await, "edit times").unwrap_or(target.timestamp);
     store
-        .message_sent_or_edited_at(thread, at)
+        .message_sent_or_edited_at(thread, &author, at)
         .await
         .ok()
         .flatten()
