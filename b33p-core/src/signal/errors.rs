@@ -72,6 +72,31 @@ pub(crate) fn upload_kind(
     }
 }
 
+/// Whether the upload's request went out on a kept-alive connection that the server closed as
+/// it went: hyper's `IncompleteMessage`, the connection ending before any answer. A CDN closes
+/// connections idle for a while (the test box's, wrangler's, after 5 s); one that closes just
+/// as the request is written can't be told from a live one in time, the later the slower the
+/// link. The request never got an answer, so trying once more, on a new connection, is safe.
+pub(crate) fn closed_under_request(
+    error: &presage::libsignal_service::sender::AttachmentUploadError,
+) -> bool {
+    use presage::libsignal_service::sender::AttachmentUploadError;
+    let AttachmentUploadError::ServiceError(ServiceError::Http(error)) = error else {
+        return false;
+    };
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = cause {
+        if error
+            .downcast_ref::<hyper::Error>()
+            .is_some_and(hyper::Error::is_incomplete_message)
+        {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
+}
+
 /// The kind of what the storage service answered: an undecipherable blob won't decipher next
 /// time.
 pub(crate) fn storage_service_kind(
@@ -141,5 +166,45 @@ mod tests {
             ServiceError::Http(error),
         );
         assert_eq!(upload_kind(&upload), ErrorKind::Unreachable);
+        assert!(
+            !closed_under_request(&upload),
+            "a refused connection never took the request"
+        );
+    }
+
+    /// A server that reads the request and closes without an answer, as a CDN closing an
+    /// idle connection just as the request comes, is told apart: the upload may go once more.
+    #[tokio::test]
+    async fn a_request_the_server_closed_under_is_told_apart() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port on the loopback");
+        let address = listener.local_addr().expect("the listener's address");
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.expect("the client connects");
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            // The whole head and the one-byte body, then the connection closes unanswered.
+            while !request.ends_with(b"\r\n\r\nx") {
+                let read = connection
+                    .read(&mut buffer)
+                    .await
+                    .expect("the request comes");
+                assert_ne!(read, 0, "the client closed first");
+                request.extend_from_slice(&buffer[..read]);
+            }
+        });
+        let error = reqwest::Client::new()
+            .post(format!("http://{address}/upload/attachments"))
+            .body("x")
+            .send()
+            .await
+            .expect_err("the server answers nothing");
+        server.await.expect("the server read the request");
+        let upload = presage::libsignal_service::sender::AttachmentUploadError::ServiceError(
+            ServiceError::Http(error),
+        );
+        assert!(closed_under_request(&upload));
     }
 }
