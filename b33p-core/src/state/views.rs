@@ -8,7 +8,7 @@ pub(super) struct Rows<'a> {
     pub(super) state: &'a ChatState,
     pub(super) history: &'a [ChatMessage],
     pub(super) group: bool,
-    pub(super) now: jiff::Zoned,
+    pub(super) now: jiff::ZonedDateTime,
     pub(super) tz: jiff::tz::TimeZone,
     pub(super) first_unread: Option<usize>,
 }
@@ -28,7 +28,7 @@ impl<'a> Rows<'a> {
             state,
             history,
             group: state.selected().is_some_and(Conversation::is_group),
-            now: now.to_zoned(tz.clone()),
+            now: now.to_zoned_datetime(tz.clone()),
             tz,
             first_unread: read_mark.and_then(|mark| first_unread(history, mark)),
         }

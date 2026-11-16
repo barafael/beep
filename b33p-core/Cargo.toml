@@ -82,7 +82,7 @@ minisign-verify = { version = "0.3", optional = true }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 rand = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-jiff = "0.2"
+jiff = "1.0"
 async-channel = "2"
 
 

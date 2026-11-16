@@ -140,7 +140,7 @@ pub fn buckets(history: &[ChatMessage], span: Span) -> Vec<Bucket> {
     // Where a bucket starting on `start` ends, in Signal's milliseconds.
     let end_of = |start: Date| {
         start
-            .to_zoned(tz.clone())
+            .to_zoned_datetime(tz.clone())
             .map_or(u64::MAX, |z| z.timestamp().as_millisecond().max(0) as u64)
     };
     let Some(first_date) = history.first().and_then(|m| date_of(m.timestamp)) else {
@@ -317,7 +317,7 @@ mod tests {
     /// Noon local time on `date`, in Signal's milliseconds.
     fn at(date: Date) -> u64 {
         date.at(12, 0, 0, 0)
-            .to_zoned(TimeZone::system())
+            .to_zoned_datetime(TimeZone::system())
             .unwrap()
             .timestamp()
             .as_millisecond() as u64
