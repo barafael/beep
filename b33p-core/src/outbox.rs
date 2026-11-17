@@ -104,13 +104,18 @@ impl Sending {
 
     async fn send(&mut self, send: Send) {
         let manager = &mut self.manager;
+        // A send's message isn't passed on: what went out is what b33p gave, as it turns
+        // presage's link previews off.
         match send {
             Send::Message {
                 to,
                 body,
                 timestamp,
                 reply,
-            } => answer(reply, manager.send_message(to, body, timestamp).await),
+            } => answer(
+                reply,
+                manager.send_message(to, body, timestamp).await.map(drop),
+            ),
             Send::GroupMessage {
                 master_key,
                 body,
@@ -120,7 +125,8 @@ impl Sending {
                 reply,
                 manager
                     .send_message_to_group(&master_key, body, timestamp)
-                    .await,
+                    .await
+                    .map(drop),
             ),
             Send::RequestContacts { reply } => answer(reply, manager.request_contacts().await),
             Send::SessionReset {
