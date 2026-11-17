@@ -1114,6 +1114,7 @@ async fn on_deleted_for_me_elsewhere(ctx: &Ctx, delete: &sync_message::DeleteFor
 
 /// The phone's whole list of whom we block: everything else is unblocked.
 async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::Blocked) {
+    super::send::remember_blocked_list(ctx, blocked).await;
     let mut now_blocked = std::collections::HashSet::new();
     for aci in &blocked.acis {
         now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
