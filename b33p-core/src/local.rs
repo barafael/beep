@@ -246,23 +246,6 @@ const SCHEMA: &[&str] = &[
         last_read INTEGER NOT NULL DEFAULT 0,
         marked_unread INTEGER NOT NULL DEFAULT 0
     )",
-    // What presage's store has no place for. It keeps one content per thread and millisecond,
-    // whoever wrote it (`thread_messages`' key), and drops a message at a time someone else's
-    // holds; so that message is kept here, as presage would have it, and read back with the rest.
-    "CREATE TABLE IF NOT EXISTS b33p_collided (
-        conversation TEXT NOT NULL,
-        author TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        server_ts INTEGER NOT NULL,
-        device INTEGER NOT NULL,
-        destination TEXT NOT NULL,
-        needs_receipt INTEGER NOT NULL,
-        unidentified_sender INTEGER NOT NULL,
-        was_plaintext INTEGER NOT NULL,
-        pni_verified TEXT,
-        content BLOB NOT NULL,
-        PRIMARY KEY (conversation, author, ts)
-    )",
     "CREATE TABLE IF NOT EXISTS b33p_delivery (
         conversation TEXT NOT NULL,
         ts INTEGER NOT NULL,
@@ -1658,126 +1641,35 @@ impl LocalStore {
         tx.commit().await
     }
 
-    /// Keeps a content presage's store has no place for; see [`SCHEMA`]'s `b33p_collided`. Again
-    /// for the same author and time replaces it: redelivered, or edited.
-    pub(crate) async fn keep_collided(
-        &self,
-        conversation: &ConversationId,
-        content: &Content,
-    ) -> Result<(), sqlx::Error> {
-        let metadata = &content.metadata;
-        sqlx::query(
-            "INSERT OR REPLACE INTO b33p_collided (conversation, author, ts, server_ts, device,
-                destination, needs_receipt, unidentified_sender, was_plaintext, pni_verified,
-                content)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    /// What earlier builds kept beside presage's store, from when it had room for one content
+    /// per thread and millisecond, by conversation; taken out of `b33p_collided` and the table
+    /// dropped by [`Self::drop_collided`] once presage's store holds them. Empty if there is
+    /// no such table.
+    pub(crate) async fn collided(&self) -> Result<Vec<(ConversationId, Content)>, sqlx::Error> {
+        let table: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'b33p_collided'",
         )
-        .bind(&conversation.0)
-        .bind(metadata.sender.service_id_string())
-        .bind(metadata.client_timestamp.timestamp_millis())
-        .bind(metadata.server_timestamp.timestamp_millis())
-        .bind(i64::from(u32::from(metadata.sender_device)))
-        .bind(metadata.destination.service_id_string())
-        .bind(metadata.needs_receipt)
-        .bind(metadata.unidentified_sender)
-        .bind(metadata.was_plaintext)
-        .bind(
-            metadata
-                .pni_verified
-                .as_ref()
-                .map(|pni| pni.service_id_string()),
-        )
-        .bind(content.body.clone().into_proto().encode_to_vec())
-        .execute(&self.db)
-        .await
-        .map(drop)
-    }
-
-    /// What [`Self::keep_collided`] kept of a conversation sent from `from` up to, not
-    /// including, `before`.
-    pub(crate) async fn collided(
-        &self,
-        conversation: &ConversationId,
-        from: u64,
-        before: Option<u64>,
-    ) -> Result<Vec<Content>, sqlx::Error> {
-        let before = before.map_or(i64::MAX, |ts| ts.min(i64::MAX as u64) as i64);
+        .fetch_optional(&self.db)
+        .await?;
+        if table.is_none() {
+            return Ok(Vec::new());
+        }
         let rows = sqlx::query(concat!(
-            "SELECT ",
+            "SELECT conversation, ",
             collided_columns!(),
-            " FROM b33p_collided WHERE conversation = ? AND ts >= ? AND ts < ?"
+            " FROM b33p_collided"
         ))
-        .bind(&conversation.0)
-        .bind(from.min(i64::MAX as u64) as i64)
-        .bind(before)
         .fetch_all(&self.db)
         .await?;
-        Ok(rows.iter().filter_map(collided_of).collect())
+        Ok(rows
+            .iter()
+            .filter_map(|row| Some((ConversationId(row.get(0)), collided_of(row)?)))
+            .collect())
     }
 
-    /// What [`Self::keep_collided`] kept of `target`.
-    pub(crate) async fn collided_message(
-        &self,
-        conversation: &ConversationId,
-        target: &MessageRef,
-    ) -> Result<Option<Content>, sqlx::Error> {
-        let (conversation, author, ts) = key(conversation, target);
-        let row = sqlx::query(concat!(
-            "SELECT ",
-            collided_columns!(),
-            " FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?"
-        ))
-        .bind(conversation)
-        .bind(author)
-        .bind(ts)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(row.as_ref().and_then(collided_of))
-    }
-
-    /// The conversation of what [`Self::keep_collided`] kept from `author` at `ts`: presage's
-    /// [`thread_for_sender_and_timestamp`](presage::store::ContentsStore::thread_for_sender_and_timestamp)
-    /// for what it has no place for.
-    pub(crate) async fn collided_conversation(
-        &self,
-        author: &str,
-        ts: u64,
-    ) -> Result<Option<ConversationId>, sqlx::Error> {
-        let conversation: Option<String> = sqlx::query_scalar(
-            "SELECT conversation FROM b33p_collided WHERE author = ? AND ts = ?",
-        )
-        .bind(author)
-        .bind(ts as i64)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(conversation.map(ConversationId))
-    }
-
-    /// Forgets what [`Self::keep_collided`] kept of `target`; whether it had.
-    pub(crate) async fn forget_collided(
-        &self,
-        conversation: &ConversationId,
-        target: &MessageRef,
-    ) -> Result<bool, sqlx::Error> {
-        let (conversation, author, ts) = key(conversation, target);
-        let result = sqlx::query(
-            "DELETE FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?",
-        )
-        .bind(conversation)
-        .bind(author)
-        .bind(ts)
-        .execute(&self.db)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Forgets all [`Self::keep_collided`] kept of a conversation, with its thread cleared.
-    pub(crate) async fn forget_collided_chat(
-        &self,
-        conversation: &ConversationId,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM b33p_collided WHERE conversation = ?")
-            .bind(&conversation.0)
+    /// Drops the table [`Self::collided`] reads.
+    pub(crate) async fn drop_collided(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("DROP TABLE IF EXISTS b33p_collided")
             .execute(&self.db)
             .await
             .map(drop)
@@ -1792,20 +1684,7 @@ impl LocalStore {
         messages: &[(ConversationId, MessageRef, Option<Thread>)],
     ) -> Result<(), sqlx::Error> {
         let mut tx = self.begin_write().await?;
-        for (conversation, message, thread) in messages {
-            // Kept beside the store: what the store holds at its time is someone else's.
-            let (id, author, ts) = key(conversation, message);
-            let collided = sqlx::query(
-                "DELETE FROM b33p_collided WHERE conversation = ? AND author = ? AND ts = ?",
-            )
-            .bind(id)
-            .bind(author)
-            .bind(ts)
-            .execute(&mut *tx)
-            .await?;
-            if collided.rows_affected() > 0 {
-                continue;
-            }
+        for (_, message, thread) in messages {
             // presage finds a thread by its group's master key or the contact's UUID.
             let (group, contact) = match thread {
                 None => continue,
@@ -1814,10 +1693,11 @@ impl LocalStore {
             };
             sqlx::query(
                 "DELETE FROM thread_messages
-                 WHERE ts = ? AND thread_id = (
+                 WHERE ts = ? AND sender_service_id = ? AND thread_id = (
                     SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)",
             )
             .bind(message.timestamp as i64)
+            .bind(&message.author_id)
             .bind(group)
             .bind(contact)
             .execute(&mut *tx)
@@ -1942,27 +1822,28 @@ macro_rules! collided_columns {
 }
 use collided_columns;
 
-/// A row of `b33p_collided` as the content it was; `None`, and said in the log, if it can't be.
+/// A row of `b33p_collided` as the content it was, from its second column on; `None`, and said
+/// in the log, if it can't be.
 fn collided_of(row: &SqliteRow) -> Option<Content> {
     let content = (|| {
         let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis);
-        let device = u8::try_from(row.get::<i64, _>(3)).ok()?;
+        let device = u8::try_from(row.get::<i64, _>(4)).ok()?;
         let metadata = Metadata {
-            sender: ServiceId::parse_from_service_id_string(row.get(0))?,
-            client_timestamp: at(row.get(1))?,
-            server_timestamp: at(row.get(2))?,
+            sender: ServiceId::parse_from_service_id_string(row.get(1))?,
+            client_timestamp: at(row.get(2))?,
+            server_timestamp: at(row.get(3))?,
             sender_device: device.try_into().ok()?,
-            destination: ServiceId::parse_from_service_id_string(row.get(4))?,
-            needs_receipt: row.get(5),
-            unidentified_sender: row.get(6),
-            was_plaintext: row.get(7),
-            pni_verified: match row.get::<Option<&str>, _>(8) {
+            destination: ServiceId::parse_from_service_id_string(row.get(5))?,
+            needs_receipt: row.get(6),
+            unidentified_sender: row.get(7),
+            was_plaintext: row.get(8),
+            pni_verified: match row.get::<Option<&str>, _>(9) {
                 Some(pni) => Some(Pni::parse_from_service_id_string(pni)?),
                 None => None,
             },
             server_guid: None,
         };
-        let body = presage::proto::Content::decode(row.get::<&[u8], _>(9)).ok()?;
+        let body = presage::proto::Content::decode(row.get::<&[u8], _>(10)).ok()?;
         Content::from_proto(body, metadata).ok()
     })();
     if content.is_none() {

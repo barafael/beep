@@ -635,25 +635,19 @@ pub(crate) enum ImportError {
         conversation: crate::ConversationId,
         source: sqlx::Error,
     },
-    #[error("failed to keep a message of the history that shares its time with another's")]
-    Collided {
-        conversation: crate::ConversationId,
-        source: sqlx::Error,
-    },
 }
 
 impl crate::Classified for ImportError {
     fn kind(&self) -> crate::ErrorKind {
         match self {
             Self::Frame(_) => crate::ErrorKind::Refused,
-            Self::Store { .. } | Self::Expiry { .. } | Self::Collided { .. } => {
-                crate::ErrorKind::Storage
-            }
+            Self::Store { .. } | Self::Expiry { .. } => crate::ErrorKind::Storage,
         }
     }
 }
 
-/// Stores one record. Messages are keyed by timestamp and thread, so importing twice is harmless.
+/// Stores one record. Messages are keyed by thread, sender and timestamp, so importing twice is
+/// harmless.
 pub(crate) async fn store<S: ContentsStore>(
     store: &mut S,
     tables: &crate::local::LocalStore,
@@ -684,27 +678,7 @@ where
             }
         }
         Record::Group { master_key, group } => store.save_group(master_key, group).await,
-        // The store keeps one content per thread and millisecond, and saving replaces it.
-        Record::Message { thread, content } => {
-            let at = content.metadata.client_timestamp.timestamp_millis() as u64;
-            match store.message(&thread, at).await {
-                Ok(Some(holder))
-                    if holder.metadata.sender != content.metadata.sender
-                        && !matches!(holder.body, ContentBody::ReceiptMessage(_)) =>
-                {
-                    let conversation = crate::signal::conversation_id(&thread);
-                    return match tables.keep_collided(&conversation, &content).await {
-                        Ok(()) => Ok(()),
-                        Err(source) => Err(ImportError::Collided {
-                            conversation,
-                            source,
-                        }),
-                    };
-                }
-                Ok(_) => store.save_message(&thread, content).await,
-                Err(error) => Err(error),
-            }
-        }
+        Record::Message { thread, content } => store.save_message(&thread, content).await,
         Record::Timer {
             contact,
             seconds,

@@ -78,13 +78,16 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d2
 #   a group's "only admins send" and "ended" kept, from its state and its changes (#493)
 #   what the server warned of on connecting, `Manager::server_alerts` (no PR yet)
 #   our PNI signature to whoever wrote to our PNI, until their delivery receipt (#504)
+#   a message known by its sender and time, `thread_messages` keyed so: two senders at one
+#        millisecond both kept, of one account's two devices the first; a delete for everyone
+#        takes the message out (#499 carries it upstream)
 # The branch before the rebuild is langis/integration-2026-11-09.
 # Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "abbc23b4d0ecc733ba035f7ddd29bf2151bacbda" }
+presage = { git = "https://github.com/barafael/presage", rev = "e30b64c2bfa20926aba15a35fcfdec9b0616390b" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "abbc23b4d0ecc733ba035f7ddd29bf2151bacbda", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "e30b64c2bfa20926aba15a35fcfdec9b0616390b", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.

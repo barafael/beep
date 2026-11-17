@@ -133,9 +133,23 @@ pub(super) async fn on_missed_changes(
         .map(|(_, at)| *at)
         .min();
     let base = later.unwrap_or_else(crate::now_millis);
-    let count = missed.len() as u64;
-    for (n, missed) in (0u64..).zip(missed) {
-        let at = base.saturating_sub(count - n);
+    // A millisecond each, just before `base` and in the order the changes were made. Saved
+    // directly, so not one the editor has a message at: that one would be replaced.
+    let mut times = Vec::with_capacity(missed.len());
+    let mut at = base;
+    for missed in missed.iter().rev() {
+        let editor = ServiceId::Aci(missed.changes.editor);
+        loop {
+            at = at.saturating_sub(1);
+            let held = manager.store().message(&thread, &editor, at).await;
+            if at == 0 || !matches!(held, Ok(Some(_))) {
+                break;
+            }
+        }
+        times.push(at);
+    }
+    times.reverse();
+    for (missed, at) in missed.into_iter().zip(times) {
         let time = chrono::DateTime::from_timestamp_millis(at as i64).unwrap_or_default();
         let data = presage::proto::DataMessage {
             group_v2: Some(GroupContextV2 {
@@ -751,7 +765,8 @@ fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, PictureError> {
     Ok(jpeg.into_inner())
 }
 
-/// Shows a message we stored ourselves (e.g. a group change), as it will read after a restart.
+/// Shows a message we stored ourselves, as ours (e.g. a group change), as it will read after a
+/// restart.
 pub(super) async fn show_stored(
     manager: &Mgr,
     ctx: &Ctx,
@@ -759,7 +774,10 @@ pub(super) async fn show_stored(
     thread: &Thread,
     timestamp: u64,
 ) {
-    if let Ok(Some(content)) = manager.store().message(thread, timestamp).await
+    if let Ok(Some(content)) = manager
+        .store()
+        .message(thread, &own_id(manager), timestamp)
+        .await
         && let Some(message) =
             to_chat_message(manager, &mut Names::new(), conversation.clone(), &content).await
     {

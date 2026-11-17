@@ -2942,7 +2942,8 @@ fn forwarding_sends_a_copy_to_the_chosen_chat() {
         (id("g"), "Ann at 10\nsecond line".into())
     );
     // Where the message is, for what only the stored one has (a sticker's pack).
-    assert_eq!(original, (id("a"), 10));
+    assert_eq!(original.0, id("a"));
+    assert_eq!(original.1.timestamp, 10);
     assert!(!state.forwarding());
     assert!(state.forward_to(&id("g")).is_none(), "once");
     assert!(state.forwarded().is_none());

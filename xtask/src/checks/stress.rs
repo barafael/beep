@@ -69,6 +69,15 @@ pub(super) enum StressError {
     /// them rather than one ([`same_moment`]).
     #[error("{texts:?} came at one millisecond from one account; b33p shows {shown} of them")]
     SameMoment { texts: Vec<String>, shown: usize },
+    /// Of messages at one millisecond from one account, b33p showed `before` and, read back from
+    /// its store after a restart, `after`.
+    #[error(
+        "of messages at one millisecond from one account b33p showed {before:?}, and {after:?} after a restart"
+    )]
+    Swapped {
+        before: Vec<String>,
+        after: Vec<String>,
+    },
     /// What b33p was sending when it was killed, neither reached the peer and shown so nor shown
     /// as failed.
     #[error("{}", lines(sends))]
@@ -583,37 +592,39 @@ pub(crate) fn content(
         Ok(missing_texts(&shown)?)
     });
 
-    checks.record("awkward texts from b33p reach the peer as sent", || {
-        select(&mut b33p, &conversation)?;
-        // Whitespace alone isn't a message to send, and what ends one isn't sent, here as in
-        // Signal's apps; b33p takes `*bold*` and the like as formatting (the desktop phase).
-        let texts: Vec<(&str, String)> = awkward_texts()
-            .into_iter()
-            .filter(|(what, text)| !text.trim().is_empty() && *what != MARKUP)
-            .map(|(what, text)| (what, text.trim_end().to_owned()))
-            .collect();
-        for (_, text) in &texts {
-            type_and_send(&mut b33p, text)?;
-        }
-        let received = peer.sync()?;
-        // presage-cli prints a message's body and not its attachments, so the peer shows a long
-        // text's inline part; the whole reaching Signal's apps is the desktop and android phases'
-        // long-text checks.
-        let missing: Vec<String> = texts
-            .iter()
-            .filter(|(_, text)| !received.contains(b33p_core::format::inline_head(text)))
-            .map(|(what, _)| (*what).to_owned())
-            .collect();
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(StressError::PeerMissing {
-                missing,
-                sent: texts.len(),
+    // A long text's inline part: presage-cli shows a message's body, not its attachments. That
+    // the whole arrives is the desktop and android phases' long-text checks.
+    checks.record(
+        "awkward texts from b33p reach the peer as sent, a long one's inline part",
+        || {
+            select(&mut b33p, &conversation)?;
+            // Whitespace alone isn't a message to send, and what ends one isn't sent, here as in
+            // Signal's apps; b33p takes `*bold*` and the like as formatting (the desktop phase).
+            let texts: Vec<(&str, String)> = awkward_texts()
+                .into_iter()
+                .filter(|(what, text)| !text.trim().is_empty() && *what != MARKUP)
+                .map(|(what, text)| (what, text.trim_end().to_owned()))
+                .collect();
+            for (_, text) in &texts {
+                type_and_send(&mut b33p, text)?;
             }
-            .into())
-        }
-    });
+            let received = peer.sync()?;
+            let missing: Vec<String> = texts
+                .iter()
+                .filter(|(_, text)| !received.contains(b33p_core::format::inline_head(text)))
+                .map(|(what, _)| (*what).to_owned())
+                .collect();
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(StressError::PeerMissing {
+                    missing,
+                    sent: texts.len(),
+                }
+                .into())
+            }
+        },
+    );
 
     let in_box = |name: &str| format!("/files/{name}");
     checks.record(
@@ -772,7 +783,16 @@ pub(crate) fn concurrency(
                 Ok(())
             })?;
             for last in [last(&from_cli)?, last(&from_desktop)?] {
-                b33p_shows(&mut b33p, &format!("{last:?}"), |message| message.text == last)?;
+                if let Err(error) =
+                    b33p_shows(&mut b33p, &format!("{last:?}"), |message| message.text == last)
+                {
+                    // One of a set at one millisecond from one account may be the one not kept:
+                    // the sets are checked below. Anything else not shown is missing.
+                    let together = same_moment(containers, &[&from_cli, &from_desktop])?;
+                    if !together.iter().any(|set| set.iter().any(|text| text == last)) {
+                        return Err(error.into());
+                    }
+                }
             }
             b33p.wait_for("b33p's own sent", PATIENCE, |snapshot| {
                 deliveries(snapshot, "testbox stress: from b33p")
@@ -782,9 +802,11 @@ pub(crate) fn concurrency(
             })?;
             settled(&mut b33p)?;
             // presage-cli and Desktop are one account, the peer's, on one clock: two of their
-            // messages can carry the same millisecond, and b33p keeps one of those.
+            // messages can carry the same millisecond, and b33p keeps the first of those.
             let together = same_moment(containers, &[&from_cli, &from_desktop])?;
-            let shows_each_once = |b33p: &mut Harness| -> Result<(), Failure> {
+            // Each once and in order, and of each set at one millisecond the one shown.
+            let shows_each_once = |b33p: &mut Harness| -> Result<Vec<String>, Failure> {
+                let mut kept = Vec::new();
                 let from_cli_shown = all_texts(b33p, "testbox stress: from presage-cli ")?;
                 let from_desktop_shown = all_texts(b33p, "testbox stress: from Desktop ")?;
                 for texts in &together {
@@ -804,6 +826,7 @@ pub(crate) fn concurrency(
                         }
                         .into());
                     }
+                    kept.extend(shown.into_iter().cloned());
                 }
                 let apart = |texts: &[String]| -> Vec<String> {
                     texts
@@ -815,22 +838,28 @@ pub(crate) fn concurrency(
                 in_order_once(&apart(&from_cli_shown), &apart(&from_cli))?;
                 in_order_once(&apart(&from_desktop_shown), &apart(&from_desktop))?;
                 in_order_once(&all_texts(b33p, "testbox stress: from b33p ")?, &from_b33p)?;
-                Ok(())
+                Ok(kept)
             };
-            shows_each_once(&mut b33p)?;
+            let kept = shows_each_once(&mut b33p)?;
             // On the peer's side, Desktop: presage-cli's sends receive in the background and
             // exit, which can drop a message between decrypting and storing it (finding 1b),
             // and the check every phase ends with names those.
             for text in &from_b33p {
                 desktop_shows(&mut desktop, text)?;
             }
-            // Read back from what b33p stored rather than from what it was told: two messages
-            // from two accounts at one millisecond both show until then, and are one row in
-            // presage's store, the other kept beside it.
+            // Read back from what b33p stored rather than from what it was told: two accounts'
+            // messages at one millisecond both stay, and of one account's two the same one.
             b33p = kill_and_start(containers, sockets)?;
             select(&mut b33p, &conversation)?;
             settled(&mut b33p)?;
-            shows_each_once(&mut b33p)?;
+            let kept_after = shows_each_once(&mut b33p)?;
+            if kept_after != kept {
+                return Err(StressError::Swapped {
+                    before: kept,
+                    after: kept_after,
+                }
+                .into());
+            }
             Ok(())
         },
     );
@@ -1546,7 +1575,9 @@ fn same_moment(containers: &Pod, texts: &[&[String]]) -> Result<Vec<Vec<String>>
 fn moments_in(log: &str, texts: &[&[String]]) -> Result<Vec<Vec<String>>, Failure> {
     let mut moments: std::collections::BTreeMap<(String, u64), Vec<String>> =
         std::collections::BTreeMap::new();
-    for line in log.lines() {
+    // A last line b33p is still writing has no newline yet.
+    let whole = log.rfind('\n').map_or("", |end| &log[..end]);
+    for line in whole.lines() {
         let logged: Logged = serde_json::from_str(line)?;
         let Some(text) = logged
             .body()
@@ -1656,18 +1687,21 @@ mod tests {
             // Redelivered: the same text again is no second message.
             line("peer", 11, "from presage-cli 022"),
             line("peer", 11, "from presage-cli 022"),
-            // Another account's at the same millisecond: b33p keeps both, `b33p_collided`.
+            // Another account's at the same millisecond: b33p keeps both.
             line("other", 12, "from presage-cli 023"),
             line("peer", 12, "from Desktop 004"),
         ]
-        .join("\n");
-        assert_eq!(
-            moments_in(&log, &[&cli, &desktop]).unwrap(),
-            vec![vec![
-                "from presage-cli 021".to_owned(),
-                "from Desktop 003".to_owned()
-            ]]
-        );
+        .map(|line| line + "\n")
+        .concat();
+        let found = vec![vec![
+            "from presage-cli 021".to_owned(),
+            "from Desktop 003".to_owned(),
+        ]];
+        assert_eq!(moments_in(&log, &[&cli, &desktop]).unwrap(), found);
+        // A line b33p is still writing: left for the next read.
+        let writing = line("peer", 12, "from presage-cli 024");
+        let partial = format!("{log}{}", &writing[..writing.len() / 2]);
+        assert_eq!(moments_in(&partial, &[&cli, &desktop]).unwrap(), found);
     }
 
     #[test]
