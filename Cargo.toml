@@ -37,8 +37,10 @@ i-slint-common = { git = "https://github.com/barafael/slint", rev = "d206fd1d88f
 i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d206fd1d88f7b8b818d0b73ec1356db2a9439173" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
-# requests, rebuilt 2026-11-09 as one commit per theme, new code in modules of their own
-# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs):
+# requests, one commit per theme (2026-11-09), new code in modules of their own
+# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs); rebased 2026-11-17 on
+# upstream main 743ed83 (call offers kept #500, sends returning the message #481, installed
+# sticker packs not downloaded again #506), built on libsignal-service's with libsignal 0.106.2:
 #   build on our libsignal-service fork: servers of one's own (`SignalServers::Custom`), the
 #        envelope ack handle, a linked secondary starting with read receipts on (#492 there)
 #   settings: one `Settings`, `Manager::set_settings`: automatic link previews off (#478) and
@@ -81,20 +83,20 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d2
 #   a message known by its sender and time, `thread_messages` keyed so: two senders at one
 #        millisecond both kept, of one account's two devices the first; a delete for everyone
 #        takes the message out (#499 carries it upstream)
-# The branch before the rebuild is langis/integration-2026-11-09.
-# Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "e30b64c2bfa20926aba15a35fcfdec9b0616390b" }
+# The branch before the rebase is tag archive/2026-11-17/langis/integration.
+# Rebase the branch when upstream moves or a PR changes; drop it once all have landed.
+presage = { git = "https://github.com/barafael/presage", rev = "8838f0f92c052ce225b7aeaf29f7c3275d6d2a37" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "e30b64c2bfa20926aba15a35fcfdec9b0616390b", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "8838f0f92c052ce225b7aeaf29f7c3275d6d2a37", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
 # `test-util` only makes its generated protobuf types public; it adds no dependencies. Using
 # them keeps us on exactly the schema its parser and validator use.
-libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0", features = ["test-util"] }
-libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
+libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.106.2", features = ["test-util"] }
+libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.106.2" }
 
 [patch.crates-io]
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
@@ -105,38 +107,14 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Go back to whisperfish's once both have landed.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
-# Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group changes
-# through /v2/groups, with the avatar upload and joins by an open invite link, which presage #448
-# needs), #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy
-# socket after a stall), #482 (websocket errors that name their cause, the string reasons in
-# `ServiceError` as enums, the task's outcome handed to the pipes), #488 (one session step at a
-# time, in order, through a `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once
-# stored, not once read; with #489: a handle dropped unacknowledged leaves the envelope to be
-# delivered again, not acknowledged unhandled), servers of one's own (`SignalServers::Custom`, which
-# presage's integration branch follows) and #490 (idle connections dropped before the servers drop
-# them, and a GET that meets one closing under it sent again (a group fetch failed so, 30 s after
-# the last)) and #491 (a replenishment's pre-keys handed to the store at once, so that it can save
-# them in one transaction, and the signed and last-resort keys made anew every day and a half) and #492 (the account's read-receipt setting in the provision message, and a linked device's registration IDs from the whole range, not 1..256),
-# #493 (stories sent as stories, `?story=true`, and only sealed), #494 (a keepalive every 30 s,
-# as Signal's apps send), #495 (`Accept-Language` on every request), #496 (a group change
-# decrypted once the server's signature shows it), #497 (a group's changes read from the
-# server's log), `set_device_capabilities` (`PUT /v1/devices/capabilities`, which a linked
-# device sends instead of the account attributes; #503), `urgent`
-# on every send as Signal-Desktop sets it per content (#493; the server took a missing one as
-# urgent, so receipts, typing and syncs woke phones), #504 (a bad contacts blob an error, not a
-# panic that came back at every start and stopped receiving), #489 also answers an envelope it
-# didn't handle with 500 (left unanswered, it held the server's queue back), a sealed plaintext
-# carrying only a decryption error message (branch fix/sealed-plaintext, no PR yet), #476 also
-# sends a transcript only for a message that reached someone, and doesn't fail a delivered message
-# when the transcript fails, and,
-# without a PR yet, a group send with a sender key in one request, and what the server warns of
-# on connecting (`SignalWebSocket::alerts`, `X-Signal-Alert`).
-# Landed upstream and dropped from the branch: #474 (drop sync messages from other
-# accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
-# history download isn't cut off).
+# Branch langis/integration of our libsignal-service fork, built by its integration.sh: upstream
+# main (libsignal 0.106.2) with each of our pull request branches merged in, and those without a
+# pull request yet (servers of one's own, a sealed plaintext carrying only a decryption error, a
+# group send with a sender key in one request, sync messages and transcripts out of
+# `send_message`). The script lists them; a merge done by hand is kept as branch merge/<topic>.
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "4cad93e8990b97ebf0d585185cb401d7639951ba" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "6b61cf9f3085138c7f18c6f2687e26b9d83bee22" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
