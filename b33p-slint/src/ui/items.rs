@@ -114,6 +114,7 @@ pub(super) fn conversation_item(
         request: chat.is_request(c),
         blocked: c.settings.blocked,
         left: c.left,
+        closed: c.closed.as_deref().unwrap_or_default().into(),
         invited: c.invited,
         requested: c.requested,
         admin: c.admin,

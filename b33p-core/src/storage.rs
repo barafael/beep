@@ -16,7 +16,7 @@ use presage::{
         storage_record::Record,
     },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::signal::errors::{http_kind, kind_of, service_kind, storage_service_kind};
 use crate::{
@@ -219,6 +219,7 @@ pub(crate) async fn sync(
     let mut pins = Vec::new();
     let mut folders = Vec::new();
     let mut account_preferences = None;
+    let mut own_profile_key = None;
     for keys in wanted.chunks(BATCH) {
         let records = read(&service, keys.to_vec(), ikm).await?;
         for record in records {
@@ -262,6 +263,7 @@ pub(crate) async fn sync(
                     );
                 }
                 Record::Account(account) => {
+                    own_profile_key = <[u8; 32]>::try_from(account.profile_key.as_slice()).ok();
                     account_preferences = Some(AccountPreferences {
                         read_receipts: account.read_receipts,
                         typing_indicators: account.typing_indicators,
@@ -289,6 +291,19 @@ pub(crate) async fn sync(
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+    // The phone makes a new profile key when it stops sharing its profile with someone, and
+    // writes it here; a linked device takes it from here, as Signal-Desktop does
+    // (ts/services/storageRecordOps.preload.ts, linked only). Else b33p gives the old one out.
+    if let Some(key) = own_profile_key {
+        let key = presage::libsignal_service::prelude::ProfileKey::create(key);
+        match manager.clone().set_profile_key(key).await {
+            Ok(true) => info!("took our new profile key from the storage service"),
+            Ok(false) => {}
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to take our new profile key");
             }
         }
     }

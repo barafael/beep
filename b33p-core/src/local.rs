@@ -674,6 +674,16 @@ impl LocalStore {
         Ok(changed)
     }
 
+    /// The build the server last called too old (`expiry::this_build`), if any.
+    pub(crate) async fn expired_build(&self) -> Result<Option<i64>, sqlx::Error> {
+        meta(&self.db, "expired_build").await
+    }
+
+    /// Remembers that the server called `build` too old.
+    pub(crate) async fn set_expired_build(&self, build: i64) -> Result<(), sqlx::Error> {
+        set_meta(&self.db, "expired_build", build).await
+    }
+
     /// Blocks or unblocks conversations, changing nothing else about them; their settings.
     pub(crate) async fn set_blocked(
         &self,

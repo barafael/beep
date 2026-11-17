@@ -834,9 +834,9 @@ fn chat(
             }),
         );
         chat_event.noted.extend(issued);
-        chat_event
-            .noted
-            .extend(sent_at(&verb, &path, &request_body).map(|at| format!("timestamp={at}")));
+        if let Some(sending) = sending(&verb, &path, &request_body) {
+            chat_event.noted.extend(sending.notes());
+        }
         found.push(chat_event);
     }
 }
@@ -858,21 +858,36 @@ fn issued(path: &str, body: Option<&[u8]>) -> Option<String> {
         .map(|credential| credential.username)
 }
 
-/// A message send's body: what it says it was sent at.
+/// A message send's body (`PUT /v1/messages/<to>`): the time it gives its messages (the
+/// envelope's timestamp, which a receiver may take as the message's), and how the server is to
+/// deliver them: `online` only to devices connected now, `urgent` waking the others (the server
+/// takes a missing `urgent` as true).
 #[derive(serde::Deserialize)]
 struct Sending {
     timestamp: u64,
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    urgent: Option<bool>,
 }
 
-/// The time a message send gives its messages (`PUT /v1/messages/<to>`): the envelope's
-/// timestamp, which a receiver may take as the message's.
-fn sent_at(verb: &str, path: &str, body: &[u8]) -> Option<u64> {
+impl Sending {
+    fn notes(&self) -> [String; 3] {
+        let flag =
+            |value: Option<bool>| value.map_or_else(|| "missing".to_owned(), |v| v.to_string());
+        [
+            format!("timestamp={}", self.timestamp),
+            format!("online={}", flag(self.online)),
+            format!("urgent={}", flag(self.urgent)),
+        ]
+    }
+}
+
+fn sending(verb: &str, path: &str, body: &[u8]) -> Option<Sending> {
     if verb != "PUT" || !path.starts_with("/v1/messages/") {
         return None;
     }
-    serde_json::from_slice::<Sending>(body)
-        .ok()
-        .map(|sending| sending.timestamp)
+    serde_json::from_slice(body).ok()
 }
 
 /// A chat response, waiting for its request.

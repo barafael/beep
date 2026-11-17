@@ -65,6 +65,20 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
     }
 }
 
+/// Whether Signal calls this version too old (499, on a request or on connecting), as it does
+/// a client it no longer works with: trying again can't help, a new version can.
+fn too_old(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
+    use presage::libsignal_service::push_service::ServiceError;
+    use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+    match error {
+        PresageError::ServiceError(ServiceError::DeprecatedVersion) => true,
+        PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+            HandshakeError::UnexpectedStatusCode(status),
+        ))) => status.as_u16() == 499,
+        _ => false,
+    }
+}
+
 /// What was done to mend sessions, kept for as long as we are linked (across restarts of
 /// receiving), so that a peer can't have it done over and over: when we last reset the
 /// session with each sender (see `SESSION_RESET_INTERVAL`), and which messages were sent
@@ -89,6 +103,8 @@ pub(super) enum Incoming {
     },
     /// Signal no longer accepts this device; receiving has stopped.
     Removed,
+    /// Signal no longer works with this version of b33p; receiving has stopped.
+    Expired,
 }
 
 /// Keeps the connection to Signal open for the rest of the session, and hands on what comes
@@ -159,6 +175,11 @@ impl Receiver {
                         // Cancelled, as `done` is dropped rather than sent on, once it is handled.
                         handled.await.ok();
                     }
+                }
+                Err(error) if too_old(&error) => {
+                    warn!(error = %crate::scrub::chain(&error), "Signal calls this version too old");
+                    incoming.send(Incoming::Expired).await.ok();
+                    return;
                 }
                 Err(error) if removed_from_account(&error) => {
                     warn!(error = %crate::scrub::chain(&error), "Signal no longer accepts this device");
@@ -246,6 +267,18 @@ pub(super) async fn handle_incoming(
     match incoming {
         Incoming::Connected => {
             kept.receipts.live = false;
+            // The server warns when the phone hasn't been seen for a while: it may then remove
+            // this device, and Signal's apps tell their user before.
+            if manager
+                .server_alerts()
+                .await
+                .iter()
+                .any(|alert| alert == "idle-primary-device")
+            {
+                warn!("Signal says the phone hasn't been seen for a while");
+                ctx.events
+                    .send(Event::Error(super::lifecycle::Notice::IdlePhone.into()));
+            }
             ctx.events.sent(Event::Connected)
         }
         Incoming::Reconnecting => ctx.events.sent(Event::Reconnecting),
@@ -255,7 +288,8 @@ pub(super) async fn handle_incoming(
             handled
         }
         // The session sees to it.
-        Incoming::Removed => true,
+        // The session takes these itself.
+        Incoming::Removed | Incoming::Expired => true,
     }
 }
 
@@ -543,6 +577,21 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
     }
 }
 
+/// Takes `key`, from a message our phone sent, as our profile key.
+async fn take_own_profile_key(manager: &Mgr, key: &[u8]) {
+    let Ok(key) = <[u8; 32]>::try_from(key) else {
+        return;
+    };
+    let key = presage::libsignal_service::prelude::ProfileKey::create(key);
+    match manager.clone().set_profile_key(key).await {
+        Ok(true) => info!("took our new profile key from a message the phone sent"),
+        Ok(false) => {}
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to take our new profile key")
+        }
+    }
+}
+
 /// Returns `false` once the UI has gone away.
 async fn handle_content(
     manager: &Mgr,
@@ -578,6 +627,43 @@ async fn handle_content(
     {
         forget_stored(manager, content).await;
         return true;
+    }
+    // As Signal's apps: in a group only admins may send to, what another member sends is
+    // dropped, and so is anything sent to a group that was ended (Signal-Desktop
+    // `handleDataMessage`). A message telling of a change still counts.
+    if let ContentBody::DataMessage(data) = &content.body
+        && let Some(group) = &data.group_v2
+        && group.group_change.is_none()
+        && let Some(key) = group
+            .master_key
+            .as_deref()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        && let Ok(Some(stored)) = manager.store().group(key).await
+    {
+        use presage::libsignal_service::groups_v2::Role;
+        let admin = stored
+            .members
+            .iter()
+            .any(|m| ServiceId::Aci(m.aci) == sender && m.role == Role::Administrator);
+        if stored.terminated || (stored.announcements_only && !admin) {
+            debug!("dropped a message to a group that takes none from its sender");
+            forget_stored(manager, content).await;
+            return true;
+        }
+    }
+    // What we sent from the phone carries our profile key as it is now: after the phone made
+    // a new one, b33p takes it, as Signal-Desktop does when linked.
+    if let ContentBody::SynchronizeMessage(SyncMessage {
+        content:
+            Some(SyncContent::Sent(Sent {
+                message: Some(sent),
+                ..
+            })),
+        ..
+    }) = &content.body
+        && let Some(key) = sent.profile_key.as_deref()
+    {
+        take_own_profile_key(manager, key).await;
     }
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
@@ -1470,5 +1556,26 @@ mod tests {
         assert!(!removed_from_account(&PresageError::ServiceError(
             ServiceError::Timeout { attempts: 3 }
         )));
+    }
+
+    /// 499, on connecting or on a request, is Signal calling this version too old; nothing
+    /// else is.
+    #[test]
+    fn only_499_means_this_version_is_too_old() {
+        use presage::libsignal_service::push_service::ServiceError;
+        use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+        let refused = |status: u16| {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+                HandshakeError::UnexpectedStatusCode(status),
+            )))
+        };
+        assert!(too_old(&refused(499)));
+        assert!(!too_old(&refused(403)));
+        assert!(!too_old(&refused(500)));
+        assert!(too_old(&PresageError::ServiceError(
+            ServiceError::DeprecatedVersion
+        )));
+        assert!(!removed_from_account(&refused(499)));
     }
 }

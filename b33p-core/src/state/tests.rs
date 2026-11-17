@@ -411,6 +411,15 @@ fn replying_follows_the_composers_rules() {
     assert!(state.reply(&g, "hi").0.is_none());
     state.select(&g);
     assert!(state.react(0, "👍").is_none());
+    // A group that was ended, or where only admins send and we aren't one.
+    let mut state = notifying();
+    state.apply(Event::Conversations(vec![Conversation {
+        closed: Some("Only admins can send messages to this group.".into()),
+        ..conversation("g", true)
+    }]));
+    assert!(state.reply(&g, "hi").0.is_none());
+    state.select(&g);
+    assert!(state.react(0, "👍").is_none());
 }
 
 #[test]
