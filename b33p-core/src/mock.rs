@@ -99,6 +99,7 @@ fn conversation(id: &str, title: &str, is_group: bool) -> Conversation {
         admin: is_group && id != "club",
         members_edit_details: false,
         left: id == "club",
+        closed: None,
         invited: id == "club",
         requested: false,
         // Verified once; her key changed since, so writing to her waits for a confirmation.

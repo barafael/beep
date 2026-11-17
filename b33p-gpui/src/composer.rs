@@ -360,6 +360,8 @@ struct Situation {
     request: bool,
     blocked: bool,
     left: bool,
+    /// Why nobody here may write in this group though we're in it, if so.
+    closed: Option<String>,
     invited: bool,
     requested: bool,
     safety_changed: bool,
@@ -376,6 +378,7 @@ impl Situation {
             || self.invited
             || self.requested
             || self.left
+            || self.closed.is_some()
             || self.safety_changed
             || self.blocked)
     }
@@ -389,6 +392,7 @@ impl Situation {
             request: chat.is_request(c),
             blocked: c.settings.blocked,
             left: c.left,
+            closed: c.closed.clone(),
             invited: c.invited,
             requested: c.requested,
             safety_changed: c.trust == Trust::Changed,
@@ -411,7 +415,7 @@ impl Situation {
 
     /// The field is where a message is written, unless a bar says why not.
     fn shows_field(&self) -> bool {
-        !(self.request || self.blocked || self.left || self.safety_changed)
+        !(self.request || self.blocked || self.left || self.closed.is_some() || self.safety_changed)
     }
 }
 
@@ -607,6 +611,9 @@ impl ComposerView {
         }
         if s.left && !s.invited && !s.requested {
             bars.push(banner("left", "log-out", s.subtitle.clone(), Vec::new(), t));
+        }
+        if let Some(closed) = s.closed.as_ref().filter(|_| !s.left) {
+            bars.push(banner("closed", "lock", closed.clone(), Vec::new(), t));
         }
         if s.safety_changed {
             let (details, keep) = (shared.clone(), shared.clone());
@@ -1069,6 +1076,7 @@ mod tests {
             request: false,
             blocked: false,
             left: false,
+            closed: None,
             invited: false,
             requested: false,
             safety_changed: false,
@@ -1085,6 +1093,7 @@ mod tests {
             |s: &mut Situation| s.request = true,
             |s: &mut Situation| s.blocked = true,
             |s: &mut Situation| s.left = true,
+            |s: &mut Situation| s.closed = Some("Only admins can send messages.".into()),
             |s: &mut Situation| s.safety_changed = true,
         ] {
             let mut s = situation();

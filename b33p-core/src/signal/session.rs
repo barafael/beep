@@ -48,6 +48,8 @@ pub(super) struct Session {
     repairs: Repairs,
     /// Where commands go that are taken in order, each with its copy; see [`outgoing`].
     in_order: mpsc::UnboundedSender<(Command, Ctx)>,
+    /// This build has expired (`crate::expiry`): nothing is received or sent any more.
+    expired: bool,
 }
 
 impl Session {
@@ -66,6 +68,7 @@ impl Session {
             kept: Kept::default(),
             repairs: Repairs::default(),
             in_order,
+            expired: false,
         }
     }
 
@@ -90,6 +93,23 @@ impl Session {
         let stories_due = tokio::time::sleep_until(stories_over(story_over));
         pin_mut!(stories_due);
 
+        // This build's expiry, when it has one; and whether the server called it too old.
+        let expires = crate::expiry::this_build_expires();
+        let expiry = tokio::time::sleep(
+            expires
+                .and_then(|at| at.duration_since(std::time::SystemTime::now()).ok())
+                .unwrap_or_default(),
+        );
+        pin_mut!(expiry);
+        let called_too_old = matches!(
+            self.ctx.tables.expired_build().await,
+            Ok(Some(build)) if build == crate::expiry::this_build()
+        );
+        if called_too_old || crate::expiry::this_build_has_expired(std::time::SystemTime::now()) {
+            self.expire(false).await;
+            incoming.close();
+        }
+
         let mut pending = pending.into_iter();
         let ended = loop {
             let command = match pending.next() {
@@ -112,6 +132,11 @@ impl Session {
                         sweep.as_mut().reset(Instant::now());
                         continue;
                     }
+                    () = &mut expiry, if expires.is_some() && !self.expired => {
+                        self.expire(false).await;
+                        incoming.close();
+                        continue;
+                    }
                     () = &mut stories_due => {
                         let next = send_stories(&self.manager, &self.ctx).await;
                         stories_due.as_mut().reset(stories_over(next));
@@ -126,8 +151,12 @@ impl Session {
                         self.on_asked(asked).await;
                         continue;
                     }
-                    arrived = incoming.recv() => match arrived {
+                    arrived = incoming.recv(), if !self.expired => match arrived {
                         Some(Incoming::Removed) => break Ended::Removed,
+                        Some(Incoming::Expired) => {
+                            self.expire(true).await;
+                            continue;
+                        }
                         Some(arrived) => {
                             if !self.on_incoming(arrived).await {
                                 break Ended::Gone;
@@ -171,7 +200,44 @@ impl Session {
         (self, ended)
     }
 
+    /// Stops talking to Signal: this build has expired, by its date or because the server
+    /// called it too old (remembered, for this build only). Says so.
+    async fn expire(&mut self, by_server: bool) {
+        warn!(
+            by_server,
+            "this build has expired; no more receiving or sending"
+        );
+        self.expired = true;
+        if by_server
+            && let Err(error) = self
+                .ctx
+                .tables
+                .set_expired_build(crate::expiry::this_build())
+                .await
+        {
+            warn!(error = %scrub::chain(&error), "failed to remember that this build expired");
+        }
+        self.ctx.events.send(Event::Error(Notice::Expired.into()));
+    }
+
     async fn on_command(&mut self, command: Command) {
+        // Expired, nothing goes out: Signal would refuse it, or take what it no longer should.
+        if self.expired && outgoing(&command) {
+            if let Command::Send {
+                conversation,
+                timestamp,
+                ..
+            } = &command
+            {
+                self.ctx.events.send(Event::SendFailed {
+                    conversation: conversation.clone(),
+                    timestamp: *timestamp,
+                    retryable: false,
+                });
+            }
+            self.ctx.events.send(Event::Error(Notice::Expired.into()));
+            return;
+        }
         if outgoing(&command) {
             // Kept from here until it went out: should b33p stop before, it shows as failed.
             if let Err(error) = self.ctx.tables.keep_unsent(&command).await {

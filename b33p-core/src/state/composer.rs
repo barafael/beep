@@ -48,6 +48,7 @@ impl ChatState {
         self.synced
             && !conversation.settings.blocked
             && !conversation.left
+            && conversation.closed.is_none()
             && conversation.trust != crate::Trust::Changed
             && !self.is_request(conversation)
     }

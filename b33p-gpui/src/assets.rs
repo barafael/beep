@@ -32,6 +32,7 @@ icon_assets!(
         Image,
         Italic,
         Link,
+        Lock,
         LogOut,
         MessageCircleQuestionMark,
         Paperclip,

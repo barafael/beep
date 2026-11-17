@@ -411,6 +411,15 @@ fn replying_follows_the_composers_rules() {
     assert!(state.reply(&g, "hi").0.is_none());
     state.select(&g);
     assert!(state.react(0, "👍").is_none());
+    // A group that was ended, or where only admins send and we aren't one.
+    let mut state = notifying();
+    state.apply(Event::Conversations(vec![Conversation {
+        closed: Some("Only admins can send messages to this group.".into()),
+        ..conversation("g", true)
+    }]));
+    assert!(state.reply(&g, "hi").0.is_none());
+    state.select(&g);
+    assert!(state.react(0, "👍").is_none());
 }
 
 #[test]
@@ -893,9 +902,9 @@ fn one_reaction_per_person_and_ours_toggles() {
 
 #[test]
 fn list_times_and_day_labels_get_coarser_with_age() {
-    let now: jiff::Zoned = "2026-10-05T12:00:00[Europe/Berlin]".parse().unwrap();
+    let now: jiff::ZonedDateTime = "2026-10-05T12:00:00[Europe/Berlin]".parse().unwrap();
     let at = |s: &str| {
-        let t: jiff::Zoned = format!("{s}[Europe/Berlin]").parse().unwrap();
+        let t: jiff::ZonedDateTime = format!("{s}[Europe/Berlin]").parse().unwrap();
         t.timestamp().as_millisecond() as u64
     };
     // Formatting uses the system time zone; compare against what it says for the same instant.
@@ -926,7 +935,7 @@ fn list_times_and_day_labels_get_coarser_with_age() {
 #[test]
 fn midnight_is_when_tomorrow_starts() {
     let until = |s: &str| {
-        let now: jiff::Zoned = format!("{s}[Europe/Berlin]").parse().unwrap();
+        let now: jiff::ZonedDateTime = format!("{s}[Europe/Berlin]").parse().unwrap();
         until_midnight_after(&now).as_secs()
     };
     assert_eq!(until("2026-10-24T23:30:00"), 30 * 60);
@@ -1009,7 +1018,7 @@ fn rows_from_scratch(state: &ChatState) -> Vec<Shown> {
     let local_date = |timestamp| zoned(timestamp).map(|time| time.date());
     let group = state.selected().is_some_and(|c| c.is_group());
     let history = state.selected_history();
-    let now = jiff::Zoned::now();
+    let now = jiff::ZonedDateTime::now();
     let read_mark = state.read_mark.filter(|&mark| mark > 0);
     let first_unread = read_mark.and_then(|mark| {
         let first = unread_after(history, mark).next()?;
@@ -1070,11 +1079,11 @@ fn rows_from_scratch(state: &ChatState) -> Vec<Shown> {
 fn varied_group() -> ChatState {
     let mut state = state();
     let minute = 60_000;
-    let midnight = jiff::Zoned::now()
+    let midnight = jiff::ZonedDateTime::now()
         .date()
         .checked_sub(jiff::Span::new().days(3))
         .unwrap()
-        .to_zoned(jiff::tz::TimeZone::system())
+        .to_zoned_datetime(jiff::tz::TimeZone::system())
         .unwrap()
         .timestamp()
         .as_millisecond() as u64;

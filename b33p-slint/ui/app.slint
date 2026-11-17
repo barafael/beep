@@ -1594,6 +1594,10 @@ export component AppWindow inherits Window {
                         icon: @image-url("@lucide/log-out.svg");
                         text: ChatList.current.subtitle;
                     }
+                    if !ChatList.current.left && ChatList.current.closed != "": Banner {
+                        icon: @image-url("@lucide/lock.svg");
+                        text: ChatList.current.closed;
+                    }
                     if ChatList.current.safety-changed: Banner {
                         icon: @image-url("@lucide/shield-exclamation-point.svg");
                         text: "Your safety number with " + ChatList.current.title + " changed since you verified it. Compare it again, or continue without.";
@@ -1626,7 +1630,7 @@ export component AppWindow inherits Window {
                     // Not for requests, blocked chats, groups left or a changed safety number: they get
                     // their bar above instead.
                     Rectangle {
-                        property <bool> hidden: ChatList.current.request || ChatList.current.blocked || ChatList.current.left || ChatList.current.safety-changed;
+                        property <bool> hidden: ChatList.current.request || ChatList.current.blocked || ChatList.current.left || ChatList.current.closed != "" || ChatList.current.safety-changed;
                         height: self.hidden ? 0px : composer-row.preferred-height;
                         clip: true;
                         // A chat opens ready to write in, wherever it was opened from (the search
