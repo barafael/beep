@@ -371,6 +371,9 @@ fn show_settings(window: &AppWindow, settings: &Settings) {
         .set_sync_to_phone(settings.preferences.sync_to_phone);
     window
         .global::<Prefs>()
+        .set_high_quality_pictures(settings.preferences.high_quality_pictures);
+    window
+        .global::<Prefs>()
         .set_autostart_supported(crate::autostart::SUPPORTED);
     window
         .global::<Prefs>()
@@ -412,6 +415,7 @@ fn read_settings(window: &AppWindow) -> Settings {
             typing_indicators: window.global::<Prefs>().get_typing_indicators(),
             link_previews: window.global::<Prefs>().get_link_previews(),
             sync_to_phone: window.global::<Prefs>().get_sync_to_phone(),
+            high_quality_pictures: window.global::<Prefs>().get_high_quality_pictures(),
         },
     }
 }

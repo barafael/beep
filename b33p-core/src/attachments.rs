@@ -1,7 +1,14 @@
 //! Attachments of live and imported messages: describing them for the UI, and downloading,
 //! decrypting and decoding them on demand. Signal's servers keep them for about 45 days.
 //!
-//! Downloads stay in memory. Only [`save`] writes a file, and only because the user asked.
+//! What is downloaded is kept on disk, encrypted under the database's key ([`cache`]), and
+//! shown from there afterwards. Only [`save`] and [`open`] write a file anyone can read, and only
+//! because the user asked.
+
+pub(crate) mod cache;
+mod scale;
+
+use cache::{Cache, Entry};
 
 use std::{path::PathBuf, rc::Rc, sync::Arc};
 
@@ -123,7 +130,7 @@ pub(crate) enum UploadError {
     },
     #[error("“{name}” is larger than Signal's limit of 100 MB.")]
     TooLarge { name: String, size: u64 },
-    #[error("stripping the metadata of “{name}” stopped")]
+    #[error("making “{name}” ready to send stopped")]
     StripStopped {
         name: String,
         source: tokio::task::JoinError,
@@ -165,6 +172,59 @@ const PREVIEW_HEIGHT: u32 = 300;
 
 /// Starts the ids of link previews' pictures; see [`describe_preview`].
 const PREVIEW_ID: &str = "preview:";
+
+/// The ids of everything of `data` that may be kept on disk: its attachments, its sticker and
+/// its link previews' pictures; for forgetting them with the message.
+pub(crate) fn kept_of(data: &DataMessage) -> Vec<AttachmentId> {
+    of_message(data)
+        .into_iter()
+        .map(|attachment| attachment.id)
+        .chain(
+            data.preview
+                .iter()
+                .filter_map(|preview| preview.image.as_ref())
+                .map(|image| describe_preview(image).id),
+        )
+        .collect()
+}
+
+/// [`kept_of`] for a message as presage stores it (`thread_messages.content_body`, a
+/// `Content`): what it sent, or what a linked device of ours sent, and their edits.
+pub(crate) fn kept_of_stored(body: &[u8]) -> Vec<AttachmentId> {
+    use presage::libsignal_service::prelude::ProtobufMessage as _;
+    use presage::proto::content::Content as Body;
+    let Ok(content) = presage::proto::Content::decode(body) else {
+        return Vec::new();
+    };
+    let data = match &content.content {
+        Some(Body::DataMessage(data)) => Some(data),
+        Some(Body::EditMessage(edit)) => edit.data_message.as_ref(),
+        Some(Body::SyncMessage(presage::proto::SyncMessage {
+            content: Some(presage::proto::sync_message::Content::Sent(sent)),
+            ..
+        })) => sent.message.as_ref().or_else(|| {
+            sent.edit_message
+                .as_ref()
+                .and_then(|edit| edit.data_message.as_ref())
+        }),
+        _ => None,
+    };
+    data.map(kept_of).unwrap_or_default()
+}
+
+/// Forgets what `cache` keeps of `ids`, on a blocking thread.
+pub(crate) async fn forget(cache: &Option<Arc<Cache>>, ids: Vec<AttachmentId>) {
+    let Some(cache) = cache.clone() else {
+        return;
+    };
+    if ids.is_empty() {
+        return;
+    }
+    let forgotten = tokio::task::spawn_blocking(move || ids.iter().for_each(|id| cache.forget(id)));
+    if forgotten.await.is_err() {
+        tracing::debug!("stopped before forgetting kept attachments");
+    }
+}
 
 /// At most this many downloads at once, so opening a chat full of photos doesn't flood the
 /// connection.
@@ -263,25 +323,126 @@ pub(crate) fn pointer(attachment: &Attachment) -> Option<AttachmentPointer> {
 }
 
 /// What a session's downloads share: one client for Signal's CDNs, which keeps its connections
-/// to use again (one per download would pay a TLS handshake for every picture), the limit on
-/// how many run at once, and the one on decoding.
+/// to use again (one per download would pay a TLS handshake for every picture), the attachments
+/// kept on disk, the limit on how many downloads run at once, and the one on decoding.
 pub(crate) struct Downloads {
     cdn: PushService,
+    cache: Option<Arc<Cache>>,
     limit: Semaphore,
     /// One picture decoded at a time: a picture may take up to [`decode_limited`]'s 512 MiB
     /// decoded, and several arriving together took b33p past 2 GiB (pending/stress.md).
     decoding: Semaphore,
+    /// What [`prefetch`] may take of `limit`: leaves the rest for what is shown.
+    prefetching: Semaphore,
+    /// One download of an attachment at a time, so that one shown while it downloads as it
+    /// came (or opened in the viewer meanwhile) waits for it, rather than downloading it again.
+    downloading:
+        std::cell::RefCell<std::collections::HashMap<AttachmentId, Rc<tokio::sync::Mutex<()>>>>,
 }
 
+/// At most this many of [`PARALLEL_DOWNLOADS`] are [`prefetch`]es.
+const PREFETCHING: usize = 2;
+
 impl Downloads {
-    pub(crate) fn new(servers: SignalServers) -> Rc<Self> {
+    pub(crate) fn new(servers: SignalServers, cache: Option<Arc<Cache>>) -> Rc<Self> {
+        if let Some(cache) = cache.clone() {
+            // Last session's downloads may have gone past the bound.
+            tokio::task::spawn_blocking(move || cache.trim(KEPT_ORIGINALS));
+        }
         Rc::new(Self {
             cdn: crate::client::push_service(servers),
+            cache,
             limit: Semaphore::new(PARALLEL_DOWNLOADS),
             decoding: Semaphore::new(1),
+            prefetching: Semaphore::new(PREFETCHING),
+            downloading: Default::default(),
         })
     }
+
+    /// Whether `id` is kept as `entry`: that its file is there, not read.
+    async fn kept(&self, id: &AttachmentId, entry: Entry) -> bool {
+        let Some(cache) = self.cache.clone() else {
+            return false;
+        };
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || cache.has(&id, entry))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// What is kept of `id` as `entry`, read on a blocking thread.
+    async fn cached(&self, id: &AttachmentId, entry: Entry) -> Option<Vec<u8>> {
+        let cache = self.cache.clone()?;
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || cache.read(&id, entry))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Keeps `data` as `entry` of `id`, on a blocking thread, and hands it back. A failure only
+    /// costs a download later.
+    async fn keep(&self, id: &AttachmentId, entry: Entry, data: Vec<u8>) -> Vec<u8> {
+        let Some(cache) = self.cache.clone() else {
+            return data;
+        };
+        let id = id.clone();
+        let kept = tokio::task::spawn_blocking(move || {
+            if let Err(error) = cache.write(&id, entry, &data) {
+                tracing::warn!(error = %crate::scrub::chain(&error), "could not keep an attachment");
+            }
+            if entry == Entry::Original {
+                cache.trim(KEPT_ORIGINALS);
+            }
+            data
+        })
+        .await;
+        // Fails only when the runtime shuts down, the data with it.
+        kept.unwrap_or_default()
+    }
+
+    /// The attachment as sent, decrypted: kept from before, or downloaded (within the limit on
+    /// downloads at once) and kept.
+    async fn original(&self, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
+        let lock = self
+            .downloading
+            .borrow_mut()
+            .entry(attachment.id.clone())
+            .or_default()
+            .clone();
+        let original = {
+            let _held = lock.lock().await;
+            self.original_once(attachment).await
+        };
+        // The last one done with it lets it go.
+        if Rc::strong_count(&lock) == 2 {
+            self.downloading.borrow_mut().remove(&attachment.id);
+        }
+        original
+    }
+
+    /// [`Self::original`], with the attachment's download to itself.
+    async fn original_once(&self, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
+        if let Some(data) = self.cached(&attachment.id, Entry::Original).await {
+            return Ok(data);
+        }
+        let data = {
+            let _permit = self
+                .limit
+                .acquire()
+                .await
+                .map_err(AttachmentError::Ending)?;
+            download(&self.cdn, attachment).await?
+        };
+        tracing::debug!(kind = ?attachment.kind, size = data.len(), "{}", crate::DOWNLOADED_LOG);
+        Ok(self.keep(&attachment.id, Entry::Original, data).await)
+    }
 }
+
+/// How much the originals kept on disk may take; what goes first is what was used longest ago,
+/// and is downloaded again if wanted. The pictures as chats show them aren't counted (see
+/// [`Cache::trim`]).
+const KEPT_ORIGINALS: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Downloads and decrypts an attachment; see [`decrypt`].
 async fn download(cdn: &PushService, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
@@ -343,35 +504,24 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
                 size: attachment.size,
             });
         }
-        let data = {
-            let _permit = downloads
-                .limit
-                .acquire()
-                .await
-                .map_err(AttachmentError::Ending)?;
-            download(&downloads.cdn, &attachment).await?
-        };
+        if is_picture(attachment.kind) {
+            // As shown before: small, and quick to decode.
+            if let Some(shown) = downloads.cached(&attachment.id, Entry::Shown).await
+                && let Ok(Some(picture)) =
+                    tokio::task::spawn_blocking(move || decode_shown(&shown)).await
+            {
+                return Ok(AttachmentContent::Picture(Arc::new(picture)));
+            }
+        }
+        let data = downloads.original(&attachment).await?;
         match attachment.kind {
             AttachmentKind::LongText => Ok(AttachmentContent::Text(shown_text(&data))),
             AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                 Ok(AttachmentContent::Audio(data.into()))
             }
-            _ => {
-                let bounds = picture_bounds(&attachment);
-                let _decoding = downloads
-                    .decoding
-                    .acquire()
-                    .await
-                    .map_err(AttachmentError::Ending)?;
-                tokio::task::spawn_blocking(move || decode_picture(&data, bounds))
-                    .await
-                    .map_err(|source| AttachmentError::Stopped {
-                        step: "decoding the picture",
-                        source,
-                    })?
-                    .map(|picture| AttachmentContent::Picture(Arc::new(picture)))
-                    .ok_or(AttachmentError::NotShowable)
-            }
+            _ => shown_picture(&downloads, &attachment, data)
+                .await
+                .map(|picture| AttachmentContent::Picture(Arc::new(picture))),
         }
     }
     .await;
@@ -389,18 +539,99 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
     });
 }
 
+/// `data`, the original of the picture `attachment`, decoded as the chat shows it (one at a
+/// time), and kept so.
+async fn shown_picture(
+    downloads: &Downloads,
+    attachment: &Attachment,
+    data: Vec<u8>,
+) -> Result<Picture, AttachmentError> {
+    let bounds = picture_bounds(attachment);
+    let _decoding = downloads
+        .decoding
+        .acquire()
+        .await
+        .map_err(AttachmentError::Ending)?;
+    let (picture, shown) = tokio::task::spawn_blocking(move || {
+        let picture = decode_picture(&data, bounds);
+        let shown = picture.as_ref().and_then(encode_shown);
+        (picture, shown)
+    })
+    .await
+    .map_err(|source| AttachmentError::Stopped {
+        step: "decoding the picture",
+        source,
+    })?;
+    if let Some(shown) = shown {
+        downloads.keep(&attachment.id, Entry::Shown, shown).await;
+    }
+    picture.ok_or(AttachmentError::NotShowable)
+}
+
+/// What of a message that just came is downloaded at once, as Signal's apps do: what its chat
+/// shows (pictures, stickers, a link preview's picture, the rest of a long text) and voice
+/// messages, each at most [`PREFETCHED_AT_MOST`]. Files, videos and audio wait to be asked
+/// for, and view-once media for its viewing.
+pub(crate) fn prefetched(message: &crate::ChatMessage) -> Vec<Attachment> {
+    message
+        .attachments
+        .iter()
+        .chain(
+            message
+                .preview
+                .iter()
+                .filter_map(|preview| preview.image.as_deref()),
+        )
+        .filter(|attachment| {
+            matches!(
+                attachment.kind,
+                AttachmentKind::Image
+                    | AttachmentKind::Sticker
+                    | AttachmentKind::LongText
+                    | AttachmentKind::VoiceNote
+            ) && attachment.size <= PREFETCHED_AT_MOST
+        })
+        .cloned()
+        .collect()
+}
+
+/// The largest attachment [`prefetched`] downloads unasked.
+const PREFETCHED_AT_MOST: u64 = 25 * 1024 * 1024;
+
+/// Downloads `attachment` into the cache unless it is there, and for a picture keeps it as the
+/// chat shows it, so that showing it takes neither: in the background, as a message comes.
+/// At most [`PREFETCHING`] at once, so that what a chat shows when opened doesn't wait long
+/// behind them.
+pub(crate) async fn prefetch(downloads: Rc<Downloads>, attachment: Attachment) {
+    let Ok(_turn) = downloads.prefetching.acquire().await else {
+        return;
+    };
+    let picture = is_picture(attachment.kind);
+    let wanted = if picture {
+        Entry::Shown
+    } else {
+        Entry::Original
+    };
+    if downloads.cache.is_none() || downloads.kept(&attachment.id, wanted).await {
+        return;
+    }
+    let done = async {
+        let data = downloads.original(&attachment).await?;
+        if picture {
+            shown_picture(&downloads, &attachment, data).await?;
+        }
+        Ok::<_, AttachmentError>(())
+    };
+    if let Err(error) = done.await {
+        tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::chain(&error), "failed to download an attachment as it came");
+    }
+}
+
 /// Downloads a picture for the picture viewer and reports it as [`Event::FullPicture`]: the
 /// whole picture rather than [`fetch`]'s bubble-sized one.
 pub(crate) async fn fetch_full(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     let picture = async {
-        let data = {
-            let _permit = downloads
-                .limit
-                .acquire()
-                .await
-                .map_err(AttachmentError::Ending)?;
-            download(&downloads.cdn, &attachment).await?
-        };
+        let data = downloads.original(&attachment).await?;
         let _decoding = downloads
             .decoding
             .acquire()
@@ -469,12 +700,7 @@ fn shown_text(data: &[u8]) -> String {
 pub(crate) async fn save(downloads: Rc<Downloads>, attachment: Attachment, events: Events) {
     tracing::debug!(kind = ?attachment.kind, size = attachment.size, "saving attachment");
     let path = async {
-        let _permit = downloads
-            .limit
-            .acquire()
-            .await
-            .map_err(AttachmentError::Ending)?;
-        let data = download(&downloads.cdn, &attachment).await?;
+        let data = downloads.original(&attachment).await?;
         let path = free_path(&attachment)?;
         if let Err(source) = tokio::fs::write(&path, data).await {
             return Err(AttachmentError::Write { path, source });
@@ -505,6 +731,7 @@ fn spec(
     name: String,
     content_type: String,
     data: &[u8],
+    blur_hash: Option<String>,
 ) -> presage::libsignal_service::sender::AttachmentSpec {
     // Receivers lay out pictures before downloading them, so they want the size.
     let (width, height) = if content_type.starts_with("image/") {
@@ -526,7 +753,7 @@ fn spec(
         width,
         height,
         caption: None,
-        blur_hash: None,
+        blur_hash,
     }
 }
 
@@ -537,7 +764,7 @@ pub(crate) async fn upload_bytes(
     content_type: &str,
     data: Vec<u8>,
 ) -> Result<AttachmentPointer, UploadError> {
-    upload_retrying(manager, name, content_type, data)
+    upload_retrying(manager, name, content_type, data, None)
         .await
         .map_err(UploadError::Upload)?
         .map_err(|source| UploadError::Attachment {
@@ -554,28 +781,39 @@ async fn upload_retrying(
     name: &str,
     content_type: &str,
     data: Vec<u8>,
+    blur_hash: Option<String>,
 ) -> Result<
     Result<AttachmentPointer, AttachmentUploadError>,
     presage::Error<presage_store_sqlite::SqliteStoreError>,
 > {
-    let first = spec(name.to_owned(), content_type.to_owned(), &data);
+    let first = spec(
+        name.to_owned(),
+        content_type.to_owned(),
+        &data,
+        blur_hash.clone(),
+    );
     match manager.upload_attachment(first, data.clone()).await? {
         Err(error) if closed_under_request(&error) => {
             tracing::info!(
                 error = %crate::scrub::chain(&error),
                 "the CDN closed the connection under an upload; uploading it once more"
             );
-            let again = spec(name.to_owned(), content_type.to_owned(), &data);
+            let again = spec(name.to_owned(), content_type.to_owned(), &data, blur_hash);
             manager.upload_attachment(again, data).await
         }
         uploaded => Ok(uploaded),
     }
 }
 
-/// Uploads `files` for sending, as the pointers to put in the message.
+/// Uploads `files` for sending, as the pointers to put in the message: pictures made ready as
+/// Signal's apps make them ([`scale`], at its high-quality level with `high`). What was
+/// uploaded is kept in `cache` as if downloaded, so that showing what was sent doesn't
+/// download it.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
+    cache: &Option<Arc<Cache>>,
     files: &[PathBuf],
+    high: bool,
 ) -> Result<Vec<AttachmentPointer>, UploadError> {
     let mut uploads = Vec::new();
     for path in files {
@@ -598,21 +836,32 @@ pub(crate) async fn upload(
             .first_or_octet_stream()
             .essence_str()
             .to_owned();
-        let data = {
-            let content_type = content_type.clone();
-            tokio::task::spawn_blocking(move || without_metadata(&content_type, data))
+        let ready =
+            tokio::task::spawn_blocking(move || scale::for_sending(&content_type, data, high))
                 .await
                 .map_err(|source| UploadError::StripStopped {
                     name: name.clone(),
                     source,
-                })?
+                })?;
+        // A PNG that went as JPEG is named so.
+        let name = match (ready.content_type.as_str(), name.rsplit_once('.')) {
+            ("image/jpeg", Some((stem, extension)))
+                if !matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg") =>
+            {
+                format!("{stem}.jpg")
+            }
+            _ => name,
         };
-        uploads.push((name, content_type, data));
+        uploads.push((name, ready.content_type, ready.data, ready.blur_hash));
     }
     // All at once, as presage's `upload_attachments`, each with its own retry.
     let results = futures::future::join_all(uploads.into_iter().map(
-        |(name, content_type, data)| async move {
-            let uploaded = upload_retrying(manager, &name, &content_type, data).await;
+        |(name, content_type, data, blur_hash)| async move {
+            let uploaded =
+                upload_retrying(manager, &name, &content_type, data.clone(), blur_hash).await;
+            if let Ok(Ok(pointer)) = &uploaded {
+                keep_sent(cache, pointer, data).await;
+            }
             (name, uploaded)
         },
     ))
@@ -625,6 +874,18 @@ pub(crate) async fn upload(
                 .map_err(|source| UploadError::Attachment { name, source })
         })
         .collect()
+}
+
+/// Keeps what was sent as `pointer` as its original, as if downloaded.
+async fn keep_sent(cache: &Option<Arc<Cache>>, pointer: &AttachmentPointer, data: Vec<u8>) {
+    let Some(cache) = cache.clone() else {
+        return;
+    };
+    let id = id(pointer);
+    let kept = tokio::task::spawn_blocking(move || cache.write(&id, Entry::Original, &data)).await;
+    if let Ok(Err(error)) = kept {
+        tracing::warn!(error = %crate::scrub::chain(&error), "could not keep a sent attachment");
+    }
 }
 
 /// Where opened attachments are put for the default app to read; see [`crate::scratch`].
@@ -782,12 +1043,7 @@ pub(crate) async fn open(downloads: Rc<Downloads>, attachment: Attachment, event
         if is_dangerous(&name) {
             return Err(AttachmentError::Dangerous { name });
         }
-        let _permit = downloads
-            .limit
-            .acquire()
-            .await
-            .map_err(AttachmentError::Ending)?;
-        let data = download(&downloads.cdn, &attachment).await?;
+        let data = downloads.original(&attachment).await?;
         // One directory per attachment, so two files with the same name don't collide.
         let subdir = hex::encode(&Sha256::digest(attachment.id.0.as_bytes())[..8]);
         // Writing up to 100 MB takes a while: not on this thread.
@@ -813,16 +1069,38 @@ pub(crate) async fn open(downloads: Rc<Downloads>, attachment: Attachment, event
     }
 }
 
-/// Decodes a picture scaled to fit `width` by `height`, keeping its shape (see
-/// [`picture_bounds`]); animated images show their first frame.
-fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
-    let image = decode_limited(data)?;
-    let image = if image.width() > width || image.height() > height {
-        image.resize(width, height, image::imageops::FilterType::Triangle)
-    } else {
-        image
-    };
-    let rgba = image.into_rgba8();
+/// Pictures, which chats show decoded; the rest (long text, audio) is used as it is.
+fn is_picture(kind: AttachmentKind) -> bool {
+    !matches!(
+        kind,
+        AttachmentKind::LongText | AttachmentKind::Audio | AttachmentKind::VoiceNote
+    )
+}
+
+/// A picture as the chat shows it, as PNG, for the cache: a fraction of the original to decode.
+fn encode_shown(picture: &Picture) -> Option<Vec<u8>> {
+    use image::ImageEncoder as _;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Adaptive,
+    )
+    .write_image(
+        &picture.rgba,
+        picture.width,
+        picture.height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .ok()?;
+    Some(png)
+}
+
+/// The picture [`encode_shown`] kept.
+fn decode_shown(png: &[u8]) -> Option<Picture> {
+    let rgba = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
     Some(Picture {
         width: rgba.width(),
         height: rgba.height(),
@@ -830,44 +1108,30 @@ fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
     })
 }
 
+/// Decodes a picture scaled to fit `width` by `height`, keeping its shape (see
+/// [`picture_bounds`]); animated images show their first frame.
+fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
+    let rgba = decode_limited(data)?.into_rgba8();
+    let picture = Picture {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    };
+    if picture.width <= width && picture.height <= height {
+        return Some(picture);
+    }
+    // Within the bounds, keeping its shape. `fast_image_resize` rather than `image`'s resize:
+    // a 12 MP photo took 295 ms with `image`'s triangle filter (release build), most of what
+    // showing one cost.
+    let scale = (f64::from(width) / f64::from(picture.width))
+        .min(f64::from(height) / f64::from(picture.height));
+    let (width, height) = crate::resample::scaled((picture.width, picture.height), scale);
+    Some(crate::resample::shrink(&picture, width, height).unwrap_or(picture))
+}
+
 /// Decodes a picture scaled to at most `edge` pixels a side.
 pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
     decode_picture(data, (edge, edge))
-}
-
-/// A photo drawn again from its pixels, as Signal's apps send them: without what its file
-/// says besides (EXIF and XMP: where and when it was taken, with what), but turned the way
-/// that said. Anything else, or what doesn't decode, stays as it is.
-fn without_metadata(content_type: &str, data: Vec<u8>) -> Vec<u8> {
-    use image::ImageDecoder as _;
-    let format = match content_type {
-        "image/jpeg" => image::ImageFormat::Jpeg,
-        "image/png" => image::ImageFormat::Png,
-        _ => return data,
-    };
-    let redraw = || -> image::ImageResult<Vec<u8>> {
-        let mut decoder =
-            image::ImageReader::with_format(std::io::Cursor::new(&data), format).into_decoder()?;
-        let orientation = decoder.orientation()?;
-        let mut picture = image::DynamicImage::from_decoder(decoder)?;
-        picture.apply_orientation(orientation);
-        let mut out = std::io::Cursor::new(Vec::new());
-        match format {
-            image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(picture.to_rgb8())
-                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut out, 90,
-                ))?,
-            _ => picture.write_to(&mut out, format)?,
-        }
-        Ok(out.into_inner())
-    };
-    match redraw() {
-        Ok(redrawn) => redrawn,
-        Err(error) => {
-            tracing::warn!(error = %crate::scrub::chain(&error), "couldn't take the metadata out of a picture; sending it as it is");
-            data
-        }
-    }
 }
 
 /// Decodes an image from the network with bounds, so a crafted file (tiny, but claiming huge
@@ -990,7 +1254,7 @@ mod tests {
         tagged.extend(&photo[2..]);
         assert_eq!(image::load_from_memory(&tagged).unwrap().width(), 2);
 
-        let sent = without_metadata("image/jpeg", tagged);
+        let sent = scale::for_sending("image/jpeg", tagged, false).data;
         assert!(!sent.windows(4).any(|w| w == b"Exif"));
         let shown = image::load_from_memory(&sent).unwrap();
         assert_eq!(
@@ -1000,8 +1264,14 @@ mod tests {
         );
 
         let text = b"not a picture".to_vec();
-        assert_eq!(without_metadata("text/plain", text.clone()), text);
-        assert_eq!(without_metadata("image/jpeg", text.clone()), text);
+        assert_eq!(
+            scale::for_sending("text/plain", text.clone(), false).data,
+            text
+        );
+        assert_eq!(
+            scale::for_sending("image/jpeg", text.clone(), false).data,
+            text
+        );
     }
 
     /// Anyone can send a long text, so only the start of a very long one is shown.
@@ -1247,5 +1517,200 @@ mod tests {
                 .all(|p| p == [200, 100, 50, 255])
         );
         assert!(decode_full(b"not an image").is_none());
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(width, height, image::Rgba([200, 100, 50, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        png
+    }
+
+    /// A picture's pointer that no CDN can serve: without its location, fetching it fails
+    /// before any request, so a test only passes on what the cache has.
+    fn unfetchable(id: &str) -> Attachment {
+        let mut attachment = describe(
+            &AttachmentPointer {
+                content_type: Some("image/png".into()),
+                size: Some(1234),
+                ..Default::default()
+            },
+            false,
+        );
+        attachment.id = AttachmentId(id.into());
+        attachment
+    }
+
+    fn with_cache<T>(test: impl AsyncFnOnce(Rc<Downloads>, Arc<Cache>) -> T) -> T {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::open(dir.path(), &zeroize::Zeroizing::new([5; 32])).unwrap());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let downloads = Downloads::new(SignalServers::Production, Some(cache.clone()));
+            test(downloads, cache).await
+        })
+    }
+
+    #[test]
+    fn what_is_kept_is_not_downloaded_again() {
+        with_cache(async |downloads, cache| {
+            let attachment = unfetchable("3/kept");
+            assert!(matches!(
+                downloads.original(&attachment).await,
+                Err(AttachmentError::Fetch(_))
+            ));
+            cache
+                .write(&attachment.id, Entry::Original, &png(40, 30))
+                .unwrap();
+            assert_eq!(downloads.original(&attachment).await.unwrap(), png(40, 30));
+
+            // Shown in a chat: decoded from the original, and the picture as shown kept.
+            let (sender, events) = async_channel::unbounded();
+            fetch(
+                downloads.clone(),
+                attachment.clone(),
+                Events::new(sender.clone()),
+            )
+            .await;
+            let Ok(Event::Attachment {
+                content: Ok(AttachmentContent::Picture(first)),
+                ..
+            }) = events.try_recv()
+            else {
+                panic!("no picture");
+            };
+            let shown = cache
+                .read(&attachment.id, Entry::Shown)
+                .expect("kept as shown");
+            assert_eq!(decode_shown(&shown).unwrap().rgba, first.rgba);
+
+            // Shown again: from what was kept as shown, though the original is gone.
+            cache.forget(&attachment.id);
+            cache.write(&attachment.id, Entry::Shown, &shown).unwrap();
+            fetch(downloads.clone(), attachment, Events::new(sender)).await;
+            let Ok(Event::Attachment {
+                content: Ok(AttachmentContent::Picture(again)),
+                ..
+            }) = events.try_recv()
+            else {
+                panic!("no picture the second time");
+            };
+            assert_eq!((again.width, again.height), (first.width, first.height));
+        });
+    }
+
+    #[test]
+    fn a_picture_as_shown_comes_back_as_it_was() {
+        let picture = Picture {
+            width: 3,
+            height: 2,
+            rgba: (0..24).map(|n| n * 10).collect(),
+        };
+        let back = decode_shown(&encode_shown(&picture).unwrap()).unwrap();
+        assert_eq!((back.width, back.height, back.rgba), (3, 2, picture.rgba));
+    }
+
+    /// What a deleted or expired message had kept is found from it as stored: its attachments
+    /// and link previews' pictures, also in what another device of ours sent.
+    #[test]
+    fn what_a_stored_message_kept_is_found() {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
+        use presage::proto::{Content, DataMessage, Preview, SyncMessage, sync_message};
+        let photo = pointer("image/jpeg", 0);
+        let mut preview = pointer("image/png", 0);
+        preview.attachment_identifier = Some(AttachmentIdentifier::CdnKey("pre".into()));
+        let data = DataMessage {
+            attachments: vec![photo.clone()],
+            preview: vec![Preview {
+                image: Some(preview.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let wanted = vec![id(&photo), describe_preview(&preview).id];
+        let received = Content {
+            content: Some(presage::proto::content::Content::DataMessage(data.clone())),
+            ..Default::default()
+        };
+        assert_eq!(kept_of_stored(&received.encode_to_vec()), wanted);
+        let sent = Content {
+            content: Some(presage::proto::content::Content::SyncMessage(SyncMessage {
+                content: Some(sync_message::Content::Sent(sync_message::Sent {
+                    message: Some(data),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert_eq!(kept_of_stored(&sent.encode_to_vec()), wanted);
+        assert!(kept_of_stored(b"not a message").is_empty());
+    }
+
+    #[test]
+    fn what_a_chat_shows_is_downloaded_as_it_comes_and_files_wait() {
+        let with = |kind: AttachmentKind, size: u64| {
+            let mut attachment = unfetchable(&format!("3/{kind:?}{size}"));
+            attachment.kind = kind;
+            attachment.size = size;
+            attachment
+        };
+        let preview = with(AttachmentKind::Image, 10);
+        let message = crate::ChatMessage {
+            attachments: vec![
+                with(AttachmentKind::Image, 1000),
+                with(AttachmentKind::Image, PREFETCHED_AT_MOST + 1),
+                with(AttachmentKind::Sticker, 10),
+                with(AttachmentKind::VoiceNote, 10),
+                with(AttachmentKind::LongText, 10),
+                with(AttachmentKind::File, 10),
+                with(AttachmentKind::Audio, 10),
+                with(AttachmentKind::Video, 10),
+                with(AttachmentKind::ViewOnce, 10),
+            ],
+            preview: Some(crate::LinkPreview {
+                url: String::new(),
+                title: String::new(),
+                description: String::new(),
+                image: Some(Box::new(preview.clone())),
+            }),
+            ..Default::default()
+        };
+        let kinds: Vec<AttachmentKind> = prefetched(&message).iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                AttachmentKind::Image,
+                AttachmentKind::Sticker,
+                AttachmentKind::VoiceNote,
+                AttachmentKind::LongText,
+                AttachmentKind::Image,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_picture_downloaded_as_it_came_is_kept_as_its_chat_shows_it() {
+        with_cache(async |downloads, cache| {
+            let attachment = unfetchable("3/came");
+            cache
+                .write(&attachment.id, Entry::Original, &png(1600, 1200))
+                .unwrap();
+            prefetch(downloads.clone(), attachment.clone()).await;
+            let shown = cache
+                .read(&attachment.id, Entry::Shown)
+                .expect("kept as shown");
+            let picture = decode_shown(&shown).unwrap();
+            assert_eq!((picture.width, picture.height), (PICTURE_EDGE, 480));
+            // Already there: nothing more is done.
+            cache.forget(&attachment.id);
+            cache.write(&attachment.id, Entry::Shown, &shown).unwrap();
+            prefetch(downloads, attachment.clone()).await;
+            assert!(cache.read(&attachment.id, Entry::Original).is_none());
+        });
     }
 }

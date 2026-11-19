@@ -958,6 +958,8 @@ async fn handle_content(
     let Some(message) = to_chat_message(manager, names, id.clone(), content).await else {
         return true;
     };
+    // Not for a stranger's message request: as with receipts, nothing tells them it came.
+    let prefetching = outgoing || accepted(ctx, &id, storage_read).await;
     // An edit's time names the message it edits, not one of its own.
     if outgoing && !edit {
         // Written from another device of ours: as when written here (`send.rs`), that accepts
@@ -997,6 +999,9 @@ async fn handle_content(
         if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
             warn!(error = %crate::scrub::chain(&error), "failed to note an edited message as sent");
         }
+        if prefetching {
+            prefetch(ctx, &message);
+        }
         return events.sent(Event::Edited {
             conversation: id,
             target,
@@ -1018,7 +1023,21 @@ async fn handle_content(
             }
         }
     }
+    if prefetching {
+        prefetch(ctx, &message);
+    }
     events.sent(Event::Message(message))
+}
+
+/// Downloads in the background what of `message` is downloaded as it comes
+/// ([`crate::attachments::prefetched`]), so that its chat shows it without waiting.
+fn prefetch(ctx: &Ctx, message: &crate::ChatMessage) {
+    let Some(downloads) = &ctx.downloads else {
+        return;
+    };
+    for attachment in crate::attachments::prefetched(message) {
+        tokio::task::spawn_local(crate::attachments::prefetch(downloads.clone(), attachment));
+    }
 }
 
 /// Removes what presage stored of `content`, if it is still there as its sender's.

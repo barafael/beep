@@ -301,6 +301,9 @@ pub enum Android {
     },
     /// The back key.
     Back,
+    /// Back to the chat list from wherever the app is (or starts it there), as its launcher
+    /// icon would: what a check needs that waits for a chat's preview.
+    ChatList,
     /// Sets the text of the field with input focus.
     TypeText {
         text: String,

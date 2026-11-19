@@ -85,6 +85,7 @@ fn taken(before: Preferences, account: AccountPreferences) -> Preferences {
         typing_indicators: account.typing_indicators,
         link_previews: before.link_previews && account.link_previews,
         sync_to_phone: before.sync_to_phone,
+        high_quality_pictures: before.high_quality_pictures,
     }
 }
 
@@ -194,6 +195,8 @@ mod tests {
             typing_indicators: false,
             link_previews,
             sync_to_phone: true,
+            // b33p's own: the phone's settings don't touch it.
+            high_quality_pictures: true,
         };
         for (here, phone, now) in [
             (false, true, false),
@@ -207,6 +210,7 @@ mod tests {
                     typing_indicators: true,
                     link_previews: now,
                     sync_to_phone: true,
+                    high_quality_pictures: true,
                 }
             );
         }

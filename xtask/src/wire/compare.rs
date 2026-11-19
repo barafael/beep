@@ -1,6 +1,7 @@
 //! `compare.md`: the clients side by side. Their connections and TLS; which requests each made
 //! and how often; how they keep their chat connection alive; where the same request differs in
-//! its headers or its body's shape; and, check by check, what each did.
+//! its headers or its body's shape; what each moved through the CDNs; and, check by check, what
+//! each did.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,6 +26,7 @@ pub(crate) fn report(events: &[Event], summaries: &[Summary], spans: &[Span]) ->
     requests(&mut out, events, &clients);
     keepalive(&mut out, events, &clients);
     differences(&mut out, events);
+    attachments(&mut out, events, spans);
     checks(&mut out, events, spans);
     out
 }
@@ -306,6 +308,99 @@ fn differences(out: &mut String, events: &[Event]) {
     }
 }
 
+/// What a client moved through the CDNs in one check.
+#[derive(Default)]
+struct Moved {
+    downloads: usize,
+    downloaded: usize,
+    /// Downloads of an attachment the client had downloaded before, in this check or earlier.
+    again: usize,
+    uploads: usize,
+    uploaded: usize,
+}
+
+/// An attachment's download from a CDN: `GET /attachments/{id}`.
+fn is_download(event: &Event) -> bool {
+    event.verb == "GET" && event.path.starts_with("/attachments/")
+}
+
+/// The bytes of an upload to a CDN: a tus POST that carries them (creation with upload), a tus
+/// PATCH, or CDN2's PUT; not the requests that only ask where to upload or how far it got.
+fn is_upload(event: &Event) -> bool {
+    matches!(event.verb.as_str(), "POST" | "PATCH" | "PUT")
+        && event.path.starts_with("/upload/")
+        && event.request.size > 0
+}
+
+/// Check by check, what each client downloaded from and uploaded to the CDNs: how often, how
+/// many bytes (as encrypted and padded), and how many downloads were of an attachment it had
+/// already downloaded. A request whose body didn't decode counts with the bytes that did.
+fn attachments(out: &mut String, events: &[Event], spans: &[Span]) {
+    out.push_str("\n## Attachments\n\n");
+    out.push_str(
+        "Downloads (`GET /attachments/{id}`) and uploads (the requests carrying the bytes) per \
+         check; *again*: downloads of an attachment the client had downloaded before.\n\n",
+    );
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut rows = String::new();
+    let mut totals: BTreeMap<&str, Moved> = BTreeMap::new();
+    let add = |moved: &mut Moved, event: &Event, again: bool| {
+        if is_download(event) {
+            moved.downloads += 1;
+            moved.downloaded += event.response.size;
+            moved.again += usize::from(again);
+        } else {
+            moved.uploads += 1;
+            moved.uploaded += event.request.size;
+        }
+    };
+    let row = |rows: &mut String, check: &str, client: &str, moved: &Moved| {
+        rows.push_str(&format!(
+            "| {check} | {client} | {} | {} | {} | {} | {} |\n",
+            moved.downloads,
+            bytes(moved.downloaded),
+            moved.again,
+            moved.uploads,
+            bytes(moved.uploaded),
+        ));
+    };
+    let moving = |event: &&Event| {
+        REQUESTS.contains(&event.transport) && (is_download(event) || is_upload(event))
+    };
+    let mut counted = 0;
+    for span in spans {
+        let mut by_client: BTreeMap<&str, Moved> = BTreeMap::new();
+        for event in events.iter().filter(moving).filter(|event| {
+            span.started <= u128::from(event.at) && u128::from(event.at) <= span.ended
+        }) {
+            let again = is_download(event) && !seen.insert((&event.client, &event.path));
+            add(by_client.entry(&event.client).or_default(), event, again);
+            add(totals.entry(&event.client).or_default(), event, again);
+            counted += 1;
+        }
+        for (client, moved) in &by_client {
+            row(&mut rows, &span.check, client, moved);
+        }
+    }
+    let all = events.iter().filter(moving).count();
+    if all == 0 {
+        out.push_str("None.\n");
+        return;
+    }
+    out.push_str("| check | client | downloads | bytes | again | uploads | bytes |\n");
+    out.push_str("|---|---|---|---|---|---|---|\n");
+    for (client, moved) in &totals {
+        row(&mut rows, "**all checks**", client, moved);
+    }
+    out.push_str(&rows);
+    if counted < all {
+        out.push_str(&format!(
+            "\n{} more between checks (setting up, or after a check ended).\n",
+            all - counted
+        ));
+    }
+}
+
 /// Check by check, each client's requests in order, a run of the same one counted once.
 fn checks(out: &mut String, events: &[Event], spans: &[Span]) {
     out.push_str("\n## Check by check\n");
@@ -356,10 +451,98 @@ fn checks(out: &mut String, events: &[Event], spans: &[Span]) {
     }
 }
 
+/// A byte count as people read it: `8.1 MiB`, `152 KiB`, `592 B`.
+fn bytes(n: usize) -> String {
+    const KIB: f64 = 1024.0;
+    let n = n as f64;
+    if n >= KIB * KIB {
+        format!("{:.1} MiB", n / (KIB * KIB))
+    } else if n >= KIB {
+        format!("{:.0} KiB", n / KIB)
+    } else {
+        format!("{n} B")
+    }
+}
+
 fn join<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> String {
     items
         .into_iter()
         .map(|item| item.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wire::Body;
+
+    fn event(at: u64, client: &str, verb: &str, path: &str, sent: usize, got: usize) -> Event {
+        let body = |size| Body {
+            size,
+            kind: "binary",
+            shape: Vec::new(),
+        };
+        Event {
+            at,
+            connection: 0,
+            port: keys::CDN3_PORT,
+            client: client.to_owned(),
+            transport: "h1",
+            from_server: false,
+            verb: verb.to_owned(),
+            path: path.to_owned(),
+            template: String::new(),
+            status: Some(200),
+            took_ms: None,
+            headers: Vec::new(),
+            noted: Vec::new(),
+            request: body(sent),
+            response: body(got),
+        }
+    }
+
+    fn span(check: &str, started: u128, ended: u128) -> Span {
+        Span {
+            check: check.to_owned(),
+            started,
+            ended,
+            passed: true,
+        }
+    }
+
+    /// The media phase of 2026-11-19, cut down: b33p uploads a photo whole (its tus POST
+    /// carries nothing, its PATCH the bytes), downloads it again itself, and again after a
+    /// restart; Desktop's POST carries its scaled copy.
+    #[test]
+    fn attachments_count_downloads_again_and_uploads_with_their_bytes() {
+        let events = [
+            event(10, "desktop", "POST", "/upload/attachments", 155_424, 20),
+            event(11, "b33p", "GET", "/attachments/a", 0, 155_424),
+            event(20, "b33p", "POST", "/upload/attachments", 0, 0),
+            event(21, "b33p", "HEAD", "/upload/attachments/b", 0, 0),
+            event(22, "b33p", "PATCH", "/upload/attachments/b", 8_489_920, 0),
+            event(23, "b33p", "GET", "/attachments/b", 0, 8_489_920),
+            event(30, "b33p", "GET", "/attachments/a", 0, 155_424),
+            event(31, "b33p", "GET", "/attachments/b", 0, 8_489_920),
+            event(40, "b33p", "GET", "/attachments/c", 0, 1),
+        ];
+        let spans = [
+            span("from Desktop", 5, 15),
+            span("from b33p", 19, 25),
+            span("restart", 29, 35),
+        ];
+        let mut out = String::new();
+        attachments(&mut out, &events, &spans);
+        for line in [
+            "| from Desktop | b33p | 1 | 152 KiB | 0 | 0 | 0 B |",
+            "| from Desktop | desktop | 0 | 0 B | 0 | 1 | 152 KiB |",
+            "| from b33p | b33p | 1 | 8.1 MiB | 0 | 1 | 8.1 MiB |",
+            "| restart | b33p | 2 | 8.2 MiB | 2 | 0 | 0 B |",
+            "| **all checks** | b33p | 4 | 16.5 MiB | 2 | 1 | 8.1 MiB |",
+            "1 more between checks",
+        ] {
+            assert!(out.contains(line), "{line:?} not in\n{out}");
+        }
+    }
 }

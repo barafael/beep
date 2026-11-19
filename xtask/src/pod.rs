@@ -1531,6 +1531,11 @@ impl Pod {
     /// says it: the end of its log up to that line. Restarted, it would most likely fail again,
     /// or wait for what its first run left behind, until the wait's patience ran out.
     fn failure(&self, service: Service, since: Option<u64>) -> Result<Option<String>, PodError> {
+        Ok(failure(&self.logs_since(service, since)?))
+    }
+
+    /// What `service` has logged so far, since `since` if given ([`process::now`]'s time).
+    pub fn logs_since(&self, service: Service, since: Option<u64>) -> Result<String, PodError> {
         let mut logs = podman(&["logs"]);
         if let Some(since) = since {
             logs.args(["--since", &since.to_string()]);
@@ -1543,11 +1548,11 @@ impl Pod {
                 container: self.container(service),
                 source,
             })?;
-        Ok(failure(&format!(
+        Ok(format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        )))
+        ))
     }
 
     fn follow_logs(&self, service: Service, since: Option<u64>) -> Command {

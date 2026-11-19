@@ -136,6 +136,21 @@ libcrux-ml-kem = { opt-level = 3 }
 # The picture viewer resamples what it shows whenever the zoom changes: unoptimized, a photo
 # took seconds rather than milliseconds.
 fast_image_resize = { opt-level = 3 }
+# Decoding pictures, and the PNGs and JPEGs b33p makes of them: unoptimized, a 12 MP photo took
+# 3.4 s to decode rather than 83 ms, which hid in debug builds (and the test box's) what
+# showing pictures costs in the builds people run.
+image = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+gif = { opt-level = 3 }
+weezl = { opt-level = 3 }
+blurhash = { opt-level = 3 }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

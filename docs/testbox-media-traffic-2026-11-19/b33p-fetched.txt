@@ -1,0 +1,6 @@
+2026-11-19T11:40:35.461855Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=71823
+2026-11-19T11:40:36.111975Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=153785
+2026-11-19T11:41:09.311011Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=8170425
+2026-11-19T11:41:26.458078Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=153785
+2026-11-19T11:41:26.658883Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=71823
+2026-11-19T11:41:32.775832Z DEBUG b33p_core::attachments: fetched attachment kind=Image size=8170425

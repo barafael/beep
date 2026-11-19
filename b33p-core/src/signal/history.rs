@@ -236,11 +236,20 @@ pub(super) async fn sweep_expired(ctx: &Ctx) -> Option<Duration> {
         })
         .collect();
     // All in one transaction.
-    if !deleted.is_empty()
-        && let Err(error) = ctx.tables.delete_messages(&deleted).await
-    {
-        warn!(error = %crate::scrub::chain(&error), "failed to delete disappearing messages");
-        return Some(RETRY);
+    if !deleted.is_empty() {
+        match ctx.tables.delete_messages(&deleted).await {
+            Ok(bodies) => {
+                let kept = bodies
+                    .iter()
+                    .flat_map(|body| crate::attachments::kept_of_stored(body))
+                    .collect();
+                crate::attachments::forget(&ctx.cache, kept).await;
+            }
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to delete disappearing messages");
+                return Some(RETRY);
+            }
+        }
     }
     if !deleted.is_empty() {
         checkpoint(ctx).await;
@@ -412,6 +421,7 @@ pub(super) async fn erase_deleted(
     taken: bool,
 ) -> Result<bool, HistoryError> {
     let mut store = manager.store().clone();
+    let kept = kept_of_target(&store, thread, target).await;
     if !erase_from_store(&mut store, thread, target).await? && !taken {
         return Ok(false);
     }
@@ -424,7 +434,26 @@ pub(super) async fn erase_deleted(
             source,
         })?;
     checkpoint(ctx).await;
+    crate::attachments::forget(&ctx.cache, kept).await;
     Ok(true)
+}
+
+/// What of `target` may be kept on disk ([`crate::attachments::kept_of`]), read from the store
+/// before it goes: afterwards nothing tells which attachments were its.
+pub(super) async fn kept_of_target(
+    store: &SqliteStore,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Vec<crate::AttachmentId> {
+    let Some(author) = ServiceId::parse_from_service_id_string(&target.author_id) else {
+        return Vec::new();
+    };
+    match store.message(thread, &author, target.timestamp).await {
+        Ok(Some(content)) => data_of(&content)
+            .map(|(data, _)| crate::attachments::kept_of(data))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// After erasing, so that nothing of it stays in the database's log. Failing leaves it there

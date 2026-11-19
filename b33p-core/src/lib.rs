@@ -400,6 +400,9 @@ pub struct Preferences {
     /// Write pins, mutes, the archive, blocks and accepted requests back to the storage
     /// service, so the phone (and other devices) get them.
     pub sync_to_phone: bool,
+    /// Send pictures at Signal's high quality (up to 4096 px, 3 MiB) rather than its standard
+    /// (1600 px, 1 MiB). Off, as in Signal's apps: everyone in the chat downloads them.
+    pub high_quality_pictures: bool,
 }
 
 impl Default for Preferences {
@@ -409,6 +412,7 @@ impl Default for Preferences {
             typing_indicators: true,
             link_previews: false,
             sync_to_phone: false,
+            high_quality_pictures: false,
         }
     }
 }
@@ -675,7 +679,9 @@ pub enum AttachmentKind {
 }
 
 /// A file attached to a message. Signal keeps attachments on its servers for about 45 days;
-/// they are downloaded on demand, never stored unencrypted except when saved by the user.
+/// b33p downloads one when it shows and keeps it on disk encrypted under the database's key
+/// (gone with the message, or with the account), never unencrypted except when the user saves
+/// or opens it.
 #[derive(Clone, PartialEq)]
 pub struct Attachment {
     pub id: AttachmentId,
@@ -1479,6 +1485,9 @@ pub const LOST_COUNTER_USED_LOG: &str =
     "lost a message: its counter was used before, and it isn't stored";
 /// What b33p logs when a message fails to decrypt; see [`LOST_COUNTER_USED_LOG`].
 pub const DECRYPTION_FAILED_LOG: &str = "failed to decrypt a message";
+/// What b33p logs (at debug) for each attachment it downloads from a CDN, as against one it
+/// had kept: the test box's `media` phase counts them (xtask `checks/media.rs`).
+pub const DOWNLOADED_LOG: &str = "downloaded an attachment from the CDN";
 
 /// Current time in Signal's timestamp format.
 pub fn now_millis() -> u64 {
