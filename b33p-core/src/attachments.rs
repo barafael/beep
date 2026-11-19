@@ -332,7 +332,16 @@ pub(crate) struct Downloads {
     /// One picture decoded at a time: a picture may take up to [`decode_limited`]'s 512 MiB
     /// decoded, and several arriving together took b33p past 2 GiB (pending/stress.md).
     decoding: Semaphore,
+    /// What [`prefetch`] may take of `limit`: leaves the rest for what is shown.
+    prefetching: Semaphore,
+    /// One download of an attachment at a time, so that one shown while it downloads as it
+    /// came (or opened in the viewer meanwhile) waits for it, rather than downloading it again.
+    downloading:
+        std::cell::RefCell<std::collections::HashMap<AttachmentId, Rc<tokio::sync::Mutex<()>>>>,
 }
+
+/// At most this many of [`PARALLEL_DOWNLOADS`] are [`prefetch`]es.
+const PREFETCHING: usize = 2;
 
 impl Downloads {
     pub(crate) fn new(servers: SignalServers, cache: Option<Arc<Cache>>) -> Rc<Self> {
@@ -345,7 +354,20 @@ impl Downloads {
             cache,
             limit: Semaphore::new(PARALLEL_DOWNLOADS),
             decoding: Semaphore::new(1),
+            prefetching: Semaphore::new(PREFETCHING),
+            downloading: Default::default(),
         })
+    }
+
+    /// Whether `id` is kept as `entry`: that its file is there, not read.
+    async fn kept(&self, id: &AttachmentId, entry: Entry) -> bool {
+        let Some(cache) = self.cache.clone() else {
+            return false;
+        };
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || cache.has(&id, entry))
+            .await
+            .unwrap_or(false)
     }
 
     /// What is kept of `id` as `entry`, read on a blocking thread.
@@ -382,6 +404,25 @@ impl Downloads {
     /// The attachment as sent, decrypted: kept from before, or downloaded (within the limit on
     /// downloads at once) and kept.
     async fn original(&self, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
+        let lock = self
+            .downloading
+            .borrow_mut()
+            .entry(attachment.id.clone())
+            .or_default()
+            .clone();
+        let original = {
+            let _held = lock.lock().await;
+            self.original_once(attachment).await
+        };
+        // The last one done with it lets it go.
+        if Rc::strong_count(&lock) == 2 {
+            self.downloading.borrow_mut().remove(&attachment.id);
+        }
+        original
+    }
+
+    /// [`Self::original`], with the attachment's download to itself.
+    async fn original_once(&self, attachment: &Attachment) -> Result<Vec<u8>, AttachmentError> {
         if let Some(data) = self.cached(&attachment.id, Entry::Original).await {
             return Ok(data);
         }
@@ -478,30 +519,9 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
             AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                 Ok(AttachmentContent::Audio(data.into()))
             }
-            _ => {
-                let bounds = picture_bounds(&attachment);
-                let _decoding = downloads
-                    .decoding
-                    .acquire()
-                    .await
-                    .map_err(AttachmentError::Ending)?;
-                let (picture, shown) = tokio::task::spawn_blocking(move || {
-                    let picture = decode_picture(&data, bounds);
-                    let shown = picture.as_ref().and_then(encode_shown);
-                    (picture, shown)
-                })
+            _ => shown_picture(&downloads, &attachment, data)
                 .await
-                .map_err(|source| AttachmentError::Stopped {
-                    step: "decoding the picture",
-                    source,
-                })?;
-                if let Some(shown) = shown {
-                    downloads.keep(&attachment.id, Entry::Shown, shown).await;
-                }
-                picture
-                    .map(|picture| AttachmentContent::Picture(Arc::new(picture)))
-                    .ok_or(AttachmentError::NotShowable)
-            }
+                .map(|picture| AttachmentContent::Picture(Arc::new(picture))),
         }
     }
     .await;
@@ -517,6 +537,94 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
         id: attachment.id,
         content: content.map_err(crate::Error::from),
     });
+}
+
+/// `data`, the original of the picture `attachment`, decoded as the chat shows it (one at a
+/// time), and kept so.
+async fn shown_picture(
+    downloads: &Downloads,
+    attachment: &Attachment,
+    data: Vec<u8>,
+) -> Result<Picture, AttachmentError> {
+    let bounds = picture_bounds(attachment);
+    let _decoding = downloads
+        .decoding
+        .acquire()
+        .await
+        .map_err(AttachmentError::Ending)?;
+    let (picture, shown) = tokio::task::spawn_blocking(move || {
+        let picture = decode_picture(&data, bounds);
+        let shown = picture.as_ref().and_then(encode_shown);
+        (picture, shown)
+    })
+    .await
+    .map_err(|source| AttachmentError::Stopped {
+        step: "decoding the picture",
+        source,
+    })?;
+    if let Some(shown) = shown {
+        downloads.keep(&attachment.id, Entry::Shown, shown).await;
+    }
+    picture.ok_or(AttachmentError::NotShowable)
+}
+
+/// What of a message that just came is downloaded at once, as Signal's apps do: what its chat
+/// shows (pictures, stickers, a link preview's picture, the rest of a long text) and voice
+/// messages, each at most [`PREFETCHED_AT_MOST`]. Files, videos and audio wait to be asked
+/// for, and view-once media for its viewing.
+pub(crate) fn prefetched(message: &crate::ChatMessage) -> Vec<Attachment> {
+    message
+        .attachments
+        .iter()
+        .chain(
+            message
+                .preview
+                .iter()
+                .filter_map(|preview| preview.image.as_deref()),
+        )
+        .filter(|attachment| {
+            matches!(
+                attachment.kind,
+                AttachmentKind::Image
+                    | AttachmentKind::Sticker
+                    | AttachmentKind::LongText
+                    | AttachmentKind::VoiceNote
+            ) && attachment.size <= PREFETCHED_AT_MOST
+        })
+        .cloned()
+        .collect()
+}
+
+/// The largest attachment [`prefetched`] downloads unasked.
+const PREFETCHED_AT_MOST: u64 = 25 * 1024 * 1024;
+
+/// Downloads `attachment` into the cache unless it is there, and for a picture keeps it as the
+/// chat shows it, so that showing it takes neither: in the background, as a message comes.
+/// At most [`PREFETCHING`] at once, so that what a chat shows when opened doesn't wait long
+/// behind them.
+pub(crate) async fn prefetch(downloads: Rc<Downloads>, attachment: Attachment) {
+    let Ok(_turn) = downloads.prefetching.acquire().await else {
+        return;
+    };
+    let picture = is_picture(attachment.kind);
+    let wanted = if picture {
+        Entry::Shown
+    } else {
+        Entry::Original
+    };
+    if downloads.cache.is_none() || downloads.kept(&attachment.id, wanted).await {
+        return;
+    }
+    let done = async {
+        let data = downloads.original(&attachment).await?;
+        if picture {
+            shown_picture(&downloads, &attachment, data).await?;
+        }
+        Ok::<_, AttachmentError>(())
+    };
+    if let Err(error) = done.await {
+        tracing::debug!(kind = ?attachment.kind, error = %crate::scrub::chain(&error), "failed to download an attachment as it came");
+    }
 }
 
 /// Downloads a picture for the picture viewer and reports it as [`Event::FullPicture`]: the
@@ -1541,5 +1649,68 @@ mod tests {
         };
         assert_eq!(kept_of_stored(&sent.encode_to_vec()), wanted);
         assert!(kept_of_stored(b"not a message").is_empty());
+    }
+
+    #[test]
+    fn what_a_chat_shows_is_downloaded_as_it_comes_and_files_wait() {
+        let with = |kind: AttachmentKind, size: u64| {
+            let mut attachment = unfetchable(&format!("3/{kind:?}{size}"));
+            attachment.kind = kind;
+            attachment.size = size;
+            attachment
+        };
+        let preview = with(AttachmentKind::Image, 10);
+        let message = crate::ChatMessage {
+            attachments: vec![
+                with(AttachmentKind::Image, 1000),
+                with(AttachmentKind::Image, PREFETCHED_AT_MOST + 1),
+                with(AttachmentKind::Sticker, 10),
+                with(AttachmentKind::VoiceNote, 10),
+                with(AttachmentKind::LongText, 10),
+                with(AttachmentKind::File, 10),
+                with(AttachmentKind::Audio, 10),
+                with(AttachmentKind::Video, 10),
+                with(AttachmentKind::ViewOnce, 10),
+            ],
+            preview: Some(crate::LinkPreview {
+                url: String::new(),
+                title: String::new(),
+                description: String::new(),
+                image: Some(Box::new(preview.clone())),
+            }),
+            ..Default::default()
+        };
+        let kinds: Vec<AttachmentKind> = prefetched(&message).iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                AttachmentKind::Image,
+                AttachmentKind::Sticker,
+                AttachmentKind::VoiceNote,
+                AttachmentKind::LongText,
+                AttachmentKind::Image,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_picture_downloaded_as_it_came_is_kept_as_its_chat_shows_it() {
+        with_cache(async |downloads, cache| {
+            let attachment = unfetchable("3/came");
+            cache
+                .write(&attachment.id, Entry::Original, &png(1600, 1200))
+                .unwrap();
+            prefetch(downloads.clone(), attachment.clone()).await;
+            let shown = cache
+                .read(&attachment.id, Entry::Shown)
+                .expect("kept as shown");
+            let picture = decode_shown(&shown).unwrap();
+            assert_eq!((picture.width, picture.height), (PICTURE_EDGE, 480));
+            // Already there: nothing more is done.
+            cache.forget(&attachment.id);
+            cache.write(&attachment.id, Entry::Shown, &shown).unwrap();
+            prefetch(downloads, attachment.clone()).await;
+            assert!(cache.read(&attachment.id, Entry::Original).is_none());
+        });
     }
 }

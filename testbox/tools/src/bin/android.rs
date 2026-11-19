@@ -1324,6 +1324,7 @@ impl Driver {
             Android::Tap { text } => self.tap(&text, PATIENCE),
             Android::LongPress { text } => self.long_press(&text).map(drop),
             Android::Back => back(),
+            Android::ChatList => self.launch(),
             Android::TypeText { text } => self.type_text(&text, agent::Echo::Exact(text.clone())),
             Android::ReactToMessage { text } => self.react_to_message(&text),
             Android::SetTimer { seconds } => self.set_timer(seconds),

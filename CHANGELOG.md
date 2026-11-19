@@ -36,6 +36,9 @@ The release workflow takes a version's notes from here (the section headed with 
   receivers show at the picture's size until it has downloaded.
 - A photo shows in a chat about three times sooner the first time (scaled to the bubble with
   `fast_image_resize` rather than `image`'s resize: 30 ms rather than 295 ms for 12 MP).
+- Pictures, stickers, voice messages and long texts download as they come (up to 25 MB each),
+  as in Signal's apps, so a chat shows them at once when opened. Not in message requests;
+  files, videos and audio still wait to be asked for.
 
 ### New
 

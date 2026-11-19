@@ -960,10 +960,15 @@ async fn run_linked(
     let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
     let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
     let (to_session, for_session) = tokio::sync::mpsc::unbounded_channel();
+    let downloads = attachments::Downloads::new(
+        manager.registration_data().signal_servers.clone(),
+        cache.clone(),
+    );
     let ctx = Ctx::new(Ports {
         events: events.clone(),
         tables: tables.clone(),
         cache: cache.clone(),
+        downloads: Some(downloads.clone()),
         preferences: preferences.clone(),
         expiring: Rc::default(),
         story_kept: Rc::default(),
@@ -1003,10 +1008,6 @@ async fn run_linked(
     ));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.ports.clone()));
 
-    let downloads = attachments::Downloads::new(
-        manager.registration_data().signal_servers.clone(),
-        cache.clone(),
-    );
     // Ends after its pass once the session has dropped its end.
     let (avatars, asked) = tokio::sync::mpsc::unbounded_channel();
     tokio::task::spawn_local(Avatars::new(manager.clone(), events.clone()).event_loop(asked));

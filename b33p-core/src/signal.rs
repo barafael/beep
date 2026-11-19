@@ -115,6 +115,8 @@ struct Ports {
     tables: LocalStore,
     /// The attachments kept on disk, if they can be ([`crate::attachments::cache`]).
     cache: Option<std::sync::Arc<crate::attachments::cache::Cache>>,
+    /// The session's downloads, for what is downloaded as it comes; none in tests.
+    downloads: Option<Rc<crate::attachments::Downloads>>,
     preferences: Rc<Cell<Preferences>>,
     /// Woken when a disappearing message starts counting down, for the session's sweep
     /// (`sweep_expired`).
@@ -214,6 +216,7 @@ impl Ctx {
             events: Events::new(events),
             tables,
             cache: None,
+            downloads: None,
             preferences: Rc::new(Cell::new(Preferences::default())),
             expiring: Rc::default(),
             story_kept: Rc::default(),

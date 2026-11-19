@@ -51,8 +51,9 @@ const SETTLE: Duration = Duration::from_secs(5);
 /// moves it: Desktop sends photos to b33p's account (b33p and Android, its primary, download
 /// them), b33p sends one (Desktop downloads it, Android as a sync), then b33p restarts and
 /// shows the chat again, and opens a photo in its viewer. `photo` is a camera-sized picture
-/// (`TESTBOX_MEDIA_PHOTO`), `picture` a small one. b33p downloads each picture once: not what
-/// it sent, and not again after a restart or for its viewer (it keeps them on disk).
+/// (`TESTBOX_MEDIA_PHOTO`), `picture` a small one. b33p downloads each picture once, as it
+/// comes: not what it sent, and not again when shown, after a restart or for its viewer (it
+/// keeps them on disk).
 pub(super) fn media(
     checks: &mut Checks,
     fixture: &mut AndroidBox<'_>,
@@ -74,6 +75,10 @@ pub(super) fn media(
     stage(picture, &files.join("picture.png"))?;
     let in_box = |name: &str| format!("/files/{name}");
 
+    // Where Android shows what the checks wait for: an earlier phase may have left a chat open.
+    checks.require("Android shows its chat list", || {
+        Ok(android.call(drivers::Android::ChatList)?)
+    })?;
     checks.require("Desktop has the peer's conversation with Android", || {
         Ok(desktop.call(drivers::Desktop::OpenConversation {
             aci: android_aci.clone(),
@@ -82,14 +87,17 @@ pub(super) fn media(
 
     let from_desktop = "testbox media: two pictures from Desktop";
     checks.record(
-        "two pictures from Desktop reach b33p and Android, and download",
+        "two pictures from Desktop reach b33p and Android, b33p downloading them as they come",
         || {
             let since = process::now()?;
-            select(b33p, conversation)?;
+            // Another chat open: b33p downloads the pictures as they come, not when shown.
+            select(b33p, &b33p_core::ConversationId::contact(android_aci).0)?;
             desktop.call(drivers::Desktop::SendFiles {
                 paths: vec![in_box("photo.jpg"), in_box("picture.png")],
                 text: from_desktop.to_owned(),
             })?;
+            containers.await_logs(B33P, b33p_core::DOWNLOADED_LOG, 2, Some(since), PATIENCE)?;
+            select(b33p, conversation)?;
             for id in incoming_images(b33p, from_desktop, 2)? {
                 b33p.act(Action::FetchAttachment { id: id.clone() })?;
                 downloaded(b33p, &id)?;

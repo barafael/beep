@@ -141,6 +141,11 @@ impl Cache {
         opened
     }
 
+    /// Whether something is kept of `id` as `entry` (not whether it opens).
+    pub(crate) fn has(&self, id: &AttachmentId, entry: Entry) -> bool {
+        self.dir.join(self.name(id, entry)).exists()
+    }
+
     /// Keeps `data` as `entry` of `id`, in place of anything kept before.
     pub(crate) fn write(
         &self,
