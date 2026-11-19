@@ -255,6 +255,31 @@ pub enum Service {
     Netem,
 }
 
+/// `argv` for the presage container, so that what presage-cli logs (its stderr, presage at
+/// debug) also goes into the container's own log, which a box's record keeps, each line
+/// tagged with the account's store (`peer`, `primary`, …): presage-cli runs in `podman exec`s,
+/// whose output only the harness saw, so the record had nothing of the presage side when a
+/// message went missing. The stderr still comes back as before, for errors.
+fn presage_logged<'a>(argv: &[&'a str]) -> Vec<&'a str> {
+    // A pipeline, which bash waits for: process substitutions outlived it as zombies of the
+    // container's `sleep infinity`, which reaps nothing, each holding a session keyring until
+    // the user's 200 keys were taken and no `podman exec` started ("join keyctl: Disk quota
+    // exceeded"). stdout goes straight out (fd 3); stderr through the loop, to both.
+    const SCRIPT: &str = r#"tag=$1; shift
+export RUST_LOG=${RUST_LOG:-info,presage=debug}
+exec 3>&1
+"$@" 2>&1 1>&3 3>&- | while IFS= read -r line; do
+    printf '%s\n' "$line" >&2
+    printf '[%s] %s\n' "$tag" "$line" >> /proc/1/fd/2
+done
+exit "${PIPESTATUS[0]}""#;
+    let tag = argv
+        .iter()
+        .find_map(|arg| arg.strip_prefix("/presage/")?.strip_suffix(".db"))
+        .unwrap_or("presage");
+    [&["bash", "-c", SCRIPT, "bash", tag][..], argv].concat()
+}
+
 /// The b33p every box has.
 pub const B33P: Service = Service::B33p(0);
 
@@ -1232,7 +1257,11 @@ impl Pod {
         stdin: &str,
     ) -> Result<String, CommandError> {
         let mut exec = podman(&["exec", "-i", &self.container(service)]);
-        exec.args(argv);
+        if service == Service::Presage {
+            exec.args(presage_logged(argv));
+        } else {
+            exec.args(argv);
+        }
         process::output(exec, stdin)
     }
 
