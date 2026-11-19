@@ -1,0 +1,73 @@
+diff --git a/b33p-gpui/src/agent.rs b/b33p-gpui/src/agent.rs
+index 62d3ea8..87b4661 100644
+--- a/b33p-gpui/src/agent.rs
++++ b/b33p-gpui/src/agent.rs
+@@ -41,8 +41,9 @@ use b33p_harness::{
+     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
+     LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
+     PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
+-    ScreenSnapshot, SearchResultSnapshot, SettingsSnapshot, Shot, Snapshot, StickerPackSnapshot,
+-    StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed, Unsubscribed, WindowSnapshot,
++    ScreenSnapshot, SearchResultSnapshot, SettingsChange, SettingsSnapshot, Shot, Snapshot,
++    StickerPackSnapshot, StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed,
++    Unsubscribed, WindowSnapshot,
+ };
+ use serde::Serialize;
+ 
+@@ -805,7 +806,7 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
+             });
+             false
+         }
+-        Action::SetSettings {
++        Action::SetSettings(SettingsChange {
+             theme,
+             text_size,
+             animations,
+@@ -819,7 +820,7 @@ fn perform(shared: &Rc<Shared>, action: Action, cx: &mut App) -> Result<bool, Ag
+             typing_indicators,
+             link_previews,
+             sync_to_phone,
+-        } => {
++        }) => {
+             let mut settings = shared.settings.borrow().clone();
+             if let Some(value) = theme {
+                 settings.theme = value.into();
+diff --git a/b33p-gpui/src/e2e_tests.rs b/b33p-gpui/src/e2e_tests.rs
+index 7809058..d673d19 100644
+--- a/b33p-gpui/src/e2e_tests.rs
++++ b/b33p-gpui/src/e2e_tests.rs
+@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
+ 
+ use b33p_harness::{
+     Acted, Action, Call, ConversationSnapshot, Delivery, Download, MessageSnapshot, Outcome, Pong,
+-    Pushed, Reply, Request, Saved, ScreenSnapshot, Snapshot, Subscribed, TextSize, Theme, Trust,
++    Pushed, Reply, Request, Saved, ScreenSnapshot, SettingsChange, Snapshot, Subscribed, TextSize,
++    Theme, Trust,
+ };
+ use gpui::TestAppContext;
+ use serde::Deserialize;
+@@ -267,21 +268,11 @@ fn selected_is(snapshot: &Snapshot, id: &str) -> bool {
+ 
+ /// Changes only the theme and the text size.
+ fn theme_and_text_size(theme: Theme, text_size: TextSize) -> Action {
+-    Action::SetSettings {
++    Action::SetSettings(SettingsChange {
+         theme: Some(theme),
+         text_size: Some(text_size),
+-        animations: None,
+-        show_avatars: None,
+-        notifications: None,
+-        notification_content: None,
+-        show_activity: None,
+-        show_calendar: None,
+-        close_to_tray: None,
+-        read_receipts: None,
+-        typing_indicators: None,
+-        link_previews: None,
+-        sync_to_phone: None,
+-    }
++        ..SettingsChange::default()
++    })
+ }
+ 
+ /// Starting, connecting, and reading are the test; also that nonsense is refused.

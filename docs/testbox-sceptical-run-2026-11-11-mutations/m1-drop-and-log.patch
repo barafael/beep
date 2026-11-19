@@ -1,0 +1,14 @@
+--- a/b33p-core/src/signal/receive.rs
++++ b/b33p-core/src/signal/receive.rs
+@@ -570,6 +570,11 @@ async fn handle_content(
+         );
+         return true;
+     }
++    // MUTATION (negative control for the testbox): drop every other data message from others.
++    if content.metadata.sender != own_id(manager) && content.timestamp() % 2 == 0 {
++        tracing::error!("mutation: dropping a message on purpose");
++        return true;
++    }
+     // Nothing at all from someone we block, in groups too, as Signal's clients do. presage
+     // has stored it by now, so it goes from the store again.
+     let sender = content.metadata.sender;
