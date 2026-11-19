@@ -72,8 +72,8 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d2
 #        ID (#503)
 #   typing indicators only for devices online, a sender-key send as urgent as its content
 #        (#490)
-#   a message kept from before a stop gets one more try, not one at every start, and a message
-#        is forgotten only once the consumer asks for the next, so b33p's own handling of it
+#   a message kept from before a stop is tried again at each start, up to five times, and a
+#        message is forgotten only once the consumer asks for the next, so b33p's own handling of it
 #        survives a crash or a quit (#476)
 #   a group's members' profile keys kept, so a member who never wrote to us alone is sent to
 #        sealed and with the group's sender key (#448); our own profile key replaceable as the
@@ -89,11 +89,11 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "d2
 #        newest first the exact reverse of oldest first (no PR yet)
 # The branch before the rebase is tag archive/2026-11-19/langis/integration.
 # Rebase the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "f10f2e2969c2b22c30dae0bb4b0b7667d9c0ecab" }
+presage = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "f10f2e2969c2b22c30dae0bb4b0b7667d9c0ecab", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
