@@ -19,7 +19,13 @@ enum MediaError {
     /// b33p went to the CDN for what it should have had: kept from before, or sent itself.
     #[error("b33p downloaded {got} attachments from the CDN, not {wanted}")]
     Downloads { got: usize, wanted: usize },
+    /// b33p sent the photo larger than Signal's apps would (`b33p_core` `attachments::scale`).
+    #[error("b33p sent the photo as {size} bytes, more than {SENT_AT_MOST}")]
+    SentWhole { size: u64 },
 }
+
+/// What a photo weighs at most as Signal's apps send it, at their standard level.
+const SENT_AT_MOST: u64 = 1024 * 1024;
 
 /// Fails unless b33p downloaded `wanted` attachments from a CDN since `since`, as its log
 /// says (`b33p_core::DOWNLOADED_LOG`): what it had kept doesn't count.
@@ -96,7 +102,8 @@ pub(super) fn media(
 
     let from_b33p = "testbox media: a photo from b33p";
     checks.record(
-        "a photo from b33p reaches Desktop, and Android as a sync, and b33p doesn't download it",
+        "a photo from b33p, as large as Signal's apps send one, reaches Desktop, and Android as \
+         a sync, and b33p doesn't download it",
         || {
             let since = process::now()?;
             select(b33p, conversation)?;
@@ -109,7 +116,10 @@ pub(super) fn media(
                 timeout_ms: PATIENCE_MS,
             })?;
             // Shown in b33p's chat, from what it sent.
-            let id = outgoing_image(b33p, from_b33p)?;
+            let (id, size) = outgoing_image(b33p, from_b33p)?;
+            if size > SENT_AT_MOST {
+                return Err(MediaError::SentWhole { size }.into());
+            }
             b33p.act(Action::FetchAttachment { id: id.clone() })?;
             downloaded(b33p, &id)?;
             android_shows(android, from_b33p)?;
@@ -128,7 +138,7 @@ pub(super) fn media(
                 b33p.act(Action::FetchAttachment { id: id.clone() })?;
                 downloaded(b33p, &id)?;
             }
-            let id = outgoing_image(b33p, from_b33p)?;
+            let (id, _) = outgoing_image(b33p, from_b33p)?;
             b33p.act(Action::FetchAttachment { id: id.clone() })?;
             downloaded(b33p, &id)?;
             std::thread::sleep(SETTLE);
@@ -176,8 +186,8 @@ fn stage(from: &Path, to: &Path) -> Result<(), AttachmentsError> {
         })
 }
 
-/// The id of the picture on b33p's own message reading `text`, once b33p shows it.
-fn outgoing_image(b33p: &mut Harness, text: &str) -> Result<String, HarnessError> {
+/// The id and size of the picture on b33p's own message reading `text`, once b33p shows it.
+fn outgoing_image(b33p: &mut Harness, text: &str) -> Result<(String, u64), HarnessError> {
     b33p.wait_for(
         &format!("{text:?} with its picture"),
         PATIENCE,
@@ -188,7 +198,7 @@ fn outgoing_image(b33p: &mut Harness, text: &str) -> Result<String, HarnessError
                 .filter(|message| message.outgoing && message.text == text)
                 .flat_map(|message| &message.attachments)
                 .find(|attachment| attachment.kind == AttachmentKind::Image)
-                .map(|attachment| attachment.id.clone())
+                .map(|attachment| (attachment.id.clone(), attachment.size))
         },
     )
 }

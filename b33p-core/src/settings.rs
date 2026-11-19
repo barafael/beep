@@ -311,6 +311,12 @@ impl Settings {
                 ("link_previews", "false") => settings.preferences.link_previews = false,
                 ("sync_to_phone", "true") => settings.preferences.sync_to_phone = true,
                 ("sync_to_phone", "false") => settings.preferences.sync_to_phone = false,
+                ("high_quality_pictures", "true") => {
+                    settings.preferences.high_quality_pictures = true;
+                }
+                ("high_quality_pictures", "false") => {
+                    settings.preferences.high_quality_pictures = false;
+                }
                 ("device_name", value) => {
                     let name = clean_device_name(value);
                     settings.device_name = (!name.is_empty()).then_some(name);
@@ -333,7 +339,8 @@ impl Settings {
             "theme = {}\ntext_size = {}\nanimations = {}\nshow_avatars = {}\nnotifications = {}\n\
              notification_content = {}\nshow_activity = {}\nshow_calendar = {}\n\
              close_to_tray = {}\nscreen_security = {}\ncheck_updates = {}\n\
-             read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n",
+             read_receipts = {}\ntyping_indicators = {}\nlink_previews = {}\nsync_to_phone = {}\n\
+             high_quality_pictures = {}\n",
             self.theme.key(),
             self.text_size.key(),
             self.animations.key(),
@@ -348,7 +355,8 @@ impl Settings {
             self.preferences.read_receipts,
             self.preferences.typing_indicators,
             self.preferences.link_previews,
-            self.preferences.sync_to_phone
+            self.preferences.sync_to_phone,
+            self.preferences.high_quality_pictures
         ) + &self
             .device_name
             .as_deref()
@@ -470,6 +478,7 @@ mod tests {
                 typing_indicators: false,
                 link_previews: true,
                 sync_to_phone: true,
+                high_quality_pictures: true,
             },
             recent_emoji: vec!["👍".into(), "👩‍💻".into(), "❤️".into()],
         };

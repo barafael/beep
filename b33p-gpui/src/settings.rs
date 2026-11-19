@@ -293,6 +293,19 @@ impl Render for SettingsView {
                 move |on, cx| change(&shared, cx, |s| s.preferences.link_previews = on)
             },
         ));
+        column.push(switch_row(
+            &t,
+            "high-quality-pictures",
+            "High-quality pictures",
+            "Send photos at up to 4096 pixels rather than 1600. Everyone in the chat downloads \
+             them, so they take longer to arrive.",
+            settings.preferences.high_quality_pictures,
+            true,
+            {
+                let shared = shared.clone();
+                move |on, cx| change(&shared, cx, |s| s.preferences.high_quality_pictures = on)
+            },
+        ));
 
         column.push(section(&t, "Background"));
         column.push(switch_row(

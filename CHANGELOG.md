@@ -28,6 +28,10 @@ The release workflow takes a version's notes from here (the section headed with 
   from a copy at the size of the chat, which takes a fraction of the time the original does.
   At most about 2 GB of originals are kept, those used longest ago going first; a message's
   attachments go with it (deleted, or disappearing), and all of them with the account.
+- Photos go out as Signal's apps send them: at most 1600 pixels and about 1 MB, rather than as
+  the camera took them (a phone photo was 5 to 10 MB). Everyone in the chat, and your phone,
+  downloads them that much faster. Settings → High-quality pictures sends up to 4096 pixels and
+  3 MB, as Signal's own setting does. Pictures without transparency go as JPEG.
 
 ### New
 

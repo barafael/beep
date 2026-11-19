@@ -517,9 +517,14 @@ async fn handle_command(
             mentions,
         } => {
             let sent = async {
-                let pointers = attachments::upload(manager, &ctx.cache, &files)
-                    .await
-                    .map_err(Error::from)?;
+                let pointers = attachments::upload(
+                    manager,
+                    &ctx.cache,
+                    &files,
+                    ctx.preferences.get().high_quality_pictures,
+                )
+                .await
+                .map_err(Error::from)?;
                 let preview = if ctx.preferences.get().link_previews {
                     link_preview(manager, &body).await
                 } else {
@@ -617,10 +622,15 @@ async fn handle_command(
                     )
                 }
                 crate::NewStory::Picture(path) => {
-                    let pointer = attachments::upload(manager, &ctx.cache, &[path])
-                        .await?
-                        .pop()
-                        .ok_or(CommandError::StoryNotUploaded)?;
+                    let pointer = attachments::upload(
+                        manager,
+                        &ctx.cache,
+                        &[path],
+                        ctx.preferences.get().high_quality_pictures,
+                    )
+                    .await?
+                    .pop()
+                    .ok_or(CommandError::StoryNotUploaded)?;
                     stored.pointer = Some(pointer.encode_to_vec());
                     presage::proto::story_message::Attachment::FileAttachment(pointer)
                 }

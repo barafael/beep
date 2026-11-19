@@ -6,6 +6,7 @@
 //! because the user asked.
 
 pub(crate) mod cache;
+mod scale;
 
 use cache::{Cache, Entry};
 
@@ -129,7 +130,7 @@ pub(crate) enum UploadError {
     },
     #[error("“{name}” is larger than Signal's limit of 100 MB.")]
     TooLarge { name: String, size: u64 },
-    #[error("stripping the metadata of “{name}” stopped")]
+    #[error("making “{name}” ready to send stopped")]
     StripStopped {
         name: String,
         source: tokio::task::JoinError,
@@ -689,12 +690,15 @@ async fn upload_retrying(
     }
 }
 
-/// Uploads `files` for sending, as the pointers to put in the message. What was uploaded is
-/// kept in `cache` as if downloaded, so that showing what was sent doesn't download it.
+/// Uploads `files` for sending, as the pointers to put in the message: pictures made ready as
+/// Signal's apps make them ([`scale`], at its high-quality level with `high`). What was
+/// uploaded is kept in `cache` as if downloaded, so that showing what was sent doesn't
+/// download it.
 pub(crate) async fn upload(
     manager: &crate::signal::Mgr,
     cache: &Option<Arc<Cache>>,
     files: &[PathBuf],
+    high: bool,
 ) -> Result<Vec<AttachmentPointer>, UploadError> {
     let mut uploads = Vec::new();
     for path in files {
@@ -717,16 +721,23 @@ pub(crate) async fn upload(
             .first_or_octet_stream()
             .essence_str()
             .to_owned();
-        let data = {
-            let content_type = content_type.clone();
-            tokio::task::spawn_blocking(move || without_metadata(&content_type, data))
+        let ready =
+            tokio::task::spawn_blocking(move || scale::for_sending(&content_type, data, high))
                 .await
                 .map_err(|source| UploadError::StripStopped {
                     name: name.clone(),
                     source,
-                })?
+                })?;
+        // A PNG that went as JPEG is named so.
+        let name = match (ready.content_type.as_str(), name.rsplit_once('.')) {
+            ("image/jpeg", Some((stem, extension)))
+                if !matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg") =>
+            {
+                format!("{stem}.jpg")
+            }
+            _ => name,
         };
-        uploads.push((name, content_type, data));
+        uploads.push((name, ready.content_type, ready.data));
     }
     // All at once, as presage's `upload_attachments`, each with its own retry.
     let results = futures::future::join_all(uploads.into_iter().map(
@@ -1003,41 +1014,6 @@ pub(crate) fn thumbnail(data: &[u8], edge: u32) -> Option<Picture> {
     decode_picture(data, (edge, edge))
 }
 
-/// A photo drawn again from its pixels, as Signal's apps send them: without what its file
-/// says besides (EXIF and XMP: where and when it was taken, with what), but turned the way
-/// that said. Anything else, or what doesn't decode, stays as it is.
-fn without_metadata(content_type: &str, data: Vec<u8>) -> Vec<u8> {
-    use image::ImageDecoder as _;
-    let format = match content_type {
-        "image/jpeg" => image::ImageFormat::Jpeg,
-        "image/png" => image::ImageFormat::Png,
-        _ => return data,
-    };
-    let redraw = || -> image::ImageResult<Vec<u8>> {
-        let mut decoder =
-            image::ImageReader::with_format(std::io::Cursor::new(&data), format).into_decoder()?;
-        let orientation = decoder.orientation()?;
-        let mut picture = image::DynamicImage::from_decoder(decoder)?;
-        picture.apply_orientation(orientation);
-        let mut out = std::io::Cursor::new(Vec::new());
-        match format {
-            image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(picture.to_rgb8())
-                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut out, 90,
-                ))?,
-            _ => picture.write_to(&mut out, format)?,
-        }
-        Ok(out.into_inner())
-    };
-    match redraw() {
-        Ok(redrawn) => redrawn,
-        Err(error) => {
-            tracing::warn!(error = %crate::scrub::chain(&error), "couldn't take the metadata out of a picture; sending it as it is");
-            data
-        }
-    }
-}
-
 /// Decodes an image from the network with bounds, so a crafted file (tiny, but claiming huge
 /// dimensions) can't make us allocate gigabytes. 12000 px a side covers any phone photo.
 pub(crate) fn decode_limited(data: &[u8]) -> Option<image::DynamicImage> {
@@ -1158,7 +1134,7 @@ mod tests {
         tagged.extend(&photo[2..]);
         assert_eq!(image::load_from_memory(&tagged).unwrap().width(), 2);
 
-        let sent = without_metadata("image/jpeg", tagged);
+        let sent = scale::for_sending("image/jpeg", tagged, false).data;
         assert!(!sent.windows(4).any(|w| w == b"Exif"));
         let shown = image::load_from_memory(&sent).unwrap();
         assert_eq!(
@@ -1168,8 +1144,14 @@ mod tests {
         );
 
         let text = b"not a picture".to_vec();
-        assert_eq!(without_metadata("text/plain", text.clone()), text);
-        assert_eq!(without_metadata("image/jpeg", text.clone()), text);
+        assert_eq!(
+            scale::for_sending("text/plain", text.clone(), false).data,
+            text
+        );
+        assert_eq!(
+            scale::for_sending("image/jpeg", text.clone(), false).data,
+            text
+        );
     }
 
     /// Anyone can send a long text, so only the start of a very long one is shown.

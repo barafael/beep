@@ -400,6 +400,9 @@ pub struct Preferences {
     /// Write pins, mutes, the archive, blocks and accepted requests back to the storage
     /// service, so the phone (and other devices) get them.
     pub sync_to_phone: bool,
+    /// Send pictures at Signal's high quality (up to 4096 px, 3 MiB) rather than its standard
+    /// (1600 px, 1 MiB). Off, as in Signal's apps: everyone in the chat downloads them.
+    pub high_quality_pictures: bool,
 }
 
 impl Default for Preferences {
@@ -409,6 +412,7 @@ impl Default for Preferences {
             typing_indicators: true,
             link_previews: false,
             sync_to_phone: false,
+            high_quality_pictures: false,
         }
     }
 }
