@@ -319,7 +319,7 @@ async fn handle_received(
             master_key,
             changes,
         } => super::groups::on_missed_changes(manager, ctx, names, master_key, changes).await,
-        Received::Contacts => {
+        Received::Contacts { .. } => {
             names.clear();
             send_conversations(manager, ctx).await;
             // A newly linked device first learns its contacts here.

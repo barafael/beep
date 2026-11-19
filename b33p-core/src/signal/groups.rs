@@ -16,7 +16,7 @@ use super::{
         Names, display_name, ensure_conversation, first_settings, members, own_id, register,
         sender_name,
     },
-    history::{data_of, stored_at, to_chat_message},
+    history::{data_of, newest_before, stored_at, to_chat_message},
 };
 
 /// The id typing indicators and the like name a group by.
@@ -200,9 +200,7 @@ pub(super) async fn told_changes(
     key: [u8; 32],
     wanted: impl Fn(u32) -> bool,
 ) -> Vec<(u32, u64)> {
-    let stored = manager
-        .store()
-        .messages_before(&Thread::Group(key), None, RECENTLY_TOLD)
+    let stored = newest_before(manager.store(), &Thread::Group(key), None, RECENTLY_TOLD)
         .await
         .unwrap_or_else(|error| {
             warn!(error = %crate::scrub::chain(&error), "failed to read a group's latest changes");

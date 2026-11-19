@@ -17,7 +17,7 @@ use crate::{
 use super::{
     Ctx, ForSession, Mgr, Ports, Threads,
     groups::group_conversation,
-    history::{stored_at, stored_since, to_chat_message},
+    history::{newest_before, stored_at, stored_since, to_chat_message},
     trust::{pin_verified, safety_number, trust_given, trust_of},
 };
 
@@ -210,7 +210,7 @@ pub(super) async fn first_settings(ctx: &Ctx, id: &ConversationId, read: u64) ->
 
 /// When the newest content stored in a thread was sent, or 0 for none.
 async fn newest_stored(manager: &Mgr, thread: &Thread) -> u64 {
-    match manager.store().messages_before(thread, None, 1).await {
+    match newest_before(manager.store(), thread, None, 1).await {
         Ok(contents) => contents.first().map_or(0, |content| content.timestamp()),
         Err(error) => {
             warn!(error = %crate::scrub::chain(&error), "failed to read a thread's newest message");
@@ -372,9 +372,7 @@ async fn latest_message(
     let mut before = None;
     let mut page = 2;
     loop {
-        let contents = manager
-            .store()
-            .messages_before(thread, before, page)
+        let contents = newest_before(manager.store(), thread, before, page)
             .await
             .ok()?;
         page = (page * 2).min(32);

@@ -1522,9 +1522,10 @@ pub(super) mod tests {
     }
 
     /// What presage asks for one chat's messages is found through b33p's index on its table,
-    /// rather than by walking every chat's messages by time (`messages_before`) or the whole
-    /// table (`messages`). b33p reads a chat's newest message, its pages of history, what is
-    /// unread, recent safety number notes, media and search hits with `messages_before`.
+    /// rather than by walking every chat's messages by time or the whole table, and read in the
+    /// index's order. b33p reads a chat's newest message, its pages of history, what is unread,
+    /// recent safety number notes, media and search hits as pages (`messages` with a limit) or
+    /// time ranges (`messages` without).
     #[test]
     fn a_chats_messages_are_found_through_its_index() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1532,21 +1533,26 @@ pub(super) mod tests {
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
         open_and_close(&paths, &key, async |_, tables| {
             use sqlx::Row as _;
-            // As presage's `messages_before` and `messages` have them (content.rs).
+            // As presage's `messages` has them (content.rs).
             const COLUMNS: &str = "ts, server_ts, sender_service_id, sender_device_id,
                 destination_service_id, needs_receipt, unidentified_sender, content_body,
                 was_plaintext, pni_verified";
-            const THREAD: &str = "thread_id = (
-                SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)";
-            let before = format!(
+            const IN_RANGE: &str = "thread_id = (
+                SELECT id FROM threads WHERE group_master_key = ?1 OR recipient_id = ?2)
+                AND ts BETWEEN ?3 AND ?4";
+            let page = format!(
                 "EXPLAIN QUERY PLAN SELECT {COLUMNS} FROM thread_messages
-                 WHERE {THREAD} AND ts < ? ORDER BY ts DESC LIMIT ?"
+                 WHERE {IN_RANGE}
+                    AND ts >= coalesce((
+                        SELECT ts FROM thread_messages WHERE {IN_RANGE}
+                        ORDER BY ts DESC LIMIT 1 OFFSET ?5
+                    ), ?3)
+                 ORDER BY ts DESC, sender_service_id DESC"
             );
             let range = format!(
                 "EXPLAIN QUERY PLAN SELECT {COLUMNS} FROM thread_messages
-                 WHERE {THREAD} AND coalesce(ts > ?, ts >= ?, true)
-                    AND coalesce(ts < ?, ts <= ?, true)
-                 ORDER BY ts DESC"
+                 WHERE {IN_RANGE}
+                 ORDER BY ts DESC, sender_service_id DESC"
             );
             // One connection that has seen the index: EXPLAIN doesn't check whether the schema
             // changed since the connection last read it, as statements that run do.
@@ -1570,21 +1576,13 @@ pub(super) mod tests {
                     .map(|row| row.get::<String, _>(3))
                     .collect()
             };
-            let before = plan(&before, 2).await;
-            assert!(
-                before.iter().any(|step| step
-                    .contains("INDEX b33p_thread_messages_thread_ts (thread_id=? AND ts<?)")),
-                "{before:?}"
-            );
-            let range = plan(&range, 4).await;
-            assert!(
-                range
-                    .iter()
-                    .any(|step| step.contains("INDEX b33p_thread_messages_thread_ts (thread_id=?)")),
-                "{range:?}"
-            );
-            // In the index's order already.
-            for step in before.iter().chain(&range) {
+            let index =
+                "INDEX b33p_thread_messages_thread_ts_sender (thread_id=? AND ts>? AND ts<?)";
+            let page = plan(&page, 3).await;
+            assert!(page.iter().any(|step| step.contains(index)), "{page:?}");
+            let range = plan(&range, 2).await;
+            assert!(range.iter().any(|step| step.contains(index)), "{range:?}");
+            for step in page.iter().chain(&range) {
                 assert!(!step.contains("TEMP B-TREE"), "{step}");
                 assert!(!step.starts_with("SCAN thread_messages"), "{step}");
             }

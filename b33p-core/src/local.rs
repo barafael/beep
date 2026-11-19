@@ -510,10 +510,14 @@ impl LocalStore {
     /// chat back to them, and a quiet chat's walks nearly all. Not in [`SCHEMA`]: the table is
     /// presage's, made by its store. Older b33p builds don't mind an index more, so it keeps
     /// [`SCHEMA_VERSION`]. Drop this once presage's migrations make one.
+    ///
+    /// With the sender last, as presage orders the messages at one time, a page is read in the
+    /// index's order. The index before it, without the sender, goes.
     pub(crate) async fn index_messages(&self) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS b33p_thread_messages_thread_ts
-             ON thread_messages (thread_id, ts)",
+        sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS b33p_thread_messages_thread_ts_sender
+                 ON thread_messages (thread_id, ts, sender_service_id);
+             DROP INDEX IF EXISTS b33p_thread_messages_thread_ts;",
         )
         .execute(&self.db)
         .await

@@ -43,7 +43,7 @@ impl crate::Classified for HistoryError {
         }
     }
 }
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, ops::Bound, time::Duration};
 
 use presage::{
     libsignal_service::{
@@ -55,9 +55,9 @@ use presage::{
         data_message::Flags,
         sync_message::{Content as SyncContent, Sent},
     },
-    store::{ContentExt, ContentsStore, Thread},
+    store::{ContentExt, ContentsStore, MessagesQueryParams, Thread},
 };
-use presage_store_sqlite::SqliteStore;
+use presage_store_sqlite::{SqliteStore, SqliteStoreError};
 use tracing::{debug, warn};
 
 use crate::{
@@ -103,6 +103,25 @@ pub(super) fn stored_at(content: &Content) -> u64 {
     content.metadata.client_timestamp.timestamp_millis() as u64
 }
 
+/// Up to `limit` of a thread's stored contents sent before `before` (or the newest), newest
+/// first; more when others share the oldest one's time, so a page that starts before it misses
+/// none. One that doesn't decode fails the page.
+pub(super) async fn newest_before(
+    store: &SqliteStore,
+    thread: &Thread,
+    before: Option<u64>,
+    limit: u32,
+) -> Result<Vec<Content>, SqliteStoreError> {
+    let range = (
+        Bound::Unbounded,
+        before.map_or(Bound::Unbounded, Bound::Excluded),
+    );
+    store
+        .messages(thread, MessagesQueryParams::from(range).limit(limit.into()))
+        .await?
+        .collect()
+}
+
 /// The content `target` names: its author's message at its time.
 pub(super) async fn stored_message(
     store: &SqliteStore,
@@ -132,9 +151,7 @@ pub(super) async fn history_page(
     let mut contents = Vec::new();
     let mut cursor = before;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, cursor, BATCH)
+        let batch = newest_before(manager.store(), thread, cursor, BATCH)
             .await
             .map_err(|source| HistoryError::Page {
                 before: cursor,
@@ -157,34 +174,15 @@ pub(super) async fn history_page(
 }
 
 /// A thread's stored contents sent at `from` or later, newest first; `None` if they can't be
-/// read.
-///
-/// Read a page at a time from the newest, which the store finds through the thread's index
-/// (see [`LocalStore::index_messages`]). It can't use that for an open range
-/// (`messages(thread, from..)`), which tests every message of the thread instead. The pages
-/// start small and grow: most threads have only a few contents that recent.
+/// read. One that doesn't decode is skipped. The store finds them through the thread's index
+/// (see [`LocalStore::index_messages`]).
 pub(super) async fn stored_since(
     store: &SqliteStore,
     thread: &Thread,
     from: u64,
 ) -> Option<Vec<Content>> {
-    let mut found = Vec::new();
-    let mut before = None;
-    let mut page = 8;
-    loop {
-        let Ok(batch) = store.messages_before(thread, before, page).await else {
-            // A content that doesn't decode fails its whole page; the range skips just it.
-            let contents = store.messages(thread, from..).await.ok()?;
-            return Some(contents.flatten().collect());
-        };
-        let full = batch.len() == page as usize;
-        before = batch.last().map(stored_at);
-        found.extend(batch.into_iter().take_while(|c| stored_at(c) >= from));
-        if !full || before.is_none_or(|oldest| oldest < from) {
-            return Some(found);
-        }
-        page = (page * 4).min(512);
-    }
+    let contents = store.messages(thread, from..).await.ok()?;
+    Some(contents.flatten().collect())
 }
 
 /// Adds what b33p keeps beside the store to messages of one conversation: how far ours got,
@@ -658,9 +656,7 @@ pub(super) async fn media(
     let mut found = Vec::new();
     let mut before = None;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, before, BATCH)
+        let batch = newest_before(manager.store(), thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Media {
                 conversation: conversation.clone(),
@@ -711,9 +707,7 @@ pub(super) async fn search(
     let mut hits = Vec::new();
     let mut before = None;
     loop {
-        let batch = manager
-            .store()
-            .messages_before(thread, before, BATCH)
+        let batch = newest_before(manager.store(), thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Search {
                 conversation: conversation.clone(),
