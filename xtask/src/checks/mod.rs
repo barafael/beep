@@ -19,6 +19,7 @@ mod errors;
 mod groups;
 mod large_group;
 mod lost;
+mod media;
 mod network;
 mod presage;
 pub(crate) mod record;
@@ -234,6 +235,18 @@ pub(crate) fn run(
             AndroidPhase::Groups => groups::groups(checks, fixture, containers, &sockets),
             AndroidPhase::Storage => storage::storage(checks, fixture),
             AndroidPhase::LargeGroup => large_group::large_group(checks, fixture, containers),
+            AndroidPhase::Media => media::media(
+                checks,
+                fixture,
+                containers,
+                &sockets,
+                &files,
+                &std::env::var_os("TESTBOX_MEDIA_PHOTO").map_or_else(
+                    || repo.join("docs/screenshots/01-chats.png"),
+                    std::path::PathBuf::from,
+                ),
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
         },
     );
     for phase in StressPhase::VARIANTS

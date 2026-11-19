@@ -268,12 +268,19 @@ pub(super) fn decode(sent: &Stream, received: &Stream, log: &KeyLog) -> Decoded 
     let mut records: Vec<(u64, Direction, &[u8], &[u8])> = Vec::new();
     for (stream, direction) in [(sent, Direction::Sent), (received, Direction::Received)] {
         let mut at = 0;
+        // A side's records open only in their order (TLS 1.3's nonces count them), so none
+        // may sort before the one ahead of it. Bytes of a segment that came early, held until a
+        // retransmission filled the gap before it (tcp.rs), carry the earlier time: their
+        // record is taken as coming with the one ahead (2026-11-19, Desktop's download of an
+        // 8 MB photo, "a record of Received didn't open" 2.9 MB in).
+        let mut previous = 0;
         while let Some(header) = stream.bytes.get(at..at + 5) {
             let length = usize::from(u16::from_be_bytes([header[3], header[4]]));
             let Some(body) = stream.bytes.get(at + 5..at + 5 + length) else {
                 break;
             };
-            records.push((stream.at(at), direction, header, body));
+            previous = previous.max(stream.at(at));
+            records.push((previous, direction, header, body));
             at += 5 + length;
         }
     }

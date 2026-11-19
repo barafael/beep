@@ -6,11 +6,13 @@
 # opens decrypted in Wireshark and xtask/src/wire decodes the connections from it. `-U` writes
 # each packet as it comes, for a record taken while the box is up; `-p` leaves promiscuous mode
 # alone, which loopback has no use for; `-Z root` keeps tcpdump from dropping to a user that
-# can't write the host's directory.
+# can't write the host's directory. `-B` (KiB) is the kernel's buffer for it: at the default,
+# an attachment of several MB over loopback came faster than tcpdump wrote it, and segments went
+# missing (2026-11-19: 84 KB of an 8 MB upload), so its TLS records didn't open.
       {
         name: "capture",
         image: "localhost/@POD@-cdn0",
-        command: ["tcpdump", "-i", "lo", "-p", "-U", "-Z", "root", "--time-stamp-precision=nano",
+        command: ["tcpdump", "-i", "lo", "-p", "-U", "-B", "65536", "-Z", "root", "--time-stamp-precision=nano",
                   "-w", "/capture/capture.pcap"],
         securityContext: {
           allowPrivilegeEscalation: false,

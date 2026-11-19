@@ -101,7 +101,7 @@ Android image builds while the linked box runs.
 flowchart LR
     build["build the images"] --> linked["the linked box:<br/>desktop, attachments, network, core"]
     build -. "meanwhile" .-> image["build the Android image"]
-    linked --> android["the Android box:<br/>android, groups, storage, large-group"]
+    linked --> android["the Android box:<br/>android, groups, storage, large-group, media"]
     image --> android
     linked -. "meanwhile" .-> watch["cargo testbox web<br/>or vnc"]
 ```
@@ -116,6 +116,7 @@ flowchart LR
 | `groups` | Android | a group b33p makes with the peer and a presage-cli member; what b33p changes shows on Desktop and Android, and what they change on b33p |
 | `storage` | Android | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
 | `large-group` | Android | a group of the peer and twenty presage-cli members more, made by b33p: its text to everyone (one sender-key request), and everyone's answers at once |
+| `media` | Android | pictures through all three clients: Desktop's to b33p and Android, b33p's to Desktop and Android, b33p's again after a restart and in its viewer; with `--capture`, `compare.md`'s Attachments says what each client moved, check by check. A camera-sized photo through `TESTBOX_MEDIA_PHOTO` ([the 2026-11-19 run](../docs/testbox-media-traffic-2026-11-19.md)) |
 
 The linked box links b33p to a presage-cli primary and Desktop to a presage-cli peer; the
 Android box links b33p to Android and Desktop to the peer. On both, the peer's first message
@@ -203,7 +204,8 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
   connections to the servers' ports, their TLS 1.3 opened with the key logs, then HTTP/1.1,
   HTTP/2, WebSocket and Signal's envelopes into `events.jsonl`, a transcript per client under
   each check's name, `connections.jsonl` (each connection's client, address, ALPN and TLS
-  fingerprint), and `compare.md`, the clients side by side. `cargo testbox wire <record>` decodes
+  fingerprint), and `compare.md`, the clients side by side (with what each downloaded from and
+  uploaded to the CDNs, check by check). `cargo testbox wire <record>` decodes
   a record again. Not for the stress phases.
 - With it, `wire/capture.pcapng`: the capture and the key logs in one file, the secrets in its
   Decryption Secrets Block. Open it in Wireshark and the box's traffic is decrypted, nothing to
