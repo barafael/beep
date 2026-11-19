@@ -594,8 +594,10 @@ fn generic_public_params(secrets: &Secrets, name: &'static str) -> Result<String
     let bytes = BASE64
         .decode(secret)
         .map_err(|source| KeysError::SecretBase64 { name, source })?;
-    let params: zkgroup::generic_server_params::GenericServerSecretParams =
-        zkgroup::deserialize(&bytes).map_err(|source| KeysError::ZkgroupSecret { name, source })?;
+    // Versioned since libsignal 0.106: read by its version byte, not with serde.
+    let params =
+        zkgroup::generic_server_params::GenericServerSecretParams::try_from(bytes.as_slice())
+            .map_err(|source| KeysError::ZkgroupSecret { name, source })?;
     Ok(BASE64.encode(zkgroup::serialize(&params.get_public_params())))
 }
 
