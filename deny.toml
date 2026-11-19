@@ -7,6 +7,11 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # Direct dependencies only; `cargo audit` still lists transitive ones.
 unmaintained = "workspace"
 yanked = "deny"
+ignore = [
+    # chrono unmaintained (2026-11): libsignal, presage, libsignal-service, Slint and GPUI all
+    # use it, so b33p's own use going wouldn't take it out. Revisit when they move (to jiff).
+    { id = "RUSTSEC-2026-0543", reason = "used throughout libsignal, presage, Slint and GPUI" },
+]
 
 [licenses]
 # AGPL-3.0-only project. Slint: the GPL-3.0-only side of its multi-license.

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use b33p_harness::{Action, AttachmentKind, Delivery, Download, Saved, Snapshot};
 
@@ -1017,15 +1017,22 @@ pub(crate) fn soak(
                         let texts: Vec<String> = (0..count)
                             .map(|n| format!("testbox soak: peer {:05}", from_peer.len() + n + 1))
                             .collect();
+                        acted(&format!("the peer sends {}", texts.join(", ")));
                         peer.send_all(&primary_aci, &texts)?;
                         from_peer.extend(texts);
                     }
                     40..70 => {
                         mine += 1;
-                        type_and_send(&mut b33p, &format!("testbox soak: b33p {mine:05}"))?;
+                        let text = format!("testbox soak: b33p {mine:05}");
+                        acted(&format!("b33p sends {text}"));
+                        type_and_send(&mut b33p, &text)?;
                     }
                     70..80 => {
                         if let Some(index) = newest(&b33p.snapshot()?, false) {
+                            acted(&format!(
+                                "b33p reacts to {:?}",
+                                text_at(&b33p.snapshot()?, index)
+                            ));
                             b33p.act(Action::React {
                                 index,
                                 emoji: "👍".to_owned(),
@@ -1034,6 +1041,10 @@ pub(crate) fn soak(
                     }
                     80..88 => {
                         if let Some(index) = newest(&b33p.snapshot()?, true) {
+                            acted(&format!(
+                                "b33p edits {:?} to {mine:05}, edited",
+                                text_at(&b33p.snapshot()?, index)
+                            ));
                             edit(
                                 &mut b33p,
                                 index,
@@ -1043,6 +1054,10 @@ pub(crate) fn soak(
                     }
                     88..93 => {
                         if let Some(index) = newest(&b33p.snapshot()?, true) {
+                            acted(&format!(
+                                "b33p deletes {:?} for everyone",
+                                text_at(&b33p.snapshot()?, index)
+                            ));
                             b33p.act(Action::Delete {
                                 index,
                                 everyone: true,
@@ -1051,6 +1066,7 @@ pub(crate) fn soak(
                     }
                     _ => {
                         let text = format!("testbox soak: a picture {}", random.below(1_000_000));
+                        acted(&format!("the peer sends {text}"));
                         peer.send_file(&primary_aci, &text, "/files/soak.png")?;
                     }
                 }
@@ -1094,6 +1110,25 @@ pub(crate) fn soak(
 
     checks.record("b33p logged no panic", || no_panic(containers, B33P));
     Ok(())
+}
+
+/// Prints what [`soak`] does now, at the time in milliseconds as Signal stamps messages, so
+/// that a message missing at the end can be found in the clients' logs and stores.
+fn acted(what: &str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    println!("  {now} {what}");
+}
+
+/// The text of the message at `index` of `snapshot`, for [`acted`].
+fn text_at(snapshot: &Snapshot, index: u32) -> &str {
+    snapshot
+        .messages
+        .iter()
+        .find(|message| message.index == index)
+        .map_or("", |message| message.text.as_str())
 }
 
 /// How long [`soak`] runs: `TESTBOX_SOAK_MINUTES`, or half an hour.

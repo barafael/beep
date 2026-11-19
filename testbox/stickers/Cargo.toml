@@ -13,8 +13,8 @@ publish = false
 [dependencies]
 testbox-tools = { path = "../tools" }
 thiserror = "2"
-presage = { git = "https://github.com/barafael/presage", rev = "f10f2e2969c2b22c30dae0bb4b0b7667d9c0ecab" }
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "f10f2e2969c2b22c30dae0bb4b0b7667d9c0ecab" }
+presage = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5" }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5" }
 # libsignal-service's (its `PushService::request` takes a `reqwest::Method`).
 reqwest = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }

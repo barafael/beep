@@ -266,6 +266,12 @@ a connection is more likely in use when presage-cli exits. The box now builds pr
 b33p's libsqlite3-sys (`RUSQLITE_REV`, checked by the pins test); the next 30-minute soak passed
 without a crash. presage-cli on whisperfish's rusqlite can still crash this way.
 
+It could still crash this way on b33p's rusqlite too (19 November, a soak on f476d4b, core
+kept by systemd-coredump): the main thread in `exit` → `OPENSSL_cleanup`, freeing OpenSSL's
+state, while an sqlx worker thread, ending, ran OpenSSL's per-thread cleanup on it. SQLCipher's
+teardown wasn't the cause, OpenSSL's own was. The box now builds presage-cli with
+`presage-store-sqlite/cdsi`, as b33p is built: SQLCipher's crypto in Rust, no OpenSSL linked.
+
 ### 8. Messages at one millisecond: presage's store had room for one (fixed: the sender in its key)
 
 2 November, `main` 817aaa2 with the actor rework, `--optimized --b33p-memory 768`:
