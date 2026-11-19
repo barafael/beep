@@ -1711,8 +1711,9 @@ impl LocalStore {
     pub(crate) async fn delete_messages(
         &self,
         messages: &[(ConversationId, MessageRef, Option<Thread>)],
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<Vec<Vec<u8>>, sqlx::Error> {
         let mut tx = self.begin_write().await?;
+        let mut deleted = Vec::new();
         for (_, message, thread) in messages {
             // presage finds a thread by its group's master key or the contact's UUID.
             let (group, contact) = match thread {
@@ -1720,20 +1721,23 @@ impl LocalStore {
                 Some(Thread::Group(key)) => (Some(key.to_vec()), None),
                 Some(Thread::Contact(who)) => (None, Some(who.raw_uuid().as_bytes().to_vec())),
             };
-            sqlx::query(
+            let bodies: Vec<(Vec<u8>,)> = sqlx::query_as(
                 "DELETE FROM thread_messages
                  WHERE ts = ? AND sender_service_id = ? AND thread_id = (
-                    SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)",
+                    SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)
+                 RETURNING content_body",
             )
             .bind(message.timestamp as i64)
             .bind(&message.author_id)
             .bind(group)
             .bind(contact)
-            .execute(&mut *tx)
+            .fetch_all(&mut *tx)
             .await?;
+            deleted.extend(bodies.into_iter().map(|(body,)| body));
         }
         Self::forget_in(&mut tx, messages.iter().map(|(c, m, _)| (c, m))).await?;
-        tx.commit().await
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     async fn forget_in(

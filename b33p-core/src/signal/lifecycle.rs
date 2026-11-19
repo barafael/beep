@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::Duration,
 };
 
@@ -26,7 +26,8 @@ use tracing::{info, warn};
 
 use crate::{
     Classified as _, Command, Event, Events, Failure, HistoryTransfer, Password, Preferences,
-    QrMatrix, attachments,
+    QrMatrix,
+    attachments::{self, cache::Cache},
     local::LocalStore,
     outbox::{Sending, Sends as _},
     transfer,
@@ -299,13 +300,14 @@ pub(super) fn attempt(
         device_name,
         use_password,
     ) {
-        Ok(Unlocked::Open(store, tables, closed)) => (
+        Ok(Unlocked::Open(store, tables, closed, cache)) => (
             local.block_on(
                 &runtime,
                 session(
                     device_name,
                     store,
                     tables,
+                    cache,
                     commands,
                     events.clone(),
                     preferences.clone(),
@@ -488,6 +490,13 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), WipeError> {
             _ => {}
         }
     }
+    // The attachments kept, whose key comes from the database's.
+    if let Err(source) = attachments::cache::clear(&paths.dir) {
+        return Err(WipeError::Delete {
+            path: paths.dir.join(attachments::cache::DIR),
+            source,
+        });
+    }
     // The key last: while the database exists, it is the only way into it.
     if matches!(
         KeySource::read(&paths.key_source),
@@ -508,7 +517,7 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), WipeError> {
 
 /// What [`unlock`] came to, other than failing.
 enum Unlocked {
-    Open(SqliteStore, LocalStore, Closed),
+    Open(SqliteStore, LocalStore, Closed, Option<Arc<Cache>>),
     /// The UI quit while being asked for a password.
     Gone,
     /// The password was forgotten: [`Command::StartOver`] instead of one.
@@ -538,7 +547,9 @@ fn unlock(
                 KeyringKey::Unavailable(reason) => return Err(Failed::KeyringUnavailable(reason)),
             };
             return open_store(runtime, local, paths, &key)
-                .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                .map(|(store, tables, closed)| {
+                    Unlocked::Open(store, tables, closed, attachment_cache(paths, &key))
+                })
                 .map_err(Failed::Open);
         }
         Some(KeySource::Password { salt, kdf }) => (salt, kdf),
@@ -553,7 +564,9 @@ fn unlock(
                 Ok(key) => {
                     write_source(paths, &KeySource::Keyring)?;
                     return open_store(runtime, local, paths, &key)
-                        .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                        .map(|(store, tables, closed)| {
+                            Unlocked::Open(store, tables, closed, attachment_cache(paths, &key))
+                        })
                         .map_err(Failed::Open);
                 }
                 // Locked now, but it may be unlocked in a moment: a password is for good, so
@@ -591,12 +604,27 @@ fn unlock(
         }
         let key = vault::password_key(password.expose(), &salt, kdf);
         match open_store(runtime, local, paths, &key) {
-            Ok((store, tables, closed)) => return Ok(Unlocked::Open(store, tables, closed)),
+            Ok((store, tables, closed)) => {
+                let cache = attachment_cache(paths, &key);
+                return Ok(Unlocked::Open(store, tables, closed, cache));
+            }
             Err(OpenError::WrongKey) if !new => {
                 info!("wrong password for the database");
                 error = Some("Wrong password.".into());
             }
             Err(error) => return Err(Failed::Open(error)),
+        }
+    }
+}
+
+/// The attachments kept on disk, under a key from the database's. Without it (its directory
+/// can't be made) b33p downloads as before, each time something shows.
+fn attachment_cache(paths: &Paths, key: &vault::Key) -> Option<Arc<Cache>> {
+    match Cache::open(&paths.dir, key) {
+        Ok(cache) => Some(Arc::new(cache)),
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "attachments won't be kept on disk");
+            None
         }
     }
 }
@@ -794,10 +822,12 @@ fn open_store(
     Ok((store, tables, closed))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn session(
     device_name: &RefCell<String>,
     store: SqliteStore,
     tables: LocalStore,
+    cache: Option<Arc<Cache>>,
     command_rx: &mut CommandRx,
     events: Events,
     preferences: Rc<Cell<Preferences>>,
@@ -865,6 +895,7 @@ async fn session(
             pending,
             &events,
             &tables,
+            &cache,
             command_rx,
             &preferences,
             device_name,
@@ -906,11 +937,13 @@ async fn has_contents(store: &SqliteStore) -> bool {
 
 /// Runs a linked session: syncs, receives and handles commands, until the UI goes away, this
 /// device is unlinked, or Signal removes it.
+#[allow(clippy::too_many_arguments)]
 async fn run_linked(
     manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
     tables: &LocalStore,
+    cache: &Option<Arc<Cache>>,
     command_rx: &mut CommandRx,
     preferences: &Rc<Cell<Preferences>>,
     device_name: &RefCell<String>,
@@ -930,6 +963,7 @@ async fn run_linked(
     let ctx = Ctx::new(Ports {
         events: events.clone(),
         tables: tables.clone(),
+        cache: cache.clone(),
         preferences: preferences.clone(),
         expiring: Rc::default(),
         story_kept: Rc::default(),
@@ -969,7 +1003,10 @@ async fn run_linked(
     ));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.ports.clone()));
 
-    let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
+    let downloads = attachments::Downloads::new(
+        manager.registration_data().signal_servers.clone(),
+        cache.clone(),
+    );
     // Ends after its pass once the session has dropped its end.
     let (avatars, asked) = tokio::sync::mpsc::unbounded_channel();
     tokio::task::spawn_local(Avatars::new(manager.clone(), events.clone()).event_loop(asked));
@@ -1161,6 +1198,11 @@ async fn reset(
             .await
             .map_err(Failed::ClearContents)?;
         tables.clear().await.map_err(Failed::ClearTables)?;
+        // Another account's attachments, if any. Emptied, not removed: the session's cache
+        // keeps writing into it.
+        if let Err(error) = attachments::cache::empty(&paths.dir) {
+            warn!(error = %crate::scrub::chain(&error), "could not empty the attachments kept");
+        }
     }
     Marker::remove(paths)
 }
@@ -1467,6 +1509,11 @@ pub(super) mod tests {
         .write(&paths.key_source)
         .unwrap();
         open_and_close(&paths, &key, async |_, _| {}).unwrap();
+        let cache = attachment_cache(&paths, &key).expect("a cache");
+        let photo = crate::AttachmentId("3/photo".into());
+        cache
+            .write(&photo, attachments::cache::Entry::Original, b"photo")
+            .unwrap();
         Marker::Link.write(&paths).unwrap();
         let lock = lock_data(&paths).unwrap();
         std::fs::write(tmp.path().join("unrelated"), b"").unwrap();

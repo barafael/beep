@@ -517,7 +517,7 @@ async fn handle_command(
             mentions,
         } => {
             let sent = async {
-                let pointers = attachments::upload(manager, &files)
+                let pointers = attachments::upload(manager, &ctx.cache, &files)
                     .await
                     .map_err(Error::from)?;
                 let preview = if ctx.preferences.get().link_previews {
@@ -617,7 +617,7 @@ async fn handle_command(
                     )
                 }
                 crate::NewStory::Picture(path) => {
-                    let pointer = attachments::upload(manager, &[path])
+                    let pointer = attachments::upload(manager, &ctx.cache, &[path])
                         .await?
                         .pop()
                         .ok_or(CommandError::StoryNotUploaded)?;
@@ -1104,6 +1104,7 @@ async fn handle_command(
         } => {
             let thread = thread(&conversation)?;
             let mut store = manager.store().clone();
+            let kept = super::history::kept_of_target(&store, &thread, &target).await;
             let deleted = match ServiceId::parse_from_service_id_string(&target.author_id) {
                 Some(author) => {
                     store
@@ -1131,6 +1132,7 @@ async fn handle_command(
                 .into());
             }
             checkpoint(ctx).await;
+            crate::attachments::forget(&ctx.cache, kept).await;
         }
         Command::Typing {
             conversation,

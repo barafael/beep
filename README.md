@@ -24,7 +24,8 @@ read, answered and reacted to:
 
 ## What works
 
-- Linking (with message history transfer), relinking, encrypted store (keyring or password)
+- Linking (with message history transfer), relinking, encrypted store (keyring or password),
+  attachments downloaded once and kept encrypted beside it
 - Read state and receipts, delivery ticks, typing indicators, edits and deletions, disappearing
   messages, markdown formatting, mentions
 - Message requests, blocking, pinned / muted / archived chats, pinned messages, folders,

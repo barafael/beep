@@ -22,6 +22,12 @@ The release workflow takes a version's notes from here (the section headed with 
 - Pictures take less memory (stickers and link previews are decoded at the size they show),
   and downloaded pictures beyond about 160 MB are let go of, oldest first, and downloaded
   again if they show again. The window no longer redraws all the time while offline.
+- Pictures, voice messages and files are downloaded once: b33p keeps them on disk, encrypted
+  under the database's key, and shows them from there after a restart, in the picture viewer,
+  and when saving or opening them; what b33p sends is never downloaded again. Pictures show
+  from a copy at the size of the chat, which takes a fraction of the time the original does.
+  At most about 2 GB of originals are kept, those used longest ago going first; a message's
+  attachments go with it (deleted, or disappearing), and all of them with the account.
 
 ### New
 
