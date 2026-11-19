@@ -44,12 +44,18 @@ const HIGH: Level = Level {
 /// The quality pictures are drawn again at when they aren't scaled: as good as they came.
 const REDRAWN_QUALITY: u8 = 90;
 
-/// A picture as it goes out: its type (a PNG without transparency goes as JPEG) and bytes.
+/// A picture as it goes out: its type (a PNG without transparency goes as JPEG), its bytes,
+/// and the blurred stand-in receivers draw until they have it, as Signal's apps send one.
 #[derive(Debug)]
 pub(crate) struct Ready {
     pub(crate) content_type: String,
     pub(crate) data: Vec<u8>,
+    pub(crate) blur_hash: Option<String>,
 }
+
+/// The longest edge a picture is shrunk to for its blurhash: the hash keeps 4 by 3 colours,
+/// and Signal-Android computes it from a picture 16 times smaller.
+const BLUR_EDGE: u32 = 64;
 
 /// `data`, of `content_type`, made ready to send at Signal's standard level or, with `high`, its
 /// high-quality one.
@@ -73,7 +79,24 @@ fn as_it_is(content_type: &str, data: Vec<u8>) -> Ready {
     Ready {
         content_type: content_type.to_owned(),
         data,
+        blur_hash: None,
     }
+}
+
+/// `picture`'s blurhash, 4 by 3 components as Signal's apps make it.
+fn blur_hash(picture: &Picture) -> Option<String> {
+    let edge = picture.width.max(picture.height);
+    let small = (edge > BLUR_EDGE)
+        .then(|| {
+            let (width, height) = crate::resample::scaled(
+                (picture.width, picture.height),
+                f64::from(BLUR_EDGE) / f64::from(edge),
+            );
+            crate::resample::shrink(picture, width, height)
+        })
+        .flatten();
+    let small = small.as_ref().unwrap_or(picture);
+    blurhash::encode(4, 3, small.width, small.height, &small.rgba).ok()
 }
 
 fn scale(data: &[u8], format: image::ImageFormat, level: &Level) -> image::ImageResult<Ready> {
@@ -97,9 +120,15 @@ fn scale(data: &[u8], format: image::ImageFormat, level: &Level) -> image::Image
         .0
         .iter()
         .all(|pixel| pixel[3] == u8::MAX);
+    // Once, from the picture as it came: the steps below only make it smaller.
+    let blurred = blur_hash(&picture);
+    let with_hash = |mut ready: Ready| {
+        ready.blur_hash.clone_from(&blurred);
+        ready
+    };
     let edge = picture.width.max(picture.height);
     if data.len() <= level.small && edge <= level.edge {
-        return encode(&picture, opaque, REDRAWN_QUALITY);
+        return encode(&picture, opaque, REDRAWN_QUALITY).map(with_hash);
     }
     let mut last = None;
     for &step in level.steps {
@@ -118,11 +147,11 @@ fn scale(data: &[u8], format: image::ImageFormat, level: &Level) -> image::Image
             level.jpeg_quality,
         )?;
         if ready.data.len() <= level.bytes {
-            return Ok(ready);
+            return Ok(with_hash(ready));
         }
         last = Some(ready);
     }
-    Ok(last.expect("a level has steps"))
+    Ok(with_hash(last.expect("a level has steps")))
 }
 
 /// `picture` as JPEG at `quality` if `opaque`, else as PNG.
@@ -146,6 +175,7 @@ fn encode(picture: &Picture, opaque: bool, quality: u8) -> image::ImageResult<Re
         Ok(Ready {
             content_type: "image/jpeg".into(),
             data: out,
+            blur_hash: None,
         })
     } else {
         image::codecs::png::PngEncoder::new(&mut out).write_image(
@@ -157,6 +187,7 @@ fn encode(picture: &Picture, opaque: bool, quality: u8) -> image::ImageResult<Re
         Ok(Ready {
             content_type: "image/png".into(),
             data: out,
+            blur_hash: None,
         })
     }
 }
@@ -218,6 +249,12 @@ mod tests {
             "{width}x{height}"
         );
 
+        // With its blurred stand-in, as receivers decode it: the photo's colours, greener below.
+        let hash = standard.blur_hash.as_deref().expect("a blurhash");
+        let blurred = blurhash::decode(hash, 2, 2, 1.0).unwrap();
+        let (top, bottom) = (&blurred[0..4], &blurred[8..12]);
+        assert!(bottom[1] > top[1], "{hash}: {top:?} above {bottom:?}");
+
         let high = for_sending("image/jpeg", original, true);
         assert!(high.data.len() <= HIGH.bytes, "{}", high.data.len());
         assert!(size(&high).0 > width, "high quality keeps more of it");
@@ -257,6 +294,7 @@ mod tests {
     fn what_isnt_a_still_jpeg_or_png_goes_as_it_is() {
         let gif = b"GIF89a not decoded".to_vec();
         let ready = for_sending("image/gif", gif.clone(), false);
+        assert_eq!(ready.blur_hash, None);
         assert_eq!(
             (ready.content_type.as_str(), ready.data),
             ("image/gif", gif)

@@ -623,6 +623,7 @@ fn spec(
     name: String,
     content_type: String,
     data: &[u8],
+    blur_hash: Option<String>,
 ) -> presage::libsignal_service::sender::AttachmentSpec {
     // Receivers lay out pictures before downloading them, so they want the size.
     let (width, height) = if content_type.starts_with("image/") {
@@ -644,7 +645,7 @@ fn spec(
         width,
         height,
         caption: None,
-        blur_hash: None,
+        blur_hash,
     }
 }
 
@@ -655,7 +656,7 @@ pub(crate) async fn upload_bytes(
     content_type: &str,
     data: Vec<u8>,
 ) -> Result<AttachmentPointer, UploadError> {
-    upload_retrying(manager, name, content_type, data)
+    upload_retrying(manager, name, content_type, data, None)
         .await
         .map_err(UploadError::Upload)?
         .map_err(|source| UploadError::Attachment {
@@ -672,18 +673,24 @@ async fn upload_retrying(
     name: &str,
     content_type: &str,
     data: Vec<u8>,
+    blur_hash: Option<String>,
 ) -> Result<
     Result<AttachmentPointer, AttachmentUploadError>,
     presage::Error<presage_store_sqlite::SqliteStoreError>,
 > {
-    let first = spec(name.to_owned(), content_type.to_owned(), &data);
+    let first = spec(
+        name.to_owned(),
+        content_type.to_owned(),
+        &data,
+        blur_hash.clone(),
+    );
     match manager.upload_attachment(first, data.clone()).await? {
         Err(error) if closed_under_request(&error) => {
             tracing::info!(
                 error = %crate::scrub::chain(&error),
                 "the CDN closed the connection under an upload; uploading it once more"
             );
-            let again = spec(name.to_owned(), content_type.to_owned(), &data);
+            let again = spec(name.to_owned(), content_type.to_owned(), &data, blur_hash);
             manager.upload_attachment(again, data).await
         }
         uploaded => Ok(uploaded),
@@ -737,12 +744,13 @@ pub(crate) async fn upload(
             }
             _ => name,
         };
-        uploads.push((name, ready.content_type, ready.data));
+        uploads.push((name, ready.content_type, ready.data, ready.blur_hash));
     }
     // All at once, as presage's `upload_attachments`, each with its own retry.
     let results = futures::future::join_all(uploads.into_iter().map(
-        |(name, content_type, data)| async move {
-            let uploaded = upload_retrying(manager, &name, &content_type, data.clone()).await;
+        |(name, content_type, data, blur_hash)| async move {
+            let uploaded =
+                upload_retrying(manager, &name, &content_type, data.clone(), blur_hash).await;
             if let Ok(Ok(pointer)) = &uploaded {
                 keep_sent(cache, pointer, data).await;
             }
@@ -995,18 +1003,22 @@ fn decode_shown(png: &[u8]) -> Option<Picture> {
 /// Decodes a picture scaled to fit `width` by `height`, keeping its shape (see
 /// [`picture_bounds`]); animated images show their first frame.
 fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
-    let image = decode_limited(data)?;
-    let image = if image.width() > width || image.height() > height {
-        image.resize(width, height, image::imageops::FilterType::Triangle)
-    } else {
-        image
-    };
-    let rgba = image.into_rgba8();
-    Some(Picture {
+    let rgba = decode_limited(data)?.into_rgba8();
+    let picture = Picture {
         width: rgba.width(),
         height: rgba.height(),
         rgba: rgba.into_raw(),
-    })
+    };
+    if picture.width <= width && picture.height <= height {
+        return Some(picture);
+    }
+    // Within the bounds, keeping its shape. `fast_image_resize` rather than `image`'s resize:
+    // a 12 MP photo took 295 ms with `image`'s triangle filter (release build), most of what
+    // showing one cost.
+    let scale = (f64::from(width) / f64::from(picture.width))
+        .min(f64::from(height) / f64::from(picture.height));
+    let (width, height) = crate::resample::scaled((picture.width, picture.height), scale);
+    Some(crate::resample::shrink(&picture, width, height).unwrap_or(picture))
 }
 
 /// Decodes a picture scaled to at most `edge` pixels a side.

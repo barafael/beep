@@ -29,6 +29,8 @@ qrcode.workspace = true
 zeroize = "1"
 # Scaling pictures down for the picture viewer; see `resample.rs`.
 fast_image_resize = "6"
+# The blurred stand-in sent with a picture, which receivers draw until it is downloaded.
+blurhash = "0.2"
 tracing = "0.1"
 
 presage = { workspace = true, optional = true }

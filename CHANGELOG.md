@@ -32,6 +32,10 @@ The release workflow takes a version's notes from here (the section headed with 
   the camera took them (a phone photo was 5 to 10 MB). Everyone in the chat, and your phone,
   downloads them that much faster. Settings → High-quality pictures sends up to 4096 pixels and
   3 MB, as Signal's own setting does. Pictures without transparency go as JPEG.
+- Pictures b33p sends carry a blurred stand-in (a blurhash), as Signal's apps' do, which
+  receivers show at the picture's size until it has downloaded.
+- A photo shows in a chat about three times sooner the first time (scaled to the bubble with
+  `fast_image_resize` rather than `image`'s resize: 30 ms rather than 295 ms for 12 MP).
 
 ### New
 
