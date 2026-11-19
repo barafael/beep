@@ -157,7 +157,7 @@ fn serve(
         .env("XDG_RUNTIME_DIR", RUNTIME)
         // No screen in the container, and no GPU unless it is given one: `WITH_DISPLAY_RENDERER=gles2`
         // (with a render node passed in) draws the display on it, which clients that present
-        // through the GPU's buffers, as GPUI does, need to run on it too.
+        // through the GPU's buffers need to run on it too.
         .env("WLR_BACKENDS", "headless")
         .env(
             "WLR_RENDERER",

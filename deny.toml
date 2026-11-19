@@ -8,9 +8,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "workspace"
 yanked = "deny"
 ignore = [
-    # chrono unmaintained (2026-11): libsignal, presage, libsignal-service, Slint and GPUI all
+    # chrono unmaintained (2026-11): libsignal, presage, libsignal-service and Slint all
     # use it, so b33p's own use going wouldn't take it out. Revisit when they move (to jiff).
-    { id = "RUSTSEC-2026-0543", reason = "used throughout libsignal, presage, Slint and GPUI" },
+    { id = "RUSTSEC-2026-0543", reason = "used throughout libsignal, presage and Slint" },
 ]
 
 [licenses]

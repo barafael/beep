@@ -4,7 +4,7 @@
 // so that `cargo build --workspace` needs no WebView libraries.
 #![cfg_attr(not(any(feature = "mobile", feature = "desktop")), allow(dead_code))]
 
-//! b33p for Android: the same Signal client as `b33p-slint` and `b33p-gpui`, with its window
+//! b33p for Android: the same Signal client as `b33p-slint`, with its window
 //! drawn by Dioxus in the system's WebView. Everything that isn't the window is `b33p-core`.
 
 mod android;
