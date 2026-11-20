@@ -124,6 +124,37 @@ impl B33pShot {
     }
 }
 
+/// For a `test`'s record, `test/<when it started>/<box>` ([`Record::new`]'s `name`), the box's
+/// name as it has always been (`<box>`) leads to it, so that "the last box's record" is where it
+/// was: the latest run's. A directory an older xtask left there is moved aside, not deleted.
+fn link_latest(pod: &Pod, name: &str) -> Result<(), RecordError> {
+    let Some(rest) = name.strip_prefix("test/") else {
+        return Ok(());
+    };
+    let Some((_, boxed)) = rest.split_once('/') else {
+        return Ok(());
+    };
+    let link = pod.record_dir().join(boxed);
+    let fail = |source| RecordError::Directory {
+        path: link.clone(),
+        source,
+    };
+    match std::fs::symlink_metadata(&link) {
+        Ok(found) if found.is_symlink() => std::fs::remove_file(&link).map_err(fail)?,
+        Ok(_) => {
+            let aside = pod.record_dir().join(format!(
+                "test/earlier-{}-{boxed}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs())
+            ));
+            std::fs::rename(&link, &aside).map_err(fail)?;
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(name, &link).map_err(fail)
+}
+
 impl Record {
     /// The record in target/testbox-record/`name` ([`Pod::record_dir`]), emptied of a former
     /// run's; with
@@ -142,6 +173,7 @@ impl Record {
             })?;
         }
         create(&directory)?;
+        link_latest(pod, name)?;
         let shots = if screenshots {
             let manifest = repo.join("testbox/shot/Cargo.toml");
             let mut build = Command::new(env!("CARGO"));

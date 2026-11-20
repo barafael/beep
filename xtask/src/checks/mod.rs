@@ -136,6 +136,8 @@ pub(crate) fn run(
         fresh,
         capture,
         b33p,
+        prebuilt,
+        jobs: _,
     } = options;
     if *capture
         && let Some(stress) = phases.iter().find_map(|phase| match phase {
@@ -153,12 +155,17 @@ pub(crate) fn run(
     let linked_clients = [Client::Desktop];
     let android_app = b33p.android_app.client();
     let android_clients = [Client::Desktop, android_app];
-    containers.build_server()?;
+    // A box `--jobs` plays has its images from the run that plays it: tags of those it built.
+    if let Some(from) = prebuilt {
+        containers.adopt_images(from)?;
+    } else {
+        containers.build_server()?;
+    }
 
     // The Android image's build takes longest, most of an hour when Signal-Android changed: it
     // goes on while the rest build and the linked box runs, and stops if the run ends first. It
     // needs only the server's.
-    let mut android_image = if android.is_empty() {
+    let mut android_image = if android.is_empty() || prebuilt.is_some() {
         None
     } else {
         Some(containers.build_beside(android_app)?)
@@ -166,10 +173,6 @@ pub(crate) fn run(
     // Once it failed, every box that needs it fails (with `--fresh`, each Android phase has one):
     // the image there is an earlier build's.
     let mut android_failed = false;
-    // Desktop's image only for a box that runs Desktop: a tour's has none.
-    let desktop = !linked.is_empty()
-        || !android.is_empty()
-        || phases.contains(&Phase::Stress(StressPhase::Concurrency));
     // Only when named, as the stress phases: signal-cli's on the shared interop box, signalmeow's
     // on a box of its own.
     let interop: Vec<InteropPhase> = InteropPhase::VARIANTS
@@ -184,27 +187,10 @@ pub(crate) fn run(
         .copied()
         .filter(|&phase| phases.contains(&Phase::Family(phase)))
         .collect();
-    let mut built: Vec<Client> = if desktop {
-        linked_clients.to_vec()
-    } else {
-        Vec::new()
-    };
-    if interop.contains(&InteropPhase::SignalCli) {
-        built.push(Client::SignalCli);
+    let built = others_needed(phases);
+    if prebuilt.is_none() {
+        containers.build_others(&built, b33p.optimized)?;
     }
-    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow))
-        || phases.contains(&Phase::Interop(InteropPhase::Mixed))
-    {
-        built.push(Client::Signalmeow);
-    }
-    if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
-        built.push(Client::SignalCli);
-        built.push(Client::Family);
-    }
-    if !family.is_empty() {
-        built.push(Client::Family);
-    }
-    containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
         containers.fresh(clients, b33ps)?;
         Ok(b33p.limit_memory(containers, b33ps)?)
@@ -410,6 +396,36 @@ fn on_own_box(
 
 /// The phases of one box (`Each`, which `phase` makes a [`Phase`]) that `phases` names, every
 /// one if it names none, in the order they run.
+/// The clients' images `phases` need beside the server's, b33p's and the Android app's (none
+/// named: the default phases'). `--jobs` builds them once for all its boxes.
+pub(crate) fn others_needed(phases: &[Phase]) -> Vec<Client> {
+    let named = |phase: Phase| phases.contains(&phase);
+    let mixed = named(Phase::Interop(InteropPhase::Mixed));
+    let mut built = Vec::new();
+    // Desktop's image only for a box that runs Desktop: a tour's has none.
+    if !chosen(phases, Phase::Linked).is_empty()
+        || !chosen(phases, Phase::Android).is_empty()
+        || named(Phase::Stress(StressPhase::Concurrency))
+    {
+        built.push(Client::Desktop);
+    }
+    if named(Phase::Interop(InteropPhase::SignalCli)) || mixed {
+        built.push(Client::SignalCli);
+    }
+    if named(Phase::Interop(InteropPhase::Signalmeow)) || mixed {
+        built.push(Client::Signalmeow);
+    }
+    // The presage family's image is a long build: only when named.
+    if mixed
+        || FamilyPhase::VARIANTS
+            .iter()
+            .any(|&phase| named(Phase::Family(phase)))
+    {
+        built.push(Client::Family);
+    }
+    built
+}
+
 fn chosen<Each: VariantArray + Copy>(phases: &[Phase], phase: fn(Each) -> Phase) -> Vec<Each> {
     Each::VARIANTS
         .iter()

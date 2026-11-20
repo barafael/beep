@@ -12,6 +12,9 @@ COPY .devcontainer/install-deps.sh /tmp/
 RUN sh /tmp/install-deps.sh && rm -rf /var/lib/apt/lists/* /tmp/install-deps.sh
 WORKDIR /src
 COPY . .
+# The xtask's sources aren't in the copy (Containerfile.containerignore: a change to them doesn't
+# build b33p again); cargo wants its binary's, which b33p's build never compiles.
+RUN mkdir -p xtask/src && touch xtask/src/main.rs
 # The crates with network, then the build without: its build scripts reach nothing, and see
 # nothing of the host but this copy of the tree.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \

@@ -21,7 +21,7 @@ use testbox_tools::{FileError, View, keys};
 /// `b33p-testbox-*` image is named. It is pod.yaml's `metadata.name` (`@POD@`), after which kube
 /// play names each container `<pod>-<container>` and the volumes are `<pod>-<claim>`; the
 /// network's; and the images', `localhost/<pod>-<image>`.
-const POD: &str = "b33p-testbox";
+pub const POD: &str = "b33p-testbox";
 /// How much of a failed build's log its error shows.
 const BUILD_TAIL: usize = 40;
 /// The line of pod.yaml's container list the clients go in, all of it.
@@ -534,13 +534,29 @@ const IMAGES: [Image; 14] = [
     },
 ];
 
+/// The names of the images a box has (`localhost/<box>-<name>`), for telling which box a tag is of:
+/// instance names may hold dashes, so `<box>-<name>` alone is ambiguous.
+pub fn image_names() -> Vec<&'static str> {
+    IMAGES.iter().map(|image| image.name).collect()
+}
+
 /// An image's build going on; dropped before [`Building::finish`], it is stopped.
 pub struct Building {
     name: String,
     log: PathBuf,
     started: Instant,
     child: Option<Child>,
+    /// The build again with the registry allowed, if it was started without ([`PULL_NEVER`])
+    /// and finds a base image it hasn't got: the program and its arguments, without the flag.
+    again: Option<(String, Vec<String>)>,
 }
+
+/// `podman build`'s flag for builds that take their base images from the local store: every
+/// `FROM` is pinned by digest, and without it a build looks every one up in its registry (a GET
+/// of the manifest) even with all of them and every layer present, which Docker Hub throttles:
+/// 30 s of waiting a build for each of the testbox's ten images, minutes for a `test`, whatever
+/// else the machine does. 1 s a build instead.
+const PULL_NEVER: &str = "--pull=never";
 
 impl Building {
     /// Waits for the build to end; fails with the end of its log if it failed.
@@ -548,10 +564,39 @@ impl Building {
         let mut child = self.child.take().ok_or_else(|| PodError::BuildStopped {
             image: self.name.clone(),
         })?;
-        let status = child.wait().map_err(|source| PodError::WaitBuild {
+        let mut status = child.wait().map_err(|source| PodError::WaitBuild {
             image: self.name.clone(),
             source,
         })?;
+        // A base image the store hasn't got (the first build, or after a prune): the registry.
+        if !status.success()
+            && let Some((program, args)) = self.again.take()
+            && std::fs::read_to_string(&self.log).is_ok_and(|log| log.contains("image not known"))
+        {
+            info!(
+                "{}: a base image isn't here yet; building with the registry",
+                self.name
+            );
+            let log = File::create(&self.log).map_err(|source| PodError::BuildLog {
+                log: self.log.clone(),
+                source,
+            })?;
+            let mut again = Command::new(program);
+            again.args(args);
+            again
+                .stdout(log.try_clone().map_err(|source| PodError::BuildLog {
+                    log: self.log.clone(),
+                    source,
+                })?)
+                .stderr(log);
+            status = again
+                .spawn()
+                .and_then(|mut child| child.wait())
+                .map_err(|source| PodError::WaitBuild {
+                    image: self.name.clone(),
+                    source,
+                })?;
+        }
         if !status.success() {
             // Lossy: a build's output needn't be UTF-8, and its end is what tells why.
             let output = std::fs::read(&self.log)
@@ -702,9 +747,7 @@ impl Pod {
 
     /// The lock [`Self::holding`] takes: the host's, for this box from any worktree.
     fn held(&self) -> PathBuf {
-        let runtime =
-            std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-        runtime.join(format!("{}.lock", self.name))
+        Self::lock_path(&self.name)
     }
 
     /// `optimized` builds b33p optimized as it ships (the `testbox` profile) instead of as the
@@ -789,7 +832,7 @@ impl Pod {
             }
         };
         // Stages that don't depend on each other at once (a Maven build and a cargo one).
-        build.args(["build", "--jobs", "0", "-t", &tag]);
+        build.args(["build", PULL_NEVER, "--jobs", "0", "-t", &tag]);
         if image.from_server {
             build
                 .arg("--build-arg")
@@ -806,6 +849,14 @@ impl Pod {
             .stdout(log.try_clone().map_err(build_log)?)
             .stderr(log);
         info!("building {name}: {}", path.display());
+        let again = (
+            build.get_program().to_string_lossy().into_owned(),
+            build
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .filter(|arg| arg != PULL_NEVER)
+                .collect(),
+        );
         let child = build.spawn().map_err(|source| PodError::StartBuild {
             image: name.clone(),
             source,
@@ -815,6 +866,7 @@ impl Pod {
             log: path,
             started: Instant::now(),
             child: Some(child),
+            again: Some(again),
         })
     }
 
@@ -1146,8 +1198,76 @@ impl Pod {
                 quietly(podman(&[&["volume", "rm"][..], &volumes].concat()))
                     .map_err(taking_down)?;
             }
+            // The network too, made again by `play`: left, every box ever played keeps one,
+            // and netavark has a /24 of 10.89.0.0/16 for each (256 of them).
+            let networks = process::output(podman(&["network", "ls", "--format", "{{.Name}}"]), "")
+                .map_err(taking_down)?;
+            if networks.lines().any(|network| network == self.name) {
+                quietly(podman(&["network", "rm", &self.name])).map_err(taking_down)?;
+            }
         }
         Ok(())
+    }
+
+    /// The volumes of this box that exist, by pod.yaml's claims (what [`Self::down`] wipes).
+    pub fn volumes_present(&self) -> Result<Vec<String>, PodError> {
+        let taking = |source| PodError::Down {
+            pod: self.name.clone(),
+            source,
+        };
+        let claims = claims(&self.render(&[], MAX_B33PS)?);
+        let present = process::output(podman(&["volume", "ls", "-q"]), "").map_err(taking)?;
+        Ok(present
+            .split_whitespace()
+            .filter(|volume| claims.iter().any(|claim| claim == volume))
+            .map(str::to_owned)
+            .collect())
+    }
+
+    /// Gives this box the images the box `from` built, as tags of the same images (`podman
+    /// tag`, nothing is built or copied): the boxes `--jobs` plays beside each other take the
+    /// images the run built once, as each box has images of its own by name.
+    pub fn adopt_images(&self, from: &str) -> Result<(), PodError> {
+        for image in IMAGES.iter() {
+            let source = format!("localhost/{from}-{}", image.name);
+            let present = podman(&["image", "exists", &source])
+                .stdin(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !present {
+                continue;
+            }
+            quietly(podman(&["tag", &source, &self.tag(image.name)])).map_err(|source| {
+                PodError::Down {
+                    pod: self.name.clone(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    /// This box's name, `b33p-testbox` or `b33p-testbox.<instance>`.
+    pub fn pod_name(&self) -> &str {
+        &self.name
+    }
+
+    /// The host directories this box's runs write in this worktree, but its record: the
+    /// harness's and drivers' sockets, the displays', the build logs, the capture, the files.
+    pub fn scratch_dirs(&self) -> Vec<PathBuf> {
+        ["run", "view", "build", "capture", "files"]
+            .iter()
+            .map(|what| self.target(what))
+            .chain([self.rendered.clone()])
+            .collect()
+    }
+
+    /// The path of the lock [`Self::holding`] takes, for a box named `name`.
+    pub fn lock_path(name: &str) -> PathBuf {
+        let runtime =
+            std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        runtime.join(format!("{name}.lock"))
     }
 
     /// `service`'s log so far, what it wrote to stdout and stderr alike.
@@ -1567,7 +1687,7 @@ fn make_directory(path: &Path, mode: Option<u32>) -> Result<(), PodError> {
         })
 }
 
-fn podman(args: &[&str]) -> Command {
+pub(crate) fn podman(args: &[&str]) -> Command {
     let mut podman = Command::new("podman");
     podman.args(args);
     podman
@@ -1655,6 +1775,39 @@ fn claims(pod: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build that finds no base image in the store is tried again with the registry; one that
+    /// fails otherwise isn't.
+    #[test]
+    fn a_missing_base_image_builds_again_with_the_registry() {
+        let directory = std::env::temp_dir().join(format!("xtask-build-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("directory");
+        let building = |first: &str, log: &str| {
+            let path = directory.join(log);
+            let file = File::create(&path).expect("log");
+            let child = Command::new("sh")
+                .args(["-c", first])
+                .stdout(file.try_clone().expect("clone"))
+                .stderr(file)
+                .spawn()
+                .expect("spawn");
+            Building {
+                name: "x".to_owned(),
+                log: path,
+                started: Instant::now(),
+                child: Some(child),
+                again: Some(("sh".to_owned(), vec!["-c".to_owned(), "echo ok".to_owned()])),
+            }
+        };
+        let missing = building(
+            "echo 'Error: creating build container: image not known'; exit 1",
+            "a",
+        );
+        assert!(missing.finish().is_ok());
+        let broken = building("echo 'error[E0308]: mismatched types'; exit 1", "b");
+        assert!(matches!(broken.finish(), Err(PodError::BuildFailed { .. })));
+        std::fs::remove_dir_all(&directory).expect("clean up");
+    }
 
     #[test]
     fn a_failed_application_ends_the_wait_with_its_last_words() {

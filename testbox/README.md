@@ -151,7 +151,26 @@ the same box fails at once and names `--instance`. The dot keeps an instance cle
 `b33p-testbox-` prefix: of other `b33p-testbox-*` images, and of an older xtask's wipe, which
 removes the volumes by it. Each box takes a Signal-Server, its stores
 and the clients, Android's emulator the most, so the host's load is what limits how many run
-well at once. `down --wipe` removes only its own box's volumes, by name.
+well at once. `down --wipe` removes only its own box's volumes, by name, and its network.
+
+`--jobs N` (on `test` and `run`) plays the boxes of one run at once instead of one after the
+other: the linked box with its phases, the Android box with its, each stress phase and the mesh
+are units, and with `--fresh` each phase is. N boxes, `<instance>-j1` … `-jN`, each play a
+`cargo testbox test` of one unit, and take the next when they are done; the images are built
+once, here, and tagged for each box (`--prebuilt`, which is for this and hidden). At most two
+Android emulators run at once. A unit's output comes when it ends, its record is in its box's
+record directory, and a box that failed stays up as `test`'s does, as the failed unit left it (its worker takes no
+more units; the other boxes take the rest); the others go. The default
+round takes about 9 minutes with `--jobs 2` against about 14 one after the other, and
+`--fresh --jobs 4` runs every phase on a box of its own in about 9 (the `network` phase alone is
+5 minutes).
+
+`cargo testbox doctor` lists the boxes on the machine by instance, with their pods, networks,
+volumes and image tags, and says which are strays (a box with no pod that keeps its network or
+volumes, as after a run that was killed) or idle (a pod left up that nobody holds).
+`cargo testbox --instance <name> clean` says what it would take of one box, `--yes` takes it:
+pod, volumes, network, image tags, and this worktree's scratch directories for it (not its
+record); `clean --strays` does the same for every box with no pod and nobody holding it.
 
 `stress-volume`, `stress-interrupt`, `stress-content`, `stress-concurrency` and `stress-soak`
 run only when named, each on a box of its own, after the others: bursts of messages; b33p killed while it receives,
@@ -191,8 +210,10 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 - `cargo testbox web` prints the address of a page with each client's display; `cargo testbox vnc`
   shows them in a window. Without `--interactive` they only show: your keys and clicks would race
   the drivers'.
-- Every box leaves a record in `target/testbox-record/<box>/` (`run`'s in
-  `target/testbox-record/run/<when it started>/<round>/<box>/`): each container's log,
+- Every box leaves a record in `target/testbox-record/test/<when it started>/<box>/` (`<box>`
+  beside it leads to the latest; `run`'s are in
+  `target/testbox-record/run/<when it started>/<round>/<box>/`, and with `--jobs` each of its
+  boxes' in `target/testbox-<instance>-j<k>-record/`): each container's log,
   Desktop's own logs and Android's logcat as they were at the box's end, so they outlast the
   next `down --wipe`, and the host's load then (`load.txt`). Signal-Server is stopped for its
   log and started again, so that its queued lines are in it (testbox/container-logs.md).
