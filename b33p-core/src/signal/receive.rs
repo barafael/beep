@@ -47,7 +47,7 @@ use super::{
         stored_at, stored_timers, to_chat_message, to_reaction,
     },
     pins::{PinOutcome, on_pin_change, pin_change},
-    stories::on_story,
+    stories::{on_story, sent_to_list},
     trust::{announce_identity_change, on_verified_elsewhere, refresh_trust_of},
 };
 
@@ -683,20 +683,31 @@ async fn handle_content(
         }
         ContentBody::StoryMessage(story) => {
             let author = content.metadata.sender;
-            on_story(manager, ctx, author, content.timestamp(), story, false).await;
+            on_story(
+                manager,
+                ctx,
+                author,
+                content.timestamp(),
+                story,
+                false,
+                None,
+            )
+            .await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
             content:
                 Some(SyncContent::Sent(Sent {
                     story_message: Some(story),
+                    story_message_recipients,
                     timestamp,
                     ..
                 })),
             ..
         }) => {
             let at = timestamp.unwrap_or_else(|| content.timestamp());
-            on_story(manager, ctx, own_id(manager), at, story, true).await;
+            let list = sent_to_list(story_message_recipients);
+            on_story(manager, ctx, own_id(manager), at, story, true, list).await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {

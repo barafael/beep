@@ -576,6 +576,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::SendStory {
                 conversation,
                 story,
+                ..
             }) => {
                 let content = match story {
                     crate::NewStory::Text(text) => crate::StoryContent::Text {

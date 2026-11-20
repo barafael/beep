@@ -46,7 +46,8 @@ use super::{
         sticker_packs,
     },
     stories::{
-        STORY_BACKGROUND, STORY_FOREGROUND, keep_story, send_stories, send_viewed, story_recipients,
+        STORY_BACKGROUND, STORY_FOREGROUND, keep_story, send_stories, send_to_list, send_viewed,
+        story_recipients,
     },
     trust::{refresh_trust, set_verified},
 };
@@ -589,9 +590,19 @@ async fn handle_command(
         Command::SendStory {
             conversation,
             story,
+            recipients,
+            allows_replies,
         } => {
-            let Thread::Group(key) = thread(&conversation)? else {
-                return Err(CommandError::StoryNotToGroup { conversation }.into());
+            // A group's story goes to the group; a story list's to each recipient.
+            let list = conversation.story_list_id();
+            let group = match list {
+                Some(_) => None,
+                None => {
+                    let Thread::Group(key) = thread(&conversation)? else {
+                        return Err(CommandError::StoryNotToGroup { conversation }.into());
+                    };
+                    Some(key)
+                }
             };
             let timestamp = now_millis();
             let mut stored = crate::local::StoredStory {
@@ -636,15 +647,29 @@ async fn handle_command(
                 }
             };
             let message = presage::proto::StoryMessage {
-                group: Some(group_context(manager, &key).await),
+                group: match group {
+                    Some(key) => Some(group_context(manager, &key).await),
+                    None => None,
+                },
                 attachment: Some(attachment),
-                allows_replies: Some(true),
+                allows_replies: Some(allows_replies),
                 ..Default::default()
             };
-            ctx.outbox
-                .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
-                .await
-                .map_err(CommandError::PostStory)?;
+            let sync_recipients = match (group, list) {
+                (Some(key), _) => {
+                    ctx.outbox
+                        .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
+                        .await
+                        .map_err(CommandError::PostStory)?;
+                    story_recipients(manager, key).await
+                }
+                (None, list) => {
+                    let list = list.unwrap_or_default();
+                    send_to_list(ctx, &message, timestamp, &recipients, &list, allows_replies)
+                        .await
+                        .map_err(CommandError::PostStory)?
+                }
+            };
             keep_story(ctx, &stored)
                 .await
                 .map_err(CommandError::KeepStory)?;
@@ -655,7 +680,7 @@ async fn handle_command(
                 content: Some(SyncContent::Sent(Sent {
                     timestamp: Some(timestamp),
                     story_message: Some(message),
-                    story_message_recipients: story_recipients(manager, key).await,
+                    story_message_recipients: sync_recipients,
                     ..Default::default()
                 })),
                 ..Default::default()

@@ -11,9 +11,9 @@ use presage::{
     proto::{ReceiptMessage, SyncMessage, receipt_message, sync_message},
     store::{ContentsStore as _, Thread},
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-use crate::outbox::{Outbox, Sends as _};
+use crate::outbox::{Outbox, SendFailure, Sends as _};
 use crate::{ConversationId, Event, MessageRef, attachments, now_millis};
 
 use super::{
@@ -55,6 +55,71 @@ pub(super) async fn story_recipients(
     }
 }
 
+/// Sends a story to each of a story list's `recipients` (service ids), one by one: sealed,
+/// with `story=true`, as Signal's apps send My Story. Says whom it reached, for the sync
+/// message to our other devices, naming the list; fails only if it reached nobody.
+pub(super) async fn send_to_list(
+    ctx: &Ctx,
+    message: &presage::proto::StoryMessage,
+    timestamp: u64,
+    recipients: &[String],
+    list: &[u8],
+    allows_replies: bool,
+) -> Result<Vec<sync_message::sent::StoryMessageRecipient>, SendFailure> {
+    let list = presage::libsignal_service::prelude::Uuid::from_slice(list)
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let mut reached = Vec::new();
+    let mut failure = None;
+    for id in recipients {
+        let Some(to) = ServiceId::parse_from_service_id_string(id) else {
+            continue;
+        };
+        match ctx
+            .outbox
+            .message(to, ContentBody::StoryMessage(message.clone()), timestamp)
+            .await
+        {
+            Ok(()) => reached.push(to),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to send a story to one of its list");
+                failure = Some(error);
+            }
+        }
+    }
+    if reached.is_empty()
+        && let Some(failure) = failure
+    {
+        return Err(failure);
+    }
+    info!(
+        reached = reached.len(),
+        of = recipients.len(),
+        "posted a story to a list"
+    );
+    Ok(reached
+        .into_iter()
+        .map(|to| sync_message::sent::StoryMessageRecipient {
+            destination_service_id: Some(to.service_id_string()),
+            destination_service_id_binary: Some(to.service_id_binary()),
+            distribution_list_ids: vec![list.clone()],
+            is_allowed_to_reply: Some(allows_replies),
+        })
+        .collect())
+}
+
+/// The story list a story we sent went to, as the sync message about it names it (a UUID
+/// string, the same for every recipient); `None` for a group's, or if none is named.
+pub(super) fn sent_to_list(
+    recipients: &[sync_message::sent::StoryMessageRecipient],
+) -> Option<Vec<u8>> {
+    recipients
+        .iter()
+        .flat_map(|r| &r.distribution_list_ids)
+        .find_map(|id| presage::libsignal_service::prelude::Uuid::parse_str(id).ok())
+        .map(|id| id.as_bytes().to_vec())
+}
+
 /// Every member but us, each allowed to reply, and no distribution list: a group story's
 /// recipients as Signal's apps say them (Desktop's sendStory.preload.ts).
 fn recipients(
@@ -83,6 +148,8 @@ pub(super) async fn on_story(
     timestamp: u64,
     story: &presage::proto::StoryMessage,
     outgoing: bool,
+    // For ours without a group: the story list it went to, as the sync message names it.
+    list: Option<Vec<u8>>,
 ) {
     use presage::proto::{story_message::Attachment, text_attachment::Background};
     if !story_is_current(now_millis(), timestamp) {
@@ -96,6 +163,10 @@ pub(super) async fn on_story(
         .and_then(|key| <[u8; 32]>::try_from(key).ok());
     let conversation = match group {
         Some(key) => conversation_id(&Thread::Group(key)),
+        // Ours: under the list it went to, My Story if the sync didn't say.
+        None if outgoing => {
+            ConversationId::story_list(list.as_deref().unwrap_or(&crate::StoryList::MY_STORY))
+        }
         None => ConversationId::contact(&author.service_id_string()),
     };
     // Only from people we know, as Signal's clients show them: a stranger's isn't shown, nor
@@ -281,6 +352,23 @@ mod tests {
 
     /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise
     /// stay for as long) is not shown, while a clock a little ahead is fine.
+    #[test]
+    fn a_synced_story_names_its_list() {
+        use sync_message::sent::StoryMessageRecipient;
+        let to = |lists: &[&str]| StoryMessageRecipient {
+            distribution_list_ids: lists.iter().map(|l| l.to_string()).collect(),
+            ..Default::default()
+        };
+        let my_story = "00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            sent_to_list(&[to(&[]), to(&[my_story])]),
+            Some(crate::StoryList::MY_STORY.to_vec())
+        );
+        let climbers = "0f1e2d3c-4b5a-4968-8776-655443322110";
+        assert_eq!(sent_to_list(&[to(&[climbers])]).unwrap()[..2], [0x0f, 0x1e]);
+        assert_eq!(sent_to_list(&[to(&[])]), None, "a group's names none");
+    }
+
     #[test]
     fn stories_from_the_future_are_not_current() {
         const HOUR: u64 = 60 * 60 * 1000;
