@@ -337,10 +337,12 @@ pub enum Android {
     MyStoryPrivacy {
         except: Vec<String>,
     },
-    /// Waits up to `timeout_ms` for a story of the account's own with `text` among its My
-    /// Stories (MyStoriesFragment), opened; back in the chats after.
-    OwnStoryShows {
-        text: String,
+    /// Waits up to `timeout_ms` for a story under My Story among the account's My Stories
+    /// (MyStoriesFragment) that counts `views` views ("1 view", strings.xml
+    /// `MyStories__d_views`); back in the chats after. A text story's text isn't there to read:
+    /// the viewer draws it without a text node.
+    OwnStoryViews {
+        views: u32,
         timeout_ms: u64,
     },
     Send {

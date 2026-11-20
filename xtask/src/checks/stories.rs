@@ -5,7 +5,7 @@
 //! b33p's story to My Story goes as Signal's apps send it: with its sender key for the list,
 //! sealed for every recipient's devices in one request (`PUT /v1/messages/multi_recipient
 //! ?story=true`, presage `send_story_to_list`), which b33p's log says. The phone files it under
-//! My Story from b33p's sync. Android's own story to My Story shows on b33p under its "My Story",
+//! My Story from b33p's sync, and counts Desktop's view of it. Android's own story to My Story shows on b33p under its "My Story",
 //! the peer's under the peer. Once Android leaves the peer out of My Story, b33p reads that from
 //! the storage service, and its next story reaches the member and not the peer.
 
@@ -122,13 +122,18 @@ pub(super) fn stories(
         Ok(story_shows(b33p, MY_STORY, to_both)?)
     });
     // b33p's sync names the list (`StoryMessageRecipient.distribution_list_ids`): the phone
-    // files the story under its own My Story.
-    checks.record("the phone files b33p's story under its My Story", || {
-        Ok(android.call(drivers::Android::OwnStoryShows {
-            text: to_both.to_owned(),
-            timeout_ms: PATIENCE_MS,
-        })?)
-    });
+    // files the story under its own My Story, and counts the view Desktop's opening it sent to
+    // the account. (It's the only story under My Story by then: those before were groups'. Its
+    // text isn't there to read: Android's viewer draws a text story without a text node.)
+    checks.record(
+        "the phone files b33p's story under its My Story, counting Desktop's view",
+        || {
+            Ok(android.call(drivers::Android::OwnStoryViews {
+                views: 1,
+                timeout_ms: PATIENCE_MS,
+            })?)
+        },
+    );
 
     // The phone's own story to My Story: b33p hears of it by a sync naming the list.
     let from_android = "testbox stories: Android's to My Story";

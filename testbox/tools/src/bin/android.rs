@@ -20,7 +20,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Condvar, Mutex, MutexGuard, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use strum::VariantArray;
@@ -376,9 +376,9 @@ enum UiError {
     ScreencapFailed { status: ExitStatus, length: usize },
     #[error("screencap format {format}, not RGBA_8888")]
     ScreencapFormat { format: u32 },
-    /// My Stories had no story under My Story to open.
-    #[error("no story of the account's own under My Story to look for {text:?} in")]
-    NoOwnStory { text: String },
+    /// My Stories had no story under My Story counting the views.
+    #[error("no story under My Story counting {views} views among the account's own")]
+    NoOwnStory { views: u32 },
     /// The screenshot is kept at `kept`.
     #[error("no reaction bar with its heart after a long press on {text:?} ({kept})")]
     NoReactionBar { text: String, kept: String },
@@ -791,7 +791,28 @@ impl Screenshot {
 /// (its sepolicy: `(typepermissive su)`); the emulator's `-prop` takes only `qemu.*`. The
 /// framework reads it as it starts, so this restarts it.
 fn raise_anr_timeouts() -> Result<(), BootError> {
-    let adb = |args: &[&str]| adb(args).map_err(BootError::Timeouts);
+    // A failure here says how adb and the device were right after (a dropped transport, exit
+    // 255 with nothing printed, says nothing of its own): adb's devices, adbd's state, whether
+    // the boot completed. Printed beside the error, which keeps its own cause.
+    let adb = |args: &[&str]| {
+        adb(args).map_err(|error| {
+            for look in [
+                &["devices", "-l"][..],
+                &["shell", "getprop", "init.svc.adbd"],
+                &["shell", "getprop", "sys.boot_completed"],
+                &["shell", "getprop", "service.adb.root"],
+            ] {
+                let seen = self::adb(look).unwrap_or_else(|error| error.to_string());
+                eprintln!(
+                    "android: after `adb {}` failed, `adb {}`: {}",
+                    args.join(" "),
+                    look.join(" "),
+                    seen.trim()
+                );
+            }
+            BootError::Timeouts(error)
+        })
+    };
     root()?;
     adb(&["wait-for-device"])?;
     adb(&[
@@ -1341,8 +1362,8 @@ impl Driver {
             Android::SetNickname { given } => self.set_nickname(&given),
             Android::PostStory { group, text } => self.post_story(&group, &text),
             Android::MyStoryPrivacy { except } => self.my_story_privacy(&except),
-            Android::OwnStoryShows { text, timeout_ms } => {
-                self.own_story_shows(&text, Duration::from_millis(timeout_ms))
+            Android::OwnStoryViews { views, timeout_ms } => {
+                self.own_story_views(views, Duration::from_millis(timeout_ms))
             }
             Android::Send { text } => self.send(&text),
             Android::WaitFor { wanted, timeout_ms } => self
@@ -1585,54 +1606,65 @@ impl Driver {
                 PATIENCE,
             )?;
             self.tap_at(&shown.node)?;
-            self.element("Who can view this story", PATIENCE)?;
         }
-        back()?;
-        back()?;
+        // The setting shows on the page before it: "All Signal connections · 1 excluded".
+        self.back_to_chats()
+    }
+
+    /// Back, until the chat list's tab bar shows ("Chats"), then to the chats: from however
+    /// deep the Stories tab's screens went, a few at most.
+    fn back_to_chats(&mut self) -> Result<(), UiError> {
+        for _ in 0..5 {
+            if let Ok(shown) = self.first_shown(vec![agent::Wanted::control("Chats")], GLANCE) {
+                self.tap_at(&shown.node)?;
+                return self.launch();
+            }
+            back()?;
+        }
         self.tap("Chats", PATIENCE)?;
         self.launch()
     }
 
-    /// Stories, My Stories, the first of them opened: the viewer goes through them all, so the
-    /// one with `text` shows within their time (strings.xml `StoriesLandingFragment__my_stories`).
-    fn own_story_shows(&mut self, text: &str, patience: Duration) -> Result<(), UiError> {
-        self.launch()?;
-        self.tap("Stories", PATIENCE)?;
-        self.tap("My Stories", PATIENCE)?;
-        let found = (|| -> Result<(), UiError> {
-            let first = self.first_shown(
+    /// Stories, My Stories: a row under My Story's heading counting `views` views, looked for
+    /// again (the screen opened anew) until it shows.
+    fn own_story_views(&mut self, views: u32, patience: Duration) -> Result<(), UiError> {
+        let counted = if views == 1 {
+            "1 view".to_owned()
+        } else {
+            format!("{views} views")
+        };
+        let deadline = Instant::now() + patience;
+        let found = loop {
+            self.launch()?;
+            self.tap("Stories", PATIENCE)?;
+            self.tap("My Stories", PATIENCE)?;
+            let shown = self.first_shown(
                 vec![
-                    agent::Wanted::containing(text),
                     agent::Wanted::label("My Story"),
+                    agent::Wanted::label(&counted),
                 ],
                 PATIENCE,
-            )?;
-            if first.which == 0 {
-                return Ok(());
-            }
-            // Below My Story's heading: its newest story's row, opened with a touch on what
-            // the row shows first (its time, its views).
-            let row = first
-                .screen
-                .iter()
-                .filter(|node| {
-                    node.y > first.node.y
-                        && (!node.text.trim().is_empty() || !node.content_desc.trim().is_empty())
+            );
+            let under = shown.as_ref().ok().is_some_and(|shown| {
+                let heading = shown.screen.iter().find(|n| n.labelled("My Story"));
+                heading.is_some_and(|heading| {
+                    shown
+                        .screen
+                        .iter()
+                        .any(|n| n.labelled(&counted) && n.y > heading.y)
                 })
-                .min_by_key(|node| node.y)
-                .cloned()
-                .ok_or_else(|| UiError::NoOwnStory {
-                    text: text.to_owned(),
-                })?;
-            self.agent.click(&row, false)?;
-            self.first_shown(vec![agent::Wanted::containing(text)], patience)?;
-            Ok(())
-        })();
-        back()?;
-        back()?;
-        self.tap("Chats", PATIENCE)?;
-        self.launch()?;
-        found
+            });
+            if under {
+                break Ok(());
+            }
+            if Instant::now() > deadline {
+                break Err(UiError::NoOwnStory { views });
+            }
+            self.back_to_chats()?;
+            std::thread::sleep(Duration::from_secs(2));
+        };
+        let back = self.back_to_chats();
+        found.and(back)
     }
 
     /// Opens the menu of the chat list's row showing `text` (a long click on it); the menu's own
