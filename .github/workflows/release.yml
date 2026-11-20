@@ -167,8 +167,7 @@ jobs:
         with:
           toolchain: stable
       - name: Build
-        # Without the default `gpu-skia`, which is for Linux (see b33p-slint/Cargo.toml).
-        run: cargo build --release --locked -p b33p-slint --no-default-features --features signal
+        run: cargo build --release --locked -p b33p-slint
       - name: Package app bundle and disk image
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -244,8 +243,7 @@ jobs:
           # The key updates are checked with (b33p-core/src/update.rs, docs/updates.md). Unset,
           # the build offers no updates.
           B33P_UPDATE_PUBLIC_KEY: ${{ vars.B33P_UPDATE_PUBLIC_KEY }}
-        # Without the default `gpu-skia`, which is for Linux (see b33p-slint/Cargo.toml).
-        run: cargo build --release --locked -p b33p-slint --no-default-features --features signal
+        run: cargo build --release --locked -p b33p-slint
       - name: Package zip
         env:
           ZIP: b33p-${{ needs.version.outputs.label }}-windows-${{ matrix.arch }}.zip

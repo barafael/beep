@@ -18,16 +18,18 @@ signal = ["b33p-core/signal"]
 # only; never part of a release build.
 harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json", "dep:i-slint-backend-testing"]
 test-servers = ["b33p-core/test-servers"]
-# What draws the window on Linux, in Slint's Fluent style. Elsewhere Slint's own winit window
-# and FemtoVG draw it, but Cargo features can't be per platform: built there with these on, Skia
-# comes along (and its prebuilt binaries have no Windows build of the set it asks for), so the
-# other platforms build with `--no-default-features --features signal`, as CI and releases do.
+# What draws the window on Linux, in Slint's Fluent style. On the other platforms Slint's own
+# winit window and FemtoVG draw it whichever of these is on.
 #   gpu-skia      Slint's winit backend (Wayland and X11) with Skia, Vulkan if the driver has it
 #                 and OpenGL if not (the default).
 #   gpu-femtovg   the same with FemtoVG on OpenGL; lighter to build, heavier to run.
 # Build the other with `--no-default-features --features signal,gpu-femtovg`.
+# Skia is asked of Slint's backend selector, a dependency on Linux only: Cargo ignores a feature
+# of a dependency the target doesn't have, so a default build on Windows or macOS has no Skia
+# (its prebuilt binaries lack a Windows build of the set it asks for). `slint/renderer-skia-*`
+# would turn it on everywhere, as a feature can't name a platform.
 gpu-femtovg = ["slint/backend-winit", "slint/renderer-femtovg"]
-gpu-skia = ["slint/backend-winit", "slint/renderer-skia-vulkan"]
+gpu-skia = ["slint/backend-winit", "i-slint-backend-selector/renderer-skia-vulkan"]
 
 [dependencies]
 thiserror.workspace = true
@@ -65,6 +67,11 @@ lucide-static-svg = "1.70"
 # The program's icon and version in the Windows executable (`assets/b33p.rc`).
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
+
+# Skia for `gpu-skia`, through the crate `slint` hands the renderer choice to; the same
+# revision as slint.
+[target.'cfg(target_os = "linux")'.dependencies]
+i-slint-backend-selector = { workspace = true, optional = true }
 
 # Off Linux, Slint's own window and FemtoVG (the `gpu-*` features choose on Linux).
 [target.'cfg(not(target_os = "linux"))'.dependencies]
