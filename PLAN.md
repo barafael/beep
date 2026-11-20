@@ -109,10 +109,21 @@ By how much they matter, most first:
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.
-- **Stories:** posting to My Story and custom lists (their audiences are distribution lists
-  in the storage service, so this needs the storage write to be proven first); replies and
-  reactions; removing stories their author deleted; Signal's own setting for story receipts
-  (they follow read receipts now).
+- **Stories:** posting to My Story and custom lists. Their audiences are distribution lists in
+  the storage service (`StoryDistributionListRecord`; My Story is the all-zero id, either
+  "all connections except" or "only these"). In order: (1) read the lists and the account's
+  `storiesDisabled` from the storage service (the transfer from the phone has them too, but the
+  first sync after linking reads them anyway); (2) work out a list's
+  recipients: connections (accepted 1:1 chats, not blocked, not requests) as the list says,
+  only those with sealed-sender access (a story is stored without its sender), all
+  connections before the phone set anything; (3) send without a group context to each
+  (libsignal-service's `story=true`, one multi-recipient request where it can), and sync it
+  with the list's id so the phone files it under My Story; own stories without a group, ours
+  or the phone's, go in a "My Story" ring; (4) the composer offers My Story and the lists
+  first, with how many will see it; (5) a testbox run: the phone's My Story shows it, a
+  contact sees it, an excluded one doesn't. Editing who is on a list needs the storage write
+  proven first. Also: replies and reactions; removing stories their author deleted; Signal's
+  own setting for story receipts (they follow read receipts now).
 - **Media:** recording voice messages (audio input across desktops); a seek bar; animated
   GIFs and video thumbnails (need a video decoder).
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart

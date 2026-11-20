@@ -305,6 +305,14 @@ pub(super) async fn send_conversations(manager: &Mgr, ctx: &Ctx) -> usize {
             warn!(error = %crate::scrub::chain(&error), "failed to read the chat folders")
         }
     }
+    match ctx.tables.story_lists().await {
+        Ok(lists) => {
+            ctx.events.send(Event::StoryLists(lists));
+        }
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to read the story lists")
+        }
+    }
     contacts
 }
 

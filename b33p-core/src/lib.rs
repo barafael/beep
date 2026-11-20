@@ -266,6 +266,38 @@ pub struct ChatFolder {
     pub excluded: Vec<ConversationId>,
 }
 
+/// Who stories go to besides groups, as Signal keeps it in the storage service: My Story, or a
+/// list of one's own (a `StoryDistributionListRecord`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoryList {
+    /// A UUID's 16 bytes; all zero for My Story.
+    pub id: Vec<u8>,
+    /// Empty for My Story, which Signal names itself.
+    pub name: String,
+    /// `members` are those left out of all connections (My Story's "all except"); otherwise
+    /// they are the only ones it goes to.
+    pub excluding: bool,
+    /// Service ids, as strings.
+    pub members: Vec<String>,
+    pub allows_replies: bool,
+}
+
+impl StoryList {
+    /// My Story's id.
+    pub const MY_STORY: [u8; 16] = [0; 16];
+
+    pub fn is_my_story(&self) -> bool {
+        self.id == Self::MY_STORY
+    }
+}
+
+/// The story lists, and whether stories are turned off for the account (on the phone).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoryLists {
+    pub lists: Vec<StoryList>,
+    pub disabled: bool,
+}
+
 /// A story: shown for a day to the author's contacts, or to a group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Story {
@@ -1005,6 +1037,8 @@ pub enum Event {
     GroupJoined(ConversationId),
     /// The chat folders, in their order (replacing those known before).
     Folders(Vec<ChatFolder>),
+    /// The story lists (replacing those known before).
+    StoryLists(StoryLists),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
     StickerPacks(Vec<StickerPack>),
     /// A sticker pack was installed or removed on another device: the packs, if gathered,
