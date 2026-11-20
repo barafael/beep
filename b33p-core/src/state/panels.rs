@@ -318,8 +318,9 @@ impl ChatState {
         self.view_current()
     }
 
-    /// The next (`by` 1) or previous (-1) story of the same conversation; past the last, the
-    /// viewer closes.
+    /// The next (`by` 1) or previous (-1) story of the same conversation. Past the last, the
+    /// first unseen of the next conversation with any, as the rings list them; the viewer
+    /// closes when there is none.
     pub fn step_story(&mut self, by: isize) -> Option<Command> {
         let (id, at) = self.story_view.clone()?;
         let count = self.stories_of(&id).count();
@@ -329,8 +330,13 @@ impl ChatState {
                 self.view_current()
             }
             None if by > 0 => {
+                let next = self
+                    .story_rings()
+                    .into_iter()
+                    .find(|ring| ring.unviewed && *ring.conversation != id)
+                    .map(|ring| ring.conversation.clone());
                 self.story_view = None;
-                None
+                self.open_story(&next?)
             }
             None => None,
         }

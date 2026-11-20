@@ -178,10 +178,19 @@ export struct RingItem {
 // The story shown.
 export struct StoryItem {
     shown: bool,
+    // Tells one story from the next, e.g. to start its time anew.
+    key: string,
+    // Whose ring it is in (the group, for a group's): its name and picture.
+    title: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    // Who posted it.
     author: string,
     time: string,
-    // E.g. "1 / 3".
-    position: string,
+    // Which of the ring's stories it is, from 0, and how many there are.
+    index: int,
+    count: int,
     text-story: bool,
     text: string,
     foreground: color,

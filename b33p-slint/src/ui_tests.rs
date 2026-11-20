@@ -146,7 +146,6 @@ fn a_text_story_can_be_clicked_through() {
         shown: true,
         author: "Ferris".into(),
         time: "11:42".into(),
-        position: "1 / 1".into(),
         text_story: true,
         text: "cargo build --release 🦀".into(),
         foreground: slint::Color::from_rgb_u8(255, 255, 255),
@@ -158,6 +157,67 @@ fn a_text_story_can_be_clicked_through() {
         .expect("the viewer shows")
         .mock_single_click(PointerEventButton::Left);
     assert_eq!(stepped.get(), 1);
+}
+
+/// A story goes on to the next by itself after five seconds, but not while it is held down
+/// or paused with Space.
+#[test]
+fn a_story_goes_on_by_itself() {
+    use slint::platform::WindowEvent;
+    let (window, _messages) = window_with_messages(0);
+    let stepped = Rc::new(Cell::new(0));
+    window.global::<Panels>().on_step_story({
+        let stepped = stepped.clone();
+        move |by| stepped.set(stepped.get() + by)
+    });
+    let story = |key: &str| StoryItem {
+        shown: true,
+        key: key.into(),
+        title: "Ferris".into(),
+        author: "Ferris".into(),
+        time: "11:42".into(),
+        index: 0,
+        count: 2,
+        text_story: true,
+        text: "cargo build --release 🦀".into(),
+        foreground: slint::Color::from_rgb_u8(255, 255, 255),
+        background: slint::Color::from_rgb_u8(43, 138, 96),
+        ..Default::default()
+    };
+    window.global::<Panels>().set_story(story("a"));
+    window.global::<Panels>().set_stories_open(true);
+    let wait = |ms: u64| {
+        for _ in 0..ms / 50 {
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+            slint::platform::update_timers_and_animations();
+        }
+    };
+    settle(&window);
+    wait(4500);
+    assert_eq!(stepped.get(), 0, "not yet");
+    wait(1000);
+    assert_eq!(stepped.get(), 1, "on after five seconds");
+
+    // The next one starts from nothing; Space pauses it.
+    window.global::<Panels>().set_story(story("b"));
+    settle(&window);
+    let space = SharedString::from(" ");
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: space.clone(),
+    });
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: space.clone(),
+    });
+    wait(8000);
+    assert_eq!(stepped.get(), 1, "paused");
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: space.clone(),
+    });
+    window
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text: space });
+    wait(5500);
+    assert_eq!(stepped.get(), 2, "going again");
 }
 
 /// A message that failed to go out offers to be sent again, from its bubble; one Signal

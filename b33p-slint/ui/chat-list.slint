@@ -2,6 +2,7 @@ import { Button, LineEdit, ListView, Spinner } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { EmptyState, Heading, Icon, IconButton, Pressable, Small, Tab } from "widgets.slint";
 import { ConversationRow } from "conversation-row.slint";
+import { StoryStrip } from "stories.slint";
 import { Account, Prefs, ChatList, Groups, Panels } from "state.slint";
 
 // The chat list and what is above it: the title and its buttons, the connection, the
@@ -34,15 +35,6 @@ export component ChatListPane inherits Rectangle {
                 text: ChatList.showing-archived ? "Archived" : "Chats";
                 vertical-alignment: center;
                 horizontal-stretch: 1;
-            }
-            IconButton {
-                icon: @image-url("@lucide/circle-dashed.svg");
-                label: Panels.unviewed-stories > 0 ? "Stories, " + Panels.unviewed-stories + " new" : "Stories";
-                badge: Panels.unviewed-stories > 0;
-                clicked => {
-                    Panels.stories-open = true;
-                    Panels.open-stories();
-                }
             }
             IconButton {
                 icon: @image-url("@lucide/plus.svg");
@@ -163,6 +155,10 @@ export component ChatListPane inherits Rectangle {
                     return accept;
                 }
             }
+        }
+        // Who has stories, and posting one; not while searching or in the archive.
+        if !ChatList.showing-archived && ChatList.search-text == ""
+            && (Panels.story-rings.length > 0 || Panels.story-groups.length > 0): StoryStrip {
         }
         if ChatList.search-is-number: HorizontalLayout {
             padding-left: Theme.space-m;

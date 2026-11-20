@@ -13,7 +13,8 @@ import { ActivityCalendar, ActivityStrip } from "activity.slint";
 import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens.slint";
 import { SettingsPage } from "settings.slint";
 import { ChatListPane } from "chat-list.slint";
-import { StoriesOverlay, GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
+import { StoryComposer, StoryViewer } from "stories.slint";
+import { GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
 import { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
 
 // What Rust reaches: the window, its data types and the globals it sets.
@@ -84,6 +85,14 @@ export component AppWindow inherits Window {
     // then go nowhere until a click.
     in-out property <int> escaped;
     changed escaped => { keys.focus(); }
+    // The stories' viewer and composer take the focus, and close by other ways than Esc too
+    // (✕, the last story, posting): the focus comes back as it does after Esc.
+    property <bool> stories-up: Panels.stories-open || Panels.story-composer-open;
+    changed stories-up => {
+        if !self.stories-up {
+            root.escaped += 1;
+        }
+    }
 
     // Shortcuts that work wherever the focus is; see `shortcut`.
     keys := FocusScope {
@@ -2054,8 +2063,10 @@ export component AppWindow inherits Window {
         }
     }
 
-    if Panels.stories-open: StoriesOverlay {
-        narrow: root.narrow;
+    if Panels.stories-open: StoryViewer {
+    }
+
+    if Panels.story-composer-open: StoryComposer {
     }
 
     if Groups.group-draft-open: GroupDraftDialog {

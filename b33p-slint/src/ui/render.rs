@@ -527,14 +527,8 @@ pub(super) fn render_stickers(window: &AppWindow, chat: &ChatState) {
         .set_sticker_rows(ModelRc::new(VecModel::from(rows)));
 }
 
-/// The stories overlay.
+/// Stories: the rings over the chat list, the groups to post to, the one shown.
 pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
-    window
-        .global::<Panels>()
-        .set_unviewed_stories(chat.unviewed_stories() as i32);
-    if !window.global::<Panels>().get_stories_open() {
-        return;
-    }
     let rings: Vec<RingItem> = chat
         .story_rings()
         .iter()
@@ -583,11 +577,20 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
     }
     let story = match chat.current_story() {
         Some((story, at, count)) => {
+            let title = chat
+                .conversation(&story.conversation)
+                .map_or(story.author.as_str(), |c| c.title.as_str());
             let mut item = StoryItem {
                 shown: true,
+                key: format!("{}/{}", story.author_id, story.timestamp).into(),
+                title: title.into(),
+                initials: state::initials(title).into(),
+                color: avatar_color(&story.conversation),
+                avatar: avatar_image(chat, images, &story.conversation),
                 author: story.author.as_str().into(),
                 time: state::format_time(story.timestamp).into(),
-                position: format!("{} / {count}", at + 1).into(),
+                index: at as i32,
+                count: count as i32,
                 ..Default::default()
             };
             match &story.content {
@@ -620,7 +623,11 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
             }
             item
         }
-        None => StoryItem::default(),
+        None => {
+            // Past the last story there is to see, or it expired: the viewer goes.
+            window.global::<Panels>().set_stories_open(false);
+            StoryItem::default()
+        }
     };
     window.global::<Panels>().set_story(story);
 }

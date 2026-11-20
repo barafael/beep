@@ -9,9 +9,8 @@ import { EmojiPicker } from "emoji.slint";
 // rests on the message or on the bar itself; "+" opens every emoji.
 // Made only while it shows: it is two dozen items, more than the message under it.
 export component ReactionPicker inherits Popover {
-    // The pointer came onto it, or left it. Told at once as it comes (the message underneath
-    // loses the pointer in the same event, and must not take the bar away meanwhile), so a
-    // callback rather than a property watched for changes.
+    // The pointer came onto it, or left it: told as it happens, since the bar is made only
+    // while it shows and its parent can't read a property of it.
     callback hovered(bool);
     callback picked(string);
     // "+": any other emoji.
@@ -19,45 +18,47 @@ export component ReactionPicker inherits Popover {
     width: layout.preferred-width;
     height: 40px;
     border-radius: self.height / 2;
+    // The buttons are inside the bar's own area, so it keeps the pointer while on them.
+    // (Beside it, the area would lose the pointer to each button, and say so after the
+    // button said it came: the bar would go.)
+    // Coming onto it is told at once, from the move itself: the message underneath loses the
+    // pointer in the same event, and a change handler would run too late to keep the bar.
     touch := TouchArea {
         pointer-event(event) => {
             if event.kind == PointerEventKind.move {
                 root.hovered(true);
             }
         }
-        changed has-hover => {
-            if !self.has-hover {
-                root.hovered(false);
-            }
-        }
-    }
-    layout := HorizontalLayout {
-        padding: Theme.space-xs;
-        spacing: 2px;
-        for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
-            width: Theme.button;
-            height: Theme.button;
-            border-radius: self.height / 2;
-            background: emoji-touch.has-hover ? Theme.pressed : transparent;
-            emoji-touch := TouchArea {
-                accessible-role: button;
-                accessible-label: "React with " + emoji;
-                accessible-action-default => { self.clicked(); }
-                mouse-cursor: pointer;
-                clicked => { root.picked(emoji); }
-                // The buttons take the pointer from the bar's own area.
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.move {
-                        root.hovered(true);
+        changed has-hover => { root.hovered(self.has-hover); }
+        layout := HorizontalLayout {
+            padding: Theme.space-xs;
+            spacing: 2px;
+            for emoji in ["❤️", "👍", "👎", "😂", "😮", "😢"]: Rectangle {
+                width: Theme.button;
+                height: Theme.button;
+                border-radius: self.height / 2;
+                background: emoji-touch.has-hover ? Theme.pressed : transparent;
+                animate background { duration: Motion.fast; easing: ease-out; }
+                emoji-touch := TouchArea {
+                    accessible-role: button;
+                    accessible-label: "React with " + emoji;
+                    accessible-action-default => { self.clicked(); }
+                    mouse-cursor: pointer;
+                    clicked => { root.picked(emoji); }
+                    // The pointer may come onto the bar right on a button.
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.move {
+                            root.hovered(true);
+                        }
                     }
                 }
+                Text { text: emoji; font-size: 1rem * Theme.emoji; }
             }
-            Text { text: emoji; font-size: 1rem * Theme.emoji; }
-        }
-        IconButton {
-            icon: @image-url("@lucide/plus.svg");
-            label: "More reactions";
-            clicked => { root.more(); }
+            IconButton {
+                icon: @image-url("@lucide/plus.svg");
+                label: "More reactions";
+                clicked => { root.more(); }
+            }
         }
     }
 }
@@ -180,6 +181,9 @@ export component Bubble inherits Rectangle {
     // The reaction bar comes once the pointer has rested on the message a moment (not while
     // it merely crosses the list), and goes when the pointer leaves it and the bar.
     property <bool> picker-shown;
+    // The bar reaches over the row above: this row goes on top while it shows, so the bar is
+    // drawn over that row's buttons and gets the pointer before that row does.
+    z: self.picker-shown ? 1 : 0;
     changed hovered => {
         if !self.hovered {
             self.picker-shown = false;

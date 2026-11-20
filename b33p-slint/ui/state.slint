@@ -374,17 +374,17 @@ export global Panels {
     callback close-chat-search;
     callback chat-search(string);
     callback show-result(int);
-    // Stories: the overlay, who has them, the one shown, groups to post to.
+    // Stories: the viewer, who has them, the one shown, groups to post to.
     in-out property <bool> stories-open;
+    // Posting one.
+    in-out property <bool> story-composer-open;
     in property <[RingItem]> story-rings;
     in property <StoryItem> story;
-    in property <int> unviewed-stories;
     in property <[string]> story-groups;
     // Their ids, in the same order.
     in property <[string]> story-group-ids;
     in-out property <int> story-group;
     in-out property <string> story-text;
-    callback open-stories;
     callback open-story(string);
     callback step-story(int);
     callback close-story;
