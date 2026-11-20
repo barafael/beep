@@ -6,7 +6,7 @@ and saves the window at each step as a PNG.
 
 The window is Slint's own (winit, Skia), so it needs a display to open on: on the desktop it
 opens a window there. To keep the desktop out of it, run the script in a display of its own
-(`testbox/gpui-view/view.sh`: cage in a container, with VIEW_BIN set to the harness build).
+(`testbox/view/view.sh`: cage in a container, with VIEW_BIN set to the harness build).
 
     cargo build -p b33p-slint --features harness
     python3 docs/screenshots/shoot.py --out target/shots/light

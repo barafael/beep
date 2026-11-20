@@ -12,8 +12,6 @@ Used against 806c673 in throwaway worktrees (`git worktree add --detach ../x 806
   and `on_typing` made no-ops, silently (`cargo testbox test desktop android groups storage`).
   Note `on_typing` returns `bool` and `false` stops b33p's session: the "control" killed the
   session, not only the handler.
-- `gpui-setsettings.patch`: the fix of finding 1 (b33p-gpui against `Action::SetSettings`'s
-  `SettingsChange`). The same change is on `main` since 5afec5a, where the patch no longer applies.
 
 The runs' output and scripts were in a scratchpad that a reboot cleared; the per-box records
 (each container's log, Android's logcat, the wire of the `--capture` run) were in the worktrees'

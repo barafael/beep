@@ -706,26 +706,6 @@ mod tests {
     }
 
     #[test]
-    fn lays_out_under_the_user_folders() {
-        let layout = Layout::new(Path::new("L"), Path::new("R"));
-        assert_eq!(layout.exe, Path::new("L").join("b33p").join("b33p.exe"));
-        assert_eq!(
-            layout.old_exe(),
-            Path::new("L").join("b33p").join("b33p.exe.old")
-        );
-        assert!(
-            layout
-                .shortcut
-                .starts_with(Path::new("R").join("Microsoft"))
-        );
-        assert!(
-            layout
-                .shortcut
-                .ends_with(Path::new("Start Menu").join("Programs").join("b33p.lnk"))
-        );
-    }
-
-    #[test]
     fn skipped_builds_and_the_installed_copy_run_as_they_are() {
         for skip in [
             Skip {

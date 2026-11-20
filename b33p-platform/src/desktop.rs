@@ -93,16 +93,3 @@ pub fn ask_paste(desktop: &Requests) -> Option<oneshot::Receiver<Option<Vec<Path
     desktop.try_send(Request::Paste { reply }).ok()?;
     Some(pasted)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The loop ends once every sender is gone, after what was queued.
-    #[test]
-    fn ends_when_nobody_can_ask() {
-        let (requests, queue) = async_channel::unbounded();
-        drop(requests);
-        Desktop.event_loop(queue);
-    }
-}

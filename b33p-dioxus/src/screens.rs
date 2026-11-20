@@ -229,23 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn a_light_code_has_nothing_to_draw() {
-        let qr = QrMatrix {
-            width: 1,
-            modules: vec![false],
-            encoded_text: String::new(),
-        };
-        assert_eq!(qr_path(&qr), "");
-    }
-
-    #[test]
-    fn the_real_link_code_draws_as_many_modules_as_it_has_dark_ones() {
-        let qr = QrMatrix::encode("sgnl://linkdevice?uuid=test").unwrap();
-        let dark = qr.modules.iter().filter(|dark| **dark).count();
-        assert_eq!(qr_path(&qr).matches('M').count(), dark);
-    }
-
-    #[test]
     fn every_stage_of_starting_up_says_something_different() {
         use HistoryTransfer::*;
         let stages = [

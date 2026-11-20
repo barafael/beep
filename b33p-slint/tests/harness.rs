@@ -2,7 +2,7 @@
 //! out. Runs only with `--features harness` (otherwise this file is empty); the window is
 //! Slint's headless testing backend (`B33P_HEADLESS`), since a test has no desktop, and every
 //! file it writes goes to a scratch home, so a test leaves nothing behind. Nothing is drawn: a
-//! build is looked at in a display of its own instead (`testbox/gpui-view/view.sh`).
+//! build is looked at in a display of its own instead (`testbox/view/view.sh`).
 #![cfg(all(feature = "harness", target_family = "unix"))]
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]
