@@ -14,12 +14,16 @@ pub(super) enum Account {
     Primary,
     /// The account b33p writes to, and Desktop links to.
     Peer,
+    /// The account signalmeow links to (`signalmeow`).
+    Meow,
     /// A group's member besides the peer (`groups`).
     Member,
     /// The `n`th of the large group's members (`large-group`).
     Crowd(u8),
     /// The account the `n`th b33p of a mesh links to (`tour`).
     Mesh(u8),
+    /// The account a client of the presage family links to as a secondary device (gurk-rs).
+    Family(u8),
 }
 
 impl Account {
@@ -27,9 +31,11 @@ impl Account {
         match self {
             Self::Primary => "/presage/primary.db".into(),
             Self::Peer => "/presage/peer.db".into(),
+            Self::Meow => "/presage/meow.db".into(),
             Self::Member => "/presage/member.db".into(),
             Self::Crowd(n) => format!("/presage/crowd-{n}.db").into(),
             Self::Mesh(n) => format!("/presage/mesh-{n}.db").into(),
+            Self::Family(n) => format!("/presage/family-host-{n}.db").into(),
         }
     }
 
@@ -37,9 +43,11 @@ impl Account {
         match self {
             Self::Primary => "+15555550101".into(),
             Self::Peer => "+15555550102".into(),
+            Self::Meow => "+15555550105".into(),
             Self::Member => "+15555550104".into(),
             Self::Crowd(n) => format!("+1555555{:04}", 300 + u16::from(n)).into(),
             Self::Mesh(n) => format!("+1555555{:04}", 200 + u16::from(n)).into(),
+            Self::Family(n) => format!("+1555555{:04}", 400 + u16::from(n)).into(),
         }
     }
 
@@ -48,9 +56,11 @@ impl Account {
         match self {
             Self::Primary => "Primary".into(),
             Self::Peer => "Peer".into(),
+            Self::Meow => "Meow".into(),
             Self::Member => "Member".into(),
             Self::Crowd(n) => format!("Crowd {n}").into(),
             Self::Mesh(n) => format!("Mesh {n}").into(),
+            Self::Family(n) => format!("Family {n}").into(),
         }
     }
 }
@@ -103,6 +113,9 @@ pub(super) enum PresageError {
 pub(super) struct Presage<'pod> {
     pub(super) containers: &'pod Pod,
     account: Account,
+    /// What the commands that receive (`send`, `sync`) printed since [`Self::take_heard`]: a send
+    /// receives while it sends, and what arrives then is printed to it, not to a later `sync`.
+    heard: std::sync::Mutex<String>,
 }
 
 /// The time of the message a line of presage-cli's says it received or sent ("From <who> @ 1793…:
@@ -123,7 +136,18 @@ impl<'pod> Presage<'pod> {
         Self {
             containers,
             account,
+            heard: std::sync::Mutex::default(),
         }
+    }
+
+    /// What the commands that received printed since this was last called.
+    pub(super) fn take_heard(&self) -> String {
+        std::mem::take(
+            &mut *self
+                .heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// The account's name, as the clients show it.
@@ -144,13 +168,22 @@ impl<'pod> Presage<'pod> {
             arguments,
         ]
         .concat();
-        self.containers
+        let output = self
+            .containers
             .exec(Service::Presage, &argv, stdin)
             .map_err(|source| PresageError::Command {
                 account: self.account,
                 command,
                 source,
-            })
+            })?;
+        // What a send received while it sent is printed to it (see `heard`).
+        if matches!(command, "send" | "send-to-group") {
+            self.heard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&output);
+        }
+        Ok(output)
     }
 
     /// `output`, after noting each message it says presage-cli lost (its
@@ -159,6 +192,10 @@ impl<'pod> Presage<'pod> {
     /// got to. One that is stored is no loss but a redelivery: presage-cli exited after storing
     /// it and before acknowledging it.
     fn noting_lost(&self, output: String) -> String {
+        self.heard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_str(&output);
         let account = self.account.name();
         for timestamp in output.lines().filter_map(printed_at) {
             self.containers.note_printed(&account, timestamp);
@@ -211,7 +248,7 @@ impl<'pod> Presage<'pod> {
     }
 
     /// The account's ACI, from presage-cli's `whoami` (`WhoAmIResponse { aci: <uuid>, ... }`).
-    fn aci(&self) -> Result<String, PresageError> {
+    pub(super) fn aci(&self) -> Result<String, PresageError> {
         let whoami = self.cli("whoami", &[], "")?;
         whoami
             .split_once("aci: ")
@@ -341,6 +378,11 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
     /// " / " and its text.
     pub(super) fn messages_with(&self, aci: &str) -> Result<String, PresageError> {
         self.cli("list-messages", &["-u", aci], "")
+    }
+
+    /// What the store holds of the group with `master_key` (hex), as [`Self::messages_with`] lists.
+    pub(super) fn messages_in_group(&self, master_key: &str) -> Result<String, PresageError> {
+        self.cli("list-messages", &["-k", master_key], "")
     }
 
     pub(super) fn sync(&self) -> Result<String, PresageError> {

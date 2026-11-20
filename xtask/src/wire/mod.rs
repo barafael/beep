@@ -492,13 +492,27 @@ impl Identities {
     /// unauthenticated, when b33p's said the same agent as presage-cli's.
     fn client(&self) -> String {
         let agent = self.agent.as_deref().unwrap_or_default();
-        if agent.contains("Signal-Desktop") {
+        if agent.contains("signal-cli") {
+            // Before Android: signal-cli says "Signal-Android/<version> signal-cli/<version>"
+            // (BaseConfig.USER_AGENT), as Signal's servers know no other third-party clients.
+            "signal-cli".to_owned()
+        } else if agent.contains("Signal-Desktop") {
             "desktop".to_owned()
         } else if agent.contains("Signal-Android") {
             "android".to_owned()
         } else if agent.starts_with("b33p/") || agent == "b33p" {
             // `b33p` alone: b33p's own downloads (b33p-core transfer.rs) before it had an agent.
             "b33p".to_owned()
+        } else if agent.starts_with("signalmeow/") {
+            // mautrix-signal's Go client (testbox/signalmeow): "signalmeow/0.1.0 libsignal/v…
+            // go/…", on its websocket, REST and gRPC alike.
+            "signalmeow".to_owned()
+        } else if agent.starts_with("gurk/") {
+            // The presage family (testbox/family) says its own agent, as it'd be taken for b33p
+            // (a linked device of presage's) or presage-cli otherwise.
+            "gurk".to_owned()
+        } else if agent.starts_with("flare-box/") {
+            "flare".to_owned()
         } else if agent.starts_with("presage") {
             match self.user.as_deref().and_then(|user| user.rsplit_once('.')) {
                 Some((_, device)) if device != "1" => "b33p".to_owned(),
@@ -1151,4 +1165,28 @@ fn file_name(name: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client_saying(agent: &str) -> String {
+        Identities {
+            agent: Some(agent.to_owned()),
+            ..Identities::default()
+        }
+        .client()
+    }
+
+    /// signal-cli's agent holds Signal-Android's: it is its own client, not Android.
+    #[test]
+    fn signal_cli_is_not_taken_for_android() {
+        assert_eq!(
+            client_saying("Signal-Android/8.35.1 signal-cli/0.14.10"),
+            "signal-cli"
+        );
+        assert_eq!(client_saying("Signal-Android/8.35.1"), "android");
+        assert_eq!(client_saying("Signal-Desktop/8.0.0 Linux"), "desktop");
+    }
 }

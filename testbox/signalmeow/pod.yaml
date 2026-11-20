@@ -1,0 +1,23 @@
+# signalmeow (mautrix-signal's Go implementation of Signal's client protocol), driven by
+# testbox/signalmeow/driver (`cargo testbox up --signalmeow`). A container for testbox/pod.yaml's
+# list, in its @CLIENTS@ line: `cargo testbox` runs the driver in here with `podman exec`, as it
+# runs presage-cli in the `presage` container. It reaches the servers as the other clients do, on
+# the pod's localhost; SIGNALMEOW_BOX_CONFIG points it at them (testbox/patches/signalmeow-local.patch).
+      {
+        name: "signalmeow",
+        image: "localhost/@POD@-signalmeow",
+        command: ["sleep", "infinity"],
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        env: [
+          { name: "SIGNALMEOW_BOX_CONFIG", value: "/keys/desktop-config.json" },
+          # Jetty's HTTP/1.1 port (testbox/tools keys.rs LIBSIGNAL_SERVICE_PORT): the websocket's.
+          # The config's serverUrl is the omnibus port, which answers only HTTP/2.
+          { name: "SIGNALMEOW_BOX_CHAT_HOST", value: "localhost:8444" },
+          { name: "HOME", value: "/signalmeow" },
+        ],
+        volumeMounts: [
+          { name: "keys", mountPath: "/keys", readOnly: true },
+          { name: "signalmeow", mountPath: "/signalmeow" },
+          { name: "files", mountPath: "/files", readOnly: true },
+        ],
+      },

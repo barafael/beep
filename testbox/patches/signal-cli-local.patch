@@ -1,0 +1,262 @@
+signal-cli's `LIVE` and `STAGING` are its only servers, Signal's, with the trust roots and public
+parameters compiled in (`lib/.../manager/config/LiveConfig.java`). This adds the box's: when the
+environment variable SIGNAL_CLI_TESTBOX_CONFIG names a file (Signal-Desktop's SIGNAL_CI_CONFIG as
+`provision` writes it, /keys/desktop-config.json), `ServiceConfig` returns the configuration
+`TestboxConfig` builds from it (the URLs as Signal-Android's local flavor has them, the CA as a BKS
+trust store, the zkgroup and sealed-sender keys), and the chat goes through libsignal-net's local
+override (libsignal-cli-local.patch). Without the variable nothing changes.
+
+`excludePatterns` is emptied: signal-cli's build removes libsignal's testing library from the jar
+it ships, and the local override is in it.
+
+Built against signal-cli v0.14.10 (8890c1b), which takes libsignal-client 0.106.1.
+
+diff --git a/build.gradle.kts b/build.gradle.kts
+index f05956b..d194d97 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -69,14 +69,9 @@ configurations.runtimeClasspath.configure {
+         attribute(minified, true)
+     }
+ }
+-val excludePatterns = mapOf(
+-    "libsignal-client" to setOf(
+-        "libsignal_jni_testing_amd64.so",
+-        "signal_jni_testing_amd64.dll",
+-        "libsignal_jni_testing_amd64.dylib",
+-        "libsignal_jni_testing_aarch64.dylib",
+-    )
+-)
++// The testbox needs libsignal's testing library, whose local override reaches the box's server
++// (testbox/patches/signal-cli-local.patch): nothing is left out of libsignal-client's jar.
++val excludePatterns = mapOf<String, Set<String>>()
+ 
+ val schemaAnnotationProcessor = configurations.create("schemaAnnotationProcessor") {
+     isCanBeConsumed = false
+diff --git a/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java b/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java
+index 5bcad4e..4ead509 100644
+--- a/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java
++++ b/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java
+@@ -67,6 +67,12 @@ public class ServiceConfig {
+ 
+         final var interceptors = List.of(userAgentInterceptor);
+ 
++        // The testbox's server, if the environment names its configuration (TestboxConfig).
++        final var testbox = TestboxConfig.get();
++        if (testbox.isPresent()) {
++            return testbox.get().serviceEnvironmentConfig(interceptors, tlsProxy);
++        }
++
+         return switch (serviceEnvironment) {
+             case LIVE -> LiveConfig.getServiceEnvironmentConfig(interceptors, tlsProxy);
+             case STAGING -> StagingConfig.getServiceEnvironmentConfig(interceptors, tlsProxy);
+diff --git a/lib/src/main/java/org/asamk/signal/manager/internal/SignalDependencies.java b/lib/src/main/java/org/asamk/signal/manager/internal/SignalDependencies.java
+index 7c32350..cc23c9b 100644
+--- a/lib/src/main/java/org/asamk/signal/manager/internal/SignalDependencies.java
++++ b/lib/src/main/java/org/asamk/signal/manager/internal/SignalDependencies.java
+@@ -171,6 +171,11 @@ public class SignalDependencies {
+ 
+     public Network getLibSignalNetwork() {
+         return getOrCreate(() -> libSignalNetwork, () -> {
++            final var testbox = org.asamk.signal.manager.config.TestboxConfig.get();
++            if (testbox.isPresent()) {
++                libSignalNetwork = testbox.get().network(userAgent);
++                return;
++            }
+             libSignalNetwork = new Network(serviceEnvironmentConfig.netEnvironment(),
+                     userAgent,
+                     Map.of(),
+diff --git a/lib/src/main/java/org/asamk/signal/manager/config/TestboxConfig.java b/lib/src/main/java/org/asamk/signal/manager/config/TestboxConfig.java
+new file mode 100644
+--- /dev/null
++++ b/lib/src/main/java/org/asamk/signal/manager/config/TestboxConfig.java
+@@ -0,0 +1,189 @@
++package org.asamk.signal.manager.config;
++
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++
++import org.asamk.signal.manager.api.ServiceEnvironment;
++import org.bouncycastle.jce.provider.BouncyCastleProvider;
++import org.signal.libsignal.net.Network;
++import org.signal.libsignal.protocol.InvalidKeyException;
++import org.signal.libsignal.protocol.ecc.ECPublicKey;
++import org.signal.network.config.SignalCdnUrl;
++import org.signal.network.config.SignalCdsiUrl;
++import org.signal.network.config.SignalProxy;
++import org.signal.network.config.SignalServiceConfiguration;
++import org.signal.network.config.SignalServiceUrl;
++import org.signal.network.config.SignalStorageUrl;
++import org.signal.network.config.SignalSvr2Url;
++import org.signal.network.config.TrustStore;
++
++import java.io.ByteArrayInputStream;
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.UncheckedIOException;
++import java.net.URI;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.GeneralSecurityException;
++import java.security.KeyStore;
++import java.security.cert.CertificateFactory;
++import java.util.Base64;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++
++import okhttp3.Interceptor;
++
++/**
++ * The testbox's server (testbox/signal-cli in b33p's repository), in place of Signal's: its values from the
++ * file the environment variable {@code SIGNAL_CLI_TESTBOX_CONFIG} names, Signal-Desktop's SIGNAL_CI_CONFIG as
++ * the box's {@code provision} writes it ({@code /keys/desktop-config.json}). Not for Signal's servers.
++ */
++public final class TestboxConfig {
++
++    public static final String ENVIRONMENT_VARIABLE = "SIGNAL_CLI_TESTBOX_CONFIG";
++
++    private static final String STORE_PASSWORD = "whisper";
++    // Only the real enclaves have a meaning for these, and the box runs none.
++    private static final String NO_MRENCLAVE = "0".repeat(64);
++
++    private static TestboxConfig instance;
++
++    private final JsonNode json;
++    private final byte[] caPem;
++    private final byte[] caDer;
++
++    private TestboxConfig(final Path path) throws IOException {
++        this.json = new ObjectMapper().readTree(Files.readAllBytes(path));
++        this.caPem = text("certificateAuthority").getBytes(StandardCharsets.UTF_8);
++        try {
++            this.caDer = CertificateFactory.getInstance("X.509")
++                    .generateCertificate(new ByteArrayInputStream(caPem))
++                    .getEncoded();
++        } catch (GeneralSecurityException e) {
++            throw new IllegalStateException("The testbox CA is no certificate", e);
++        }
++    }
++
++    /**
++     * The testbox's configuration if the environment names one, and nothing otherwise.
++     */
++    public static synchronized Optional<TestboxConfig> get() {
++        final var path = System.getenv(ENVIRONMENT_VARIABLE);
++        if (path == null || path.isEmpty()) {
++            return Optional.empty();
++        }
++        if (instance == null) {
++            try {
++                instance = new TestboxConfig(Path.of(path));
++            } catch (IOException e) {
++                throw new UncheckedIOException("Reading " + path, e);
++            }
++        }
++        return Optional.of(instance);
++    }
++
++    private String text(final String field) {
++        final var node = json.get(field);
++        if (node == null || !node.isTextual()) {
++            throw new IllegalStateException("The testbox's configuration has no " + field);
++        }
++        return node.asText();
++    }
++
++    private String cdn(final int number) {
++        return json.get("cdn").get(Integer.toString(number)).asText();
++    }
++
++    /**
++     * The URLs are the box's (testbox/tools keys.rs): Jetty's HTTP/2 port for the REST requests, as
++     * Signal-Android's local flavor has them; the chat is libsignal-net's, on the omnibus port.
++     */
++    public ServiceEnvironmentConfig serviceEnvironmentConfig(
++            final List<Interceptor> interceptors,
++            final Optional<SignalProxy> proxy
++    ) {
++        final var trustStore = new BoxTrustStore(caPem);
++        final var rest = text("resourcesUrl");
++        final var configuration = new SignalServiceConfiguration(new SignalServiceUrl[]{new SignalServiceUrl(rest,
++                trustStore)},
++                Map.of(0,
++                        new SignalCdnUrl[]{new SignalCdnUrl(cdn(0), trustStore)},
++                        2,
++                        new SignalCdnUrl[]{new SignalCdnUrl(cdn(2), trustStore)},
++                        3,
++                        new SignalCdnUrl[]{new SignalCdnUrl(cdn(3), trustStore)}),
++                new SignalStorageUrl[]{new SignalStorageUrl(text("storageUrl"), trustStore)},
++                new SignalCdsiUrl[]{new SignalCdsiUrl(text("directoryCDSIUrl"), trustStore)},
++                new SignalSvr2Url[]{new SignalSvr2Url(rest, trustStore, null, null)},
++                interceptors,
++                Optional.empty(),
++                proxy,
++                decode(text("serverPublicParams")),
++                decode(text("genericServerPublicParams")),
++                decode(text("backupServerPublicParams")),
++                false);
++        return new ServiceEnvironmentConfig(ServiceEnvironment.LIVE,
++                Network.Environment.STAGING,
++                configuration,
++                unidentifiedSenderTrustRoots(),
++                NO_MRENCLAVE,
++                List.of(NO_MRENCLAVE));
++    }
++
++    private List<ECPublicKey> unidentifiedSenderTrustRoots() {
++        final var roots = json.get("serverTrustRoots");
++        final var keys = new java.util.ArrayList<ECPublicKey>();
++        for (final var root : roots) {
++            try {
++                keys.add(new ECPublicKey(decode(root.asText())));
++            } catch (InvalidKeyException e) {
++                throw new IllegalStateException("A trust root of the testbox's configuration is no key", e);
++            }
++        }
++        return keys;
++    }
++
++    /**
++     * libsignal-net's local override (the patched libsignal, testbox/patches/libsignal-local.patch):
++     * the box's server on localhost, trusting the box's CA. Chat, contact discovery and the enclaves
++     * all at the omnibus port, as Signal-Android's local flavor has them.
++     */
++    public Network network(final String userAgent) {
++        final var port = URI.create(text("serverUrl")).getPort();
++        return Network.localTestServer(userAgent, port, port, port, port, caDer, 2);
++    }
++
++    private static byte[] decode(final String base64) {
++        return Base64.getDecoder().decode(base64);
++    }
++
++    /**
++     * The CA as the BKS store BlacklistingTrustManager opens, made when asked for.
++     */
++    private record BoxTrustStore(byte[] caPem) implements TrustStore {
++
++        @Override
++        public InputStream getKeyStoreInputStream() {
++            try {
++                final var certificate = CertificateFactory.getInstance("X.509")
++                        .generateCertificate(new ByteArrayInputStream(caPem));
++                final var store = KeyStore.getInstance("BKS", new BouncyCastleProvider());
++                store.load(null, null);
++                store.setCertificateEntry("box", certificate);
++                final var out = new ByteArrayOutputStream();
++                store.store(out, STORE_PASSWORD.toCharArray());
++                return new ByteArrayInputStream(out.toByteArray());
++            } catch (GeneralSecurityException | IOException e) {
++                throw new IllegalStateException("Building the testbox's trust store", e);
++            }
++        }
++
++        @Override
++        public String getKeyStorePassword() {
++            return STORE_PASSWORD;
++        }
++    }
++}

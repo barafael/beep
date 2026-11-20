@@ -78,10 +78,19 @@ enum Command {
         /// Signal-Android on an emulator.
         #[arg(long)]
         android: bool,
+        /// signal-cli (Java, libsignal-service-java), which the checks run in its container.
+        #[arg(long)]
+        signal_cli: bool,
+        /// mautrix-signal's signalmeow (Go), driven by `podman exec` of its driver.
+        #[arg(long)]
+        signalmeow: bool,
+        /// gurk-rs and Flare's backend, the presage family (testbox/family).
+        #[arg(long)]
+        family: bool,
         #[command(flatten)]
         b33p: B33pOptions,
     },
-    /// Runs the phases' checks, every phase's if none is named but the stress and mesh phases'.
+    /// Runs the phases' checks, every phase's if none is named but the stress, mesh and interop phases'.
     ///
     /// Builds the images, the Android image while the linked box runs, each build's output in
     /// target/testbox-build. The phases on one setup share a box (without `--fresh`): the pod
@@ -139,7 +148,7 @@ enum Command {
 /// What `test` and `run` run, and how.
 #[derive(clap::Args)]
 pub(crate) struct TestOptions {
-    /// The phases; all but the stress and mesh phases if none.
+    /// The phases; all but the stress, mesh and interop phases if none.
     pub(crate) phases: Vec<Phase>,
     /// Also takes each client's display after each check, into the record beside the
     /// containers' logs.
@@ -166,6 +175,10 @@ pub(crate) struct B33pOptions {
     /// instead of as a debug build.
     #[arg(long)]
     pub(crate) optimized: bool,
+    /// The app on the Android emulator: Signal-Android, or Molly (a hardened fork of it, on an
+    /// older release: docs/onboarding-molly.md), which the phases that drive Android then drive.
+    #[arg(long, value_enum, default_value_t = pod::AndroidApp::Signal, env = "TESTBOX_ANDROID_APP")]
+    pub(crate) android_app: pod::AndroidApp,
     /// The most memory b33p's container may take, in MiB; the kernel kills b33p past it, as
     /// on a small machine or under a desktop's own limits.
     #[arg(long, value_name = "MIB")]
@@ -209,9 +222,18 @@ fn main() -> ExitCode {
         Command::Up {
             desktop,
             android,
+            signal_cli,
+            signalmeow,
+            family,
             b33p,
         } => {
-            let clients = [(desktop, Client::Desktop), (android, Client::Android)];
+            let clients = [
+                (desktop, Client::Desktop),
+                (android, b33p.android_app.client()),
+                (signal_cli, Client::SignalCli),
+                (signalmeow, Client::Signalmeow),
+                (family, Client::Family),
+            ];
             let clients: Vec<Client> = clients
                 .into_iter()
                 .filter_map(|(asked, client)| asked.then_some(client))

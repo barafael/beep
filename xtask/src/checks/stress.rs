@@ -1369,7 +1369,7 @@ fn fetched(b33p: &mut Harness, text: &str, count: usize) -> Result<Vec<String>, 
 }
 
 /// Saves the attachment `id`: where to, or why it wasn't.
-fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure> {
+pub(super) fn save(b33p: &mut Harness, id: &str) -> Result<Result<String, String>, Failure> {
     if !b33p.act(Action::SaveAttachment { id: id.to_owned() })? {
         return Err(StressError::NotSaving {
             id: id.to_owned(),
@@ -1478,7 +1478,7 @@ fn accepted(
 }
 
 /// `prefix 001` to `prefix <count>`: in order when compared as text, and told apart in a preview.
-fn numbered(prefix: &str, count: usize) -> Vec<String> {
+pub(super) fn numbered(prefix: &str, count: usize) -> Vec<String> {
     (1..=count).map(|n| format!("{prefix} {n:03}")).collect()
 }
 
@@ -1516,24 +1516,25 @@ fn preview_number(snapshot: &Snapshot, conversation: &str, prefix: &str) -> Opti
 
 /// The texts of the open conversation's messages that start with `prefix`, oldest first, all of
 /// them: loading older pages until none comes.
-fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>, HarnessError> {
+pub(super) fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>, HarnessError> {
     let mut quiet = 0;
     let mut seen = 0;
     loop {
-        let texts: Vec<String> = b33p
-            .snapshot()?
-            .messages
-            .into_iter()
-            .filter(|message| message.text.starts_with(prefix))
-            .map(|message| message.text)
-            .collect();
-        if texts.len() == seen {
+        // Counted over every message loaded, not only those that match: a page of other
+        // messages (an earlier burst's, say) is progress towards the matching ones.
+        let messages = b33p.snapshot()?.messages;
+        let loaded = messages.len();
+        if loaded == seen {
             quiet += 1;
             if quiet == QUIET_LOADS {
-                return Ok(texts);
+                return Ok(messages
+                    .into_iter()
+                    .filter(|message| message.text.starts_with(prefix))
+                    .map(|message| message.text)
+                    .collect());
             }
         } else {
-            seen = texts.len();
+            seen = loaded;
             quiet = 0;
         }
         b33p.act(Action::LoadOlder)?;
@@ -1542,7 +1543,7 @@ fn all_texts(b33p: &mut Harness, prefix: &str) -> Result<Vec<String>, HarnessErr
 }
 
 /// Waits until the open conversation's messages stay the same for a while.
-fn settled(b33p: &mut Harness) -> Result<(), Failure> {
+pub(super) fn settled(b33p: &mut Harness) -> Result<(), Failure> {
     let deadline = Instant::now() + PATIENCE;
     let mut last = None;
     let mut quiet = 0;
@@ -1568,7 +1569,7 @@ fn settled(b33p: &mut Harness) -> Result<(), Failure> {
 }
 
 /// Fails, saying how, unless `found` is `expected`.
-fn in_order_once(found: &[String], expected: &[String]) -> Result<(), StressError> {
+pub(super) fn in_order_once(found: &[String], expected: &[String]) -> Result<(), StressError> {
     if found == expected {
         return Ok(());
     }
@@ -1634,7 +1635,7 @@ fn moments_in(log: &str, texts: &[&[String]]) -> Result<Vec<Vec<String>>, Failur
 }
 
 /// Kills b33p's container, starts it again, and connects to it unlocked.
-fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness, Failure> {
+pub(super) fn kill_and_start(containers: &Pod, sockets: &Sockets) -> Result<Harness, Failure> {
     let since = process::now()?;
     containers.kill(B33P)?;
     // The pod may have started it again already (`restartPolicy: Always`): then this does

@@ -1,0 +1,406 @@
+From 88016e929befac09c91648602f884df0cd37bded Mon Sep 17 00:00:00 2001
+From: Rafael Bachmann <rafael.bachmann.93@gmail.com>
+Date: Fri, 16 Oct 2026 13:43:05 +0200
+Subject: [PATCH] feat(configuration): servers of one's own
+
+`SignalServers::Custom` carries a full `ServiceConfiguration`, so a store
+registered against a test server stays self-describing. The configuration
+serializes in a form a file can hold (URLs, CA PEM, trust roots and
+zkgroup parameters as base64). Contact discovery, which runs in Signal's
+enclaves, reports itself unavailable there.
+
+Assisted-by: anthropic/claude-fable-5-1
+---
+ src/configuration.rs       | 250 +++++++++++++++++++++++++++++++++++--
+ src/push_service/error.rs  |   3 +
+ src/push_service/mod.rs    |  11 +-
+ src/websocket/directory.rs |   2 +-
+ src/websocket/mod.rs       |   4 +-
+ 5 files changed, 256 insertions(+), 14 deletions(-)
+
+diff --git a/src/configuration.rs b/src/configuration.rs
+index d262abcdf..ad7f51fe8 100644
+--- a/src/configuration.rs
++++ b/src/configuration.rs
+@@ -1,5 +1,9 @@
+ use core::fmt;
+-use std::{borrow::Cow, collections::HashMap, str::FromStr};
++use std::{
++    borrow::Cow,
++    collections::{BTreeMap, HashMap},
++    str::FromStr,
++};
+ 
+ use crate::{content::ServiceError, utils::BASE64_RELAXED};
+ use base64::prelude::*;
+@@ -11,7 +15,32 @@ use zkgroup::ServerPublicParams;
+ 
+ use crate::push_service::{HttpAuth, DEFAULT_DEVICE_ID};
+ 
+-#[derive(Clone)]
++/// Where the servers are and what they are trusted with.
++///
++/// Serializes as its wire form: URLs as strings, the CDN map keyed by the CDN number as a
++/// string, trust roots and the zkgroup parameters as base64. For example, in TOML:
++///
++/// ```toml
++/// service_url = "https://127.0.0.1:4443"
++/// storage_url = "https://127.0.0.1:4444"
++/// certificate_authority = """
++/// -----BEGIN CERTIFICATE-----
++/// ...
++/// -----END CERTIFICATE-----
++/// """
++/// unidentified_sender_trust_roots = ["BXu6QIKVz5MA8gstzfOgRQGqyLqOwNKHL6INkv3IHWMF"]
++/// zkgroup_server_public_params = "AMhf5ywV..."
++///
++/// [cdn_urls]
++/// 0 = "https://127.0.0.1:4445"
++/// 2 = "https://127.0.0.1:4445"
++/// 3 = "https://127.0.0.1:4445"
++/// ```
++#[derive(Clone, Serialize, Deserialize)]
++#[serde(
++    try_from = "ServiceConfigurationRepr",
++    into = "ServiceConfigurationRepr"
++)]
+ pub struct ServiceConfiguration {
+     service_url: Url,
+     storage_url: Url,
+@@ -21,6 +50,150 @@ pub struct ServiceConfiguration {
+     pub zkgroup_server_public_params: ServerPublicParams,
+ }
+ 
++impl ServiceConfiguration {
++    /// A configuration for servers other than Signal's, such as a test server.
++    pub fn new(
++        service_url: Url,
++        storage_url: Url,
++        cdn_urls: HashMap<u32, Url>,
++        certificate_authority: String,
++        unidentified_sender_trust_roots: Vec<PublicKey>,
++        zkgroup_server_public_params: ServerPublicParams,
++    ) -> Self {
++        Self {
++            service_url,
++            storage_url,
++            cdn_urls,
++            certificate_authority,
++            unidentified_sender_trust_roots,
++            zkgroup_server_public_params,
++        }
++    }
++
++    /// The chat server: accounts, keys, messages, provisioning.
++    pub fn service_url(&self) -> &Url {
++        &self.service_url
++    }
++
++    /// The storage service: the settings manifest and groups.
++    pub fn storage_url(&self) -> &Url {
++        &self.storage_url
++    }
++
++    /// The CDNs by number: attachments, avatars, stickers.
++    pub fn cdn_urls(&self) -> &HashMap<u32, Url> {
++        &self.cdn_urls
++    }
++}
++
++impl fmt::Debug for ServiceConfiguration {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("ServiceConfiguration")
++            .field("service_url", &self.service_url.as_str())
++            .field("storage_url", &self.storage_url.as_str())
++            .field("cdn_urls", &self.cdn_urls)
++            .finish_non_exhaustive()
++    }
++}
++
++impl PartialEq for ServiceConfiguration {
++    fn eq(&self, other: &Self) -> bool {
++        ServiceConfigurationRepr::from(self.clone())
++            == ServiceConfigurationRepr::from(other.clone())
++    }
++}
++
++impl Eq for ServiceConfiguration {}
++
++/// The serialized form of a [`ServiceConfiguration`].
++#[derive(Serialize, Deserialize, PartialEq, Eq)]
++struct ServiceConfigurationRepr {
++    service_url: Url,
++    storage_url: Url,
++    cdn_urls: BTreeMap<String, Url>,
++    certificate_authority: String,
++    unidentified_sender_trust_roots: Vec<String>,
++    zkgroup_server_public_params: String,
++}
++
++impl From<ServiceConfiguration> for ServiceConfigurationRepr {
++    fn from(cfg: ServiceConfiguration) -> Self {
++        Self {
++            service_url: cfg.service_url,
++            storage_url: cfg.storage_url,
++            cdn_urls: cfg
++                .cdn_urls
++                .into_iter()
++                .map(|(id, url)| (id.to_string(), url))
++                .collect(),
++            certificate_authority: cfg.certificate_authority,
++            unidentified_sender_trust_roots: cfg
++                .unidentified_sender_trust_roots
++                .iter()
++                .map(|key| BASE64_STANDARD.encode(key.serialize()))
++                .collect(),
++            zkgroup_server_public_params: BASE64_STANDARD.encode(
++                bincode::serialize(&cfg.zkgroup_server_public_params)
++                    .expect("server public params serialize"),
++            ),
++        }
++    }
++}
++
++/// What is wrong with a serialized [`ServiceConfiguration`].
++#[derive(Debug, thiserror::Error)]
++pub enum ServiceConfigurationError {
++    #[error("CDN number {0:?} is not a number")]
++    CdnNumber(String),
++    #[error("unidentified sender trust root: {0}")]
++    TrustRoot(String),
++    #[error("zkgroup server public params: {0}")]
++    ZkGroupServerPublicParams(String),
++}
++
++impl TryFrom<ServiceConfigurationRepr> for ServiceConfiguration {
++    type Error = ServiceConfigurationError;
++
++    fn try_from(repr: ServiceConfigurationRepr) -> Result<Self, Self::Error> {
++        let cdn_urls = repr
++            .cdn_urls
++            .into_iter()
++            .map(|(id, url)| {
++                id.parse::<u32>()
++                    .map(|id| (id, url))
++                    .map_err(|_| ServiceConfigurationError::CdnNumber(id))
++            })
++            .collect::<Result<_, _>>()?;
++        let unidentified_sender_trust_roots = repr
++            .unidentified_sender_trust_roots
++            .iter()
++            .map(|key| {
++                let bytes = BASE64_RELAXED.decode(key).map_err(|e| {
++                    ServiceConfigurationError::TrustRoot(e.to_string())
++                })?;
++                PublicKey::deserialize(&bytes).map_err(|e| {
++                    ServiceConfigurationError::TrustRoot(e.to_string())
++                })
++            })
++            .collect::<Result<_, _>>()?;
++        let zkgroup_server_public_params = BASE64_RELAXED
++            .decode(&repr.zkgroup_server_public_params)
++            .map_err(|e| e.to_string())
++            .and_then(|bytes| {
++                bincode::deserialize(&bytes).map_err(|e| e.to_string())
++            })
++            .map_err(ServiceConfigurationError::ZkGroupServerPublicParams)?;
++        Ok(Self {
++            service_url: repr.service_url,
++            storage_url: repr.storage_url,
++            cdn_urls,
++            certificate_authority: repr.certificate_authority,
++            unidentified_sender_trust_roots,
++            zkgroup_server_public_params,
++        })
++    }
++}
++
+ #[derive(Clone)]
+ pub struct ServiceCredentials {
+     pub aci: Option<uuid::Uuid>,
+@@ -59,18 +232,27 @@ impl ServiceCredentials {
+     }
+ }
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++/// Which servers to talk to: Signal's, or some of our own.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ pub enum SignalServers {
+     Staging,
+     Production,
++    /// Servers other than Signal's, such as a test server, described in full.
++    Custom(Box<ServiceConfiguration>),
+ }
+ 
+ #[cfg(feature = "cdsi")]
+-impl From<SignalServers> for libsignal_net::env::Env<'static> {
+-    fn from(servers: SignalServers) -> Self {
++impl TryFrom<&SignalServers> for libsignal_net::env::Env<'static> {
++    type Error = ServiceError;
++
++    /// Contact discovery runs in Signal's enclaves, so there is none for custom servers.
++    fn try_from(servers: &SignalServers) -> Result<Self, Self::Error> {
+         match servers {
+-            SignalServers::Staging => libsignal_net::env::STAGING,
+-            SignalServers::Production => libsignal_net::env::PROD,
++            SignalServers::Staging => Ok(libsignal_net::env::STAGING),
++            SignalServers::Production => Ok(libsignal_net::env::PROD),
++            SignalServers::Custom(_) => {
++                Err(ServiceError::ContactDiscoveryUnavailable)
++            },
+         }
+     }
+ }
+@@ -185,6 +367,7 @@ impl fmt::Display for SignalServers {
+         match self {
+             Self::Staging => f.write_str("staging"),
+             Self::Production => f.write_str("production"),
++            Self::Custom(cfg) => write!(f, "custom ({})", cfg.service_url),
+         }
+     }
+ }
+@@ -199,6 +382,7 @@ impl From<&SignalServers> for ServiceConfiguration {
+     fn from(val: &SignalServers) -> Self {
+         // base configuration from https://github.com/signalapp/Signal-Desktop/blob/development/config/default.json
+         match val {
++            SignalServers::Custom(cfg) => (**cfg).clone(),
+             // configuration with the Signal API staging endpoints
+             // see: https://github.com/signalapp/Signal-Desktop/blob/master/config/default.json
+             SignalServers::Staging => ServiceConfiguration {
+@@ -242,3 +426,55 @@ impl From<&SignalServers> for ServiceConfiguration {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn configuration_round_trips_through_serde() {
++        let production = ServiceConfiguration::from(SignalServers::Production);
++        let json = serde_json::to_string(&production).unwrap();
++        let back: ServiceConfiguration = serde_json::from_str(&json).unwrap();
++        assert_eq!(back, production);
++        assert_eq!(back.service_url().as_str(), "https://chat.signal.org/");
++        assert_eq!(back.cdn_urls().len(), 3);
++        assert_eq!(back.unidentified_sender_trust_roots.len(), 2);
++    }
++
++    #[test]
++    fn servers_keep_their_old_serialized_form() {
++        assert_eq!(
++            serde_json::to_string(&SignalServers::Production).unwrap(),
++            "\"Production\""
++        );
++        let custom = SignalServers::Custom(Box::new(
++            ServiceConfiguration::from(SignalServers::Staging),
++        ));
++        let json = serde_json::to_string(&custom).unwrap();
++        assert!(json.starts_with("{\"Custom\":{"));
++        assert_eq!(
++            serde_json::from_str::<SignalServers>(&json).unwrap(),
++            custom
++        );
++    }
++
++    #[test]
++    fn bad_values_are_refused() {
++        let mut repr = serde_json::to_value(ServiceConfiguration::from(
++            SignalServers::Staging,
++        ))
++        .unwrap();
++        repr["cdn_urls"] = serde_json::json!({ "zero": "https://x.test" });
++        assert!(serde_json::from_value::<ServiceConfiguration>(repr.clone())
++            .unwrap_err()
++            .to_string()
++            .contains("CDN number"));
++        repr["cdn_urls"] = serde_json::json!({});
++        repr["unidentified_sender_trust_roots"] = serde_json::json!(["AAAA"]);
++        assert!(serde_json::from_value::<ServiceConfiguration>(repr)
++            .unwrap_err()
++            .to_string()
++            .contains("trust root"));
++    }
++}
+diff --git a/src/push_service/error.rs b/src/push_service/error.rs
+index a67878584..89faf1484 100644
+--- a/src/push_service/error.rs
++++ b/src/push_service/error.rs
+@@ -137,6 +137,9 @@ pub enum ServiceError {
+     #[error("Not found.")]
+     NotFoundError,
+ 
++    #[error("contact discovery is only available on Signal's servers")]
++    ContactDiscoveryUnavailable,
++
+     #[error("failed to decrypt field from device info: {0}")]
+     DecryptDeviceInfoFieldError(&'static str),
+ 
+diff --git a/src/push_service/mod.rs b/src/push_service/mod.rs
+index 23d131f84..66818c116 100644
+--- a/src/push_service/mod.rs
++++ b/src/push_service/mod.rs
+@@ -87,7 +87,7 @@ impl PushService {
+         credentials: Option<ServiceCredentials>,
+         user_agent: impl AsRef<str>,
+     ) -> Self {
+-        let cfg: ServiceConfiguration = env.into();
++        let cfg = ServiceConfiguration::from(&env);
+ 
+         // Use the ring provider except if the application already installed one.
+         if rustls::crypto::CryptoProvider::get_default().is_none() {
+@@ -175,7 +175,7 @@ impl PushService {
+             .await?;
+ 
+         let unidentified_push_service = PushService {
+-            servers: self.servers,
++            servers: self.servers.clone(),
+             cfg: self.cfg.clone(),
+             credentials: None,
+             client: self.client.clone(),
+@@ -361,8 +361,11 @@ mod tests {
+         let environments = &[SignalServers::Staging, SignalServers::Production];
+ 
+         for env in environments {
+-            let _ =
+-                super::PushService::new(*env, None, "libsignal-service test");
++            let _ = super::PushService::new(
++                env.clone(),
++                None,
++                "libsignal-service test",
++            );
+         }
+     }
+ 
+diff --git a/src/websocket/directory.rs b/src/websocket/directory.rs
+index 1c048f5b3..1466de8ed 100644
+--- a/src/websocket/directory.rs
++++ b/src/websocket/directory.rs
+@@ -64,7 +64,7 @@ impl SignalWebSocket<Identified> {
+         lookup_request: LookupRequest,
+     ) -> Result<Vec<(libsignal_core::E164, Option<ServiceId>)>, ServiceError>
+     {
+-        let env: libsignal_net::env::Env<'_> = self.servers().into();
++        let env = libsignal_net::env::Env::try_from(self.servers())?;
+ 
+         // 1. Get CDSI auth credentials from chat server
+         let cdsi_auth_response = self.get_cdsi_auth().await?;
+diff --git a/src/websocket/mod.rs b/src/websocket/mod.rs
+index bfd293265..96f31ad5a 100644
+--- a/src/websocket/mod.rs
++++ b/src/websocket/mod.rs
+@@ -422,8 +422,8 @@ impl<C: WebSocketType> SignalWebSocket<C> {
+         )
+     }
+ 
+-    pub fn servers(&self) -> SignalServers {
+-        self.unidentified_push_service.servers
++    pub fn servers(&self) -> &SignalServers {
++        &self.unidentified_push_service.servers
+     }
+ 
+     pub fn is_closed(&self) -> bool {
+-- 
+2.56.0
+

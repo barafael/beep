@@ -1,0 +1,80 @@
+# signal-cli (AsamK/signal-cli, Java, libsignal-service-java's fork by Turasa: neither presage nor
+# libsignal-service-rs) built from source at a release, as a client of the box's server: the
+# `signal-cli` that `cargo testbox` runs in this container (`podman exec`), registering accounts
+# of its own and linking to others. The build context is the repository, for the patches.
+#
+# It takes two patches (testbox/patches): signal-cli has Signal's servers only, with their trust
+# roots compiled in, and its chat is libsignal-net's, whose local override the Java library
+# doesn't have. libsignal-cli-local.patch is libsignal-local.patch (Android's) for the version
+# signal-cli takes; signal-cli-local.patch makes signal-cli read the box's keys at run time
+# (/keys/desktop-config.json, SIGNAL_CLI_TESTBOX_CONFIG), so that the image doesn't depend on them
+# as Android's APK does.
+
+# Temurin's, as the server's Containerfile takes it: the JDK to build, the JRE to run. signal-cli
+# compiles for Java 25 (build.gradle.kts `VERSION_25`).
+FROM docker.io/library/eclipse-temurin:25-jdk@sha256:b8705e936964c228dfce359e63dbf08f6c69cb380ed1d576b1f6b1064f15567d AS jdk
+FROM docker.io/library/eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699 AS jre
+
+# libsignal v0.106.1 with libsignal-cli-local.patch, its JNI libraries and the testing one built
+# for the desktop (java/build_jni.sh `desktop`: x86_64 only here, the box's), in libsignal-client's
+# jar under 0.106.1-testbox. On Debian's JDK 21, as libsignal's Java build is on in the Android
+# image (testbox/android/Containerfile).
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS libsignal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git unzip openjdk-21-jdk-headless \
+        clang cmake make libclang-dev protobuf-compiler libprotobuf-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+# rustup as libsignal's java/Dockerfile pins it; the toolchain its rust-toolchain names.
+ADD --chmod=755 --checksum=sha256:20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c \
+    https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init /tmp/rustup-init
+ENV PATH=/root/.cargo/bin:${PATH}
+RUN /tmp/rustup-init -y --profile minimal --default-toolchain 1.98.1 && rm /tmp/rustup-init
+# v0.106.1.
+ARG LIBSIGNAL_REV=904c8dc8216073b078a5f2f5090e3da8382e6a92
+WORKDIR /opt/libsignal
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/libsignal "$LIBSIGNAL_REV" \
+    && git checkout -q FETCH_HEAD
+COPY testbox/patches/libsignal-cli-local.patch /tmp/
+RUN git apply /tmp/libsignal-cli-local.patch
+# Kotlin compiles in Gradle's own process (as the Android image's builds do). The jar is copied
+# out within the step: the Rust target directory is a cache mount.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.gradle \
+    --mount=type=cache,id=libsignal-0.106.1-target,target=/opt/libsignal/target \
+    cd java && ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -PskipAndroid :client:jar \
+    && mkdir -p /out && cp client/build/libs/libsignal-client-0.106.1-testbox.jar /out/ \
+    && unzip -l /out/libsignal-client-0.106.1-testbox.jar | grep -E 'libsignal_jni(_testing)?_amd64\.so'
+
+# signal-cli at v0.14.10, patched, as its own build installs it (`installDist`), against that jar:
+# lib/build.gradle.kts takes libsignal-client from `libsignal_client_path` instead of Maven.
+FROM jdk AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+ARG SIGNAL_CLI_REV=8890c1bb7fd266444e83f6c5a91a7d5b6095d2b3
+WORKDIR /opt/signal-cli-src
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/AsamK/signal-cli "$SIGNAL_CLI_REV" \
+    && git checkout -q FETCH_HEAD \
+    && test "$(cat libsignal-version)" = 0.106.1
+COPY testbox/patches/signal-cli-local.patch /tmp/
+RUN git apply /tmp/signal-cli-local.patch
+COPY --from=libsignal /out/libsignal-client-0.106.1-testbox.jar /opt/libsignal/libsignal-client-0.106.1-testbox.jar
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew --no-daemon installDist \
+        -Plibsignal_client_path=/opt/libsignal/libsignal-client-0.106.1-testbox.jar \
+    && ls build/install/signal-cli/lib | grep -E '^libsignal-client'
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+COPY --from=jre /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_HOME=/opt/java/openjdk PATH=/opt/java/openjdk/bin:/opt/signal-cli/bin:$PATH
+# The JVM decodes its arguments in the locale's charset (sun.jnu.encoding): under the image's
+# POSIX locale that is ASCII, and an emoji given to `sendReaction -e`, or any text with a
+# non-ASCII character, reached the server as replacement characters. UTF-8, as a user's is.
+ENV LC_ALL=C.utf8
+COPY --from=build /opt/signal-cli-src/build/install/signal-cli /opt/signal-cli
+# The box's configuration for the patched signal-cli (testbox/patches/signal-cli-local.patch).
+ENV SIGNAL_CLI_TESTBOX_CONFIG=/keys/desktop-config.json
+# The accounts' data: a volume (testbox/signal-cli/pod.yaml).
+WORKDIR /signal-cli
+CMD ["sleep", "infinity"]

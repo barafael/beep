@@ -16,15 +16,19 @@ mod core;
 mod crashed;
 mod desktop;
 mod errors;
+mod family;
 mod groups;
 mod large_group;
 mod lost;
 mod media;
+mod mixed;
 mod network;
 mod presage;
 pub(crate) mod record;
 mod rng;
 mod setup;
+mod signal_cli;
+mod signalmeow;
 mod storage;
 mod stress;
 mod tour;
@@ -35,7 +39,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use strum::VariantArray;
 
-use crate::phase::{AndroidPhase, LinkedPhase, MeshPhase, Phase, StressPhase};
+use crate::phase::{
+    AndroidPhase, FamilyPhase, InteropPhase, LinkedPhase, MeshPhase, Phase, StressPhase,
+};
 use crate::pod::{Client, Pod};
 use crate::{Sockets, TestOptions};
 
@@ -145,7 +151,8 @@ pub(crate) fn run(
     let linked = chosen(phases, Phase::Linked);
     let android = chosen(phases, Phase::Android);
     let linked_clients = [Client::Desktop];
-    let android_clients = [Client::Desktop, Client::Android];
+    let android_app = b33p.android_app.client();
+    let android_clients = [Client::Desktop, android_app];
     containers.build_server()?;
 
     // The Android image's build takes longest, most of an hour when Signal-Android changed: it
@@ -154,7 +161,7 @@ pub(crate) fn run(
     let mut android_image = if android.is_empty() {
         None
     } else {
-        Some(containers.build_beside(Client::Android)?)
+        Some(containers.build_beside(android_app)?)
     };
     // Once it failed, every box that needs it fails (with `--fresh`, each Android phase has one):
     // the image there is an earlier build's.
@@ -163,8 +170,41 @@ pub(crate) fn run(
     let desktop = !linked.is_empty()
         || !android.is_empty()
         || phases.contains(&Phase::Stress(StressPhase::Concurrency));
-    let built: &[Client] = if desktop { &linked_clients } else { &[] };
-    containers.build_others(built, b33p.optimized)?;
+    // Only when named, as the stress phases: signal-cli's on the shared interop box, signalmeow's
+    // on a box of its own.
+    let interop: Vec<InteropPhase> = InteropPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phase == InteropPhase::SignalCli)
+        .filter(|&phase| phases.contains(&Phase::Interop(phase)))
+        .collect();
+    // Only when named, as the stress phases: the presage family's image is a long build.
+    let family: Vec<FamilyPhase> = FamilyPhase::VARIANTS
+        .iter()
+        .copied()
+        .filter(|&phase| phases.contains(&Phase::Family(phase)))
+        .collect();
+    let mut built: Vec<Client> = if desktop {
+        linked_clients.to_vec()
+    } else {
+        Vec::new()
+    };
+    if interop.contains(&InteropPhase::SignalCli) {
+        built.push(Client::SignalCli);
+    }
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow))
+        || phases.contains(&Phase::Interop(InteropPhase::Mixed))
+    {
+        built.push(Client::Signalmeow);
+    }
+    if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
+        built.push(Client::SignalCli);
+        built.push(Client::Family);
+    }
+    if !family.is_empty() {
+        built.push(Client::Family);
+    }
+    containers.build_others(&built, b33p.optimized)?;
     let play = |clients: &[Client], b33ps: u8| -> Result<(), Failure> {
         containers.fresh(clients, b33ps)?;
         Ok(b33p.limit_memory(containers, b33ps)?)
@@ -273,6 +313,27 @@ pub(crate) fn run(
             },
         );
     }
+    if phases.contains(&Phase::Interop(InteropPhase::Signalmeow)) {
+        on_own_box(
+            &mut tally,
+            InteropPhase::Signalmeow.into(),
+            || play(&[Client::Signalmeow], b33ps),
+            |checks| signalmeow::signalmeow(checks, containers, &sockets, &files),
+        );
+    }
+    if phases.contains(&Phase::Interop(InteropPhase::Mixed)) {
+        on_own_box(
+            &mut tally,
+            InteropPhase::Mixed.into(),
+            || {
+                play(
+                    &[Client::SignalCli, Client::Signalmeow, Client::Family],
+                    b33ps,
+                )
+            },
+            |checks| mixed::mixed(checks, containers, &sockets, &files),
+        );
+    }
     on_fixture(
         &mut tally,
         "mesh",
@@ -290,6 +351,37 @@ pub(crate) fn run(
             ),
         },
     );
+    on_fixture(
+        &mut tally,
+        "interop",
+        &interop,
+        || play(&[Client::SignalCli], b33ps),
+        |checks| setup::interop_box(checks, containers, &sockets),
+        |phase, checks, fixture| match phase {
+            InteropPhase::Signalmeow | InteropPhase::Mixed => {
+                Err("this phase runs on a box of its own, not the interop box".into())
+            }
+            InteropPhase::SignalCli => signal_cli::signal_cli(
+                checks,
+                fixture,
+                containers,
+                &files,
+                // Any picture will do; this one is in the repository already.
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
+        },
+    );
+    for phase in family {
+        on_own_box(
+            &mut tally,
+            phase.into(),
+            || play(&[Client::Family], b33ps),
+            |checks| match phase {
+                FamilyPhase::Gurk => family::gurk(checks, containers, &sockets),
+                FamilyPhase::Flare => family::flare(checks, containers, &sockets),
+            },
+        );
+    }
     Ok(tally.finish()?)
 }
 

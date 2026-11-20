@@ -245,10 +245,17 @@ pub enum Service {
     Storage,
     Cdn0,
     Presage,
+    /// signal-cli, with `--signal-cli` (testbox/signal-cli): a client of neither presage's nor
+    /// libsignal-service-rs's making.
+    SignalCli,
     /// The `n`th b33p of [`Pod::play`]'s: every box has the first, a mesh several.
     B33p(u8),
     Desktop,
     Android,
+    /// signalmeow's driver (`Client::Signalmeow`), which `podman exec` runs as it does presage-cli.
+    Signalmeow,
+    /// With `--family`, gurk-rs and Flare's backend (testbox/family).
+    Family,
     /// With `--capture`, the packet capture (testbox/capture).
     Capture,
     /// Where the clients' link is impaired from ([`Pod::impair`]).
@@ -291,10 +298,13 @@ impl Service {
             Self::Storage => "storage".to_owned(),
             Self::Cdn0 => "cdn0".to_owned(),
             Self::Presage => "presage".to_owned(),
+            Self::SignalCli => "signal-cli".to_owned(),
             Self::B33p(0) => "b33p".to_owned(),
             Self::B33p(n) => format!("b33p-{n}"),
             Self::Desktop => "desktop".to_owned(),
             Self::Android => "android".to_owned(),
+            Self::Signalmeow => "signalmeow".to_owned(),
+            Self::Family => "family".to_owned(),
             Self::Capture => "capture".to_owned(),
             Self::Netem => "netem".to_owned(),
         }
@@ -362,6 +372,34 @@ impl Ready {
 pub enum Client {
     Desktop,
     Android,
+    #[strum(serialize = "signal-cli")]
+    SignalCli,
+    /// mautrix-signal's signalmeow, in Go, driven by testbox/signalmeow/driver.
+    Signalmeow,
+    /// gurk-rs and Flare's backend, on the presage and libsignal-service they ship with.
+    Family,
+    /// Molly, in the place of [`Client::Android`]: its container is `android` too
+    /// (testbox/molly/pod.yaml), so the box has one of the two ([`AndroidApp`]).
+    Molly,
+}
+
+/// The app on the box's Android emulator: Signal-Android, or Molly (testbox/molly,
+/// docs/onboarding-molly.md), a hardened fork of it at an older release.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum AndroidApp {
+    #[default]
+    Signal,
+    Molly,
+}
+
+impl AndroidApp {
+    /// The client that puts it in the pod.
+    pub fn client(self) -> Client {
+        match self {
+            Self::Signal => Client::Android,
+            Self::Molly => Client::Molly,
+        }
+    }
 }
 
 impl Client {
@@ -410,7 +448,7 @@ enum Priority {
     Lower,
 }
 
-const IMAGES: [Image; 10] = [
+const IMAGES: [Image; 14] = [
     Image {
         name: SERVER,
         containerfile: "testbox/server/Containerfile",
@@ -466,6 +504,31 @@ const IMAGES: [Image; 10] = [
         name: "android",
         containerfile: "testbox/android/Containerfile",
         client: Some(Client::Android),
+        from_server: true,
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "signal-cli",
+        containerfile: "testbox/signal-cli/Containerfile",
+        client: Some(Client::SignalCli),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "signalmeow",
+        containerfile: "testbox/signalmeow/Containerfile",
+        client: Some(Client::Signalmeow),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "family",
+        containerfile: "testbox/family/Containerfile",
+        client: Some(Client::Family),
+        ..Image::REPOSITORY
+    },
+    Image {
+        name: "molly",
+        containerfile: "testbox/molly/Containerfile",
+        client: Some(Client::Molly),
         from_server: true,
         ..Image::REPOSITORY
     },
@@ -1221,6 +1284,41 @@ impl Pod {
         process::output(exec, stdin)
     }
 
+    /// Starts `argv` in `service` without a shell, its stdout and stderr piped, and returns it
+    /// running: for a command that talks while it runs (signalmeow's `link` prints the URL a
+    /// primary adds, then waits for it to).
+    pub fn spawn_exec(&self, service: Service, argv: &[&str]) -> Result<Child, PodError> {
+        let mut exec = podman(&["exec", "-i", &self.container(service)]);
+        exec.args(argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        exec.spawn().map_err(|source| PodError::StartExec {
+            service,
+            argv: argv.iter().map(|&arg| arg.to_owned()).collect(),
+            source,
+        })
+    }
+
+    /// [`Self::spawn_exec`] with its stdin piped, for a command that takes commands as it runs
+    /// (signalmeow's `serve`).
+    pub fn spawn_exec_interactive(
+        &self,
+        service: Service,
+        argv: &[&str],
+    ) -> Result<Child, PodError> {
+        let mut exec = podman(&["exec", "-i", &self.container(service)]);
+        exec.args(argv)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        exec.spawn().map_err(|source| PodError::StartExec {
+            service,
+            argv: argv.iter().map(|&arg| arg.to_owned()).collect(),
+            source,
+        })
+    }
+
     /// Runs `argv` in `service` without a shell, and returns how it ended, whatever that was.
     pub fn exec_status(
         &self,
@@ -1617,6 +1715,23 @@ mod tests {
         assert!(rendered.contains(&format!(r#"path: "{}/target/testbox-run""#, repo.display())));
     }
 
+    /// signalmeow's container is in the pod only when asked for, with its own volume claim and
+    /// its image under the pod's name.
+    #[test]
+    fn signalmeow_is_in_the_pod_when_asked_for() {
+        let pod = Pod::new(&repo(), Some("two")).expect("an instance");
+        let without = pod.render(&[], 1).expect("pod.yaml");
+        let image = r#"image: "localhost/b33p-testbox.two-signalmeow","#;
+        assert!(!without.contains(image), "{without}");
+        let with = pod.render(&[Client::Signalmeow], 1).expect("pod.yaml");
+        assert!(with.contains(image), "{with}");
+        assert!(with.contains(r#"claimName: "b33p-testbox.two-signalmeow""#));
+        assert_eq!(
+            pod.container(Service::Signalmeow),
+            "b33p-testbox.two-signalmeow"
+        );
+    }
+
     /// An instance's names and directories are its own, and pod.yaml leaves none of the
     /// default box's: two boxes share nothing.
     #[test]
@@ -1671,6 +1786,22 @@ mod tests {
         assert!(default.iter().all(|claim| !two.contains(claim)));
         // What an older xtask's wipe takes, `name=^b33p-testbox-`, is none of an instance's.
         assert!(two.iter().all(|claim| !claim.starts_with("b33p-testbox-")));
+    }
+
+    /// signal-cli's container is in the pod only when asked for, its volume in every box's (so
+    /// that a wipe takes it).
+    #[test]
+    fn signal_cli_is_there_only_when_asked_for() {
+        let pod = Pod::new(&repo(), Some("cli")).unwrap();
+        let without = pod.render(&[Client::Desktop], 1).unwrap();
+        let with = pod.render(&[Client::SignalCli], 1).unwrap();
+        assert!(!without.contains("name: \"signal-cli\",\n        image"));
+        assert!(with.contains("image: \"localhost/b33p-testbox.cli-signal-cli\""));
+        for rendered in [&without, &with] {
+            assert!(claims(rendered).contains(&"b33p-testbox.cli-signal-cli".to_owned()));
+        }
+        assert_eq!(Service::SignalCli.name(), "signal-cli");
+        assert!(<Client as std::str::FromStr>::from_str("signal-cli").is_ok());
     }
 
     #[test]

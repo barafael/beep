@@ -1,0 +1,55 @@
+# signalmeow, the Go Signal implementation inside mautrix-signal (pkg/signalmeow, with pkg/libsignalgo,
+# its cgo bindings to libsignal's FFI), driven by testbox/signalmeow/driver: a client that uses
+# neither presage nor libsignal-service (Rust or Java): its own websocket, HTTP and gRPC code
+# over Signal's protocol buffers, and libsignal only for the cryptography. Built from source at
+# the pins below, and patched to reach the box (testbox/patches/signalmeow-local.patch); the
+# build context is the repository. `cargo testbox` runs the driver in the container with
+# `podman exec`, as it runs presage-cli.
+
+# libsignal's FFI as mautrix-signal's submodule pins it (pkg/libsignalgo/libsignal, tag v0.106.1,
+# which pkg/libsignalgo/signalversion names), as build-rust.sh builds it.
+FROM docker.io/library/rust:1-trixie@sha256:e259494b14672950a909b4c54527e19d29cae6ebf980672114c8bb85e5594e4a AS libsignal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang cmake git libprotobuf-dev pkg-config protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+ARG LIBSIGNAL_REV=904c8dc8216073b078a5f2f5090e3da8382e6a92
+WORKDIR /opt/libsignal
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/signalapp/libsignal "$LIBSIGNAL_REV" \
+    && git checkout -q FETCH_HEAD
+# The target cache is the host's, shared by every worktree's and every box's builds: locked, so
+# that one build at a time writes it and copies out what it built.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/opt/libsignal/target,sharing=locked \
+    cargo build -p libsignal-ffi --release --locked \
+    && mkdir /out && cp target/release/libsignal_ffi.a /out/
+
+FROM docker.io/library/golang:1.27-trixie@sha256:c47c3fda018d13d43a6bf5ebac3e5bba8a23a35782aa4faf531afaf47c64c39f AS driver
+# zlib for the link: libsignalgo's cflags.go (`-lz`).
+RUN apt-get update && apt-get install -y --no-install-recommends zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+ARG MAUTRIX_SIGNAL_REV=01626c1428f2701d3b6c8f6f737ad343e391bdd9
+WORKDIR /src/mautrix-signal
+RUN git init -q . \
+    && git fetch -q --depth 1 https://github.com/mautrix/signal "$MAUTRIX_SIGNAL_REV" \
+    && git checkout -q FETCH_HEAD
+COPY testbox/patches/signalmeow-local.patch /tmp/
+RUN git apply /tmp/signalmeow-local.patch
+COPY --from=libsignal /out/libsignal_ffi.a /usr/local/lib/
+# The driver has a module of its own, on the patched source (its go.mod's `replace`), so that the
+# modules it needs are the ones go.sum names: `-mod=readonly` refuses any other.
+COPY testbox/signalmeow/driver /src/driver
+WORKDIR /src/driver
+ENV CGO_ENABLED=1 LIBRARY_PATH=/usr/local/lib GOFLAGS=-mod=readonly
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    gofmt -l . | (! grep .) \
+    && go vet ./... \
+    && go build -trimpath -o /out/signalmeow-driver .
+
+FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# The FFI links libstdc++ and zlib dynamically (libsignalgo's cflags.go).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=driver /out/signalmeow-driver /usr/local/bin/
