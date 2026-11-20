@@ -174,9 +174,7 @@ impl Sending {
 }
 
 /// Whom a send to many reached, by its results; each that failed is logged.
-fn reached(
-    results: Vec<presage::libsignal_service::sender::SendMessageResult>,
-) -> Vec<ServiceId> {
+fn reached(results: Vec<presage::libsignal_service::sender::SendMessageResult>) -> Vec<ServiceId> {
     results
         .into_iter()
         .filter_map(|result| match result {

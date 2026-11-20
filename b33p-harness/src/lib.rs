@@ -607,6 +607,10 @@ pub struct Snapshot {
     pub join: Option<JoinSnapshot>,
     /// The story shown, while one is.
     pub story: Option<StorySnapshot>,
+    /// Where a story can go besides groups: My Story first, then the account's own lists, as
+    /// the phone keeps them; empty while stories are off.
+    #[serde(default)]
+    pub story_lists: Vec<StoryListSnapshot>,
     pub settings: SettingsSnapshot,
     pub stickers: StickersSnapshot,
     /// The phone's chat folders, in its order.
@@ -749,6 +753,17 @@ pub struct StorySnapshot {
     pub count: usize,
     /// A text story's text; a picture story has none.
     pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoryListSnapshot {
+    /// The conversation id to post to it with ([`Action::PostStoryText`]'s `group`), `s:` and
+    /// the list's id in hex; My Story's is all zeros.
+    pub id: String,
+    /// "My Story", or the list's name.
+    pub title: String,
+    /// The service ids a story to it goes to now.
+    pub recipients: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
