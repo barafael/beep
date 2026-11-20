@@ -41,7 +41,7 @@ read, answered and reacted to:
 
 Payments and calls are out of scope. b33p is young: see [PLAN.md](PLAN.md) for where it stands,
 [TESTPLAN.md](TESTPLAN.md) for what is checked by hand, and [CHANGELOG.md](CHANGELOG.md) for
-what changed. It is not made or endorsed by Signal.
+what changed; [docs/](docs/README.md) lists the rest. It is not made or endorsed by Signal.
 
 ## Installing
 
@@ -116,7 +116,7 @@ title, and it answers whatever you send.
 | Crate | What it is |
 |---|---|
 | `b33p-core` | The chat state and the backends: the real Signal backend (over [presage](https://github.com/whisperfish/presage)) and the mock. A headless state machine: events in, updates out; actions return commands. |
-| `b33p-slint` | The window: Slint UI wired to the chat state, tray, notifications playback, and the agent harness. |
+| `b33p-slint` | The window: Slint UI wired to the chat state, tray, notifications, and the agent harness. |
 | `b33p-dioxus` | The Android app: the same client with its screens drawn by [Dioxus](https://dioxuslabs.com) in the system's WebView, for a phone. Early: see [its README](b33p-dioxus/README.md). |
 | `b33p-platform` | What the windows ask of the desktop, whichever toolkit draws them: one copy of b33p, the log, autostart, the clipboard, audio, reduced motion, file dialogs. |
 | `b33p-notify` | Desktop notifications with click-to-open and inline reply. |
@@ -156,7 +156,8 @@ B33P_MOCK=1 B33P_AGENT_SOCKET="$XDG_RUNTIME_DIR/b33p-agent.sock" \
 ```
 
 The screenshots above were taken that way: a script opened the mock, clicked around, and
-captured the window at each step.
+captured the window at each step ([docs/screenshots/shoot.py](docs/screenshots/shoot.py), in the
+private display of [testbox/view](testbox/view/view.sh)).
 
 ## Tests
 
@@ -174,9 +175,9 @@ Signal-Desktop and Signal-Android in a Podman pod with no egress, and checks b33
 for what it needs and how to run it:
 
 ```sh
-cargo testbox test                # every phase
+cargo testbox test                # the default phases (not stress-*, tour, interop, family-*)
 cargo testbox test core           # one
-cargo test -p xtask -- --ignored  # every phase, as a test
+cargo test -p xtask -- --ignored  # the default phases, as a test
 ```
 
 ## License

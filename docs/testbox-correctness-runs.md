@@ -1,5 +1,8 @@
 # Testbox correctness runs, 2026-11-08 (after the dependency update)
 
+> b33p-gpui and `--ui` were removed on 2026-11-19 (5b664ba); the commands with `--ui gpui` no
+> longer run.
+
 Both windows, one after the other, on `origin/main` at 5635e27 (the merge of #155, the
 dependency update), on a box of its own (`--instance correct`), in a debug build:
 

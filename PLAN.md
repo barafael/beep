@@ -43,31 +43,17 @@ done when every check is ✅ or has an issue noted here.
 
 ## 2. Make the build stand on its own
 
-Done: every change we need in presage and libsignal-service is offered upstream, and b33p
-builds from branch `langis/integration` of each fork: upstream main plus our open pull requests,
-so what b33p runs is exactly what is proposed. Nothing waits on a merge.
-
-- libsignal-service-rs: #473 group calls, #474 drop sync messages from other accounts on the
-  PNI receive path too (a security fix; reproducer in `~/libsignal-pni-sync-repro`), #476 send a
-  sync message to ourselves once, not twice.
-- presage: #442 history-transfer key on `RegistrationData`, #447 wait for the history archive
-  (stacked on #442), #443 paged thread reads, #444 storage service from a linked device,
-  #445 drop sync messages from other accounts, #446 a linked device unlinks itself, #448 create
-  and change groups (draft until #473 lands; it pins libsignal-service to #473 meanwhile),
-  #449 report only real identity changes, and note them, #450 pin an identity required for
-  sending, #453 only a message's sender deletes or edits it, #454 write transactions take the
-  lock up front, #460 the provisioning link logged at debug, #461 why a message failed to
-  decrypt, and retry receipts as their own event.
-- rusqlite (whisperfish's SQLCipher fork), through branch `langis/integration` of our fork:
-  whisperfish/rusqlite#2 (not ours) builds on Linux arm64 and ends a crash at exit; ours, #3, lets the
-  Rust crypto provider build on Windows without OpenSSL.
+Done: b33p builds from branch `langis/integration` of our presage, libsignal-service-rs and
+rusqlite forks: upstream main plus our open pull requests, and a few changes without a PR yet.
+The comments above each pin in the workspace `Cargo.toml` list them, theme by theme with their PR
+numbers, and are updated at each rebase. The Slint fork's topics are in
+[pending/branches.md](pending/branches.md).
 
 Contact discovery brings BoringSSL, so SQLCipher uses a crypto provider in Rust and nothing links
 OpenSSL. On Windows arm64, BoringSSL is built with Ninja and clang-cl (MSVC can't assemble it).
 
 Upstream asks for short pull requests, commits and comments, and `Assisted-by:` rather than
-`Co-Authored-By:` (their AGENTS.md). #444 and #449 are one commit each now; #448 is the feature
-plus the temporary #473 pin.
+`Co-Authored-By:` (their AGENTS.md).
 
 Left: when upstream moves or a pull request changes, rebuild the integration branches (cherry-pick
 the PR branches onto the new main) and bump the revisions in `Cargo.toml`; drop each entry as its
@@ -113,8 +99,8 @@ By how much they matter, most first:
   in the storage service, so this needs the storage write to be proven first); replies and
   reactions; removing stories their author deleted; Signal's own setting for story receipts
   (they follow read receipts now).
-- **Media:** recording voice messages (audio input across desktops); a seek bar; animated
-  GIFs and video thumbnails (need a video decoder).
+- **Media:** recording voice messages (audio input across desktops); animated GIFs and video
+  thumbnails (need a video decoder).
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart
   (presage overwrites the stored message first); a group counts as read once any member read a
   message; pinned chats move by menu, not by dragging.
@@ -125,7 +111,8 @@ By how much they matter, most first:
   follows a link, and a selecting press takes the focus, as in a `TextInput`), pinned as a git
   dependency in the workspace. An input laid over the styled text to fake it was tried first and
   dropped: a second copy of the text, drifting along bold and code, in the way of links. Left:
-  see the review of slint-ui/slint#13985 through and drop the fork once a release carries it.
+  drop the fork once a Slint release carries it (the fork's other topics:
+  [pending/branches.md](pending/branches.md)).
 - **Tests:** a sticker picker test that sees the stickers (the testing backend doesn't lay
   out popups).
 - **Device name:** renaming a device that is already linked (presage has no call for it yet;
@@ -135,7 +122,8 @@ By how much they matter, most first:
   notarizing the builds; a menu-bar icon that follows the menu bar's colours (Slint's tray has
   no template images); opening the window from the Dock icon, unchecked; starting with the
   system.
-- **Windows:** an installer, and signing (SmartScreen).
+- **Windows:** code signing (SmartScreen). The zip installs itself already, and updates are
+  minisign-signed ([docs/updates.md](docs/updates.md)).
 
 ## 4. Ready for others
 

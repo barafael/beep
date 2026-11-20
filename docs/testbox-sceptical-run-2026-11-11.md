@@ -33,16 +33,15 @@ step and the clippy runs with the feature are not.)
   feature in `just lint` and CI; also an ERROR line when b33p's backend stops without saying why,
   found by a second control, M2, in the investigation of finding 3). Verified: GPUI `desktop` and
   `core`, Slint `core`, 127 GPUI e2e tests, clippy, fmt.
-- Finding 2, **half answered**: `../beep-mem/docs/testbox-soak-memory-2026-11-11.md`. The history
+- Finding 2, **half answered**: [testbox-soak-memory-2026-11-11.md](testbox-soak-memory-2026-11-11.md). The history
   costs about 6 MiB; a running b33p holds about 26 MiB more than a fresh one with the same history,
   in live heap, not fragmentation. The owner of that memory is not found.
-- Finding 3, **investigated**: `../beep-fixes/docs/testbox-silent-loss-2026-11-11.md`. Three handlers
+- Finding 3, **investigated**: [testbox-silent-loss-2026-11-11.md](testbox-silent-loss-2026-11-11.md). Three handlers
   nothing checks (read on the phone, blocked on the phone, a request answered on the phone), and a
   list of what to add.
-- Speed and isolation: `../beep-speed/docs/testbox-speed-isolation-2026-11-11.md` (patch beside
-  it): a round from 18.7 to 13.7 minutes, 8.7 with `--jobs 2`; `--fresh` from 36 to 9 minutes with
+- Speed and isolation: [testbox-speed-isolation-2026-11-11.md](testbox-speed-isolation-2026-11-11.md): a round from 18.7 to 13.7 minutes, 8.7 with `--jobs 2`; `--fresh` from 36 to 9 minutes with
   `--jobs 4`.
-- Finding 8, **partly fixed**: `../beep-storage/docs/storage-manifest-2026-11-11.md`. The unversioned
+- Finding 8, **partly fixed**: [storage-manifest-2026-11-11.md](storage-manifest-2026-11-11.md). The unversioned
   whole-manifest calls are gone (15 to 2 in a run of the `storage` phase alone), but the manifests
   downloaded in all fell only from 25 to 22: b33p still downloads each new manifest twice;
   the rest needs a change in presage (the `FetchLatest` branch of its receive loop, a patch is
@@ -128,7 +127,8 @@ error[E0769]: tuple variant `Action::SetSettings` written as struct variant
   on `main` until the patch below lands.
 - The patch I used (10 lines added, 18 removed: wrap the pattern in `SettingsChange { … }`, build
   the test's action with `..SettingsChange::default()`) is in
-  `docs/testbox-sceptical-run-2026-11-11-mutations/gpui-setsettings.patch` and applied only in the
+  `docs/testbox-sceptical-run-2026-11-11-mutations/gpui-setsettings.patch` (deleted with the GPUI
+  client, #178) and applied only in the
   worktree `../beep-sceptic-gpui`; `main` is untouched. With it `cargo check -p
   b33p-gpui --features harness --tests` passes and B and G3 passed.
 - Fixed in `../beep-fixes` (uncommitted): the patch, plus the same step in `just test`, and clippy
@@ -154,7 +154,7 @@ The 45-minute soak (seed 1794359349, 2,550 messages received) passed
   per message if all of it is that, against about 235 bytes of content per message in
   `content-b33p.jsonl`) or a leak. The 2026-11-08 extended run saw the same shape (35 to 68 MiB
   in 30 minutes, "Q7 in `performance-open-questions.md`"; the question about this soak is Q13
-  there, which extends Q7). The experiment that would tell: two
+  there, which extends Q7; (deleted 2026-11-20 with the GPUI client, #178: `git show 1c74cc0^:docs/performance-open-questions.md`)). The experiment that would tell: two
   soaks with different message rates, or one soak followed by a long idle stretch, and compare
   growth per message with growth per minute.
 - Tours show the same direction: each b33p went from 66–71 MiB to 78–118 MiB in a few minutes.
@@ -261,7 +261,7 @@ Android's `sdkmanager` installs without a version: `platform-tools` and the syst
 revisions the Containerfile then asserts (one that moved fails the build), and
 `platforms;android-37.0`, whose revision it does not. A rebuild without the layer cache can pull
 newer packages and a newer platform. The emulator was already caught once, when Google
-moved it (observations.md, 2026-10-31). `testbox/gpui-view/Containerfile` uses `archlinux:latest`
+moved it ([testbox-runs-2026-10-31.md](testbox-runs-2026-10-31.md)). `testbox/gpui-view/Containerfile` (now `testbox/view/Containerfile`) uses `archlinux:latest`
 (not in the pod). The README's sentence is slightly stronger than that.
 
 ### 10. Small things

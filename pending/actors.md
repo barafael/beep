@@ -49,7 +49,10 @@ grows, one at a time, each with the testbox phases run before and after.
 - **Tests without sleeps.** Queue the messages, drop the sender, run the loop, assert on the
   state it returns.
 
-## Where it stands
+## Where it stands (checked 2026-11-21)
+
+Steps 1, 4 and 7 are done; 2, 3, 5 and 6 are open (`ctx.expiring` and `ctx.storage_changed` are
+still `Notify`s); 8 waits for presage#473, still open.
 
 | Today | Shares | Becomes |
 |---|---|---|
@@ -57,8 +60,8 @@ grows, one at a time, each with the testbox phases run before and after.
 | `LocalStore::update` | the settings table | one transaction (step 1, #61) |
 | `sweep_expired`, `expire_stories` | `ctx.expiring` (`Notify`), the tables | `Expiry` (step 2) |
 | `follow_storage`, `write_storage` | `ctx.storage_changed`, `storage_read` | `Storage` (step 3; its merge is one transaction since #61) |
-| `AvatarFetcher` | `Rc<Cell<AvatarRun>>`, `threads` | `Avatars` (step 4) |
-| `ctx.threads`, `ctx.trust` | 17 and 4 uses in signal.rs | `Registry` (step 5) |
+| `AvatarFetcher` | `Rc<Cell<AvatarRun>>`, `threads` | `Avatars` (step 4, done: `signal/avatars.rs`) |
+| `ctx.threads`, `ctx.trust` | about 25 uses across `signal/*.rs` | `Registry` (step 5) |
 | `receive`, the command loop | all of the above | sources that send to the actors (step 6) |
 | attachment fetch / save / open | `download_limit` only | stay tasks |
 
@@ -99,7 +102,7 @@ core`, `groups`, `storage`) run before and after.
    events. `Repairs` moves into `receive`, its only user (with the session resets it limits
    going through `Sending`).
 
-7. **Split signal.rs.** One module per actor (outbox.rs already), so that signal.rs keeps the
+7. **Split signal.rs** (done: `signal/*.rs`). One module per actor (outbox.rs already), so that signal.rs keeps the
    session's start and end, and the handlers.
 
 8. **When presage serializes sessions** (whisperfish/presage#473): `Sending` stays, for ordering
