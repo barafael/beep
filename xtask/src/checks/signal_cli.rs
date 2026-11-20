@@ -746,12 +746,40 @@ fn await_received(
     }
 }
 
-/// Whether two encoded pictures show the same: the same size and pixels.
-fn same_pixels(one: &[u8], other: &[u8]) -> bool {
-    match (image::load_from_memory(one), image::load_from_memory(other)) {
-        (Ok(one), Ok(other)) => one.to_rgba8() == other.to_rgba8(),
-        _ => false,
+/// How far, on average, a received picture's channels may be from the sent one's (of 255): b33p
+/// sends a picture as Signal's apps do (b33p-core `attachments::scale`), a PNG without
+/// transparency as a JPEG of quality 70 and a large one smaller, so the pixels are near the
+/// picture's, not equal. A wrong or damaged file is far off, or doesn't decode.
+const PICTURE_TOLERANCE: f64 = 6.0;
+
+/// The mean difference of `received`'s channels from `sent`'s, `sent` scaled to `received`'s
+/// size; `None` if either doesn't decode or their shapes differ.
+fn picture_difference(received: &[u8], sent: &[u8]) -> Option<f64> {
+    let received = image::load_from_memory(received).ok()?.to_rgb8();
+    let sent = image::load_from_memory(sent).ok()?.to_rgb8();
+    let (width, height) = received.dimensions();
+    let (sent_width, sent_height) = sent.dimensions();
+    // The same shape: scaling keeps the aspect ratio, to within a pixel's rounding.
+    let ratio = |w: u32, h: u32| f64::from(w) / f64::from(h);
+    if width == 0
+        || height == 0
+        || (ratio(width, height) - ratio(sent_width, sent_height)).abs()
+            > 1.0 / f64::from(height.min(width))
+    {
+        return None;
     }
+    let sent = if (sent_width, sent_height) == (width, height) {
+        sent
+    } else {
+        image::imageops::resize(&sent, width, height, image::imageops::FilterType::Triangle)
+    };
+    let total: u64 = received
+        .as_raw()
+        .iter()
+        .zip(sent.as_raw())
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    Some(total as f64 / received.as_raw().len() as f64)
 }
 
 /// What the signal-cli checks find wrong of their own.
@@ -776,8 +804,8 @@ enum InteropError {
     #[error("no attachment id in {message:?}")]
     NoAttachmentId { message: Received },
     /// What signal-cli saved of an attachment isn't the picture that was sent.
-    #[error("attachment {id} isn't the picture sent")]
-    Differs { id: String },
+    #[error("attachment {id} isn't the picture sent (mean difference {difference:?} of 255)")]
+    Differs { id: String, difference: Option<f64> },
     #[error("reading {}", path.display())]
     ReadPicture {
         path: std::path::PathBuf,
@@ -870,15 +898,16 @@ pub(super) fn signal_cli(
             .ok_or_else(|| InteropError::NoAttachmentId {
                 message: message.clone(),
             })?;
-        // Not byte for byte: b33p sends a picture without its metadata (b33p-core
-        // `without_metadata`), re-encoded. The pixels are the picture's.
+        // Not byte for byte: b33p sends a picture re-encoded, without its metadata, as Signal's
+        // apps do ([`PICTURE_TOLERANCE`]).
         let received = cli.attachment(&id)?;
         let sent = std::fs::read(picture).map_err(|source| InteropError::ReadPicture {
             path: picture.to_owned(),
             source,
         })?;
-        if !same_pixels(&received, &sent) {
-            return Err(InteropError::Differs { id }.into());
+        let difference = picture_difference(&received, &sent);
+        if !difference.is_some_and(|difference| difference <= PICTURE_TOLERANCE) {
+            return Err(InteropError::Differs { id, difference }.into());
         }
         Ok(())
     });
@@ -1052,6 +1081,65 @@ pub(super) fn signal_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screenshot(name: &str) -> Vec<u8> {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../docs/screenshots")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    /// As b33p sends a picture: smaller, then a JPEG of quality 70.
+    fn as_sent(picture: &[u8], width: u32) -> Vec<u8> {
+        let picture = image::load_from_memory(picture).unwrap().to_rgb8();
+        let height = picture.height() * width / picture.width();
+        let scaled = image::imageops::resize(
+            &picture,
+            width,
+            height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70)
+            .encode_image(&scaled)
+            .unwrap();
+        jpeg
+    }
+
+    #[test]
+    fn a_picture_sent_as_signals_apps_send_it_is_the_picture() {
+        let sent = screenshot("01-chats.png");
+        for width in [1000, 768, 512] {
+            let difference = picture_difference(&as_sent(&sent, width), &sent).unwrap();
+            assert!(difference <= PICTURE_TOLERANCE, "{width} px: {difference}");
+        }
+    }
+
+    #[test]
+    fn another_picture_or_a_damaged_one_is_not() {
+        let sent = screenshot("01-chats.png");
+        let other = screenshot("03-composing.png");
+        let difference = picture_difference(&as_sent(&other, 1000), &sent);
+        assert!(
+            difference.is_none_or(|difference| difference > PICTURE_TOLERANCE),
+            "{difference:?}"
+        );
+        let mut flipped = image::load_from_memory(&sent).unwrap();
+        flipped = flipped.fliph();
+        let mut png = Vec::new();
+        flipped
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let difference = picture_difference(&png, &sent).unwrap();
+        assert!(difference > PICTURE_TOLERANCE, "{difference}");
+        let mut cut = as_sent(&sent, 1000);
+        cut.truncate(cut.len() / 2);
+        assert!(
+            picture_difference(&cut, &sent).is_none_or(|difference| difference > PICTURE_TOLERANCE)
+        );
+    }
 
     #[test]
     fn what_receive_printed_is_read() {

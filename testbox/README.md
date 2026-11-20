@@ -159,7 +159,8 @@ are units, and with `--fresh` each phase is. N boxes, `<instance>-j1` … `-jN`,
 `cargo testbox test` of one unit, and take the next when they are done; the images are built
 once, here, and tagged for each box (`--prebuilt`, which is for this and hidden). At most two
 Android emulators run at once. A unit's output comes when it ends, its record is in its box's
-record directory, and a box that failed stays up as `test`'s does; the others go. The default
+record directory, and a box that failed stays up as `test`'s does, as the failed unit left it (its worker takes no
+more units; the other boxes take the rest); the others go. The default
 round takes about 9 minutes with `--jobs 2` against about 14 one after the other, and
 `--fresh --jobs 4` runs every phase on a box of its own in about 9 (the `network` phase alone is
 5 minutes).

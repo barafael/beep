@@ -213,7 +213,9 @@ pub(crate) fn run(pod: &Pod, options: &TestOptions) -> Result<(), Failure> {
             );
             scope.spawn(move || {
                 let mut clean = true;
-                loop {
+                // A box whose unit failed stays as that unit left it, to be looked at: its
+                // worker takes no more units, the other workers take the rest.
+                while clean {
                     let Some(unit) = queue.lock().expect("queue").pop_front() else {
                         break;
                     };
@@ -277,6 +279,13 @@ pub(crate) fn run(pod: &Pod, options: &TestOptions) -> Result<(), Failure> {
     });
 
     let outcomes = outcomes.into_inner().expect("outcomes");
+    // What no worker was left to run: every box had a unit fail.
+    let not_run: Vec<String> = queue
+        .into_inner()
+        .expect("queue")
+        .into_iter()
+        .map(|unit| unit.name)
+        .collect();
     println!("== jobs summary, {:.0} s", started.elapsed().as_secs_f64());
     for outcome in &outcomes {
         println!(
@@ -294,6 +303,11 @@ pub(crate) fn run(pod: &Pod, options: &TestOptions) -> Result<(), Failure> {
         .iter()
         .filter(|outcome| !outcome.passed)
         .map(|outcome| format!("{} (box {}, left up)", outcome.unit, outcome.instance))
+        .chain(
+            not_run
+                .iter()
+                .map(|unit| format!("{unit} (not run: every box failed)")),
+        )
         .collect();
     if failed.is_empty() {
         Ok(())

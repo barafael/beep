@@ -13,7 +13,7 @@ clap = { version = "4.6", features = ["derive", "env"] }
 # The errors, a type per module.
 thiserror.workspace = true
 # The pictures `stress-content` sends: huge, broken and animated ones. b33p-core's version.
-image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg"] }
 serde = { version = "1", features = ["derive"] }
 # `--capture`'s decoding (src/wire): HTTP/1.1, HTTP/2's header blocks, WebSocket's
 # permessage-deflate, Basic auth's user.
