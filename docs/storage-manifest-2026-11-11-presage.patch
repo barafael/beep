@@ -1,0 +1,123 @@
+diff --git a/presage/src/manager/registered.rs b/presage/src/manager/registered.rs
+index a311373..91b1054 100644
+--- a/presage/src/manager/registered.rs
++++ b/presage/src/manager/registered.rs
+@@ -707,6 +707,7 @@ impl<S: Store> Manager<S, Registered> {
+             &self.store,
+             self.identified_push_service(),
+             &mut groups_manager,
++            &mut StorageGroups::default(),
+         )
+         .await
+     }
+@@ -1644,10 +1645,23 @@ fn ensure_data_message_timestamp(content_body: &mut ContentBody, timestamp: u64)
+     }
+ }
+ 
++/// What the last read of the groups in the storage service saw, so that the next one (the primary
++/// device says "fetch the manifest again" for each record it writes, in bursts) asks for the
++/// manifest only if it changed (`manifest_if_changed`, 204 without a body otherwise) and reads only
++/// the group records it hasn't read yet.
++#[derive(Default)]
++pub(super) struct StorageGroups {
++    /// The manifest version the groups were read from; 0 before the first read.
++    version: u64,
++    /// The identifiers of the group records read, by their raw bytes.
++    read: std::collections::HashSet<Vec<u8>>,
++}
++
+ async fn sync_groups_from_storage_service<S: Store>(
+     store: &S,
+     push_service: PushService,
+     groups_manager: &mut GroupsManager<GroupCredentialsCache>,
++    seen: &mut StorageGroups,
+ ) -> Result<(), Error<S::Error>> {
+     const READ_CHUNK: usize = 100;
+ 
+@@ -1661,17 +1675,23 @@ async fn sync_groups_from_storage_service<S: Store>(
+     let storage_key = StorageServiceKey::from_master_key(&master_key);
+     let storage = StorageService::new(push_service, storage_key).await?;
+ 
+-    let manifest = storage.manifest().await?;
++    // The manifest again only if it changed since the last read: one that didn't is a 204.
++    let Some(manifest) = storage.manifest_if_changed(seen.version).await? else {
++        debug!(version = seen.version, "the storage service's groups are as read before");
++        return Ok(());
++    };
+     let group_ids: Vec<Vec<u8>> = manifest
+         .identifiers
+         .iter()
+         .filter(|id| id.r#type() == manifest_record::identifier::Type::Groupv2)
+         .map(|id| id.raw.clone())
++        .filter(|raw| !seen.read.contains(raw))
+         .collect();
+     debug!(
+         count = group_ids.len(),
+-        "groups listed in the storage service"
++        "groups listed in the storage service, not read before"
+     );
++    let mut all_read = true;
+ 
+     for chunk in group_ids.chunks(READ_CHUNK) {
+         let records = match storage
+@@ -1681,9 +1701,11 @@ async fn sync_groups_from_storage_service<S: Store>(
+             Ok(records) => records,
+             Err(error) => {
+                 warn!(%error, "failed to read group records from the storage service");
++                all_read = false;
+                 continue;
+             }
+         };
++        seen.read.extend(chunk.iter().cloned());
+         for record in records {
+             let Some(storage_record::Record::GroupV2(record)) = record.record else {
+                 continue;
+@@ -1694,6 +1716,10 @@ async fn sync_groups_from_storage_service<S: Store>(
+             }
+         }
+     }
++    // A manifest whose records couldn't all be read is read again in full next time.
++    if all_read {
++        seen.version = manifest.version;
++    }
+     Ok(())
+ }
+ 
+diff --git a/presage/src/manager/registered/receive.rs b/presage/src/manager/registered/receive.rs
+index 72fa47b..fd18777 100644
+--- a/presage/src/manager/registered/receive.rs
++++ b/presage/src/manager/registered/receive.rs
+@@ -40,7 +40,7 @@ use tracing::{debug, error, info, trace, warn};
+ use super::groups::update_group;
+ use super::{
+     download_sticker_pack, save_message, sync_groups_from_storage_service, MessageSender,
+-    Registered, RegistrationData, RegistrationType, ServiceCipher,
++    Registered, RegistrationData, RegistrationType, ServiceCipher, StorageGroups,
+ };
+ use crate::manager::group_credentials::GroupCredentialsCache;
+ use crate::manager::Kept;
+@@ -114,6 +114,7 @@ impl<S: Store> Manager<S, Registered> {
+                 self.state.device_id(),
+             ),
+             groups_manager: Box::pin(self.groups_manager()).await?,
++            storage_groups: StorageGroups::default(),
+             identified_push_service,
+             service_ids: self.state.data.service_ids.clone(),
+             message_sender: self.new_message_sender().await?,
+@@ -160,6 +161,8 @@ struct Receiver<S: Store, E> {
+     aci_address: ProtocolAddress,
+     pni_address: ProtocolAddress,
+     groups_manager: GroupsManager<GroupCredentialsCache>,
++    /// What the groups in the storage service were last read as ([`StorageGroups`]).
++    storage_groups: StorageGroups,
+     identified_push_service: PushService,
+     service_ids: ServiceIds,
+     message_sender: MessageSender<S::AciStore>,
+@@ -482,6 +485,7 @@ where
+                     &self.store,
+                     self.identified_push_service.clone(),
+                     &mut self.groups_manager,
++                    &mut self.storage_groups,
+                 )
+                 .await
+                 {

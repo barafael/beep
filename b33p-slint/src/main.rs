@@ -814,6 +814,9 @@ fn main() -> Result<(), slint::PlatformError> {
             // report, which says more.
             let mut chat = shared.chat.borrow_mut();
             if !matches!(chat.screen(), Screen::Failed { .. }) {
+                // The window says it; the log must too, or nothing that reads the log (the
+                // testbox's "no unexpected error" check) can tell a stopped backend from a quiet one.
+                tracing::error!("the backend stopped without saying why");
                 let update = chat.apply(Event::Failed {
                     failure: Failure::Stopped,
                     message: "b33p stopped working unexpectedly. Restart it to try again; the \

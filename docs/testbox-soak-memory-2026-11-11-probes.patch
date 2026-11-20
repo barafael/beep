@@ -1,0 +1,96 @@
+diff --git a/b33p-slint/src/memory.rs b/b33p-slint/src/memory.rs
+index af72756..5a65ed2 100644
+--- a/b33p-slint/src/memory.rs
++++ b/b33p-slint/src/memory.rs
+@@ -8,10 +8,10 @@ use std::time::Duration;
+ /// Starts the thread that logs it; it lives as long as b33p.
+ pub fn watch() {
+     let spawned = std::thread::Builder::new().name("memory".into()).spawn(|| {
+-        std::thread::sleep(Duration::from_secs(60));
++        std::thread::sleep(Duration::from_secs(10));
+         loop {
+             log();
+-            std::thread::sleep(Duration::from_secs(15 * 60));
++            std::thread::sleep(Duration::from_secs(20));
+         }
+     });
+     if let Err(error) = spawned {
+@@ -19,9 +19,48 @@ pub fn watch() {
+     }
+ }
+ 
++#[repr(C)]
++struct Mallinfo2 {
++    arena: usize,
++    ordblks: usize,
++    smblks: usize,
++    hblks: usize,
++    hblkhd: usize,
++    usmblks: usize,
++    fsmblks: usize,
++    uordblks: usize,
++    fordblks: usize,
++    keepcost: usize,
++}
++unsafe extern "C" {
++    fn mallinfo2() -> Mallinfo2;
++}
++
+ fn log() {
++    // SCRATCH PROBE (investigation only): glibc's allocator split next to RssAnon.
++    let m = unsafe { mallinfo2() };
++    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
++    let field = |key: &str| -> u64 {
++        status
++            .lines()
++            .find(|l| l.starts_with(key))
++            .and_then(|l| l.split_whitespace().nth(1))
++            .and_then(|v| v.parse().ok())
++            .unwrap_or(0)
++    };
+     match private_bytes() {
+-        Some(bytes) => tracing::info!("mem: private {:.1} MiB", bytes as f64 / MIB),
++        Some(bytes) => tracing::info!(
++            "mem: private {:.1} MiB; malloc arena {:.1} in-use {:.1} free {:.1} mmapped {:.1} (MiB), free-chunks {}, rss-anon-kb {} vm-data-kb {} threads {}",
++            bytes as f64 / MIB,
++            m.arena as f64 / MIB,
++            m.uordblks as f64 / MIB,
++            m.fordblks as f64 / MIB,
++            m.hblkhd as f64 / MIB,
++            m.ordblks,
++            field("RssAnon:"),
++            field("VmData:"),
++            field("Threads:"),
++        ),
+         None => tracing::debug!("mem: unknown on this system"),
+     }
+ }
+diff --git a/xtask/src/checks/stress.rs b/xtask/src/checks/stress.rs
+index f4e5d4e..0f798a3 100644
+--- a/xtask/src/checks/stress.rs
++++ b/xtask/src/checks/stress.rs
+@@ -1059,6 +1059,24 @@ pub(crate) fn soak(
+                 }
+                 .into());
+             }
++            // SCRATCH PROBE (investigation of the soak's growth): the same history in a b33p
++            // that has just started: what it holds is what the history costs, and the rest of
++            // the soak's growth is what a long-running b33p accumulates.
++            if env_number::<u64>("TESTBOX_SOAK_RESTART_PROBE")?.is_some() {
++                let mut again = kill_and_start(containers, sockets)?;
++                select(&mut again, &conversation)?;
++                thread::sleep(Duration::from_secs(30));
++                println!(
++                    "  restarted, the chat open: {}",
++                    sample(containers, B33P, &mut again)?
++                );
++                all_texts(&mut again, "testbox soak: ")?;
++                thread::sleep(Duration::from_secs(30));
++                println!(
++                    "  restarted, all the history loaded: {}",
++                    sample(containers, B33P, &mut again)?
++                );
++            }
+             Ok(growing(&samples)?)
+         },
+     );
