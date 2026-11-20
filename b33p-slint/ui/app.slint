@@ -25,6 +25,26 @@ export { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panel
 export { Emojis, EmojiGroup } from "emoji.slint";
 export { Viewer } from "viewer.slint";
 
+// The open chat's menu, in its header: from a right click there, or from the "More" button.
+component OpenChatMenu inherits ConversationMenu {
+    // How wide the menu is, near enough, which Slint doesn't say: 194px with Fluent on Linux.
+    // It's in a popup window of its own, whose text doesn't follow our font size, so it can't
+    // be measured with a Text here. Guessed short, the menu still fits the window, only
+    // without the gap to its edge.
+    out property <length> menu-width: 196px;
+    item: ChatList.current;
+    in-header: true;
+    property <string> id: ChatList.current.id;
+    toggle-pin => { ChatList.toggle-pin(self.id); }
+    move-pin(by) => { ChatList.move-pin(self.id, by); }
+    mark-read(read) => { ChatList.mark-read(self.id, read); }
+    mute(seconds) => { ChatList.mute(self.id, seconds); }
+    archive(archived) => { ChatList.archive(self.id, archived); }
+    block(blocked) => { ChatList.block(self.id, blocked); }
+    show-media => { Panels.open-media(); }
+    show-details => { Groups.open-details(); }
+}
+
 export component AppWindow inherits Window {
     // Rust says "MOCK" here when the mock backend runs, since it sends nothing.
     in property <string> window-title: "b33p";
@@ -427,27 +447,29 @@ export component AppWindow inherits Window {
                                             Panels.open-chat-search();
                                         }
                                     }
-                                    IconButton {
-                                        icon: @image-url("@lucide/ellipsis-vertical.svg");
-                                        label: "More";
-                                        clicked => { chat-menu.show({ x: chat-menu.width - 240px, y: chat-menu.height - 8px }); }
+                                    // The menu hangs from the button, and a resize that moves
+                                    // the button moves it too: Slint places an open menu against
+                                    // the area it was shown from.
+                                    more-menu := OpenChatMenu {
+                                        width: 32px;
+                                        height: 32px;
+                                        IconButton {
+                                            icon: @image-url("@lucide/ellipsis-vertical.svg");
+                                            label: "More";
+                                            // Below it, a little off the window's edge.
+                                            clicked => {
+                                                more-menu.show({
+                                                    x: root.width - Theme.space-xs - more-menu.menu-width - more-menu.absolute-position.x,
+                                                    y: self.height + Theme.space-xs,
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                        chat-menu := ConversationMenu {
-                            item: ChatList.current;
-                            in-header: true;
-                            property <string> id: ChatList.current.id;
-                            toggle-pin => { ChatList.toggle-pin(self.id); }
-                            move-pin(by) => { ChatList.move-pin(self.id, by); }
-                            mark-read(read) => { ChatList.mark-read(self.id, read); }
-                            mute(seconds) => { ChatList.mute(self.id, seconds); }
-                            archive(archived) => { ChatList.archive(self.id, archived); }
-                            block(blocked) => { ChatList.block(self.id, blocked); }
-                            show-media => { Panels.open-media(); }
-                            show-details => { Groups.open-details(); }
-                        }
+                        // A right click anywhere on the header.
+                        OpenChatMenu { }
                         Rectangle { y: parent.height - 1px; height: 1px; background: Theme.divider; }
                     }
                     if OpenChat.pins.length > 0: PinBar {
