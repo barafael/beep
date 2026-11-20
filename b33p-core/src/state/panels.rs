@@ -378,6 +378,55 @@ impl ChatState {
         &self.story_lists
     }
 
+    /// The people a story to `list` (a [`crate::StoryList`]'s id) goes to, by service id: our
+    /// connections as the list says. My Story goes to all of them until the phone says
+    /// otherwise; `None` for another list we don't know. Whether each can be sent a story at
+    /// all (sealed sender) is for the backend to find out.
+    pub fn story_recipients(&self, list: &[u8]) -> Option<Vec<String>> {
+        let blocked = |id: &str| {
+            self.conversation(&ConversationId::contact(id))
+                .is_some_and(|c| c.settings.blocked)
+        };
+        let found = self.story_lists.lists.iter().find(|l| l.id == list);
+        let mut recipients: Vec<String> = match found {
+            // "Only these".
+            Some(only) if !only.excluding => only
+                .members
+                .iter()
+                .filter(|id| !blocked(id))
+                .cloned()
+                .collect(),
+            None if list != crate::StoryList::MY_STORY => return None,
+            // "All connections except", or My Story before the phone set it: all of them.
+            _ => {
+                let left_out = found.map_or(&[][..], |l| &l.members[..]);
+                self.story_connections()
+                    .filter(|id| !left_out.iter().any(|out| out == id))
+                    .map(str::to_owned)
+                    .collect()
+            }
+        };
+        recipients.sort();
+        recipients.dedup();
+        Some(recipients)
+    }
+
+    /// Our connections, as Signal's apps count them for stories (Desktop's
+    /// `isSignalConnection`): those we share our profile with, which for b33p is a 1:1 chat
+    /// we accepted or wrote in, with someone's ACI (not a number or PNI only), not blocked.
+    fn story_connections(&self) -> impl Iterator<Item = &str> {
+        self.conversations.iter().filter_map(|c| {
+            let id = c.id.contact_id()?;
+            (!c.is_group()
+                && !c.note_to_self
+                && !c.settings.blocked
+                && (c.settings.accepted || self.written_to.contains(&c.id))
+                && !id.starts_with("PNI:")
+                && !id.starts_with('+'))
+            .then_some(id)
+        })
+    }
+
     /// Groups a story can be posted to, by name.
     pub fn story_groups(&self) -> Vec<&Conversation> {
         let mut groups: Vec<&Conversation> = self

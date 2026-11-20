@@ -3900,6 +3900,61 @@ fn people_are_chosen_for_a_group() {
     ));
 }
 
+/// A story to My Story goes to our connections (accepted 1:1 chats with an ACI, not blocked)
+/// but those the phone leaves out; an "only these" list goes to its members, still not the
+/// blocked; before the phone said anything, to every connection.
+#[test]
+fn story_lists_choose_among_connections() {
+    let mut state = state();
+    let person = |id: &str, accepted: bool, blocked: bool| {
+        let mut c = conversation(&format!("c:{id}"), false);
+        c.settings.accepted = accepted;
+        c.settings.blocked = blocked;
+        c
+    };
+    let mut me = person("me", true, false);
+    me.note_to_self = true;
+    state.apply(Event::Conversations(vec![
+        person("ann", true, false),
+        person("bob", true, false),
+        // A message request: not a connection.
+        person("cid", false, false),
+        person("dan", true, true),
+        person("PNI:eve", true, false),
+        me,
+    ]));
+    let my_story = crate::StoryList::MY_STORY;
+    assert_eq!(
+        state.story_recipients(&my_story).unwrap(),
+        ["ann", "bob"],
+        "every connection before the phone set My Story"
+    );
+    state.apply(Event::StoryLists(crate::StoryLists {
+        lists: vec![
+            crate::StoryList {
+                id: my_story.to_vec(),
+                excluding: true,
+                members: vec!["bob".into()],
+                ..Default::default()
+            },
+            crate::StoryList {
+                id: vec![7; 16],
+                name: "Climbers".into(),
+                members: vec!["cid".into(), "dan".into()],
+                ..Default::default()
+            },
+        ],
+        disabled: false,
+    }));
+    assert_eq!(state.story_recipients(&my_story).unwrap(), ["ann"]);
+    assert_eq!(
+        state.story_recipients(&[7; 16]).unwrap(),
+        ["cid"],
+        "the list's own members, but not the blocked"
+    );
+    assert!(state.story_recipients(&[9; 16]).is_none());
+}
+
 /// Past someone's last story the viewer goes on to the next one with stories not seen yet,
 /// as Signal's apps do; it closes once there are none.
 #[test]
