@@ -527,10 +527,52 @@ pub(super) fn render_stickers(window: &AppWindow, chat: &ChatState) {
         .set_sticker_rows(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Stories: the rings over the chat list, the groups to post to, the one shown.
+/// Where a story can be posted, and what to call each choice: nothing while stories are off
+/// on the phone; else My Story and the account's own lists, each while it reaches anyone, then
+/// the groups.
+fn story_choices(chat: &ChatState) -> Vec<(ConversationId, String)> {
+    let lists = chat.story_lists();
+    if lists.disabled {
+        return Vec::new();
+    }
+    let mut ids = vec![b33p_core::StoryList::MY_STORY.to_vec()];
+    ids.extend(
+        lists
+            .lists
+            .iter()
+            .filter(|l| !l.is_my_story())
+            .map(|l| l.id.clone()),
+    );
+    let mut choices: Vec<(ConversationId, String)> = ids
+        .iter()
+        .filter_map(|id| {
+            let reach = chat.story_recipients(id)?.len();
+            (reach > 0).then(|| {
+                let people = if reach == 1 { "person" } else { "people" };
+                (
+                    ConversationId::story_list(id),
+                    format!("{} · {reach} {people}", chat.story_list_title(id)),
+                )
+            })
+        })
+        .collect();
+    choices.extend(
+        chat.story_groups()
+            .into_iter()
+            .map(|c| (c.id.clone(), c.title.clone())),
+    );
+    choices
+}
+
+/// Stories: the rings over the chat list, where to post one, the one shown.
 pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
-    let rings: Vec<RingItem> = chat
-        .story_rings()
+    // Stories turned off on the phone: none here either, as in Signal's apps.
+    let rings = if chat.story_lists().disabled {
+        Vec::new()
+    } else {
+        chat.story_rings()
+    };
+    let rings: Vec<RingItem> = rings
         .iter()
         .map(|ring| RingItem {
             id: ring.conversation.0.as_str().into(),
@@ -543,10 +585,12 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
         })
         .collect();
     update_list(&window.global::<Panels>().get_story_rings(), rings);
-    // Rebuilt when the groups or their names change; the choice stays with its group.
-    let groups = chat.story_groups();
-    let ids: Vec<ConversationId> = groups.iter().map(|c| c.id.clone()).collect();
-    let titles: Vec<SharedString> = groups.iter().map(|c| c.title.as_str().into()).collect();
+    // Where a story can go: My Story and the account's lists (with how many they reach), then
+    // the groups. Rebuilt when these or their names change; the choice stays with its own.
+    let (ids, titles): (Vec<ConversationId>, Vec<SharedString>) = story_choices(chat)
+        .into_iter()
+        .map(|(id, title)| (id, title.into()))
+        .unzip();
     let offered: Vec<SharedString> = window
         .global::<Panels>()
         .get_story_group_ids()
@@ -577,9 +621,13 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
     }
     let story = match chat.current_story() {
         Some((story, at, count)) => {
-            let title = chat
-                .conversation(&story.conversation)
-                .map_or(story.author.as_str(), |c| c.title.as_str());
+            let title = match story.conversation.story_list_id() {
+                Some(list) => chat.story_list_title(&list),
+                None => chat
+                    .conversation(&story.conversation)
+                    .map_or_else(|| story.author.clone(), |c| c.title.clone()),
+            };
+            let title = title.as_str();
             let mut item = StoryItem {
                 shown: true,
                 key: format!("{}/{}", story.author_id, story.timestamp).into(),
