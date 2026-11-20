@@ -8,6 +8,10 @@ long-lived account has, b33p was never shown.
 This plan closes the gaps found so far, and keeps the next ones from staying hidden. It was
 written 2026-11-08, against `main` at `8ddd7d8`.
 
+**Since (2026-11-21):** G3's incoming half is done: a delete for me from another device takes the
+message out of b33p's window (`receive.rs`, `on_deleted_for_me_elsewhere`). b33p's own deletes
+for me still send no sync message.
+
 ## The gaps, as checked in the code
 
 | # | What | Found where | How much it matters |

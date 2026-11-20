@@ -1,7 +1,12 @@
 # The testbox, looked back on (October 2026)
 
 What stood in the way of a green testbox, what the box would do better, and the user flows it
-doesn't check yet. The branches themselves are in [branches.md](branches.md).
+doesn't check yet.
+
+**Since (2026-11-21):** much of this is done. Rounds and phases run at once (`--instance`,
+`--jobs`, `--fresh`); long text, typing, timers, forwarding, invite links and a killed b33p
+(`stress-interrupt`) are checked. Still open: right-to-left text, a CDN pause, a report per
+run.
 
 ## What stood in our way
 

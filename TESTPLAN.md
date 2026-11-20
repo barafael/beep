@@ -552,6 +552,15 @@ Back up `~/.local/share/b33p` before these; some delete it on purpose.
 3. **Windows zip** on a fresh Windows 11: SmartScreen as the README says; the exe shows the
    icon in Explorer and its version under Properties → Details; a toast shows the icon; the
    log appears where the README says. `b33p.exe --unregister` turns off starting with Windows.
+   Started from the zip, it installs itself to `%LOCALAPPDATA%\b33p` with a Start menu shortcut
+   and an entry in Settings → Apps → Installed apps, and starts that copy; removing it there
+   removes b33p (and the account data only if asked). With `B33P_NO_INSTALL=1` it runs where it
+   was unpacked. Once a signed release exists, Settings → **Check for updates** offers it.
 4. **macOS dmg**: the Gatekeeper steps in the README open it; Settings has no notification
    switches and shows ⌘ in the shortcuts; closing the window and clicking the Dock icon (note
    what happens: PLAN.md lists it as unchecked).
+5. **The desktop around the window, on Linux with Skia** (the default since Qt went): an input
+   method (fcitx5 or IBus composing Hangul or Japanese), the tray icon and its menu, the file
+   dialogs, copy and paste of text and pictures, dragging a file onto a chat, a screen reader
+   (Orca) reading the chat list and a message, and a second start raising the window (the XDG
+   activation token). The testbox's display has none of these.

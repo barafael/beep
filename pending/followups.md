@@ -1,21 +1,27 @@
 # Follow-ups left from the UI review
 
 What was left of docs/review-plan.md when its worktree went (2026-11-06); the full note is in
-`beep-records/tidy-2026-11-06/remaining-work.md`.
+`../beep-records/tidy-2026-11-06/remaining-work.md` (not in the repository).
 
-## The thread index and batched saves (presage)
+## Batched saves for the history import (presage)
 
-Branches `pr/thread-messages-index`, `pr/batch-save-messages` and `langis/integration-next` of
-barafael/presage, rebased 2026-11-06. Measured on 300k messages in 300 threads: latest per thread
-1.16 s to 0.01 s, unread counts 2.35 s to 0.01 s; importing 5,000 messages 7.9 s to 0.19 s.
+The thread index went another way: b33p makes its own, `b33p_thread_messages_thread_ts_sender`
+(`LocalStore::index_messages`), and presage's fork finds a thread's messages through it (no PR
+yet, `Cargo.toml`); upstream #502 replaced our paged reads. What is left is
+`ContentsStore::save_messages` (branch `pr/batch-save-messages` of barafael/presage, 2026-11-06,
+not in `langis/integration`): importing 5,000 messages took 7.9 s one by one and 0.19 s
+batched. To take it: rebase it onto the integration branch, append its migration (if any) to
+`b33p-core/tests/presage-migrations.txt`, and switch the history import (`import.rs`,
+`transfer.rs`) to `save_messages`, about 1,000 at a time.
 
-Once they land, or to take them from the fork first:
+## The real backend while catching up
 
-1. Bump the presage rev (`presage` and `presage-store-sqlite`).
-2. Append the migration to `b33p-core/tests/presage-migrations.txt`.
-3. Drop b33p's own `b33p_thread_messages_thread_ts` (`LocalStore::index_messages`).
-4. Switch the history import (`import.rs`, `transfer.rs`) to `save_messages`, about 1,000 at a
-   time. This is what makes the import fast.
+Carried over from docs/performance-open-questions.md (Q4, removed with the GPUI client in #178).
+The catch-up measurements used the mock. Reading `signal/receive.rs` (`handle_content`) suggests
+6 to 8 small store calls per received message; only the trust refresh that read a whole table per
+message was removed. Count them: a counting layer around the store in a debug build, while an
+account receives a backlog of a few thousand messages (in the testbox), giving calls per message
+and time per call. That says whether one transaction per batch is worth it.
 
 ## b33p
 
@@ -31,5 +37,10 @@ Once they land, or to take them from the fork first:
   `upload_attachment` took shared bytes (`Bytes` or `Arc<[u8]>`) instead of a `Vec<u8>`, or for
   files by reading the file again for the retry. Pictures arriving together once took b33p past
   2 GiB (pending/stress.md finding 4), so the peak matters.
+- `ChatMessage.quote` and `.preview` are unboxed `Option`s most messages leave empty
+  (`b33p-core/src/lib.rs`). Boxing `LinkPreview.image` made a message about 25% smaller (a
+  200,000-message backlog 330 to 290 MB). Box both, run the mock's catch-up with
+  `B33P_MOCK_SCALE` backlog 200000 and keep it if it saves more than a few MB (Q5 of the removed
+  performance-open-questions.md).
 - Regenerate the README screenshots and the demo GIF on a real desktop
   (`docs/screenshots/shoot.py`).

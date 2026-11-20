@@ -87,9 +87,9 @@ sequenceDiagram
 ## Running the phases
 
 ```sh
-cargo testbox test                # every phase
+cargo testbox test                # the default phases (not stress-*, tour, interop, family-*)
 cargo testbox test desktop core   # some
-cargo test -p xtask -- --ignored  # every phase, as a test: its output only if it fails
+cargo test -p xtask -- --ignored  # the default phases, as a test: its output only if it fails
 ```
 
 `test` builds the images and plays the box itself. The phases share two boxes, each from
@@ -194,7 +194,24 @@ Signal's client protocol (no presage, no libsignal-service; only libsignal's cry
 its FFI) linked to a presage-cli account, writing text, files and a group message with a
 presage-cli peer and with b33p, and the other way round
 ([docs/onboarding-signalmeow.md](../docs/onboarding-signalmeow.md)). It is built at the first run,
-which takes a while (libsignal's FFI, then Go).
+which takes a while (libsignal's FFI, then Go); `up --signalmeow` plays a box with it.
+
+`mixed` runs only when named, on a box of its own: b33p, a presage-cli account, signal-cli,
+signalmeow and Flare's backend write to one another in overlapping bursts, and every client's own
+record of what it received is held to every message once, in each sender's order
+(`xtask/src/checks/mixed.rs` names its `TESTBOX_MIXED_*` knobs;
+[docs/testbox-clients-run-2026-11-13.md](../docs/testbox-clients-run-2026-11-13.md) is its first
+run).
+
+`family-gurk` and `family-flare` run only when named, each on a box of its own: gurk-rs and Flare's
+backend, clients on the presage and libsignal-service they ship with rather than b33p's fork's,
+writing to b33p and a presage-cli peer (`testbox/family`,
+[docs/onboarding-presage-family.md](../docs/onboarding-presage-family.md)); `up --family` plays a
+box with both.
+
+`--android-app molly` puts Molly, a hardened fork of Signal-Android on an older release, on the
+emulator in Signal-Android's place, and the phases that drive Android drive it
+([docs/onboarding-molly.md](../docs/onboarding-molly.md)).
 
 `tour` runs only when named, on a box of several b33ps (`--b33ps <N>`, three by default), each
 linked to a presage-cli primary of its own and writing to the others: every feature b33p has,
@@ -264,6 +281,13 @@ first is `b33p` as ever, the others `b33p-1`, `b33p-2`, … in the logs, display
 |---|---|
 | `pod.yaml` | The pod for `podman kube play`; `desktop/pod.yaml` and `android/pod.yaml` are the clients' containers, put in when asked for |
 | `<service>/Containerfile` | Each image, built at pinned revisions |
+| `server/`, `storage/`, `foundationdb/`, `dynamodb/`, `garage/`, `tus/` | Signal-Server, the storage service, and the stores and uploads they run on |
+| `b33p/` | b33p's image and its container in the pod |
+| `android/` | The emulator's image, the on-device agent (`agent/`), and `stop-android.sh` |
+| `molly/` | Molly in Signal-Android's place (`--android-app molly`) |
+| `family/` | gurk-rs and Flare's backend, with the patches that point them at the box (`family-*` phases) |
+| `capture/` | The tcpdump container `--capture` adds to the pod |
+| `view/` | `view.sh`: b33p alone in a private display (cage and wayvnc in a container), for looking at a build and for `docs/screenshots/shoot.py` |
 | `patches/` | What libsignal and Signal-Android need to run against a local server, and what Signal-Server needs on DynamoDB Local |
 | `tools/` | The containers' entrypoints (`provision` makes the box's keys and servers file), the Android driver, and the drivers' protocol |
 | `desktop/driver.ts` | The Signal-Desktop driver, on Playwright |

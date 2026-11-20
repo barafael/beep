@@ -1,5 +1,8 @@
 # Extended testbox runs, 2026-11-08
 
+> b33p-gpui and `--ui` were removed on 2026-11-19 (5b664ba); the commands with `--ui gpui` no
+> longer run.
+
 Five runs of `cargo testbox` on `origin/main` at 31083b5, on a box of its own
 (`--instance ext`), one after the other, from 02:28 to 04:11. Every check passed in every run:
 no failures, no retries, no unexpected ERROR lines in b33p's log, no client lost a message or
@@ -60,7 +63,7 @@ throughout; the check "nothing lost, and nothing keeps growing" passed. The samp
 between 48 and 56 MiB in the last minutes, so the end point is one sample above that range; the
 check's own threshold is in `xtask/src/checks/stress.rs`. Not examined here: whether the growth
 from 35 to 52 MiB over the first minutes is the history filling or a leak. A longer soak with
-messages-received subtracted would tell (Q7 in `performance-open-questions.md`).
+messages-received subtracted would tell (Q7 in `performance-open-questions.md`, (deleted 2026-11-20 with the GPUI client, #178: `git show 1c74cc0^:docs/performance-open-questions.md`)).
 
 ## Not covered
 

@@ -2,8 +2,8 @@
 
 The testbox's `tour` phase runs several b33ps in one pod, each linked to a presage-cli primary of
 its own. They write to each other through every feature b33p has, in an order drawn from a seed,
-and after each step every b33p it reached is checked against a model of the chats. The work is on
-branch `tour` (worktree `~/code/beep-tour`).
+and after each step every b33p it reached is checked against a model of the chats. The phase is on
+main (`xtask/src/checks/tour.rs`); it began on branch `tour`.
 
 This file is kept as the runs go. Newest entries go at the end of each section.
 
@@ -25,7 +25,7 @@ This file is kept as the runs go. Newest entries go at the end of each section.
      - presage `langis/integration` is at bf7cfd0, with #478 on top.
      - b33p commit 1eacb7c on `forks-454` turns it off at the start of `run_linked`. It isn't
        pushed yet; it waits on #82.
-   - **To do:** a tour step that sends an https link with `link_previews` off and checks that
+   - **Done** (`tour.rs`, a link sent with previews off): a tour step that sends an https link with `link_previews` off and checks that
      the sender's log shows no preview attempt. It should fail on main until 1eacb7c lands, and
      pass on `forks-454`. With `ca-certificates` in the image, presage's attempt now gets as
      far as DNS, which fails without egress, and logs "failed to build link preview".

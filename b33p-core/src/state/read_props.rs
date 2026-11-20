@@ -25,6 +25,8 @@ proptest! {
         let mut read = Vec::new();
         let mut expiring = Vec::new();
         let mut sent = Vec::new();
+        // Of each message, the first copy counts: a second with the same timestamp is a duplicate.
+        let mut disappears = Vec::new();
         for (t, disappearing) in arrivals {
             let message = ChatMessage {
                 conversation: id.clone(),
@@ -37,6 +39,9 @@ proptest! {
             };
             if !sent.contains(&message.timestamp) {
                 sent.push(message.timestamp);
+                if disappearing {
+                    disappears.push(message.timestamp);
+                }
             }
             chat.apply(Event::Message(message));
             for command in chat.take_commands() {
@@ -48,6 +53,10 @@ proptest! {
         }
         let unread: Vec<u64> = sent.iter().copied().filter(|t| !read.contains(t)).map(|t| (t - base) / 1000).collect();
         prop_assert!(unread.is_empty(), "never marked read (no receipt, timer never started): {unread:?} of {:?}", sent.iter().map(|t| (t - base) / 1000).collect::<Vec<_>>());
+        // Every disappearing message's timer starts, once; no other message's does.
+        expiring.sort_unstable();
+        disappears.sort_unstable();
+        prop_assert_eq!(expiring, disappears, "timers started, against the disappearing messages");
     }
 
     /// The same for messages arriving in batches, as when catching up: each is marked read

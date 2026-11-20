@@ -1,12 +1,12 @@
 # A stress run for b33p
 
-Run b33p in ways the six phases never do (volume, interruptions, awkward content, concurrency,
+Run b33p in ways the default phases never do (volume, interruptions, awkward content, concurrency,
 long runtimes) and give every failure a root cause, whether it lies in b33p, presage,
-libsignal-service, Slint, Qt or rusqlite. It reuses what the box has: the agent harness,
+libsignal-service, Slint or rusqlite. It reuses what the box has: the agent harness,
 presage-cli, Desktop and Android as the other ends, the crash and lost-message checks, and the
 record each phase leaves.
 
-## Before it starts (once everything is on main)
+## Before it starts (done: the stress phases are on main)
 
 - `cargo testbox run --rounds 2` on main, all green: what the stress run finds is then new, not
   inherited.
@@ -107,7 +107,7 @@ Each group is a phase of about ten minutes, except E.
 - The harness reports each message's delivery; a conversation's full history needs `LoadOlder`
   until nothing more comes (`all_texts`).
 
-## Where it stands (26 October 2026, main 8ff6797)
+## Where it stood (26 October 2026, main 8ff6797; a record, the findings below go on)
 
 Groups A to E are written: `cargo testbox run stress-volume stress-interrupt stress-content
 stress-concurrency stress-soak` (`xtask/src/checks/stress.rs`). They aren't among `run`'s
