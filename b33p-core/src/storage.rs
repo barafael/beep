@@ -590,10 +590,88 @@ pub(crate) enum Written {
 /// Signal shows at most this many pinned chats.
 const MAX_PINS: usize = 4;
 
+/// What a write would put on the phone, worked out from b33p's own tables alone: no request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Plan {
+    /// The chats whose settings differ from what the phone said last, by id, with what the phone
+    /// is to say instead.
+    changed: Vec<(ConversationId, ChatSettings)>,
+    /// The chats pinned here, in order, as many as Signal shows.
+    pins: Vec<ConversationId>,
+    /// Whether those differ from the pins the phone said last.
+    pins_changed: bool,
+}
+
+impl Plan {
+    fn new(
+        local: &HashMap<ConversationId, ChatSettings>,
+        before: &HashMap<ConversationId, ChatSettings>,
+    ) -> Self {
+        let pins = wanted_pins(local);
+        let pins_changed = pins != pinned_order(before);
+        let mut changed: Vec<(ConversationId, ChatSettings)> = local
+            .iter()
+            .filter_map(|(id, settings)| {
+                // Pins are written apart, to the account record.
+                let remote = ChatSettings {
+                    pinned: None,
+                    ..before.get(id).cloned().unwrap_or_default()
+                };
+                let wanted = wanted(settings, &remote);
+                (wanted != remote).then_some((id.clone(), wanted))
+            })
+            .collect();
+        changed.sort_by(|a, b| a.0.0.cmp(&b.0.0));
+        Self {
+            changed,
+            pins,
+            pins_changed,
+        }
+    }
+
+    /// Whether the phone already says all of it.
+    fn is_empty(&self) -> bool {
+        self.changed.is_empty() && !self.pins_changed
+    }
+}
+
+/// The last write that found no record to put its changes in: the manifest version it read and
+/// what it was to write. The changes concern chats the phone keeps no record of, so they stay
+/// "changed" in b33p's tables and every later write would read the whole manifest and every
+/// record again to find the same; until the phone's version or the changes differ, it needn't.
+#[derive(Default)]
+pub(crate) struct Unplaced(Option<(u64, Plan)>);
+
+impl Unplaced {
+    /// Whether a write of `plan` on `version` was tried already and found no record for it.
+    fn covers(&self, version: u64, plan: &Plan) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|(tried, was)| *tried == version && was == plan)
+    }
+
+    /// Notes that `plan` found no record on `version`.
+    fn note(&mut self, version: u64, plan: Plan) {
+        self.0 = Some((version, plan));
+    }
+
+    fn forget(&mut self) {
+        self.0 = None;
+    }
+}
+
 /// Writes what was changed here (pins, mutes, archive, blocks, accepted requests) to the
 /// storage service. Records are changed in their bytes, field by field, so fields b33p
 /// doesn't know stay as the phone wrote them; and only on top of the version b33p last read.
-pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, StorageError> {
+///
+/// Nothing is asked of the service until there is something to write: what differs is worked
+/// out from b33p's tables, and a write that has nothing to write, or that found no place for
+/// what it had on this version already (`unplaced`), makes no request.
+pub(crate) async fn push(
+    manager: &Mgr,
+    tables: &LocalStore,
+    unplaced: &mut Unplaced,
+) -> Result<Written, StorageError> {
     use presage::libsignal_service::prelude::ProtobufMessage as _;
     let Some((service, key)) = manager
         .storage_access()
@@ -605,38 +683,41 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
     let key: [u8; 32] = Vec::from(key)
         .try_into()
         .map_err(|key: Vec<u8>| StorageError::KeyLength { len: key.len() })?;
-    let client = Client::new(service).await?;
-    let (manifest, manifest_bytes) = client.manifest(&key).await?;
-    if manifest.version
-        != tables
-            .storage_version()
-            .await
-            .map_err(at(Step::ReadVersion))?
-    {
-        return Ok(Written::Stale);
-    }
     let local = tables
         .conversations()
         .await
         .map_err(at(Step::ReadSettings))?;
     let before = tables.remote().await.map_err(at(Step::ReadRemote))?;
-    let pins = wanted_pins(&local);
-    let pins_changed = pins != pinned_order(&before);
-    let changed: HashMap<&ConversationId, ChatSettings> = local
-        .iter()
-        .filter_map(|(id, settings)| {
-            // Pins are written apart, to the account record.
-            let remote = ChatSettings {
-                pinned: None,
-                ..before.get(id).cloned().unwrap_or_default()
-            };
-            let wanted = wanted(settings, &remote);
-            (wanted != remote).then_some((id, wanted))
-        })
-        .collect();
-    if changed.is_empty() && !pins_changed {
+    let plan = Plan::new(&local, &before);
+    if plan.is_empty() {
+        unplaced.forget();
         return Ok(Written::Nothing);
     }
+    let known = tables
+        .storage_version()
+        .await
+        .map_err(at(Step::ReadVersion))?;
+    if unplaced.covers(known, &plan) {
+        debug!(
+            version = known,
+            "no record on the phone for these changes yet"
+        );
+        return Ok(Written::Nothing);
+    }
+    unplaced.forget();
+    let client = Client::new(service).await?;
+    let (manifest, manifest_bytes) = client.manifest(&key).await?;
+    if manifest.version != known {
+        return Ok(Written::Stale);
+    }
+    let Plan {
+        changed,
+        pins,
+        pins_changed,
+    } = &plan;
+    let (pins, pins_changed) = (pins, *pins_changed);
+    let changed: HashMap<&ConversationId, &ChatSettings> =
+        changed.iter().map(|(id, wanted)| (id, wanted)).collect();
 
     let ikm = (!manifest.record_ikm.is_empty()).then_some(&manifest.record_ikm[..]);
     let keys: Vec<Vec<u8>> = manifest
@@ -667,7 +748,7 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
                         let edited = crate::wire::edit_message(&plaintext, 1, |c| {
                             set_flags(c, wanted, [9, 10, 11, 12, 13])
                         })?;
-                        remote_after.insert(id.clone(), wanted.clone());
+                        remote_after.insert(id.clone(), (*wanted).clone());
                         Some(edited)
                     })
                 }
@@ -677,12 +758,12 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
                         let edited = crate::wire::edit_message(&plaintext, 3, |g| {
                             set_flags(g, wanted, [2, 3, 4, 5, 6])
                         })?;
-                        remote_after.insert(id.clone(), wanted.clone());
+                        remote_after.insert(id.clone(), (*wanted).clone());
                         Some(edited)
                     })
                 }
                 Some(Record::Account(account)) if pins_changed => {
-                    let entries = pinned_entries(&account.pinned_conversations, &pins);
+                    let entries = pinned_entries(&account.pinned_conversations, pins);
                     crate::wire::edit_message(&plaintext, 4, |account| {
                         crate::wire::set_repeated(account, 14, &entries)
                     })
@@ -700,6 +781,7 @@ pub(crate) async fn push(manager: &Mgr, tables: &LocalStore) -> Result<Written, 
     }
     if replaced.is_empty() {
         // The changes concern chats the phone keeps no record of.
+        unplaced.note(known, plan);
         return Ok(Written::Nothing);
     }
     for (id, settings) in remote_after.iter_mut() {
@@ -1098,6 +1180,85 @@ fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn muted(until: u64) -> ChatSettings {
+        ChatSettings {
+            muted_until: Some(until),
+            ..ChatSettings::default()
+        }
+    }
+
+    fn chats(
+        of: impl IntoIterator<Item = (&'static str, ChatSettings)>,
+    ) -> HashMap<ConversationId, ChatSettings> {
+        of.into_iter()
+            .map(|(who, settings)| (ConversationId::contact(who), settings))
+            .collect()
+    }
+
+    /// A write worked out from b33p's tables is empty when the phone says what b33p says, which
+    /// is what lets it ask the storage service nothing: the usual case, when the change that woke
+    /// it came from the phone. What b33p keeps to itself (read positions) never counts.
+    #[test]
+    fn nothing_differs_when_the_phone_says_what_we_say() {
+        let before = chats([("a", muted(5)), ("b", ChatSettings::default())]);
+        let local = chats([
+            ("a", muted(5)),
+            (
+                "b",
+                ChatSettings {
+                    last_read: 99,
+                    ..ChatSettings::default()
+                },
+            ),
+        ]);
+        assert!(Plan::new(&local, &before).is_empty());
+        assert!(Plan::new(&HashMap::new(), &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn what_differs_is_listed_by_chat_and_pins_apart() {
+        let before = chats([("a", ChatSettings::default()), ("b", muted(5))]);
+        let mut local = chats([("a", muted(7)), ("b", muted(5)), ("c", muted(1))]);
+        local.get_mut(&ConversationId::contact("b")).unwrap().pinned = Some(0);
+        let plan = Plan::new(&local, &before);
+        assert_eq!(
+            plan.changed,
+            vec![
+                (ConversationId::contact("a"), muted(7)),
+                (ConversationId::contact("c"), muted(1)),
+            ]
+        );
+        assert_eq!(plan.pins, vec![ConversationId::contact("b")]);
+        assert!(plan.pins_changed);
+        assert!(!plan.is_empty());
+        // A pin alone is a change, and so is a chat the phone didn't know.
+        let pinned = chats([(
+            "a",
+            ChatSettings {
+                pinned: Some(0),
+                ..ChatSettings::default()
+            },
+        )]);
+        assert!(Plan::new(&pinned, &chats([("a", ChatSettings::default())])).pins_changed);
+        assert!(!Plan::new(&chats([("z", muted(2))]), &HashMap::new()).is_empty());
+    }
+
+    /// A write that found no record for its changes isn't tried again on the same version with
+    /// the same changes, and is when either differs (the phone wrote, or b33p changed more).
+    #[test]
+    fn a_write_without_a_record_is_not_tried_again_on_the_same_version() {
+        let plan = Plan::new(&chats([("z", muted(2))]), &HashMap::new());
+        let mut unplaced = Unplaced::default();
+        assert!(!unplaced.covers(4, &plan));
+        unplaced.note(4, plan.clone());
+        assert!(unplaced.covers(4, &plan));
+        assert!(!unplaced.covers(5, &plan), "the phone wrote since");
+        let more = Plan::new(&chats([("z", muted(3))]), &HashMap::new());
+        assert!(!unplaced.covers(4, &more), "b33p changed more since");
+        unplaced.forget();
+        assert!(!unplaced.covers(4, &plan));
+    }
 
     /// As Signal-Desktop titles a chat: the nickname, the address book's name, the profile's,
     /// the username; nothing when only the number is known. Blank names don't count.

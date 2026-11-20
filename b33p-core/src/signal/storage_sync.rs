@@ -23,6 +23,9 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
     const RETRY: Duration = Duration::from_secs(5 * 60);
     // Changes made here come in bursts (pinning, reordering); write them together.
     const SETTLE: Duration = Duration::from_secs(2);
+    // The most a run of changes holds a read back.
+    const LONGEST: Duration = Duration::from_secs(10);
+    let mut unplaced = crate::storage::Unplaced::default();
     loop {
         match crate::storage::sync(&manager, &ctx.tables, &ctx.events).await {
             Ok(synced) => {
@@ -37,7 +40,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
                     ctx.storage_read.send_replace(true);
                 }
                 if known && ctx.preferences.get().sync_to_phone {
-                    write_storage(&mut manager, &ctx).await;
+                    write_storage(&mut manager, &ctx, &mut unplaced).await;
                 }
                 if known {
                     ctx.storage_changed.notified().await;
@@ -50,7 +53,7 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
                         () = ctx.storage_changed.notified() => {}
                     }
                 }
-                tokio::time::sleep(SETTLE).await;
+                settle(&ctx.storage_changed, SETTLE, LONGEST).await;
             }
             // E.g. offline at the start; try again later.
             Err(error) => {
@@ -60,6 +63,24 @@ pub(super) async fn follow_storage(mut manager: Mgr, ctx: Ports) {
                     () = ctx.storage_changed.notified() => {}
                 }
             }
+        }
+    }
+}
+
+/// Waits until nothing has said the storage service changed for `quiet`, but no longer than
+/// `longest` in all, so that a run of changes (the phone writes a record for each chat it
+/// touches, one after the other) is read once when it is over, not once for each of them. A
+/// change that comes after leaves a wake for the next round, as `Notify` keeps one.
+async fn settle(changed: &tokio::sync::Notify, quiet: Duration, longest: Duration) {
+    let end = tokio::time::Instant::now() + longest;
+    loop {
+        let wait = quiet.min(end.saturating_duration_since(tokio::time::Instant::now()));
+        if wait.is_zero() {
+            return;
+        }
+        tokio::select! {
+            () = changed.notified() => {}
+            () = tokio::time::sleep(wait) => return,
         }
     }
 }
@@ -140,10 +161,10 @@ pub(super) async fn take_verifications(
 
 /// Writes what changed here to the storage service, reading first when the phone changed
 /// something meanwhile; then tells our other devices to fetch it.
-async fn write_storage(manager: &mut Mgr, ctx: &Ports) {
+async fn write_storage(manager: &mut Mgr, ctx: &Ports, unplaced: &mut crate::storage::Unplaced) {
     use crate::storage::Written;
     for _ in 0..3 {
-        match crate::storage::push(manager, &ctx.tables).await {
+        match crate::storage::push(manager, &ctx.tables, unplaced).await {
             Ok(Written::Stale) => {
                 match crate::storage::sync(manager, &ctx.tables, &ctx.events).await {
                     Ok(synced) => {
@@ -182,6 +203,50 @@ async fn write_storage(manager: &mut Mgr, ctx: &Ports) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::Instant;
+
+    /// Time stands still for a test except where it sleeps, so these take no time and can't be
+    /// late.
+    async fn settled_after(changes: &[Duration], quiet: Duration, longest: Duration) -> Duration {
+        let changed = tokio::sync::Notify::new();
+        let start = Instant::now();
+        let waiting = settle(&changed, quiet, longest);
+        let making = async {
+            for at in changes {
+                tokio::time::sleep_until(start + *at).await;
+                changed.notify_one();
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            () = waiting => start.elapsed(),
+            () = making => unreachable!("it never ends"),
+        }
+    }
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_moment_ends_the_wait() {
+        let took = settled_after(&[], 2 * SECOND, 10 * SECOND).await;
+        assert_eq!(took, 2 * SECOND);
+    }
+
+    /// The phone writes a record for each chat it touches, a second or so apart: one read after,
+    /// not one for each.
+    #[tokio::test(start_paused = true)]
+    async fn a_run_of_changes_is_waited_out_and_read_once() {
+        let changes = [SECOND / 2, SECOND, 2 * SECOND, 3 * SECOND];
+        let took = settled_after(&changes, 2 * SECOND, 10 * SECOND).await;
+        assert_eq!(took, 5 * SECOND);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn changes_that_never_stop_hold_the_read_back_only_so_long() {
+        let changes: Vec<Duration> = (1..60).map(|n| n * SECOND).collect();
+        let took = settled_after(&changes, 2 * SECOND, 10 * SECOND).await;
+        assert_eq!(took, 10 * SECOND);
+    }
 
     #[test]
     fn the_phone_turns_link_previews_off_but_not_on() {
