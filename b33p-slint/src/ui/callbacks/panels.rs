@@ -4,10 +4,6 @@
 use super::*;
 
 pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
-    window.global::<Panels>().on_open_stories({
-        let shared = shared.clone();
-        move || shared.refresh(Update::default())
-    });
     window.global::<Panels>().on_open_story({
         let shared = shared.clone();
         move |id| shared.command(|chat| chat.open_story(&ConversationId(id.into())))
@@ -43,6 +39,7 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                 window
                     .global::<Panels>()
                     .set_story_text(SharedString::new());
+                window.global::<Panels>().set_story_composer_open(false);
             }
         }
     });
@@ -73,13 +70,16 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
                 .get_story_group_ids()
                 .row_data(at)
                 .map(|id| ConversationId(id.into()));
-            shared.act(|chat| {
+            let sent = shared.act(|chat| {
                 let story = b33p_core::NewStory::Picture(std::path::PathBuf::from(path.as_str()));
                 (
                     group.and_then(|g| chat.send_story(&g, story)),
                     Update::default(),
                 )
             });
+            if sent {
+                window.global::<Panels>().set_story_composer_open(false);
+            }
         }
     });
     window.global::<Groups>().on_open_details({

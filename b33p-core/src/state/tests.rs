@@ -3953,6 +3953,43 @@ fn people_are_chosen_for_a_group() {
     ));
 }
 
+/// Past someone's last story the viewer goes on to the next one with stories not seen yet,
+/// as Signal's apps do; it closes once there are none.
+#[test]
+fn stories_go_on_to_the_next_unseen() {
+    let mut state = state();
+    let story = |who: &str, chat: &str, ts: u64, viewed| crate::Story {
+        author_id: who.into(),
+        author: who.into(),
+        conversation: id(chat),
+        timestamp: ts,
+        content: crate::StoryContent::Text {
+            text: format!("{who} {ts}"),
+            foreground: 0,
+            background: 0,
+        },
+        viewed,
+        outgoing: false,
+    };
+    state.apply(Event::Stories(vec![
+        story("ann", "a", 10, false),
+        story("bob", "g", 20, true),
+        story("bob", "g", 30, false),
+        story("cid", "c:bob", 40, true),
+    ]));
+    state.open_story(&id("a"));
+    // On to the group's first unseen, marked seen in turn; the chat seen already is skipped.
+    assert!(matches!(state.step_story(1), Some(Command::ViewStory(r)) if r.timestamp == 30));
+    assert_eq!(
+        state
+            .current_story()
+            .map(|(s, at, count)| (s.conversation.0.clone(), at, count)),
+        Some(("g".into(), 1, 2))
+    );
+    assert!(state.step_story(1).is_none());
+    assert!(state.current_story().is_none(), "nothing unseen is left");
+}
+
 #[test]
 fn stories_are_watched_in_order() {
     let mut state = state();

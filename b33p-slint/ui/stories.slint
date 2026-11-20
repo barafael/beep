@@ -1,0 +1,445 @@
+// Stories: the rings over the chat list, the viewer over the whole window, and posting one.
+
+import { Button, ComboBox, TextEdit } from "std-widgets.slint";
+import { Motion, Theme } from "theme.slint";
+import { Avatar, Caption, Dialog, DialogButtons, FadeIn, Icon, IconButton, Small, Title } from "widgets.slint";
+import { AttachmentView } from "attachment.slint";
+import { OpenChat, Panels } from "state.slint";
+
+// One ring: a picture in a circle, ringed in the accent while there is something new, and the
+// name under it.
+component StoryRing inherits Rectangle {
+    in property <string> title;
+    in property <string> initials;
+    in property <color> tint;
+    in property <image> picture;
+    in property <bool> unviewed;
+    // "New story": a plus instead of a picture.
+    in property <bool> new;
+    in property <string> label;
+    callback clicked;
+    width: 64px;
+    height: 80px;
+    border-radius: Theme.radius-m;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-action-default => { self.clicked(); }
+        clicked => { root.clicked(); }
+    }
+    VerticalLayout {
+        padding-top: Theme.space-xs;
+        spacing: Theme.space-xs;
+        alignment: start;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 52px;
+                height: 52px;
+                border-radius: self.height / 2;
+                border-width: root.unviewed ? 2.5px : 1.5px;
+                border-color: root.new ? transparent : root.unviewed ? Theme.accent : Theme.divider;
+                animate border-color { duration: Motion.normal; easing: ease-out; }
+                if !root.new: Avatar {
+                    width: 44px;
+                    initials: root.initials;
+                    tint: root.tint;
+                    picture: root.picture;
+                }
+                if root.new: Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: self.height / 2;
+                    background: Theme.pressed;
+                    Icon {
+                        source: @image-url("@lucide/plus.svg");
+                        width: Theme.icon;
+                        tint: Theme.text;
+                    }
+                }
+            }
+        }
+        Caption {
+            text: root.title;
+            horizontal-alignment: center;
+            overflow: elide;
+            color: root.unviewed || root.new ? Theme.text : Theme.text-secondary;
+            font-weight: root.unviewed ? 600 : 400;
+        }
+    }
+}
+
+// Who has stories, newest unseen first, as a row over the chat list; the first opens the
+// composer. Scrolls sideways when there are more than fit.
+export component StoryStrip inherits Rectangle {
+    height: row.preferred-height;
+    Flickable {
+        content-width: row.preferred-width;
+        content-height: self.height;
+        row := HorizontalLayout {
+            padding-left: Theme.space-s;
+            padding-right: Theme.space-s;
+            padding-bottom: Theme.space-xs;
+            spacing: Theme.space-xs;
+            if Panels.story-groups.length > 0: StoryRing {
+                new: true;
+                title: "New";
+                label: "New story";
+                clicked => { Panels.story-composer-open = true; }
+            }
+            for ring in Panels.story-rings: StoryRing {
+                title: ring.title;
+                initials: ring.initials;
+                tint: ring.color;
+                picture: ring.avatar;
+                unviewed: ring.unviewed;
+                label: ring.title + "'s stories" + (ring.unviewed ? ", new" : "") + ", " + ring.time;
+                clicked => {
+                    Panels.open-story(ring.id);
+                    Panels.stories-open = true;
+                }
+            }
+        }
+    }
+}
+
+// A story over the whole window: a phone-shaped card with a bar per story at its top, that
+// goes on by itself after a while. Clicking its left third goes back, the rest on; holding it
+// pauses, as does Space. ← and → step, Esc closes.
+export component StoryViewer inherits FadeIn {
+    background: Theme.stage-scrim;
+    // How long a story shows before the next.
+    property <duration> length: 5s;
+    property <duration> elapsed;
+    // A press held this long pauses, and doesn't step when let go.
+    property <duration> hold: 250ms;
+    property <duration> held;
+    property <bool> paused;
+    // A picture still on its way: its time starts once it is there.
+    property <bool> waiting: !Panels.story.text-story && !Panels.story.picture.video
+        && Panels.story.picture.picture.width == 0;
+    property <bool> running: Panels.story.shown && !card-touch.pressed && !root.paused && !root.waiting;
+    property <float> progress: root.elapsed / root.length;
+    property <string> key: Panels.story.key;
+    changed key => {
+        self.elapsed = 0;
+        self.paused = false;
+        next-picture.running = true;
+    }
+    function step(by: int) {
+        root.elapsed = 0;
+        Panels.step-story(by);
+    }
+    // 20 times a second while it runs: the bar glides, and nothing redraws while paused.
+    Timer {
+        interval: 50ms;
+        running: root.running;
+        triggered => {
+            root.elapsed += self.interval;
+            if root.elapsed >= root.length {
+                root.step(1);
+            }
+        }
+    }
+    Timer {
+        interval: 50ms;
+        running: card-touch.pressed;
+        triggered => { root.held += self.interval; }
+    }
+    // The next picture is fetched when it is shown. Not from the change handler itself:
+    // fetching redraws, which mustn't happen while Slint runs its change handlers.
+    init => { next-picture.running = true; }
+    next-picture := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if !Panels.story.text-story && Panels.story.picture.fetch {
+                OpenChat.fetch-attachment(Panels.story.picture.id);
+            }
+        }
+    }
+
+    // Clicks beside the card do nothing (Esc or ✕ close).
+    TouchArea {}
+    keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.step(-1);
+                return accept;
+            }
+            if event.text == Key.RightArrow {
+                root.step(1);
+                return accept;
+            }
+            if event.text == " " {
+                root.paused = !root.paused;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    property <length> card-height: min(root.height - 2 * Theme.space-xl, (root.width - 2 * Theme.space-l) * 16 / 9);
+    property <length> card-width: root.card-height * 9 / 16;
+    // Room beside the card for the arrows.
+    property <bool> roomy: (root.width - root.card-width) / 2 > 64px;
+
+    if root.roomy: IconButton {
+        x: (root.width - root.card-width) / 2 - self.width - Theme.space-l;
+        y: (root.height - self.height) / 2;
+        width: 44px;
+        height: 44px;
+        icon-size: 24px;
+        icon: @image-url("@lucide/chevron-left.svg");
+        label: "Previous story";
+        tint: Theme.on-stage;
+        clicked => { root.step(-1); }
+    }
+    if root.roomy: IconButton {
+        x: (root.width + root.card-width) / 2 + Theme.space-l;
+        y: (root.height - self.height) / 2;
+        width: 44px;
+        height: 44px;
+        icon-size: 24px;
+        icon: @image-url("@lucide/chevron-right.svg");
+        label: "Next story";
+        tint: Theme.on-stage;
+        clicked => { root.step(1); }
+    }
+
+    card := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: root.card-width;
+        height: root.card-height;
+        border-radius: Theme.radius-l;
+        clip: true;
+        background: Panels.story.text-story ? Panels.story.background : Theme.stage;
+
+        // Placed by hand (x, y), so that the text stays out of the layout's size: its height
+        // depends on its width, which the layout would take from the text.
+        if Panels.story.text-story: Text {
+            x: Theme.space-l;
+            y: (parent.height - self.height) / 2;
+            width: parent.width - 2 * Theme.space-l;
+            text: Panels.story.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+            font-size: 1rem * Theme.display;
+            font-weight: 600;
+            color: Panels.story.foreground;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        // A picture fills the card's width; the blurred stand-in shows until it is there.
+        if !Panels.story.text-story && !Panels.story.picture.video: Rectangle {
+            if Panels.story.picture.placeholder.width > 0: Image {
+                width: parent.width;
+                height: parent.height;
+                source: Panels.story.picture.placeholder;
+                image-fit: cover;
+            }
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: Panels.story.picture.picture;
+                image-fit: contain;
+                accessible-role: image;
+                accessible-label: Panels.story.picture.caption != "" ? Panels.story.picture.caption : "Photo";
+            }
+            if Panels.story.picture.caption != "": Rectangle {
+                y: parent.height - self.height;
+                height: caption.preferred-height + 2 * Theme.space-l;
+                background: @linear-gradient(0deg, Theme.story-shade 0%, transparent 100%);
+                caption := Text {
+                    x: Theme.space-l;
+                    width: parent.width - 2 * Theme.space-l;
+                    text: Panels.story.picture.caption;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    color: Theme.on-stage;
+                }
+            }
+        }
+        // A video plays in the desktop's player.
+        if !Panels.story.text-story && Panels.story.picture.video: VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                alignment: center;
+                AttachmentView {
+                    item: Panels.story.picture;
+                    outgoing: false;
+                    fetch(id) => { OpenChat.fetch-attachment(id); }
+                    open(id) => { OpenChat.open-attachment(id); }
+                }
+            }
+        }
+
+        card-touch := TouchArea {
+            changed pressed => {
+                if self.pressed {
+                    root.held = 0;
+                }
+            }
+            clicked => {
+                if root.held < root.hold {
+                    root.step(self.mouse-x < self.width / 3 ? -1 : 1);
+                }
+            }
+        }
+
+        // The bars and who posted it, over a shade that keeps them readable on any picture.
+        Rectangle {
+            y: 0;
+            height: top.preferred-height + Theme.space-xl;
+            background: @linear-gradient(180deg, Theme.story-shade 0%, transparent 100%);
+        }
+        top := VerticalLayout {
+            y: 0;
+            height: self.preferred-height;
+            padding: Theme.space-s;
+            spacing: Theme.space-s;
+            HorizontalLayout {
+                spacing: Theme.space-xs;
+                for i in Panels.story.count: Rectangle {
+                    height: 3px;
+                    border-radius: self.height / 2;
+                    background: Theme.on-stage-faint;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * (i < Panels.story.index ? 1 : i == Panels.story.index ? root.progress : 0);
+                        border-radius: self.height / 2;
+                        background: Theme.on-stage;
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.space-s;
+                Avatar {
+                    width: 32px;
+                    initials: Panels.story.initials;
+                    tint: Panels.story.color;
+                    picture: Panels.story.avatar;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: Panels.story.title;
+                        color: Theme.on-stage;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    Small {
+                        text: (Panels.story.author != Panels.story.title ? Panels.story.author + " · " : "") + Panels.story.time;
+                        color: Theme.on-stage-secondary;
+                        overflow: elide;
+                    }
+                }
+                if root.paused || root.waiting: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        source: root.waiting ? @image-url("@lucide/loader.svg") : @image-url("@lucide/pause.svg");
+                        width: Theme.icon;
+                        tint: Theme.on-stage-secondary;
+                        accessible-role: text;
+                        accessible-label: root.waiting ? "Loading" : "Paused";
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: @image-url("@lucide/x.svg");
+                        label: "Close stories";
+                        tint: Theme.on-stage;
+                        clicked => {
+                            Panels.close-story();
+                            Panels.stories-open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Posting a story to a group: a preview of it as it will look, beside where it goes and what
+// it says.
+export component StoryComposer inherits Dialog {
+    card-width: 640px;
+    card-height: 480px;
+    dismissed => { Panels.story-composer-open = false; }
+    HorizontalLayout {
+        padding: Theme.space-l;
+        spacing: Theme.space-l;
+        // As b33p posts text stories: white on its blue.
+        Rectangle {
+            width: self.height * 9 / 16;
+            border-radius: Theme.radius-l;
+            clip: true;
+            background: Theme.story-background;
+            Text {
+                x: Theme.space-m;
+                y: (parent.height - self.height) / 2;
+                width: parent.width - 2 * Theme.space-m;
+                text: Panels.story-text != "" ? Panels.story-text : "Your story";
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                font-size: 1rem * Theme.title;
+                font-weight: 600;
+                color: Panels.story-text != "" ? Theme.on-stage : Theme.on-stage-faint;
+            }
+        }
+        VerticalLayout {
+            spacing: Theme.space-m;
+            Title { text: "New story"; }
+            VerticalLayout {
+                spacing: Theme.space-xs;
+                Small {
+                    text: "Shared with";
+                    color: Theme.text-secondary;
+                }
+                ComboBox {
+                    model: Panels.story-groups;
+                    current-index <=> Panels.story-group;
+                }
+            }
+            TextEdit {
+                vertical-stretch: 1;
+                placeholder-text: "What's on your mind?";
+                wrap: word-wrap;
+                text <=> Panels.story-text;
+                init => { self.focus(); }
+            }
+            Small {
+                text: "Stories disappear after 24 hours.";
+                color: Theme.text-tertiary;
+                wrap: word-wrap;
+            }
+            DialogButtons {
+                Button {
+                    text: "Photo…";
+                    icon: @image-url("@lucide/image.svg");
+                    colorize-icon: true;
+                    clicked => { Panels.post-story-photo(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Cancel";
+                    clicked => { Panels.story-composer-open = false; }
+                }
+                Button {
+                    text: "Post";
+                    primary: true;
+                    enabled: Panels.story-text != "";
+                    clicked => { Panels.post-story-text(); }
+                }
+            }
+        }
+    }
+}

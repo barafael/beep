@@ -535,8 +535,8 @@ pub enum Action {
         name: String,
     },
     /// Opens (or closes) what only the window keeps open, as its buttons do: "settings",
-    /// "stories", "calendar", or the dialogs that ask first: "unlink", "start_over",
-    /// "leave_group".
+    /// "stories" (the viewer, which closes again without a story to show), "story_composer",
+    /// "calendar", or the dialogs that ask first: "unlink", "start_over", "leave_group".
     Show {
         what: String,
         open: bool,

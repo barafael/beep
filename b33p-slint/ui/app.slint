@@ -13,7 +13,8 @@ import { ActivityCalendar, ActivityStrip } from "activity.slint";
 import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens.slint";
 import { SettingsPage } from "settings.slint";
 import { ChatListPane } from "chat-list.slint";
-import { StoriesOverlay, GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
+import { StoryComposer, StoryViewer } from "stories.slint";
+import { GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
 import { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
 
 // What Rust reaches: the window, its data types and the globals it sets.
@@ -2054,8 +2055,10 @@ export component AppWindow inherits Window {
         }
     }
 
-    if Panels.stories-open: StoriesOverlay {
-        narrow: root.narrow;
+    if Panels.stories-open: StoryViewer {
+    }
+
+    if Panels.story-composer-open: StoryComposer {
     }
 
     if Groups.group-draft-open: GroupDraftDialog {

@@ -518,12 +518,17 @@ fn perform(shared: &Rc<Shared>, action: Action) -> Result<bool, AgentError> {
             chat.close_media();
             (None, Update::default())
         }),
-        Action::OpenStory { conversation } => shared.act(|chat| {
-            (
-                chat.open_story(&ConversationId(conversation)),
-                Update::default(),
-            )
-        }),
+        // As clicking the ring does: the story, and the viewer to show it.
+        Action::OpenStory { conversation } => {
+            let sent = shared.act(|chat| {
+                (
+                    chat.open_story(&ConversationId(conversation)),
+                    Update::default(),
+                )
+            });
+            window(shared)?.show_part("stories", true, &shared.chat.borrow())?;
+            sent
+        }
         Action::StepStory { by } => {
             shared.act(|chat| (chat.step_story(by as isize), Update::default()))
         }

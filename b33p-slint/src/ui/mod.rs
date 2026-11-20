@@ -310,6 +310,7 @@ impl Window {
         match what {
             "settings" => window.global::<Prefs>().set_settings_open(open),
             "stories" => window.global::<Panels>().set_stories_open(open),
+            "story_composer" => window.global::<Panels>().set_story_composer_open(open),
             "calendar" => {
                 if open {
                     render_calendar(window, chat);
@@ -559,12 +560,11 @@ fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         chat.close_viewer();
     } else if chat.join().is_some() {
         chat.close_join();
+    } else if window.global::<Panels>().get_story_composer_open() {
+        window.global::<Panels>().set_story_composer_open(false);
     } else if window.global::<Panels>().get_stories_open() {
-        if chat.current_story().is_some() {
-            chat.close_story();
-        } else {
-            window.global::<Panels>().set_stories_open(false);
-        }
+        chat.close_story();
+        window.global::<Panels>().set_stories_open(false);
     } else if chat.group_draft().is_some() {
         chat.close_group_draft();
     } else if chat.forwarding() {
