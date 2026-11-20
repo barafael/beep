@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     time::Duration,
 };
 
@@ -26,7 +26,8 @@ use tracing::{info, warn};
 
 use crate::{
     Classified as _, Command, Event, Events, Failure, HistoryTransfer, Password, Preferences,
-    QrMatrix, attachments,
+    QrMatrix,
+    attachments::{self, cache::Cache},
     local::LocalStore,
     outbox::{Sending, Sends as _},
     transfer,
@@ -53,6 +54,31 @@ pub(super) enum Ending {
     /// The data here is to be deleted ([`Command::StartOver`], [`Command::Unlink`]); then
     /// everything starts again.
     Wipe,
+}
+
+/// Moves what earlier builds kept beside presage's store into it, now that it keeps two senders'
+/// messages at one millisecond apart, and drops the table they were in. Left for the next start
+/// if a message can't be stored.
+async fn move_collided(store: &SqliteStore, tables: &LocalStore) {
+    let collided = match tables.collided().await {
+        Ok(collided) => collided,
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "could not read the messages kept beside the store");
+            return;
+        }
+    };
+    for (conversation, content) in collided {
+        let Some(thread) = super::conversations::thread_of(&conversation) else {
+            continue;
+        };
+        if let Err(error) = store.save_message(&thread, content).await {
+            warn!(error = %crate::scrub::chain(&error), "could not move a message kept beside the store into it");
+            return;
+        }
+    }
+    if let Err(error) = tables.drop_collided().await {
+        warn!(error = %crate::scrub::chain(&error), "could not drop the table of messages kept beside the store");
+    }
 }
 
 /// Why an [`attempt`] failed. It says what went wrong for the log; [`Failed::failure`] and
@@ -199,6 +225,16 @@ pub(super) enum Notice {
     Removed,
     #[error("Receiving messages failed; trying again.")]
     ReceivingFailed,
+    #[error(
+        "Your phone hasn't been connected to Signal for a while. Open Signal on it, or this \
+         device may be unlinked."
+    )]
+    IdlePhone,
+    #[error(
+        "This version of b33p has expired: Signal no longer works with it. Install the newest \
+         version to send and receive again; the messages here can still be read."
+    )]
+    Expired,
     #[error("The linking code couldn't be drawn. Restart b33p to try again.")]
     QrNotDrawn,
     #[error("the task sending messages in order has stopped")]
@@ -209,9 +245,9 @@ impl crate::Classified for Notice {
     fn kind(&self) -> crate::ErrorKind {
         use crate::ErrorKind::{Refused, Storage, Unreachable};
         match self {
-            Self::TransferInterrupted | Self::ReceivingFailed => Unreachable,
+            Self::TransferInterrupted | Self::ReceivingFailed | Self::IdlePhone => Unreachable,
             Self::TransferFailed { kind } => *kind,
-            Self::Removed | Self::QrNotDrawn => Refused,
+            Self::Removed | Self::QrNotDrawn | Self::Expired => Refused,
             Self::OrderedSendingStopped => Storage,
         }
     }
@@ -264,13 +300,14 @@ pub(super) fn attempt(
         device_name,
         use_password,
     ) {
-        Ok(Unlocked::Open(store, tables, closed)) => (
+        Ok(Unlocked::Open(store, tables, closed, cache)) => (
             local.block_on(
                 &runtime,
                 session(
                     device_name,
                     store,
                     tables,
+                    cache,
                     commands,
                     events.clone(),
                     preferences.clone(),
@@ -453,6 +490,13 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), WipeError> {
             _ => {}
         }
     }
+    // The attachments kept, whose key comes from the database's.
+    if let Err(source) = attachments::cache::clear(&paths.dir) {
+        return Err(WipeError::Delete {
+            path: paths.dir.join(attachments::cache::DIR),
+            source,
+        });
+    }
     // The key last: while the database exists, it is the only way into it.
     if matches!(
         KeySource::read(&paths.key_source),
@@ -473,7 +517,7 @@ pub(super) fn wipe(paths: &Paths) -> Result<(), WipeError> {
 
 /// What [`unlock`] came to, other than failing.
 enum Unlocked {
-    Open(SqliteStore, LocalStore, Closed),
+    Open(SqliteStore, LocalStore, Closed, Option<Arc<Cache>>),
     /// The UI quit while being asked for a password.
     Gone,
     /// The password was forgotten: [`Command::StartOver`] instead of one.
@@ -503,7 +547,9 @@ fn unlock(
                 KeyringKey::Unavailable(reason) => return Err(Failed::KeyringUnavailable(reason)),
             };
             return open_store(runtime, local, paths, &key)
-                .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                .map(|(store, tables, closed)| {
+                    Unlocked::Open(store, tables, closed, attachment_cache(paths, &key))
+                })
                 .map_err(Failed::Open);
         }
         Some(KeySource::Password { salt, kdf }) => (salt, kdf),
@@ -518,7 +564,9 @@ fn unlock(
                 Ok(key) => {
                     write_source(paths, &KeySource::Keyring)?;
                     return open_store(runtime, local, paths, &key)
-                        .map(|(store, tables, closed)| Unlocked::Open(store, tables, closed))
+                        .map(|(store, tables, closed)| {
+                            Unlocked::Open(store, tables, closed, attachment_cache(paths, &key))
+                        })
                         .map_err(Failed::Open);
                 }
                 // Locked now, but it may be unlocked in a moment: a password is for good, so
@@ -556,12 +604,27 @@ fn unlock(
         }
         let key = vault::password_key(password.expose(), &salt, kdf);
         match open_store(runtime, local, paths, &key) {
-            Ok((store, tables, closed)) => return Ok(Unlocked::Open(store, tables, closed)),
+            Ok((store, tables, closed)) => {
+                let cache = attachment_cache(paths, &key);
+                return Ok(Unlocked::Open(store, tables, closed, cache));
+            }
             Err(OpenError::WrongKey) if !new => {
                 info!("wrong password for the database");
                 error = Some("Wrong password.".into());
             }
             Err(error) => return Err(Failed::Open(error)),
+        }
+    }
+}
+
+/// The attachments kept on disk, under a key from the database's. Without it (its directory
+/// can't be made) b33p downloads as before, each time something shows.
+fn attachment_cache(paths: &Paths, key: &vault::Key) -> Option<Arc<Cache>> {
+    match Cache::open(&paths.dir, key) {
+        Ok(cache) => Some(Arc::new(cache)),
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "attachments won't be kept on disk");
+            None
         }
     }
 }
@@ -742,6 +805,7 @@ fn open_store(
     if let Err(error) = local.block_on(runtime, tables.index_messages()) {
         warn!(error = %crate::scrub::chain(&error), "could not index the stored messages");
     }
+    local.block_on(runtime, move_collided(&store, &tables));
     // SQLite creates its files with the process umask, typically world-readable; another user
     // could copy them and attack the password offline. (The directory is private too.)
     for path in [
@@ -758,10 +822,12 @@ fn open_store(
     Ok((store, tables, closed))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn session(
     device_name: &RefCell<String>,
     store: SqliteStore,
     tables: LocalStore,
+    cache: Option<Arc<Cache>>,
     command_rx: &mut CommandRx,
     events: Events,
     preferences: Rc<Cell<Preferences>>,
@@ -829,6 +895,7 @@ async fn session(
             pending,
             &events,
             &tables,
+            &cache,
             command_rx,
             &preferences,
             device_name,
@@ -870,11 +937,13 @@ async fn has_contents(store: &SqliteStore) -> bool {
 
 /// Runs a linked session: syncs, receives and handles commands, until the UI goes away, this
 /// device is unlinked, or Signal removes it.
+#[allow(clippy::too_many_arguments)]
 async fn run_linked(
     manager: Mgr,
     pending: Vec<Command>,
     events: &Events,
     tables: &LocalStore,
+    cache: &Option<Arc<Cache>>,
     command_rx: &mut CommandRx,
     preferences: &Rc<Cell<Preferences>>,
     device_name: &RefCell<String>,
@@ -891,9 +960,15 @@ async fn run_linked(
     let (outbox, queued) = tokio::sync::mpsc::channel(crate::outbox::CAPACITY);
     let sending = tokio::task::spawn_local(Sending::new(manager.clone()).event_loop(queued));
     let (to_session, for_session) = tokio::sync::mpsc::unbounded_channel();
+    let downloads = attachments::Downloads::new(
+        manager.registration_data().signal_servers.clone(),
+        cache.clone(),
+    );
     let ctx = Ctx::new(Ports {
         events: events.clone(),
         tables: tables.clone(),
+        cache: cache.clone(),
+        downloads: Some(downloads.clone()),
         preferences: preferences.clone(),
         expiring: Rc::default(),
         story_kept: Rc::default(),
@@ -928,13 +1003,11 @@ async fn run_linked(
     // In the background, so receiving starts right away.
     let latest = tokio::task::spawn_local(send_latest_messages(
         manager.clone(),
-        ctx.tables.clone(),
         ctx.threads_now(),
         events.clone(),
     ));
     let following = tokio::task::spawn_local(follow_storage(manager.clone(), ctx.ports.clone()));
 
-    let downloads = attachments::Downloads::new(manager.registration_data().signal_servers.clone());
     // Ends after its pass once the session has dropped its end.
     let (avatars, asked) = tokio::sync::mpsc::unbounded_channel();
     tokio::task::spawn_local(Avatars::new(manager.clone(), events.clone()).event_loop(asked));
@@ -1126,6 +1199,11 @@ async fn reset(
             .await
             .map_err(Failed::ClearContents)?;
         tables.clear().await.map_err(Failed::ClearTables)?;
+        // Another account's attachments, if any. Emptied, not removed: the session's cache
+        // keeps writing into it.
+        if let Err(error) = attachments::cache::empty(&paths.dir) {
+            warn!(error = %crate::scrub::chain(&error), "could not empty the attachments kept");
+        }
     }
     Marker::remove(paths)
 }
@@ -1212,11 +1290,7 @@ async fn link(
 pub(super) mod tests {
     use super::*;
     use crate::signal::conversations::conversation_id;
-    use crate::signal::history::{
-        contents_before, keep_edit_if_dropped, keep_if_dropped, stored_at, stored_message,
-        stored_since,
-    };
-    use crate::signal::pins::pinned_content;
+    use crate::signal::history::{stored_at, stored_message, stored_since};
     use crate::signal::tests::aci;
     use crate::{ConversationId, MessageRef};
     use presage::{
@@ -1436,6 +1510,11 @@ pub(super) mod tests {
         .write(&paths.key_source)
         .unwrap();
         open_and_close(&paths, &key, async |_, _| {}).unwrap();
+        let cache = attachment_cache(&paths, &key).expect("a cache");
+        let photo = crate::AttachmentId("3/photo".into());
+        cache
+            .write(&photo, attachments::cache::Entry::Original, b"photo")
+            .unwrap();
         Marker::Link.write(&paths).unwrap();
         let lock = lock_data(&paths).unwrap();
         std::fs::write(tmp.path().join("unrelated"), b"").unwrap();
@@ -1491,9 +1570,10 @@ pub(super) mod tests {
     }
 
     /// What presage asks for one chat's messages is found through b33p's index on its table,
-    /// rather than by walking every chat's messages by time (`messages_before`) or the whole
-    /// table (`messages`). b33p reads a chat's newest message, its pages of history, what is
-    /// unread, recent safety number notes, media and search hits with `messages_before`.
+    /// rather than by walking every chat's messages by time or the whole table, and read in the
+    /// index's order. b33p reads a chat's newest message, its pages of history, what is unread,
+    /// recent safety number notes, media and search hits as pages (`messages` with a limit) or
+    /// time ranges (`messages` without).
     #[test]
     fn a_chats_messages_are_found_through_its_index() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1501,21 +1581,26 @@ pub(super) mod tests {
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
         open_and_close(&paths, &key, async |_, tables| {
             use sqlx::Row as _;
-            // As presage's `messages_before` and `messages` have them (content.rs).
+            // As presage's `messages` has them (content.rs).
             const COLUMNS: &str = "ts, server_ts, sender_service_id, sender_device_id,
                 destination_service_id, needs_receipt, unidentified_sender, content_body,
                 was_plaintext, pni_verified";
-            const THREAD: &str = "thread_id = (
-                SELECT id FROM threads WHERE group_master_key = ? OR recipient_id = ?)";
-            let before = format!(
+            const IN_RANGE: &str = "thread_id = (
+                SELECT id FROM threads WHERE group_master_key = ?1 OR recipient_id = ?2)
+                AND ts BETWEEN ?3 AND ?4";
+            let page = format!(
                 "EXPLAIN QUERY PLAN SELECT {COLUMNS} FROM thread_messages
-                 WHERE {THREAD} AND ts < ? ORDER BY ts DESC LIMIT ?"
+                 WHERE {IN_RANGE}
+                    AND ts >= coalesce((
+                        SELECT ts FROM thread_messages WHERE {IN_RANGE}
+                        ORDER BY ts DESC LIMIT 1 OFFSET ?5
+                    ), ?3)
+                 ORDER BY ts DESC, sender_service_id DESC"
             );
             let range = format!(
                 "EXPLAIN QUERY PLAN SELECT {COLUMNS} FROM thread_messages
-                 WHERE {THREAD} AND coalesce(ts > ?, ts >= ?, true)
-                    AND coalesce(ts < ?, ts <= ?, true)
-                 ORDER BY ts DESC"
+                 WHERE {IN_RANGE}
+                 ORDER BY ts DESC, sender_service_id DESC"
             );
             // One connection that has seen the index: EXPLAIN doesn't check whether the schema
             // changed since the connection last read it, as statements that run do.
@@ -1539,21 +1624,13 @@ pub(super) mod tests {
                     .map(|row| row.get::<String, _>(3))
                     .collect()
             };
-            let before = plan(&before, 2).await;
-            assert!(
-                before.iter().any(|step| step
-                    .contains("INDEX b33p_thread_messages_thread_ts (thread_id=? AND ts<?)")),
-                "{before:?}"
-            );
-            let range = plan(&range, 4).await;
-            assert!(
-                range
-                    .iter()
-                    .any(|step| step.contains("INDEX b33p_thread_messages_thread_ts (thread_id=?)")),
-                "{range:?}"
-            );
-            // In the index's order already.
-            for step in before.iter().chain(&range) {
+            let index =
+                "INDEX b33p_thread_messages_thread_ts_sender (thread_id=? AND ts>? AND ts<?)";
+            let page = plan(&page, 3).await;
+            assert!(page.iter().any(|step| step.contains(index)), "{page:?}");
+            let range = plan(&range, 2).await;
+            assert!(range.iter().any(|step| step.contains(index)), "{range:?}");
+            for step in page.iter().chain(&range) {
                 assert!(!step.contains("TEMP B-TREE"), "{step}");
                 assert!(!step.starts_with("SCAN thread_messages"), "{step}");
             }
@@ -1561,16 +1638,12 @@ pub(super) mod tests {
         .unwrap();
     }
 
-    /// The body of a content's data message.
-    fn body_of(content: &Content) -> Option<&str> {
-        crate::signal::history::data_of(content).and_then(|(data, _)| data.body.as_deref())
-    }
-
-    /// Two authors at one millisecond: presage's store holds one, and the other is kept beside
-    /// it, comes back as it was among the store's in pages that don't skip or repeat it, and
-    /// goes on its own when edited, expired or deleted. The holder stays through all of it.
+    /// What an earlier build kept beside presage's store, from when it had room for one content
+    /// per thread and millisecond, goes into it at start, beside the message that held the
+    /// time, and the table goes.
     #[test]
-    fn a_message_the_store_has_no_place_for_is_kept_beside_it() {
+    fn what_was_kept_beside_the_store_moves_into_it() {
+        use presage::libsignal_service::prelude::ProtobufMessage as _;
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
@@ -1578,126 +1651,60 @@ pub(super) mod tests {
             let (ann, bob) = (ServiceId::Aci(aci(1)), ServiceId::Aci(aci(2)));
             let thread = Thread::Group([9; 32]);
             let id = conversation_id(&thread);
-            let of = |who: ServiceId, timestamp| MessageRef {
-                author_id: who.service_id_string(),
-                timestamp,
-            };
-            for ts in [10, 20, 30] {
-                store.save_message(&thread, stored(ann, ts)).await.unwrap();
-            }
+            store.save_message(&thread, stored(ann, 20)).await.unwrap();
+            // As 29d98a3 made and filled it.
+            let db = tables.pool();
+            sqlx::query(
+                "CREATE TABLE b33p_collided (
+                    conversation TEXT NOT NULL, author TEXT NOT NULL, ts INTEGER NOT NULL,
+                    server_ts INTEGER NOT NULL, device INTEGER NOT NULL,
+                    destination TEXT NOT NULL, needs_receipt INTEGER NOT NULL,
+                    unidentified_sender INTEGER NOT NULL, was_plaintext INTEGER NOT NULL,
+                    pni_verified TEXT, content BLOB NOT NULL,
+                    PRIMARY KEY (conversation, author, ts))",
+            )
+            .execute(db)
+            .await
+            .unwrap();
             let bobs = stored(bob, 20);
-            keep_if_dropped(store, tables, &thread, &bobs).await;
+            assert!(matches!(bobs.body, ContentBody::DataMessage(_)));
+            sqlx::query("INSERT INTO b33p_collided VALUES (?, ?, 20, 20, 1, ?, 0, 0, 0, NULL, ?)")
+                .bind(&id.0)
+                .bind(bob.service_id_string())
+                .bind(bob.service_id_string())
+                .bind(bobs.body.clone().into_proto().encode_to_vec())
+                .execute(db)
+                .await
+                .unwrap();
 
-            // Only what the store turned away: the holder's own isn't, nor a time nobody holds.
-            keep_if_dropped(store, tables, &thread, &stored(ann, 30)).await;
-            keep_if_dropped(store, tables, &thread, &stored(bob, 40)).await;
-            // A delete names a time and isn't saved at its own, so it says nothing of the holder.
-            let delete = Content {
-                body: ContentBody::DataMessage(DataMessage {
-                    delete: Some(presage::proto::data_message::Delete {
-                        target_sent_timestamp: Some(10),
-                    }),
-                    ..Default::default()
-                }),
-                ..stored(bob, 30)
+            move_collided(store, tables).await;
+            let of = |who: ServiceId| MessageRef {
+                author_id: who.service_id_string(),
+                timestamp: 20,
             };
-            keep_if_dropped(store, tables, &thread, &delete).await;
-            let kept = tables.collided(&id, 0, None).await.unwrap();
-            assert_eq!(kept.len(), 1, "bob's message at 20 alone");
-
-            // As it was.
-            let kept = &kept[0];
-            assert_eq!(kept.metadata.sender, bob);
-            assert_eq!(kept.metadata.destination, bobs.metadata.destination);
-            assert_eq!(kept.metadata.sender_device, bobs.metadata.sender_device);
-            assert_eq!(stored_at(kept), 20);
-            assert_eq!(
-                kept.metadata.server_timestamp,
-                bobs.metadata.server_timestamp
+            let moved = stored_message(store, &thread, &of(bob)).await.unwrap();
+            assert_eq!(moved.metadata.sender, bob);
+            assert!(matches!(
+                &moved.body,
+                ContentBody::DataMessage(data) if data.body.as_deref() == Some("at 20")
+            ));
+            let holder = stored_message(store, &thread, &of(ann)).await.unwrap();
+            assert_eq!(holder.metadata.sender, ann);
+            assert!(
+                tables.collided().await.unwrap().is_empty(),
+                "the table is gone"
             );
-            assert_eq!(body_of(kept), Some("at 20"));
-            let found = stored_message(store, tables, &id, &thread, &of(bob, 20)).await;
-            assert_eq!(found.unwrap().metadata.sender, bob);
-            let found = stored_message(store, tables, &id, &thread, &of(ann, 20)).await;
-            assert_eq!(found.unwrap().metadata.sender, ann);
-            // A pin of either shows that one, not the other's at its time.
-            let pinned = pinned_content(store, tables, &id, &thread, &of(bob, 20)).await;
-            assert_eq!(pinned.unwrap().metadata.sender, bob);
-            let pinned = pinned_content(store, tables, &id, &thread, &of(ann, 20)).await;
-            assert_eq!(pinned.unwrap().metadata.sender, ann);
-            assert_eq!(
-                tables
-                    .collided_conversation(&bob.service_id_string(), 20)
-                    .await
-                    .unwrap(),
-                Some(id.clone())
-            );
-
-            // Every page size, read to the end: each once, newest first, none left out at a
-            // page's edge, where the next page starts before the time it ended at.
-            for limit in 1..=4 {
-                let mut seen = Vec::new();
-                let mut before = None;
-                loop {
-                    let page = contents_before(store, tables, &thread, before, limit)
-                        .await
-                        .unwrap();
-                    seen.extend(page.iter().map(|c| (stored_at(c), c.metadata.sender)));
-                    if page.len() < limit as usize {
-                        break;
-                    }
-                    before = page.last().map(stored_at);
-                }
-                assert_eq!(seen.len(), 4, "page of {limit}: {seen:?}");
-                assert!(seen.contains(&(20, bob)), "page of {limit}");
-                assert!(seen.is_sorted_by_key(|(ts, _)| std::cmp::Reverse(*ts)));
-            }
-            let since = stored_since(store, tables, &thread, 20).await.unwrap();
-            assert_eq!(
-                since.iter().map(stored_at).collect::<Vec<_>>(),
-                [30, 20, 20]
-            );
-
-            // An edit takes its place, at its first time; one of the holder's touches nothing.
-            let mut edit = stored(bob, 25);
-            edit.body = ContentBody::EditMessage(presage::proto::EditMessage {
-                target_sent_timestamp: Some(20),
-                data_message: Some(DataMessage {
-                    body: Some("edited".into()),
-                    timestamp: Some(25),
-                    ..Default::default()
-                }),
-            });
-            keep_edit_if_dropped(tables, &id, &of(bob, 20), &edit).await;
-            keep_edit_if_dropped(tables, &id, &of(ann, 20), &edit).await;
-            let kept = tables.collided(&id, 0, None).await.unwrap();
-            assert_eq!(kept.len(), 1);
-            assert_eq!(stored_at(&kept[0]), 20);
-            assert_eq!(body_of(&kept[0]), Some("edited"));
-
-            // Expiring it leaves the holder; then the holder expiring takes the store's.
-            let entry = |message| (id.clone(), message, Some(thread.clone()));
-            tables.delete_messages(&[entry(of(bob, 20))]).await.unwrap();
-            assert!(tables.collided(&id, 0, None).await.unwrap().is_empty());
-            assert!(store.message(&thread, 20).await.unwrap().is_some());
-            tables.delete_messages(&[entry(of(ann, 20))]).await.unwrap();
-            assert!(store.message(&thread, 20).await.unwrap().is_none());
-
-            // Forgotten one by one, whether there was one to forget, and by chat.
-            tables.keep_collided(&id, &stored(bob, 30)).await.unwrap();
-            assert!(tables.forget_collided(&id, &of(bob, 30)).await.unwrap());
-            assert!(!tables.forget_collided(&id, &of(bob, 30)).await.unwrap());
-            tables.keep_collided(&id, &stored(bob, 30)).await.unwrap();
-            tables.forget_collided_chat(&id).await.unwrap();
-            assert!(tables.collided(&id, 0, None).await.unwrap().is_empty());
+            // Again, with nothing to move: nothing happens.
+            move_collided(store, tables).await;
+            assert!(stored_message(store, &thread, &of(bob)).await.is_some());
         })
         .unwrap();
     }
 
-    /// A backup's message at a time someone else's holds doesn't replace it, as saving would; and
-    /// importing twice stays harmless.
+    /// A message expiring takes only its author's at its time: someone else's, sent at the same
+    /// millisecond, stays.
     #[test]
-    fn importing_a_message_at_someone_elses_time_keeps_both() {
+    fn an_expired_message_takes_only_its_authors() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
@@ -1705,26 +1712,19 @@ pub(super) mod tests {
             let (ann, bob) = (ServiceId::Aci(aci(1)), ServiceId::Aci(aci(2)));
             let thread = Thread::Group([9; 32]);
             let id = conversation_id(&thread);
-            let mut writer = store.clone();
-            for _ in 0..2 {
-                for sender in [ann, bob] {
-                    crate::import::store(
-                        &mut writer,
-                        tables,
-                        crate::import::Record::Message {
-                            thread: thread.clone(),
-                            content: stored(sender, 40),
-                        },
-                    )
-                    .await
-                    .unwrap();
-                }
+            for who in [ann, bob] {
+                store.save_message(&thread, stored(who, 20)).await.unwrap();
             }
-            let holder = store.message(&thread, 40).await.unwrap().unwrap();
-            assert_eq!(holder.metadata.sender, ann);
-            let kept = tables.collided(&id, 0, None).await.unwrap();
-            assert_eq!(kept.len(), 1);
-            assert_eq!(kept[0].metadata.sender, bob);
+            let of = |who: ServiceId| MessageRef {
+                author_id: who.service_id_string(),
+                timestamp: 20,
+            };
+            tables
+                .delete_messages(&[(id.clone(), of(bob), Some(thread.clone()))])
+                .await
+                .unwrap();
+            assert!(stored_message(store, &thread, &of(bob)).await.is_none());
+            assert!(stored_message(store, &thread, &of(ann)).await.is_some());
         })
         .unwrap();
     }
@@ -1758,8 +1758,9 @@ pub(super) mod tests {
                 .delete_messages(&[entry(&chat, 10), entry(&group, 20)])
                 .await
                 .unwrap();
-            let kept =
-                async |thread: &Thread, ts| store.message(thread, ts).await.unwrap().is_some();
+            let kept = async |thread: &Thread, ts| {
+                store.message(thread, &ann, ts).await.unwrap().is_some()
+            };
             assert!(!kept(&chat, 10).await);
             assert!(kept(&chat, 20).await);
             assert!(kept(&group, 10).await);
@@ -1777,7 +1778,7 @@ pub(super) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = test_paths(tmp.path());
         let key = vault::password_key("correct horse", &[3; 16], vault::Kdf::V1);
-        open_and_close(&paths, &key, async |store, tables| {
+        open_and_close(&paths, &key, async |store, _| {
             let who = |n: u8| {
                 ServiceId::parse_from_service_id_string(&format!(
                     "00000000-0000-0000-0000-0000000000{n:02}"
@@ -1796,7 +1797,7 @@ pub(super) mod tests {
                     .unwrap();
             }
             let times = async |thread: &Thread, from: u64| -> Vec<u64> {
-                stored_since(store, tables, thread, from)
+                stored_since(store, thread, from)
                     .await
                     .unwrap()
                     .iter()

@@ -9,10 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # presage at the revision b33p pins (Cargo.toml). presage itself pins upstream libsignal-service,
 # which has no servers of one's own (`SignalServers::Custom`); b33p's Cargo.toml patches it to
 # its fork, and so does this build, through `--config` for this build only.
-ARG PRESAGE_REV=8057f23b1b4585703ddb9ce154a4a649ba6bbcaf
-ARG LIBSIGNAL_SERVICE_REV=470e2b08712b8755fff752337e223d4b7cc92644
+ARG PRESAGE_REV=53b6295f9a51af4492884263072bda91435bb1c5
+ARG LIBSIGNAL_SERVICE_REV=e0693ce07c782b9d83bcba8c689a8aed8e0c1eb5
 # b33p's SQLCipher too (Cargo.toml's libsqlite3-sys): presage's own still tears SQLCipher down at
-# exit, and presage-cli, exiting while a connection was still in use, crashed in OPENSSL_cleanup.
+# exit, and presage-cli, exiting while a connection was still in use, crashed there.
 ARG RUSQLITE_REV=3475a314b4c98bcc006eb8143de5ef7bfeda8cbb
 RUN git init -q /opt/presage && cd /opt/presage \
     && git fetch -q --depth 1 https://github.com/barafael/presage "$PRESAGE_REV" \
@@ -23,11 +23,15 @@ RUN git init -q /opt/presage && cd /opt/presage \
 COPY testbox/presage/presage-cli.lock /opt/presage/Cargo.lock
 # The target cache is the host's, shared by every worktree's and every box's builds: locked, so
 # that one build at a time writes it and copies out what it built.
+# With `presage-store-sqlite/cdsi`, as b33p builds it: SQLCipher with its crypto in Rust, so
+# presage-cli doesn't link OpenSSL at all. With OpenSSL, a `send` crashed now and then as it
+# exited: `exit` ran OPENSSL_cleanup while an sqlx worker thread, ending, ran OpenSSL's
+# per-thread cleanup on what that had just freed (SIGSEGV, core of 19 November).
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/opt/presage/target,sharing=locked \
     cd /opt/presage \
-    && cargo build --release --locked -p presage-cli \
+    && cargo build --release --locked -p presage-cli --features presage-store-sqlite/cdsi \
         --config 'patch."https://github.com/whisperfish/libsignal-service-rs".libsignal-service.git="https://github.com/barafael/libsignal-service-rs"' \
         --config "patch.\"https://github.com/whisperfish/libsignal-service-rs\".libsignal-service.rev=\"$LIBSIGNAL_SERVICE_REV\"" \
         --config 'patch.crates-io.libsqlite3-sys.git="https://github.com/barafael/rusqlite"' \

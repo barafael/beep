@@ -1,0 +1,40 @@
+diff --git a/b33p-core/src/signal/receive.rs b/b33p-core/src/signal/receive.rs
+index 85f1792..eb95b15 100644
+--- a/b33p-core/src/signal/receive.rs
++++ b/b33p-core/src/signal/receive.rs
+@@ -960,6 +960,8 @@ fn named_conversation(
+ 
+ /// The phone's whole list of whom we block: everything else is unblocked.
+ async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::Blocked) {
++    // MUTATION (negative control): this handler does nothing.
++    return;
+     let mut now_blocked = std::collections::HashSet::new();
+     for aci in &blocked.acis {
+         now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
+@@ -1015,6 +1017,8 @@ async fn on_answered_elsewhere(
+     ctx: &Ctx,
+     answer: &sync_message::MessageRequestResponse,
+ ) {
++    // MUTATION (negative control): this handler does nothing.
++    return;
+     use sync_message::message_request_response::Type;
+     let Some(id) = named_conversation(
+         ctx,
+@@ -1137,6 +1141,8 @@ async fn on_typing(
+     content: &Content,
+     typing: &TypingMessage,
+ ) -> bool {
++    // MUTATION (negative control): this handler does nothing.
++    return false;
+     let sender = content.metadata.sender;
+     if sender == own_id(manager) {
+         return true;
+@@ -1181,6 +1187,8 @@ async fn is_party(manager: &Mgr, conversation: &ConversationId, who: ServiceId)
+ 
+ /// Messages were read on another of our devices.
+ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read]) {
++    // MUTATION (negative control): this handler does nothing.
++    return;
+     let mut read: HashMap<ConversationId, Vec<MessageRef>> = HashMap::new();
+     for entry in reads {
+         let (Some(sender), Some(timestamp)) = (

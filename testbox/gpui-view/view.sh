@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Looks at b33p-gpui on a display of its own, which only ever holds b33p (testbox/tools
+# Looks at b33p on a display of its own, which only ever holds b33p (testbox/tools
 # `with-display`: cage and wayvnc, in a container), never the host's desktop.
 #
 #   testbox/gpui-view/view.sh start [env=value...]   runs the built binary on the mock
 #   testbox/gpui-view/view.sh shot <name>            writes target/gpui-view/shots/<name>.png
 #   testbox/gpui-view/view.sh logs | stop
 #
-# VIEW_BIN: another binary to run (default target/debug/b33p-gpui; e.g. a b33p-slint build);
+# VIEW_BIN: another binary to run (default target/debug/b33p);
 # VIEW_IMAGE: another image (default b33p-gpui-view; b33p-bench-view has the Vulkan driver);
 # VIEW_GPU=1: draw on the host's GPU through its render node, as bench.py does.
 #
-# Needs: `cargo build -p b33p-gpui` (add `--features harness` to drive it through
+# Needs: `cargo build -p b33p-slint` (add `--features harness` to drive it through
 # target/gpui-view/run/agent.sock), the image from the Containerfile beside this script
 # (`podman build -t b33p-gpui-view -f testbox/gpui-view/Containerfile testbox/gpui-view`), and
 # the tools: `CARGO_TARGET_DIR=target/testbox-workspaces cargo build --manifest-path
@@ -40,7 +40,7 @@ start)
     env_args=()
     for pair in "$@"; do env_args+=(-e "$pair"); done
     podman run -d --rm --name $name --userns=keep-id --security-opt label=disable \
-        "${gpu_args[@]}" -v "${VIEW_BIN:-$root/target/debug/b33p-gpui}:/usr/local/bin/b33p:ro" \
+        "${gpu_args[@]}" -v "${VIEW_BIN:-$root/target/debug/b33p}:/usr/local/bin/b33p:ro" \
         -v "$tools/with-display:/usr/local/bin/with-display:ro" \
         -v "$out/view:/run/view" -v "$out/run:/run/b33p" -v "$out/data:/tmp/home" \
         -e HOME=/tmp/home -e B33P_MOCK=1 -e B33P_AGENT_SOCKET=/run/b33p/agent.sock \

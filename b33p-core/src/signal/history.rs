@@ -22,11 +22,6 @@ pub(super) enum HistoryError {
     },
     #[error("searching stopped")]
     SearchStopped(#[source] tokio::task::JoinError),
-    #[error("failed to look up a deleted message")]
-    FindDeleted {
-        target: MessageRef,
-        source: StoreError,
-    },
     #[error("failed to erase a deleted message")]
     EraseDeleted {
         target: MessageRef,
@@ -48,7 +43,7 @@ impl crate::Classified for HistoryError {
         }
     }
 }
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, ops::Bound, time::Duration};
 
 use presage::{
     libsignal_service::{
@@ -60,22 +55,21 @@ use presage::{
         data_message::Flags,
         sync_message::{Content as SyncContent, Sent},
     },
-    store::{ContentExt, ContentsStore, Thread},
+    store::{ContentExt, ContentsStore, MessagesQueryParams, Thread},
 };
-use presage_store_sqlite::SqliteStore;
+use presage_store_sqlite::{SqliteStore, SqliteStoreError};
 use tracing::{debug, warn};
 
 use crate::{
     ChatMessage, ConversationId, Event, MessageRef, Quote, Reaction, Style, StyleRange,
     attachments,
     format::{self, RangeValue, WireRange},
-    local::LocalStore,
     now_millis,
 };
 
 use super::{
     Ctx, Mgr,
-    conversations::{Names, conversation_id, display_name, or_logged, own_id, thread_of},
+    conversations::{Names, display_name, or_logged, own_id, thread_of},
     groups::group_notice,
     trust::identity_note,
 };
@@ -109,117 +103,37 @@ pub(super) fn stored_at(content: &Content) -> u64 {
     content.metadata.client_timestamp.timestamp_millis() as u64
 }
 
-/// Keeps `content` beside the store if the store just turned it away: presage keeps one content
-/// per thread and millisecond, and drops a message at a time someone else's holds. Called once
-/// presage has saved what it would. An edit or a delete isn't saved at its own time, so one
-/// says nothing of the time's holder.
-pub(super) async fn keep_if_dropped(
+/// Up to `limit` of a thread's stored contents sent before `before` (or the newest), newest
+/// first; more when others share the oldest one's time, so a page that starts before it misses
+/// none. One that doesn't decode fails the page.
+pub(super) async fn newest_before(
     store: &SqliteStore,
-    tables: &LocalStore,
-    thread: &Thread,
-    content: &Content,
-) {
-    if !data_of(content).is_some_and(|(data, edit)| !edit && data.delete.is_none()) {
-        return;
-    }
-    let holder = store.message(thread, stored_at(content)).await;
-    if let Ok(Some(holder)) = holder
-        && holder.metadata.sender != content.metadata.sender
-    {
-        debug!(thread = %thread, "keeping a message beside the store");
-        let conversation = conversation_id(thread);
-        if let Err(error) = tables.keep_collided(&conversation, content).await {
-            warn!(error = %crate::scrub::chain(&error), "failed to keep a message beside the store");
-        }
-    }
-}
-
-/// `edit` of `target`, in its place, if `target` is kept beside the store: presage finds someone
-/// else's message at that time, and ignores it.
-pub(super) async fn keep_edit_if_dropped(
-    tables: &LocalStore,
-    conversation: &ConversationId,
-    target: &MessageRef,
-    edit: &Content,
-) {
-    let kept = or_logged(
-        tables.collided_message(conversation, target).await,
-        "messages kept beside the store",
-    );
-    let Some(kept) = kept else {
-        return;
-    };
-    let mut edit = edit.clone();
-    edit.metadata.client_timestamp = kept.metadata.client_timestamp;
-    match &mut edit.body {
-        ContentBody::EditMessage(edit)
-        | ContentBody::SynchronizeMessage(SyncMessage {
-            content:
-                Some(SyncContent::Sent(Sent {
-                    edit_message: Some(edit),
-                    ..
-                })),
-            ..
-        }) => edit.target_sent_timestamp = Some(target.timestamp),
-        _ => return,
-    }
-    if let Err(error) = tables.keep_collided(conversation, &edit).await {
-        warn!(error = %crate::scrub::chain(&error), "failed to keep an edit beside the store");
-    }
-}
-
-/// The content that holds `target`: kept beside the store, or else the store's at its time.
-pub(super) async fn stored_message(
-    store: &SqliteStore,
-    tables: &LocalStore,
-    conversation: &ConversationId,
-    thread: &Thread,
-    target: &MessageRef,
-) -> Option<Content> {
-    if let Ok(Some(kept)) = tables.collided_message(conversation, target).await {
-        return Some(kept);
-    }
-    store.message(thread, target.timestamp).await.ok().flatten()
-}
-
-/// Up to `limit` stored contents of a thread before `before` (or the newest), newest first, with
-/// those kept beside the store among them: all of those the page's times reach, so that a page
-/// ending at a time doesn't leave one of its contents to the next, which starts before it. More
-/// than `limit`, then; fewer means there are no older ones.
-pub(super) async fn contents_before(
-    store: &SqliteStore,
-    tables: &LocalStore,
     thread: &Thread,
     before: Option<u64>,
     limit: u32,
-) -> Result<Vec<Content>, StoreError> {
-    let mut contents = store.messages_before(thread, before, limit).await?;
-    let from = match contents.last() {
-        Some(oldest) if contents.len() == limit as usize => stored_at(oldest),
-        _ => 0,
-    };
-    with_kept(tables, thread, from, before, &mut contents).await;
-    Ok(contents)
+) -> Result<Vec<Content>, SqliteStoreError> {
+    let range = (
+        Bound::Unbounded,
+        before.map_or(Bound::Unbounded, Bound::Excluded),
+    );
+    store
+        .messages(thread, MessagesQueryParams::from(range).limit(limit.into()))
+        .await?
+        .collect()
 }
 
-/// Adds what is kept beside the store from `from` up to `before` to `contents`, newest first.
-async fn with_kept(
-    tables: &LocalStore,
+/// The content `target` names: its author's message at its time.
+pub(super) async fn stored_message(
+    store: &SqliteStore,
     thread: &Thread,
-    from: u64,
-    before: Option<u64>,
-    contents: &mut Vec<Content>,
-) {
-    let kept = or_logged(
-        tables
-            .collided(&conversation_id(thread), from, before)
-            .await,
-        "messages kept beside the store",
-    );
-    if !kept.is_empty() {
-        contents.extend(kept);
-        contents.sort_by_key(|content| std::cmp::Reverse(stored_at(content)));
-    }
+    target: &MessageRef,
+) -> Option<Content> {
+    let author = ServiceId::parse_from_service_id_string(&target.author_id)?;
+    store
+        .message(thread, &author, target.timestamp)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Messages shown per page of history.
@@ -229,7 +143,6 @@ const HISTORY_PAGE: usize = 100;
 /// [`HISTORY_PAGE`] messages, plus where the next older page starts, if there is one.
 pub(super) async fn history_page(
     manager: &Mgr,
-    tables: &LocalStore,
     thread: &Thread,
     before: Option<u64>,
 ) -> Result<(Vec<Content>, Option<u64>), HistoryError> {
@@ -238,7 +151,7 @@ pub(super) async fn history_page(
     let mut contents = Vec::new();
     let mut cursor = before;
     loop {
-        let batch = contents_before(manager.store(), tables, thread, cursor, BATCH)
+        let batch = newest_before(manager.store(), thread, cursor, BATCH)
             .await
             .map_err(|source| HistoryError::Page {
                 before: cursor,
@@ -261,38 +174,15 @@ pub(super) async fn history_page(
 }
 
 /// A thread's stored contents sent at `from` or later, newest first; `None` if they can't be
-/// read.
-///
-/// Read a page at a time from the newest, which the store finds through the thread's index
-/// (see [`LocalStore::index_messages`]). It can't use that for an open range
-/// (`messages(thread, from..)`), which tests every message of the thread instead. The pages
-/// start small and grow: most threads have only a few contents that recent.
+/// read. One that doesn't decode is skipped. The store finds them through the thread's index
+/// (see [`LocalStore::index_messages`]).
 pub(super) async fn stored_since(
     store: &SqliteStore,
-    tables: &LocalStore,
     thread: &Thread,
     from: u64,
 ) -> Option<Vec<Content>> {
-    let mut found = Vec::new();
-    let mut before = None;
-    let mut page = 8;
-    loop {
-        let Ok(batch) = store.messages_before(thread, before, page).await else {
-            // A content that doesn't decode fails its whole page; the range skips just it.
-            let contents = store.messages(thread, from..).await.ok()?;
-            let mut contents: Vec<Content> = contents.flatten().collect();
-            with_kept(tables, thread, from, None, &mut contents).await;
-            return Some(contents);
-        };
-        let full = batch.len() == page as usize;
-        before = batch.last().map(stored_at);
-        found.extend(batch.into_iter().take_while(|c| stored_at(c) >= from));
-        if !full || before.is_none_or(|oldest| oldest < from) {
-            with_kept(tables, thread, from, None, &mut found).await;
-            return Some(found);
-        }
-        page = (page * 4).min(512);
-    }
+    let contents = store.messages(thread, from..).await.ok()?;
+    Some(contents.flatten().collect())
 }
 
 /// Adds what b33p keeps beside the store to messages of one conversation: how far ours got,
@@ -346,11 +236,20 @@ pub(super) async fn sweep_expired(ctx: &Ctx) -> Option<Duration> {
         })
         .collect();
     // All in one transaction.
-    if !deleted.is_empty()
-        && let Err(error) = ctx.tables.delete_messages(&deleted).await
-    {
-        warn!(error = %crate::scrub::chain(&error), "failed to delete disappearing messages");
-        return Some(RETRY);
+    if !deleted.is_empty() {
+        match ctx.tables.delete_messages(&deleted).await {
+            Ok(bodies) => {
+                let kept = bodies
+                    .iter()
+                    .flat_map(|body| crate::attachments::kept_of_stored(body))
+                    .collect();
+                crate::attachments::forget(&ctx.cache, kept).await;
+            }
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "failed to delete disappearing messages");
+                return Some(RETRY);
+            }
+        }
     }
     if !deleted.is_empty() {
         checkpoint(ctx).await;
@@ -402,7 +301,6 @@ pub(super) async fn start_timers(
 /// The disappearing timers of stored messages, for messages read elsewhere.
 pub(super) async fn stored_timers(
     manager: &Mgr,
-    tables: &LocalStore,
     conversation: &ConversationId,
     messages: &[MessageRef],
 ) -> Vec<(MessageRef, u32)> {
@@ -411,8 +309,7 @@ pub(super) async fn stored_timers(
     };
     let mut timers = Vec::new();
     for message in messages {
-        if let Some(content) =
-            stored_message(manager.store(), tables, conversation, &thread, message).await
+        if let Some(content) = stored_message(manager.store(), &thread, message).await
             && let Some(timer) = data_of(&content).and_then(|(data, _)| data.expire_timer)
         {
             timers.push((message.clone(), timer));
@@ -512,27 +409,20 @@ pub(super) fn author_of(manager: &Mgr, content: &Content) -> ServiceId {
     }
 }
 
-/// Why: deleted content must not stay on disk (cf. CVE-2018-14023). `Ok(false)` if there was
-/// no such message, in which case nothing is noted either.
+/// Why: deleted content must not stay on disk (cf. CVE-2018-14023). `taken`: presage took it
+/// out of the store already, as it does with a delete it keeps (`Kept::Deleted`). `Ok(false)`
+/// if there was no such message, in which case nothing is noted either.
 pub(super) async fn erase_deleted(
     manager: &Mgr,
     ctx: &Ctx,
     conversation: &ConversationId,
     thread: &Thread,
     target: &MessageRef,
+    taken: bool,
 ) -> Result<bool, HistoryError> {
-    // Kept beside the store: what the store holds at its time is someone else's.
-    let kept = ctx
-        .tables
-        .forget_collided(conversation, target)
-        .await
-        .map_err(|source| HistoryError::NoteDeleted {
-            conversation: conversation.clone(),
-            target: target.clone(),
-            source,
-        })?;
     let mut store = manager.store().clone();
-    if !kept && !erase_from_store(&mut store, thread, target).await? {
+    let kept = kept_of_target(&store, thread, target).await;
+    if !erase_from_store(&mut store, thread, target).await? && !taken {
         return Ok(false);
     }
     ctx.tables
@@ -544,7 +434,26 @@ pub(super) async fn erase_deleted(
             source,
         })?;
     checkpoint(ctx).await;
+    crate::attachments::forget(&ctx.cache, kept).await;
     Ok(true)
+}
+
+/// What of `target` may be kept on disk ([`crate::attachments::kept_of`]), read from the store
+/// before it goes: afterwards nothing tells which attachments were its.
+pub(super) async fn kept_of_target(
+    store: &SqliteStore,
+    thread: &Thread,
+    target: &MessageRef,
+) -> Vec<crate::AttachmentId> {
+    let Some(author) = ServiceId::parse_from_service_id_string(&target.author_id) else {
+        return Vec::new();
+    };
+    match store.message(thread, &author, target.timestamp).await {
+        Ok(Some(content)) => data_of(&content)
+            .map(|(data, _)| crate::attachments::kept_of(data))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// After erasing, so that nothing of it stays in the database's log. Failing leaves it there
@@ -559,46 +468,22 @@ pub(super) async fn checkpoint(ctx: &Ctx) {
     }
 }
 
-/// The store keys messages by (thread, timestamp); the sender check keeps another author's
-/// message at the same time. presage erases a received delete's target itself (leaving an
-/// empty message with no sender), which counts as erased.
+/// Takes `target` out of the store, if it is there: its author's message at its time.
 async fn erase_from_store(
     store: &mut SqliteStore,
     thread: &Thread,
     target: &MessageRef,
 ) -> Result<bool, HistoryError> {
-    let stored = store
-        .message(thread, target.timestamp)
-        .await
-        .map_err(|source| HistoryError::FindDeleted {
-            target: target.clone(),
-            source,
-        })?;
-    let Some(content) = stored else {
+    let Some(author) = ServiceId::parse_from_service_id_string(&target.author_id) else {
         return Ok(false);
     };
-    if is_erased(&content) {
-        return Ok(true);
-    }
-    if content.metadata.sender.service_id_string() != target.author_id {
-        return Ok(false);
-    }
     store
-        .delete_message(thread, target.timestamp)
+        .delete_message(thread, &author, target.timestamp)
         .await
         .map_err(|source| HistoryError::EraseDeleted {
             target: target.clone(),
             source,
         })
-}
-
-/// What presage leaves of a message deleted for everyone: a null message from nobody.
-fn is_erased(content: &Content) -> bool {
-    matches!(content.body, ContentBody::NullMessage(_))
-        && content.metadata.sender
-            == ServiceId::Aci(presage::libsignal_service::protocol::Aci::from(
-                presage::libsignal_service::prelude::Uuid::nil(),
-            ))
 }
 
 /// A reaction, from someone else or (synced from the phone) from us.
@@ -705,10 +590,10 @@ pub(super) async fn to_chat_message(
                 None => String::new(),
             };
             // By the time of the version it quotes, which for an edited message is an edit's.
-            let stored = match (thread_of(&conversation), quote.id) {
-                (Some(thread), Some(id)) => manager
+            let stored = match (thread_of(&conversation), author_id, quote.id) {
+                (Some(thread), Some(author), Some(id)) => manager
                     .store()
-                    .message_sent_or_edited_at(&thread, id)
+                    .message_sent_or_edited_at(&thread, &author, id)
                     .await
                     .ok()
                     .flatten(),
@@ -791,7 +676,6 @@ pub(super) async fn to_chat_message(
 /// newest first, at most [`MEDIA_MESSAGES`].
 pub(super) async fn media(
     manager: &Mgr,
-    tables: &LocalStore,
     thread: &Thread,
     conversation: &ConversationId,
 ) -> Result<Vec<ChatMessage>, HistoryError> {
@@ -801,7 +685,7 @@ pub(super) async fn media(
     let mut found = Vec::new();
     let mut before = None;
     loop {
-        let batch = contents_before(manager.store(), tables, thread, before, BATCH)
+        let batch = newest_before(manager.store(), thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Media {
                 conversation: conversation.clone(),
@@ -838,7 +722,6 @@ pub(super) async fn media(
 /// [`SEARCH_HITS`].
 pub(super) async fn search(
     manager: &Mgr,
-    tables: &LocalStore,
     thread: &Thread,
     conversation: &ConversationId,
     query: &str,
@@ -853,7 +736,7 @@ pub(super) async fn search(
     let mut hits = Vec::new();
     let mut before = None;
     loop {
-        let batch = contents_before(manager.store(), tables, thread, before, BATCH)
+        let batch = newest_before(manager.store(), thread, before, BATCH)
             .await
             .map_err(|source| HistoryError::Search {
                 conversation: conversation.clone(),
@@ -1001,13 +884,13 @@ mod tests {
                     .await
                     .unwrap()
             );
-            assert!(store.message(&thread, 10).await.unwrap().is_some());
+            assert!(store.message(&thread, &alice, 10).await.unwrap().is_some());
             assert!(
                 erase_from_store(&mut store, &thread, &named(alice))
                     .await
                     .unwrap()
             );
-            assert!(store.message(&thread, 10).await.unwrap().is_none());
+            assert!(store.message(&thread, &alice, 10).await.unwrap().is_none());
             assert!(
                 !erase_from_store(&mut store, &thread, &named(alice))
                     .await
@@ -1016,72 +899,6 @@ mod tests {
         });
     }
 
-    /// presage erases a received delete's target itself, leaving an empty message from
-    /// nobody; that counts as erased, so that the deletion is noted, while a delete of a
-    /// message that was never there is not.
-    #[test]
-    fn a_message_presage_erased_counts_as_erased() {
-        use presage::libsignal_service::{content::Metadata, push_service::DEFAULT_DEVICE_ID};
-        use presage::proto::NullMessage;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let mut store = SqliteStore::open(":memory:", OnNewIdentity::Trust)
-                .await
-                .unwrap();
-            let alice =
-                ServiceId::parse_from_service_id_string("00000000-0000-0000-0000-000000000001")
-                    .unwrap();
-            let nobody = ServiceId::Aci(presage::libsignal_service::protocol::Aci::from(
-                presage::libsignal_service::prelude::Uuid::nil(),
-            ));
-            let thread = Thread::Contact(alice);
-            let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis).unwrap();
-            let content = |sender, body| Content {
-                metadata: Metadata {
-                    sender,
-                    destination: alice,
-                    sender_device: *DEFAULT_DEVICE_ID,
-                    pni_verified: None,
-                    client_timestamp: at(10),
-                    server_timestamp: at(11),
-                    needs_receipt: false,
-                    unidentified_sender: false,
-                    was_plaintext: false,
-                    server_guid: None,
-                },
-                body,
-            };
-            let erased = content(nobody, ContentBody::NullMessage(NullMessage::default()));
-            assert!(is_erased(&erased));
-            assert!(!is_erased(&content(
-                alice,
-                ContentBody::NullMessage(NullMessage::default())
-            )));
-            store.save_message(&thread, erased).await.unwrap();
-            let named = |timestamp| MessageRef {
-                author_id: alice.service_id_string(),
-                timestamp,
-            };
-            assert!(
-                erase_from_store(&mut store, &thread, &named(10))
-                    .await
-                    .unwrap()
-            );
-            assert!(
-                !erase_from_store(&mut store, &thread, &named(30))
-                    .await
-                    .unwrap()
-            );
-        });
-    }
-
-    /// A number typed internationally, or the way our own country writes them, is the same
-    /// number; text that isn't one, or an invalid number, is none.
-    /// Current Signal apps fill only the binary ACI fields, and read only those when given
-    /// both; b33p reads either and fills both.
     #[test]
     fn acis_are_read_and_written_in_binary_too() {
         use presage::proto::data_message::Reaction;

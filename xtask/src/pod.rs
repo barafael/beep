@@ -6,7 +6,7 @@ use std::fs::{File, TryLockError};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -262,6 +262,31 @@ pub enum Service {
     Netem,
 }
 
+/// `argv` for the presage container, so that what presage-cli logs (its stderr, presage at
+/// debug) also goes into the container's own log, which a box's record keeps, each line
+/// tagged with the account's store (`peer`, `primary`, …): presage-cli runs in `podman exec`s,
+/// whose output only the harness saw, so the record had nothing of the presage side when a
+/// message went missing. The stderr still comes back as before, for errors.
+fn presage_logged<'a>(argv: &[&'a str]) -> Vec<&'a str> {
+    // A pipeline, which bash waits for: process substitutions outlived it as zombies of the
+    // container's `sleep infinity`, which reaps nothing, each holding a session keyring until
+    // the user's 200 keys were taken and no `podman exec` started ("join keyctl: Disk quota
+    // exceeded"). stdout goes straight out (fd 3); stderr through the loop, to both.
+    const SCRIPT: &str = r#"tag=$1; shift
+export RUST_LOG=${RUST_LOG:-info,presage=debug}
+exec 3>&1
+"$@" 2>&1 1>&3 3>&- | while IFS= read -r line; do
+    printf '%s\n' "$line" >&2
+    printf '[%s] %s\n' "$tag" "$line" >> /proc/1/fd/2
+done
+exit "${PIPESTATUS[0]}""#;
+    let tag = argv
+        .iter()
+        .find_map(|arg| arg.strip_prefix("/presage/")?.strip_suffix(".db"))
+        .unwrap_or("presage");
+    [&["bash", "-c", SCRIPT, "bash", tag][..], argv].concat()
+}
+
 /// The b33p every box has.
 pub const B33P: Service = Service::B33p(0);
 
@@ -414,32 +439,6 @@ impl Image {
 
 /// The server's image, which the clients' copy the box's keys and tools from.
 const SERVER: &str = "server";
-
-/// Which window b33p is in the box: the same client, drawn with either toolkit.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Ui {
-    /// b33p-slint.
-    #[default]
-    Slint,
-    /// b33p-gpui.
-    Gpui,
-}
-
-impl Ui {
-    /// The crate's suffix: `b33p-<this>`, the Containerfile's `UI` argument.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Slint => "slint",
-            Self::Gpui => "gpui",
-        }
-    }
-
-    /// Whether its harness can write its window to a file (`Call::Screenshot`). GPUI draws on
-    /// the GPU and doesn't hand the frame back: its screenshots are its display's.
-    pub fn draws_to_file(self) -> bool {
-        matches!(self, Self::Slint)
-    }
-}
 
 /// How a build shares the CPU.
 #[derive(Clone, Copy)]
@@ -610,8 +609,6 @@ pub struct Pod {
     printed: Mutex<HashSet<(String, u64)>>,
     /// Whether the boxes it plays write the wire down ([`Self::capture`]).
     capture: AtomicBool,
-    /// Which window b33p is ([`Self::set_ui`]), a [`Ui`] as a number.
-    ui: AtomicU8,
 }
 
 impl Pod {
@@ -645,7 +642,6 @@ impl Pod {
             lost: Mutex::default(),
             printed: Mutex::default(),
             capture: AtomicBool::new(false),
-            ui: AtomicU8::new(Ui::Slint as u8),
         })
     }
 
@@ -674,18 +670,6 @@ impl Pod {
 
     pub fn capturing(&self) -> bool {
         self.capture.load(Ordering::Relaxed)
-    }
-
-    /// Which window the b33p of the boxes built and played from now on is.
-    pub fn set_ui(&self, ui: Ui) {
-        self.ui.store(ui as u8, Ordering::Relaxed);
-    }
-
-    pub fn ui(&self) -> Ui {
-        match self.ui.load(Ordering::Relaxed) {
-            1 => Ui::Gpui,
-            _ => Ui::Slint,
-        }
     }
 
     /// The capture and the key logs (testbox/capture/volumes.yaml), the box's since it played
@@ -814,9 +798,6 @@ impl Pod {
         if image.profiled {
             let profile = if optimized { "testbox" } else { "dev" };
             build.arg("--build-arg").arg(format!("PROFILE={profile}"));
-            build
-                .arg("--build-arg")
-                .arg(format!("UI={}", self.ui().name()));
         }
         build
             .arg("-f")
@@ -1295,7 +1276,11 @@ impl Pod {
         stdin: &str,
     ) -> Result<String, CommandError> {
         let mut exec = podman(&["exec", "-i", &self.container(service)]);
-        exec.args(argv);
+        if service == Service::Presage {
+            exec.args(presage_logged(argv));
+        } else {
+            exec.args(argv);
+        }
         process::output(exec, stdin)
     }
 
@@ -1600,6 +1585,11 @@ impl Pod {
     /// says it: the end of its log up to that line. Restarted, it would most likely fail again,
     /// or wait for what its first run left behind, until the wait's patience ran out.
     fn failure(&self, service: Service, since: Option<u64>) -> Result<Option<String>, PodError> {
+        Ok(failure(&self.logs_since(service, since)?))
+    }
+
+    /// What `service` has logged so far, since `since` if given ([`process::now`]'s time).
+    pub fn logs_since(&self, service: Service, since: Option<u64>) -> Result<String, PodError> {
         let mut logs = podman(&["logs"]);
         if let Some(since) = since {
             logs.args(["--since", &since.to_string()]);
@@ -1612,11 +1602,11 @@ impl Pod {
                 container: self.container(service),
                 source,
             })?;
-        Ok(failure(&format!(
+        Ok(format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        )))
+        ))
     }
 
     fn follow_logs(&self, service: Service, since: Option<u64>) -> Command {

@@ -9,7 +9,7 @@ use futures::{StreamExt, future};
 use presage::{
     Error as PresageError,
     libsignal_service::{
-        content::{Content, ContentBody, DataMessage, GroupContextV2, Metadata},
+        content::{ContentBody, DataMessage, GroupContextV2},
         protocol::ServiceId,
     },
     proto::{
@@ -33,11 +33,11 @@ use crate::{
 use super::{
     Ctx, Mgr, Ports,
     conversations::{
-        Names, accepted, conversation_id, e164_of, expire_timer, is_blocked, or_logged, own_id,
-        sender_name, thread_of, wrote_to,
+        Names, accepted, e164_of, expire_timer, is_blocked, or_logged, own_id, sender_name,
+        thread_of, wrote_to,
     },
     groups::{group_identifier, member_aci},
-    history::{checkpoint, keep_edit_if_dropped, keep_if_dropped, start_timers},
+    history::{checkpoint, start_timers},
     trust::{announce_identity_change, hold_changed},
 };
 
@@ -215,62 +215,11 @@ async fn deliver(
             return Err(SendError::MembersHeld { names });
         }
     }
-    let sent = send_to(&ctx.outbox, thread, body.clone(), timestamp).await;
-    match &sent {
-        Err(SendError::Untrusted { who }) => hold_changed(manager, ctx, *who).await,
-        Ok(()) => keep_sent_if_dropped(manager, ctx, thread, body, timestamp).await,
-        Err(_) => {}
+    let sent = send_to(&ctx.outbox, thread, body, timestamp).await;
+    if let Err(SendError::Untrusted { who }) = &sent {
+        hold_changed(manager, ctx, *who).await;
     }
     sent
-}
-
-/// Keeps what we just sent beside the store if presage had no place for it: an incoming message
-/// holds its millisecond. As presage has what we send.
-async fn keep_sent_if_dropped(
-    manager: &Mgr,
-    ctx: &Ctx,
-    thread: &Thread,
-    body: ContentBody,
-    timestamp: u64,
-) {
-    let edit = match &body {
-        ContentBody::EditMessage(edit) => edit.target_sent_timestamp,
-        ContentBody::DataMessage(_) => None,
-        _ => return,
-    };
-    let Some(at) = chrono::DateTime::from_timestamp_millis(timestamp as i64) else {
-        return;
-    };
-    let own = own_id(manager);
-    let content = Content {
-        metadata: Metadata {
-            sender: own,
-            destination: match thread {
-                Thread::Contact(who) => *who,
-                Thread::Group(_) => own,
-            },
-            sender_device: manager.device_id(),
-            client_timestamp: at,
-            server_timestamp: at,
-            needs_receipt: false,
-            unidentified_sender: false,
-            was_plaintext: false,
-            server_guid: None,
-            pni_verified: None,
-        },
-        body,
-    };
-    match edit {
-        Some(target) => {
-            let target = MessageRef {
-                author_id: own.service_id_string(),
-                timestamp: target,
-            };
-            let conversation = conversation_id(thread);
-            keep_edit_if_dropped(&ctx.tables, &conversation, &target, &content).await;
-        }
-        None => keep_if_dropped(manager.store(), &ctx.tables, thread, &content).await,
-    }
 }
 
 /// The names of the members of group `key` whose verified safety number changed and isn't
@@ -678,13 +627,77 @@ pub(super) async fn send_sync_at(
     }
 }
 
+/// Who b33p has a chat with, so that b33p decides whether they are blocked.
+#[derive(Default)]
+pub(super) struct Known {
+    pub(super) numbers: std::collections::HashSet<String>,
+    pub(super) acis: std::collections::HashSet<String>,
+    pub(super) groups: std::collections::HashSet<Vec<u8>>,
+}
+
+/// The whole list to send: whom b33p blocks, and from the list our devices last sent, everyone
+/// b33p has no chat for. Signal's apps take the list as the whole one (Signal-Android
+/// `RecipientTable.applyBlockedUpdate` unblocks everyone first), so leaving those out would
+/// unblock them: a number with no Signal account, a group b33p hasn't seen.
+pub(super) fn whole_blocked_list(
+    mut own: sync_message::Blocked,
+    last: Option<&sync_message::Blocked>,
+    known: &Known,
+) -> sync_message::Blocked {
+    let Some(last) = last else {
+        return own;
+    };
+    for number in &last.numbers {
+        if !known.numbers.contains(number) && !own.numbers.contains(number) {
+            own.numbers.push(number.clone());
+        }
+    }
+    let last_acis = last
+        .acis
+        .iter()
+        .filter_map(|aci| ServiceId::parse_from_service_id_string(aci));
+    let last_binary = last
+        .acis_binary
+        .iter()
+        .filter_map(|aci| ServiceId::parse_from_service_id_binary(aci));
+    for who in last_acis.chain(last_binary) {
+        let aci = who.service_id_string();
+        if !known.acis.contains(&aci) && !own.acis.contains(&aci) {
+            own.acis.push(aci);
+            own.acis_binary.push(who.service_id_binary());
+        }
+    }
+    for group in &last.group_ids {
+        if !known.groups.contains(group) && !own.group_ids.contains(group) {
+            own.group_ids.push(group.clone());
+        }
+    }
+    own
+}
+
+/// The list our devices last sent, or b33p last sent them.
+pub(super) async fn last_blocked_list(ctx: &Ctx) -> Option<sync_message::Blocked> {
+    use prost::Message as _;
+    let bytes = ctx.tables.blocked_list().await.ok()??;
+    sync_message::Blocked::decode(bytes.as_slice()).ok()
+}
+
+/// Remembers the whole list as our devices have it now.
+pub(super) async fn remember_blocked_list(ctx: &Ctx, list: &sync_message::Blocked) {
+    use prost::Message as _;
+    if let Err(error) = ctx.tables.set_blocked_list(&list.encode_to_vec()).await {
+        warn!(error = %crate::scrub::chain(&error), "failed to remember the list of whom we block");
+    }
+}
+
 /// Tells our other devices whom we block now: the whole list, as Signal expects.
 pub(super) async fn send_blocked(manager: &Mgr, ctx: &Ctx) {
     let Ok(all) = ctx.tables.conversations().await else {
         return;
     };
-    let mut blocked = sync_message::Blocked::default();
-    for id in all.iter().filter(|(_, s)| s.blocked).map(|(id, _)| id) {
+    let mut own = sync_message::Blocked::default();
+    let mut known = Known::default();
+    for (id, settings) in &all {
         let Some(thread) = thread_of(id) else {
             continue;
         };
@@ -692,8 +705,21 @@ pub(super) async fn send_blocked(manager: &Mgr, ctx: &Ctx) {
             Thread::Contact(who @ ServiceId::Pni(_)) => e164_of(manager, who).await,
             _ => None,
         };
-        list_blocked(&mut blocked, &thread, number);
+        match &thread {
+            Thread::Contact(who @ ServiceId::Aci(_)) => {
+                known.acis.insert(who.service_id_string());
+            }
+            Thread::Contact(_) => known.numbers.extend(number.clone()),
+            Thread::Group(key) => {
+                known.groups.insert(group_identifier(key).to_vec());
+            }
+        }
+        if settings.blocked {
+            list_blocked(&mut own, &thread, number);
+        }
     }
+    let blocked = whole_blocked_list(own, last_blocked_list(ctx).await.as_ref(), &known);
+    remember_blocked_list(ctx, &blocked).await;
     let sync = SyncMessage {
         content: Some(SyncContent::Blocked(blocked)),
         ..Default::default()
@@ -738,9 +764,6 @@ pub(super) async fn respond(
                     conversation: conversation.clone(),
                     source,
                 })?;
-            if let Err(error) = ctx.tables.forget_collided_chat(conversation).await {
-                warn!(error = %crate::scrub::chain(&error), "failed to forget what was kept of a deleted chat");
-            }
             checkpoint(ctx).await;
             ctx.events.send(Event::Cleared(conversation.clone()));
             Type::Delete
@@ -986,5 +1009,64 @@ mod tests {
         assert_eq!(blocked.acis_binary, [aci.service_id_binary()]);
         assert_eq!(blocked.numbers, ["+4915123456789"]);
         assert!(blocked.group_ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod blocked_list_tests {
+    use super::{Known, sync_message, whole_blocked_list};
+
+    const SPAMMER: &str = "+4915112345678";
+    const FRIEND: &str = "+4915187654321";
+    const ACI: &str = "a1b2c3d4-0000-4000-8000-000000000001";
+
+    fn phone_list() -> sync_message::Blocked {
+        sync_message::Blocked {
+            numbers: vec![SPAMMER.to_owned(), FRIEND.to_owned()],
+            acis: vec![ACI.to_owned()],
+            group_ids: vec![vec![7; 32]],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn what_b33p_has_no_chat_for_stays_blocked() {
+        let sent = whole_blocked_list(
+            sync_message::Blocked::default(),
+            Some(&phone_list()),
+            &Known::default(),
+        );
+        assert_eq!(sent.numbers, [SPAMMER, FRIEND]);
+        assert_eq!(sent.acis, [ACI]);
+        assert_eq!(sent.acis_binary.len(), 1);
+        assert_eq!(sent.group_ids, [vec![7; 32]]);
+    }
+
+    #[test]
+    fn what_b33p_knows_it_decides() {
+        let known = Known {
+            numbers: [FRIEND.to_owned()].into(),
+            acis: [ACI.to_owned()].into(),
+            groups: [vec![7; 32]].into(),
+        };
+        // Unblocked here: neither the friend, the ACI nor the group is listed.
+        let sent = whole_blocked_list(
+            sync_message::Blocked::default(),
+            Some(&phone_list()),
+            &known,
+        );
+        assert_eq!(sent.numbers, [SPAMMER]);
+        assert!(sent.acis.is_empty() && sent.acis_binary.is_empty());
+        assert!(sent.group_ids.is_empty());
+    }
+
+    #[test]
+    fn nothing_is_listed_twice() {
+        let own = sync_message::Blocked {
+            numbers: vec![SPAMMER.to_owned()],
+            ..Default::default()
+        };
+        let sent = whole_blocked_list(own, Some(&phone_list()), &Known::default());
+        assert_eq!(sent.numbers, [SPAMMER, FRIEND]);
     }
 }

@@ -42,9 +42,9 @@ pub fn format_remaining(at: u64, now: u64) -> String {
 }
 
 /// Signal's milliseconds as local time.
-pub(super) fn zoned(timestamp: u64) -> Option<jiff::Zoned> {
+pub(super) fn zoned(timestamp: u64) -> Option<jiff::ZonedDateTime> {
     let time = jiff::Timestamp::from_millisecond(timestamp as i64).ok()?;
-    Some(time.to_zoned(jiff::tz::TimeZone::system()))
+    Some(time.to_zoned_datetime(jiff::tz::TimeZone::system()))
 }
 
 /// The day of Signal's milliseconds in `tz`: looked up once, for many messages.
@@ -60,23 +60,23 @@ pub fn format_clock(timestamp: u64) -> String {
 
 /// For the chat list: "14:05" today, "Mon" this week, "Oct 2" this year, "Oct 2, 2024" before.
 pub fn format_list_time(timestamp: u64) -> String {
-    format_list_time_at(timestamp, &jiff::Zoned::now())
+    format_list_time_at(timestamp, &jiff::ZonedDateTime::now())
 }
 
 /// [`format_list_time`] for many timestamps, e.g. a whole chat list's: the present is looked
 /// up once.
 pub fn list_time_formatter() -> impl Fn(u64) -> String {
-    let now = jiff::Zoned::now();
+    let now = jiff::ZonedDateTime::now();
     move |timestamp| format_list_time_at(timestamp, &now)
 }
 
 /// How long until the next local midnight, when what [`format_list_time`] says changes: today's
 /// "14:05" becomes "Mon", and so on.
 pub fn until_midnight() -> std::time::Duration {
-    until_midnight_after(&jiff::Zoned::now())
+    until_midnight_after(&jiff::ZonedDateTime::now())
 }
 
-pub(super) fn until_midnight_after(now: &jiff::Zoned) -> std::time::Duration {
+pub(super) fn until_midnight_after(now: &jiff::ZonedDateTime) -> std::time::Duration {
     now.tomorrow()
         .and_then(|tomorrow| tomorrow.start_of_day())
         .ok()
@@ -85,7 +85,7 @@ pub(super) fn until_midnight_after(now: &jiff::Zoned) -> std::time::Duration {
         .unwrap_or(std::time::Duration::from_secs(3600))
 }
 
-pub(super) fn format_list_time_at(timestamp: u64, now: &jiff::Zoned) -> String {
+pub(super) fn format_list_time_at(timestamp: u64, now: &jiff::ZonedDateTime) -> String {
     let Some(time) = zoned(timestamp) else {
         return String::new();
     };
@@ -100,7 +100,7 @@ pub(super) fn format_list_time_at(timestamp: u64, now: &jiff::Zoned) -> String {
 }
 
 /// For day separators: "Today", "Yesterday", "Monday", "Oct 2", "Oct 2, 2024".
-pub(super) fn day_label(timestamp: u64, now: &jiff::Zoned) -> String {
+pub(super) fn day_label(timestamp: u64, now: &jiff::ZonedDateTime) -> String {
     let Some(time) = zoned(timestamp) else {
         return String::new();
     };
@@ -115,12 +115,12 @@ pub(super) fn day_label(timestamp: u64, now: &jiff::Zoned) -> String {
 
 /// "14:05" for today, "Mar  3, 14:05" otherwise, in local time.
 pub fn format_time(timestamp: u64) -> String {
-    format_time_on(timestamp, jiff::Zoned::now().date())
+    format_time_on(timestamp, jiff::ZonedDateTime::now().date())
 }
 
 /// [`format_time`] for many timestamps, e.g. the media overview's: today is looked up once.
 pub fn time_formatter() -> impl Fn(u64) -> String {
-    let today = jiff::Zoned::now().date();
+    let today = jiff::ZonedDateTime::now().date();
     move |timestamp| format_time_on(timestamp, today)
 }
 

@@ -1,6 +1,6 @@
 //! What b33p asks of the desktop, whichever toolkit draws its window: one copy of b33p, the
 //! log, starting with the system, the clipboard, audio playback, the desktop's reduced-motion
-//! preference, whether the desktop shows tray icons, and its file dialogs. Both windows (b33p-slint, b33p-gpui) build on it.
+//! preference, whether the desktop shows tray icons, and its file dialogs. b33p-slint builds on it.
 
 // Every outcome is handled: a discarded `Result` would hide a failure.
 #![deny(clippy::let_underscore_must_use, clippy::let_underscore_untyped)]

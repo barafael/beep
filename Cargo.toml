@@ -1,5 +1,5 @@
 [workspace]
-members = ["b33p-core", "b33p-dioxus", "b33p-gpui", "b33p-harness", "b33p-notify", "b33p-platform", "b33p-slint", "xtask"]
+members = ["b33p-core", "b33p-dioxus", "b33p-harness", "b33p-notify", "b33p-platform", "b33p-slint", "xtask"]
 resolver = "3"
 # testbox/tools, testbox/stickers, testbox/vnc, testbox/viewer and testbox/web are workspaces of
 # their own (their Cargo.toml say why).
@@ -26,25 +26,27 @@ crossbeam-channel = "0.5"
 qrcode = { version = "0.14", default-features = false }
 thiserror = "2"
 
-# Branch langis/integration of our Slint fork, which is upstream master now (as of 2026-11-09,
-# master `d600063` merged in), nothing more: slint-ui/slint#13985 (selecting text in a
-# `StyledText`) has landed.
-# Merge master in when it moves; go back to crates.io once a release carries it.
-slint = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
+# Branch slint/integration-branch of our Slint fork: upstream master plus our open pull requests
+# (and edualc's `edualc-text`); the branch's `integration.sh` lists them and rebuilds it.
+# Go back to crates.io once a release carries what b33p uses.
+slint = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "5d7a6f2b42d5e2dfbd3446963258ca80948c1c0c" }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
-# requests, rebuilt 2026-11-09 as one commit per theme, new code in modules of their own
-# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs):
+# requests, one commit per theme (2026-11-09), new code in modules of their own
+# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs); rebased 2026-11-19 on
+# upstream main 7a5c2c7 (what a contacts sync saved #470, one sticker of a pack #507, message
+# reads with a limit and an order #502, which replaces our paged reads #443), built on
+# libsignal-service's with libsignal 0.106.2:
 #   build on our libsignal-service fork: servers of one's own (`SignalServers::Custom`), the
 #        envelope ack handle, a linked secondary starting with read receipts on (#492 there)
 #   settings: one `Settings`, `Manager::set_settings`: automatic link previews off (#478) and
 #        stories delivered (#489)
-#   the store: paged thread reads (#443); identity changes reported only when real, noted, and
+#   the store: identity changes reported only when real, noted, and
 #        pinned, the key a pin refused kept (#449, #450); a replenishment's pre-keys in one
 #        transaction, the write lock waited for 30 s (#483)
 #   receiving: the loop in a module of its own; `keep`, public and tested, and
@@ -64,20 +66,41 @@ i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "5d
 #   sending: a send that met a closed websocket goes again (#464), every story sealed (#490)
 #   the client's user agent and languages, set by the application (#492)
 #   presage-cli's list-messages doesn't panic (#477)
-# The branch before the rebuild is langis/integration-2026-11-09.
-# Rebuild the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "8057f23b1b4585703ddb9ce154a4a649ba6bbcaf" }
+#   a linked device leaves the account to the primary: only its capabilities, no account
+#        attributes (which reset the registration lock and discoverability), and no answers to
+#        sync requests (an empty block list unblocked everyone); the primary told by its device
+#        ID (#503)
+#   typing indicators only for devices online, a sender-key send as urgent as its content
+#        (#490)
+#   a message kept from before a stop is tried again at each start, up to five times, and a
+#        message is forgotten only once the consumer asks for the next, so b33p's own handling of it
+#        survives a crash or a quit (#476)
+#   a group's members' profile keys kept, so a member who never wrote to us alone is sent to
+#        sealed and with the group's sender key (#448); our own profile key replaceable as the
+#        primary changes it, `Manager::set_profile_key` (#503)
+#   a group's "only admins send" and "ended" kept, from its state and its changes (#493)
+#   what the server warned of on connecting, `Manager::server_alerts` (no PR yet)
+#   our PNI signature to whoever wrote to our PNI, until their delivery receipt (#504)
+#   a message known by its sender and time, `thread_messages` keyed so: two senders at one
+#        millisecond both kept, of one account's two devices the first; a delete for everyone
+#        takes the message out (#499 carries it upstream); a page read with a limit holds all
+#        the messages at its last time, so the next page misses none
+#   a thread's messages found by their time (`ts BETWEEN`), through the index b33p makes, and
+#        newest first the exact reverse of oldest first (no PR yet)
+# The branch before the rebase is tag archive/2026-11-19/langis/integration.
+# Rebase the branch when upstream moves or a PR changes; drop it once all have landed.
+presage = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "8057f23b1b4585703ddb9ce154a4a649ba6bbcaf", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
 # `test-util` only makes its generated protobuf types public; it adds no dependencies. Using
 # them keeps us on exactly the schema its parser and validator use.
-libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0", features = ["test-util"] }
-libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.99.0" }
+libsignal-message-backup = { git = "https://github.com/signalapp/libsignal", tag = "v0.106.2", features = ["test-util"] }
+libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag = "v0.106.2" }
 
 [patch.crates-io]
 # Required by presage-store-sqlite (SQLCipher build); mirrors presage's own workspace patch. Branch
@@ -88,28 +111,17 @@ libsignal-account-keys = { git = "https://github.com/signalapp/libsignal", tag =
 # Go back to whisperfish's once both have landed.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqlite", rev = "3475a314b4c98bcc006eb8143de5ef7bfeda8cbb" }
 
-# Branch langis/integration of our libsignal-service fork: upstream main plus #473 (group changes
-# through /v2/groups, with the avatar upload and joins by an open invite link, which presage #448
-# needs), #476 (send a sync message to ourselves once, not twice), #481 (don't close a healthy
-# socket after a stall), #482 (websocket errors that name their cause, the string reasons in
-# `ServiceError` as enums, the task's outcome handed to the pipes), #488 (one session step at a
-# time, in order, through a `SessionLock`), #442 (rubdos's envelope ack handle: acknowledged once
-# stored, not once read; with #489: a handle dropped unacknowledged leaves the envelope to be
-# delivered again, not acknowledged unhandled), servers of one's own (`SignalServers::Custom`, which
-# presage's integration branch follows) and #490 (idle connections dropped before the servers drop
-# them, and a GET that meets one closing under it sent again (a group fetch failed so, 30 s after
-# the last)) and #491 (a replenishment's pre-keys handed to the store at once, so that it can save
-# them in one transaction) and #492 (the account's read-receipt setting in the provision message),
-# #493 (stories sent as stories, `?story=true`, and only sealed), #494 (a keepalive every 30 s,
-# as Signal's apps send), #495 (`Accept-Language` on every request), #496 (a group change
-# decrypted once the server's signature shows it), #497 (a group's changes read from the
-# server's log) and, without a PR yet, a group send with a sender key in one request.
-# Landed upstream and dropped from the branch: #474 (drop sync messages from other
-# accounts on the PNI path too), #478 (a read timeout instead of one for the whole request, so the
-# history download isn't cut off).
+# Branch langis/integration of our libsignal-service fork, built by its integration.sh: upstream
+# main (libsignal 0.106.2) with each of our pull request branches merged in, and those without a
+# pull request yet (servers of one's own, a sealed plaintext carrying only a decryption error, a
+# group send with a sender key in one request, sync messages and transcripts out of
+# `send_message`). The script lists them; a merge done by hand is kept as branch merge/<topic>.
+# Upstream merged five of them on 2026-11-19 (groups #473, provisioning read receipts #492,
+# the 30 s keepalive #494, device capabilities #503, contact sync panics #504); they're gone
+# from the list.
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "470e2b08712b8755fff752337e223d4b7cc92644" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "e0693ce07c782b9d83bcba8c689a8aed8e0c1eb5" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
@@ -124,6 +136,21 @@ libcrux-ml-kem = { opt-level = 3 }
 # The picture viewer resamples what it shows whenever the zoom changes: unoptimized, a photo
 # took seconds rather than milliseconds.
 fast_image_resize = { opt-level = 3 }
+# Decoding pictures, and the PNGs and JPEGs b33p makes of them: unoptimized, a 12 MP photo took
+# 3.4 s to decode rather than 83 ms, which hid in debug builds (and the test box's) what
+# showing pictures costs in the builds people run.
+image = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+gif = { opt-level = 3 }
+weezl = { opt-level = 3 }
+blurhash = { opt-level = 3 }
 
 [profile.release]
 # Optimized for size: 29.3 MB instead of 39.9 MB at opt-level 3 (Linux x86_64). "z" saves another

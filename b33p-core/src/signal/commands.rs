@@ -79,9 +79,7 @@ pub(super) async fn send_interrupted(manager: &Mgr, ctx: &Ctx) {
             timestamp: *timestamp,
         };
         let stored = match thread_of(conversation) {
-            Some(thread) => {
-                stored_message(manager.store(), &ctx.tables, conversation, &thread, &ours).await
-            }
+            Some(thread) => stored_message(manager.store(), &thread, &ours).await,
             None => None,
         };
         if stored.is_some_and(|content| is_outgoing(manager, &content)) {
@@ -281,20 +279,15 @@ pub(super) fn outgoing(command: &Command) -> bool {
     )
 }
 
-/// The message `original` names (its conversation and timestamp), as stored: what only it
-/// has of what is forwarded, a sticker's pack and a link's preview. `None` if it isn't stored.
+/// The message `original` names (its conversation, and it there), as stored: what only it has
+/// of what is forwarded, a sticker's pack and a link's preview. `None` if it isn't stored.
 async fn forwarded_original(
     manager: &Mgr,
     ctx: &Ctx,
-    original: &(ConversationId, u64),
+    original: &(ConversationId, MessageRef),
 ) -> Option<presage::proto::DataMessage> {
     let thread = ctx.threads.borrow().get(&original.0).cloned()?;
-    let stored = manager
-        .store()
-        .message(&thread, original.1)
-        .await
-        .ok()
-        .flatten()?;
+    let stored = stored_message(manager.store(), &thread, &original.1).await?;
     data_of(&stored).map(|(data, _)| data.clone())
 }
 
@@ -398,7 +391,7 @@ async fn handle_command(
             let Ok(thread) = thread(&id) else {
                 return Ok(());
             };
-            let (contents, older) = history_page(manager, &ctx.tables, &thread, before).await?;
+            let (contents, older) = history_page(manager, &thread, before).await?;
             let mut names = Names::new();
             let mut messages = Vec::new();
             let mut reactions = Vec::new();
@@ -524,9 +517,14 @@ async fn handle_command(
             mentions,
         } => {
             let sent = async {
-                let pointers = attachments::upload(manager, &files)
-                    .await
-                    .map_err(Error::from)?;
+                let pointers = attachments::upload(
+                    manager,
+                    &ctx.cache,
+                    &files,
+                    ctx.preferences.get().high_quality_pictures,
+                )
+                .await
+                .map_err(Error::from)?;
                 let preview = if ctx.preferences.get().link_previews {
                     link_preview(manager, &body).await
                 } else {
@@ -624,10 +622,15 @@ async fn handle_command(
                     )
                 }
                 crate::NewStory::Picture(path) => {
-                    let pointer = attachments::upload(manager, &[path])
-                        .await?
-                        .pop()
-                        .ok_or(CommandError::StoryNotUploaded)?;
+                    let pointer = attachments::upload(
+                        manager,
+                        &ctx.cache,
+                        &[path],
+                        ctx.preferences.get().high_quality_pictures,
+                    )
+                    .await?
+                    .pop()
+                    .ok_or(CommandError::StoryNotUploaded)?;
                     stored.pointer = Some(pointer.encode_to_vec());
                     presage::proto::story_message::Attachment::FileAttachment(pointer)
                 }
@@ -895,9 +898,9 @@ async fn handle_command(
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
             };
-            let (manager, tables, events) = (manager.clone(), ctx.tables.clone(), events.clone());
+            let (manager, events) = (manager.clone(), events.clone());
             ctx.background.run(BackgroundKind::Media, async move {
-                match media(&manager, &tables, &thread, &conversation).await {
+                match media(&manager, &thread, &conversation).await {
                     Ok(messages) => {
                         events.send(Event::Media {
                             conversation,
@@ -918,9 +921,9 @@ async fn handle_command(
             let Ok(thread) = thread(&conversation) else {
                 return Ok(());
             };
-            let (manager, tables, events) = (manager.clone(), ctx.tables.clone(), events.clone());
+            let (manager, events) = (manager.clone(), events.clone());
             ctx.background.run(BackgroundKind::Search, async move {
-                match search(&manager, &tables, &thread, &conversation, &query).await {
+                match search(&manager, &thread, &conversation, &query).await {
                     Ok(messages) => {
                         events.send(Event::SearchResults {
                             conversation,
@@ -999,14 +1002,7 @@ async fn handle_command(
             // An edit replaces the whole message, so all but the text comes from the message
             // as sent: its attachments, quote, sticker and timer stay (receivers show what
             // the edit carries, and nothing else).
-            let stored = stored_message(
-                manager.store(),
-                &ctx.tables,
-                &conversation,
-                &thread,
-                &target,
-            )
-            .await;
+            let stored = stored_message(manager.store(), &thread, &target).await;
             let original = stored
                 .as_ref()
                 .and_then(data_of)
@@ -1109,7 +1105,7 @@ async fn handle_command(
                 ..Default::default()
             };
             send_data(manager, ctx, &thread, message, now_millis()).await?;
-            erase_deleted(manager, ctx, &conversation, &thread, &target).await?;
+            erase_deleted(manager, ctx, &conversation, &thread, &target, true).await?;
         }
         Command::Delete {
             conversation,
@@ -1117,16 +1113,15 @@ async fn handle_command(
             for_everyone: false,
         } => {
             let thread = thread(&conversation)?;
-            // Kept beside the store: what the store holds at its time is someone else's.
-            let kept = or_logged(
-                ctx.tables.forget_collided(&conversation, &target).await,
-                "messages kept beside the store",
-            );
             let mut store = manager.store().clone();
-            let deleted = if kept {
-                Ok(true)
-            } else {
-                store.delete_message(&thread, target.timestamp).await
+            let kept = super::history::kept_of_target(&store, &thread, &target).await;
+            let deleted = match ServiceId::parse_from_service_id_string(&target.author_id) {
+                Some(author) => {
+                    store
+                        .delete_message(&thread, &author, target.timestamp)
+                        .await
+                }
+                None => Ok(false),
             };
             if let Err(source) = deleted {
                 return Err(CommandError::DeleteHere {
@@ -1147,6 +1142,7 @@ async fn handle_command(
                 .into());
             }
             checkpoint(ctx).await;
+            crate::attachments::forget(&ctx.cache, kept).await;
         }
         Command::Typing {
             conversation,

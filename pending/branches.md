@@ -54,10 +54,20 @@ the session lock). Its commits, oldest first:
 
 ## Slint (barafael/slint)
 
-| Branch | What | State |
+b33p pins `slint/integration-branch` (`076293d`, 2026-11-20): upstream master `4e21b60` with the
+branches below merged in order by the branch's own `integration.sh` (`./integration.sh push`
+tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-20-d206fd1d8`).
+A topic that conflicts with an earlier one is listed as `merge/<topic>`: the topic with the earlier
+one merged in by hand.
+
+| Topic | Upstream | State |
 |---|---|---|
-| `langis/integration` (`5d7a6f2`) | Master `d600063` merged in, 2026-11-09, on the branch b33p pinned (`2a80213`: the emoji and StyledText selection, landed upstream as #13985 and #14449, and two animation fixes); the fork stays until a release carries them | Pinned by `forks-1106` |
-| `pr/qt-color-bitmap-glyphs` (`930ceeb`), pushed | The emoji commit, master merged in, `CBDT` and `sbix` in the spell-check words, and the review's points: a stroke draws no emoji (it drew them twice: 713 of 2499 pixels differed), the font parsed only on a cache miss, why glyphs without a bitmap are skipped, straight alpha (measured), `tests/Cargo.lock` master's plus `swash`, "color". On Debian 12's Qt 6.4.2, b33p's mock under valgrind: 0 errors; 5 invalid writes in `QFontEngineFT::loadGlyph` without the fix | slint-ui/slint#14449 |
+| `no-op-animation` | slint-ui/slint#14823 | ogoffart's review answered 11-09; waiting on him |
+| `scrollbar-thumb-animation` | #14841 | ready since 11-20, no review yet |
+| `text-cursor-blink-timeout` | #14855 | ready since 11-20, spell check fixed, no review yet |
+| `inline-code-padding` | #14721 | parley 0.13 needs a U+FFFC under each in-flow inline box: the left padding's box now has one in the layout's text (`34293320d`); asked on the PR whether that's sane |
+| `merge/edualc-text` | none (felintusun's branches) | `edualc-text` with `inline-code-padding` merged in by hand |
+| `merge/incremental-text-shaping` | #14953 | overlaps ogoffart's #14742 (plain text only; ours covers StyledText and content widths): rebase onto it as a follow-up. Has `merge/edualc-text` merged in by hand; content widths shape the same U+FFFC text as drawing |
 
 ## Testbox runs
 

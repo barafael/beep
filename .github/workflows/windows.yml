@@ -29,15 +29,23 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The app with the real backend is built for the tests, so this is the Windows build too.
+      # The app with the real backend is built for the tests, so this is the Windows build too:
+      # without the default `gpu-skia`, which is for Linux (see b33p-slint/Cargo.toml), as the
+      # release builds it. `--no-default-features` would reach every `-p`, so b33p-slint has its
+      # own command.
       # Not Git Bash: its /usr/bin/link would stand in for MSVC's link.exe once it's on PATH.
       - name: Test
         shell: pwsh
-        run: cargo test --locked --no-fail-fast -p b33p-core -p b33p-platform -p b33p-slint -p b33p-notify
+        run: |
+          cargo test --locked --no-fail-fast -p b33p-core -p b33p-platform -p b33p-notify
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          cargo test --locked --no-fail-fast -p b33p-slint --no-default-features --features signal
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          if ($failed) { exit 1 }
 
   # The release build on the mock, as a person would start it: does the window draw, with the
   # fonts Windows has (the mock's "Yuki 駅 鉄 国 · 김민지" chat shows whether ideographs and
@@ -55,7 +63,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

@@ -16,7 +16,7 @@ use super::{
         Names, display_name, ensure_conversation, first_settings, members, own_id, register,
         sender_name,
     },
-    history::{data_of, stored_at, to_chat_message},
+    history::{data_of, newest_before, stored_at, to_chat_message},
 };
 
 /// The id typing indicators and the like name a group by.
@@ -70,6 +70,17 @@ pub(super) async fn group_conversation(
         access.attributes == presage::libsignal_service::groups_v2::AccessRequired::Member
     });
     conversation.left = left;
+    // As Signal's apps: an ended group takes nothing more, and in an announcements-only one
+    // they drop what a non-admin sends.
+    conversation.closed = if left {
+        None
+    } else if group.terminated {
+        Some("This group was ended. It can be read, not written to.".into())
+    } else if group.announcements_only && !admin {
+        Some("Only admins can send messages to this group.".into())
+    } else {
+        None
+    };
     conversation.invited = invited;
     conversation.requested = requested;
     conversation
@@ -122,9 +133,23 @@ pub(super) async fn on_missed_changes(
         .map(|(_, at)| *at)
         .min();
     let base = later.unwrap_or_else(crate::now_millis);
-    let count = missed.len() as u64;
-    for (n, missed) in (0u64..).zip(missed) {
-        let at = base.saturating_sub(count - n);
+    // A millisecond each, just before `base` and in the order the changes were made. Saved
+    // directly, so not one the editor has a message at: that one would be replaced.
+    let mut times = Vec::with_capacity(missed.len());
+    let mut at = base;
+    for missed in missed.iter().rev() {
+        let editor = ServiceId::Aci(missed.changes.editor);
+        loop {
+            at = at.saturating_sub(1);
+            let held = manager.store().message(&thread, &editor, at).await;
+            if at == 0 || !matches!(held, Ok(Some(_))) {
+                break;
+            }
+        }
+        times.push(at);
+    }
+    times.reverse();
+    for (missed, at) in missed.into_iter().zip(times) {
         let time = chrono::DateTime::from_timestamp_millis(at as i64).unwrap_or_default();
         let data = presage::proto::DataMessage {
             group_v2: Some(GroupContextV2 {
@@ -175,9 +200,7 @@ pub(super) async fn told_changes(
     key: [u8; 32],
     wanted: impl Fn(u32) -> bool,
 ) -> Vec<(u32, u64)> {
-    let stored = manager
-        .store()
-        .messages_before(&Thread::Group(key), None, RECENTLY_TOLD)
+    let stored = newest_before(manager.store(), &Thread::Group(key), None, RECENTLY_TOLD)
         .await
         .unwrap_or_else(|error| {
             warn!(error = %crate::scrub::chain(&error), "failed to read a group's latest changes");
@@ -740,7 +763,8 @@ fn group_picture(path: &std::path::Path) -> Result<Vec<u8>, PictureError> {
     Ok(jpeg.into_inner())
 }
 
-/// Shows a message we stored ourselves (e.g. a group change), as it will read after a restart.
+/// Shows a message we stored ourselves, as ours (e.g. a group change), as it will read after a
+/// restart.
 pub(super) async fn show_stored(
     manager: &Mgr,
     ctx: &Ctx,
@@ -748,7 +772,10 @@ pub(super) async fn show_stored(
     thread: &Thread,
     timestamp: u64,
 ) {
-    if let Ok(Some(content)) = manager.store().message(thread, timestamp).await
+    if let Ok(Some(content)) = manager
+        .store()
+        .message(thread, &own_id(manager), timestamp)
+        .await
         && let Some(message) =
             to_chat_message(manager, &mut Names::new(), conversation.clone(), &content).await
     {
@@ -877,6 +904,13 @@ pub(super) async fn group_notice(
             GroupChange::InviteLinkPassword(_) if !sets_link_access => {
                 format!("{editor} reset the invite link.")
             }
+            GroupChange::AnnouncementOnly(true) => {
+                format!("{editor} let only admins send messages.")
+            }
+            GroupChange::AnnouncementOnly(false) => {
+                format!("{editor} let all members send messages.")
+            }
+            GroupChange::TerminateGroup => format!("{editor} ended the group."),
             _ => continue,
         };
         lines.push(line);

@@ -1,6 +1,6 @@
 # The display for bench.py: Containerfile's, with what b33p-slint needs (its winit builds,
 # `gpu-skia` and `gpu-femtovg`, find libEGL, libvulkan and Mesa's drivers here already, and
-# Xwayland gives them X11 to run on) and what b33p-gpui draws with on the host's
+# Xwayland gives them X11 to run on) and what draws on the host's
 # GPU, through its render node (Mesa's Vulkan driver for AMD; another GPU needs its own:
 # `vulkan-intel`, or the vendor's). The binaries are built on the host and mounted in, so that
 # this image matches the host's glibc and Mesa (Arch).

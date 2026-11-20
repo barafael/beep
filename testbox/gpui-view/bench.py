@@ -10,8 +10,9 @@ Wayland requests the client sends.
   bench.py report DIR [--baseline slint-skia] [--json]
   report_html.py DIR OUT.html          (beside this file: one self-contained HTML page)
 
-A "way" is one client binary in one graphics stack. The two-way default is `slint` and `gpui`
-(BENCH_SLINT, BENCH_GPUI, `--uis`); a multi-way run names its ways, `--ways
+A "way" is one client binary in one graphics stack. The default is `slint` (BENCH_SLINT; `--uis
+slint,gpui` adds a b33p-gpui binary kept from before it left the tree, BENCH_GPUI); a multi-way
+run names its ways, `--ways
 slint-skia=PATH,slint-femtovg=PATH,gpui=PATH`, or takes every known name that exists in a
 directory (`--ways-dir`: slint-femtovg, slint-femtovg-patched, slint-skia,
 slint-skia-patched, gpui). The kind of a way, slint or gpui, is the prefix of its
@@ -21,8 +22,7 @@ the same for all of them.
 `run` builds nothing: it needs the binaries built as the `testbox` profile (a release build
 that keeps the debug assertions the mock needs), with the harness:
 
-  cargo build --profile testbox -p b33p-slint -p b33p-gpui \\
-      --features b33p-slint/harness,b33p-gpui/harness
+  cargo build --profile testbox -p b33p-slint --features harness
 
 and the image of Containerfile.bench beside this script (`podman build -t b33p-bench-view -f
 testbox/gpui-view/Containerfile.bench testbox/gpui-view`), and the tools of view.sh's header
@@ -70,7 +70,8 @@ RENDER_NODE = os.environ.get("BENCH_RENDER_NODE", "/dev/dri/renderD128")
 # Chats, a long thread, a big group, pictures of a size a camera's thumbnail has.
 SCALE = "chats=200,messages=20000,members=500,picture=640"
 BINARIES = {
-    # BENCH_SLINT, BENCH_GPUI: other binaries, to measure a build against another's.
+    # BENCH_SLINT, BENCH_GPUI: other binaries, to measure a build against another's. b33p-gpui
+    # is not part of b33p any more: its kind stays for a binary built before, and for old results.
     "slint": os.environ.get("BENCH_SLINT", os.path.join(ROOT, "target/testbox/b33p")),
     "gpui": os.environ.get("BENCH_GPUI", os.path.join(ROOT, "target/testbox/b33p-gpui")),
 }
@@ -1014,7 +1015,7 @@ def main():
     run = sub.add_parser("run", help="run the scenarios for every way and write a json per run")
     run.add_argument("--rounds", type=int, default=5)
     run.add_argument("--frames-rounds", type=int, default=1)
-    run.add_argument("--uis", default="slint,gpui",
+    run.add_argument("--uis", default="slint",
                      help="the two-way names (slint, gpui; binaries BENCH_SLINT, BENCH_GPUI); ignored with --ways or --ways-dir")
     run.add_argument("--ways", help="LABEL=PATH,LABEL=PATH,...: the ways to run, e.g. "
                      "slint-skia=/b/slint-skia,slint-femtovg=/b/slint-femtovg,gpui=/b/gpui. The label starts with "

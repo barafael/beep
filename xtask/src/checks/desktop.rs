@@ -372,6 +372,14 @@ pub(super) fn desktop(checks: &mut Checks, linked: &mut LinkedBox<'_>) -> Result
         type_and_send(b33p, &long_text(head))?;
         Ok(desktop_shows_whole(desktop, head)?)
     });
+    // Cut inside a character: the head and its newline are 45 bytes, so of the four-byte emoji
+    // after them the 2000th byte falls in the middle of one ((2000 - 45) % 4 == 3).
+    checks.record("a long emoji text from b33p reaches Desktop whole", || {
+        let head = "testbox desktop: a long emoji text from b33p";
+        let text = format!("{head}\n{}\n{LAST_LINE}", "😀".repeat(600));
+        type_and_send(b33p, &text)?;
+        Ok(desktop_shows_whole(desktop, head)?)
+    });
 
     // TESTPLAN.md §2.10: a link with the box's preview page behind it (testbox/tools `preview`),
     // its preview fetched by b33p and sent along, which Desktop shows as a card.

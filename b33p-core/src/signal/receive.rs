@@ -13,6 +13,7 @@ use presage::{
         content::{Content, ContentBody},
         protocol::{DeviceId, ProtocolAddress, PublicKey, ServiceId, SignalProtocolError},
     },
+    manager::Kept as Stored,
     model::messages::Received,
     proto::{
         DecryptionErrorMessage, ReceiptMessage, SyncMessage, TypingMessage,
@@ -42,9 +43,8 @@ use super::{
         own_membership_change, refresh_group, signed_group_change, told_changes,
     },
     history::{
-        author_of, checkpoint, data_of, erase_deleted, is_outgoing, keep_edit_if_dropped,
-        keep_if_dropped, original, start_timers, stored_at, stored_timers, to_chat_message,
-        to_reaction,
+        author_of, checkpoint, data_of, erase_deleted, is_outgoing, original, start_timers,
+        stored_at, stored_timers, to_chat_message, to_reaction,
     },
     pins::{PinOutcome, on_pin_change, pin_change},
     stories::on_story,
@@ -61,6 +61,20 @@ fn removed_from_account(error: &PresageError<presage_store_sqlite::SqliteStoreEr
         PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
             HandshakeError::UnexpectedStatusCode(status),
         ))) => matches!(status.as_u16(), 401 | 403),
+        _ => false,
+    }
+}
+
+/// Whether Signal calls this version too old (499, on a request or on connecting), as it does
+/// a client it no longer works with: trying again can't help, a new version can.
+fn too_old(error: &PresageError<presage_store_sqlite::SqliteStoreError>) -> bool {
+    use presage::libsignal_service::push_service::ServiceError;
+    use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+    match error {
+        PresageError::ServiceError(ServiceError::DeprecatedVersion) => true,
+        PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+            HandshakeError::UnexpectedStatusCode(status),
+        ))) => status.as_u16() == 499,
         _ => false,
     }
 }
@@ -89,6 +103,8 @@ pub(super) enum Incoming {
     },
     /// Signal no longer accepts this device; receiving has stopped.
     Removed,
+    /// Signal no longer works with this version of b33p; receiving has stopped.
+    Expired,
 }
 
 /// Keeps the connection to Signal open for the rest of the session, and hands on what comes
@@ -159,6 +175,11 @@ impl Receiver {
                         // Cancelled, as `done` is dropped rather than sent on, once it is handled.
                         handled.await.ok();
                     }
+                }
+                Err(error) if too_old(&error) => {
+                    warn!(error = %crate::scrub::chain(&error), "Signal calls this version too old");
+                    incoming.send(Incoming::Expired).await.ok();
+                    return;
                 }
                 Err(error) if removed_from_account(&error) => {
                     warn!(error = %crate::scrub::chain(&error), "Signal no longer accepts this device");
@@ -246,6 +267,18 @@ pub(super) async fn handle_incoming(
     match incoming {
         Incoming::Connected => {
             kept.receipts.live = false;
+            // The server warns when the phone hasn't been seen for a while: it may then remove
+            // this device, and Signal's apps tell their user before.
+            if manager
+                .server_alerts()
+                .await
+                .iter()
+                .any(|alert| alert == "idle-primary-device")
+            {
+                warn!("Signal says the phone hasn't been seen for a while");
+                ctx.events
+                    .send(Event::Error(super::lifecycle::Notice::IdlePhone.into()));
+            }
             ctx.events.sent(Event::Connected)
         }
         Incoming::Reconnecting => ctx.events.sent(Event::Reconnecting),
@@ -255,7 +288,8 @@ pub(super) async fn handle_incoming(
             handled
         }
         // The session sees to it.
-        Incoming::Removed => true,
+        // The session takes these itself.
+        Incoming::Removed | Incoming::Expired => true,
     }
 }
 
@@ -285,7 +319,7 @@ async fn handle_received(
             master_key,
             changes,
         } => super::groups::on_missed_changes(manager, ctx, names, master_key, changes).await,
-        Received::Contacts => {
+        Received::Contacts { .. } => {
             names.clear();
             send_conversations(manager, ctx).await;
             // A newly linked device first learns its contacts here.
@@ -309,11 +343,6 @@ async fn handle_received(
                         .thread_for_sender_and_timestamp(&sender, timestamp)
                         .await
                         .is_ok_and(|thread| thread.is_some())
-                        || ctx
-                            .tables
-                            .collided_conversation(&sender.service_id_string(), timestamp)
-                            .await
-                            .is_ok_and(|conversation| conversation.is_some())
                 };
                 if decrypted.contains(&(sender, sender_device, timestamp)) || stored().await {
                     debug!(sender = %sender.service_id_string(), "dropped a message delivered again");
@@ -398,7 +427,7 @@ async fn handle_received(
             debug!(?kept, "presage kept");
             let metadata = &content.metadata;
             decrypted.note((metadata.sender, metadata.sender_device, stored_at(&content)));
-            let handled = handle_content(manager, ctx, names, receipts, &content).await;
+            let handled = handle_content(manager, ctx, names, receipts, &content, &kept).await;
             if receipts.live {
                 receipts.send(&ctx.outbox).await;
             }
@@ -493,8 +522,12 @@ async fn on_retry_receipt(
         return;
     };
     let thread = Thread::Contact(sender);
-    let stored = match manager.store().message(&thread, timestamp).await {
-        Ok(Some(content)) if content.metadata.sender == own_id(manager) => content,
+    let stored = match manager
+        .store()
+        .message(&thread, &own_id(manager), timestamp)
+        .await
+    {
+        Ok(Some(content)) => content,
         _ => return,
     };
     let ContentBody::DataMessage(mut data) = stored.body else {
@@ -543,6 +576,21 @@ async fn archive_session_with(manager: &Mgr, sender: ServiceId, device: DeviceId
     }
 }
 
+/// Takes `key`, from a message our phone sent, as our profile key.
+async fn take_own_profile_key(manager: &Mgr, key: &[u8]) {
+    let Ok(key) = <[u8; 32]>::try_from(key) else {
+        return;
+    };
+    let key = presage::libsignal_service::prelude::ProfileKey::create(key);
+    match manager.clone().set_profile_key(key).await {
+        Ok(true) => info!("took our new profile key from a message the phone sent"),
+        Ok(false) => {}
+        Err(error) => {
+            warn!(error = %crate::scrub::chain(&error), "failed to take our new profile key")
+        }
+    }
+}
+
 /// Returns `false` once the UI has gone away.
 async fn handle_content(
     manager: &Mgr,
@@ -550,6 +598,7 @@ async fn handle_content(
     names: &mut Names,
     receipts: &mut Receipts,
     content: &Content,
+    kept: &Stored,
 ) -> bool {
     #[cfg(feature = "test-servers")]
     crate::content_log::received(
@@ -578,6 +627,43 @@ async fn handle_content(
     {
         forget_stored(manager, content).await;
         return true;
+    }
+    // As Signal's apps: in a group only admins may send to, what another member sends is
+    // dropped, and so is anything sent to a group that was ended (Signal-Desktop
+    // `handleDataMessage`). A message telling of a change still counts.
+    if let ContentBody::DataMessage(data) = &content.body
+        && let Some(group) = &data.group_v2
+        && group.group_change.is_none()
+        && let Some(key) = group
+            .master_key
+            .as_deref()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        && let Ok(Some(stored)) = manager.store().group(key).await
+    {
+        use presage::libsignal_service::groups_v2::Role;
+        let admin = stored
+            .members
+            .iter()
+            .any(|m| ServiceId::Aci(m.aci) == sender && m.role == Role::Administrator);
+        if stored.terminated || (stored.announcements_only && !admin) {
+            debug!("dropped a message to a group that takes none from its sender");
+            forget_stored(manager, content).await;
+            return true;
+        }
+    }
+    // What we sent from the phone carries our profile key as it is now: after the phone made
+    // a new one, b33p takes it, as Signal-Desktop does when linked.
+    if let ContentBody::SynchronizeMessage(SyncMessage {
+        content:
+            Some(SyncContent::Sent(Sent {
+                message: Some(sent),
+                ..
+            })),
+        ..
+    }) = &content.body
+        && let Some(key) = sent.profile_key.as_deref()
+    {
+        take_own_profile_key(manager, key).await;
     }
     // From someone whose safety number changed: the store noted it while decrypting.
     if content.metadata.sender != own_id(manager) {
@@ -611,6 +697,13 @@ async fn handle_content(
         }) => {
             let at = timestamp.unwrap_or_else(|| content.timestamp());
             on_story(manager, ctx, own_id(manager), at, story, true).await;
+            return true;
+        }
+        ContentBody::SynchronizeMessage(SyncMessage {
+            content: Some(SyncContent::DeleteForMe(delete)),
+            ..
+        }) => {
+            on_deleted_for_me_elsewhere(ctx, delete).await;
             return true;
         }
         ContentBody::SynchronizeMessage(SyncMessage {
@@ -779,8 +872,6 @@ async fn handle_content(
     {
         receipts.owe(content.metadata.sender, stored_at(content));
     }
-    // Past what b33p drops above: what it doesn't show isn't worth keeping.
-    keep_if_dropped(manager.store(), &ctx.tables, &thread, content).await;
     if let Some((target, reaction, remove)) = to_reaction(manager, names, content).await {
         let target = original(ctx, &id, target).await;
         return events.sent(Event::Reaction {
@@ -810,9 +901,11 @@ async fn handle_content(
             timestamp,
         };
         let target = original(ctx, &id, target).await;
-        // Only a message that was there, and by that author (presage checks too): a delete
-        // of anything else would leave a "deleted" marker where nothing was.
-        match erase_deleted(manager, ctx, &id, &thread, &target).await {
+        // Only a message that was there, and by that author: a delete of anything else would
+        // leave a "deleted" marker where nothing was. presage has taken one it kept the delete
+        // of out of the store already.
+        let taken = matches!(kept, Stored::Deleted { .. });
+        match erase_deleted(manager, ctx, &id, &thread, &target, taken).await {
             Ok(true) => {}
             Ok(false) => {
                 debug!("ignored a delete of a message that isn't there");
@@ -853,7 +946,10 @@ async fn handle_content(
         if told.iter().any(|(_, at)| *at != own) {
             debug!(revision, "a group change told already");
             let mut store = manager.store().clone();
-            if let Err(error) = store.delete_message(&thread, own).await {
+            if let Err(error) = store
+                .delete_message(&thread, &content.metadata.sender, own)
+                .await
+            {
                 warn!(error = %crate::scrub::chain(&error), "failed to drop a group change told already");
             }
             return true;
@@ -862,6 +958,8 @@ async fn handle_content(
     let Some(message) = to_chat_message(manager, names, id.clone(), content).await else {
         return true;
     };
+    // Not for a stranger's message request: as with receipts, nothing tells them it came.
+    let prefetching = outgoing || accepted(ctx, &id, storage_read).await;
     // An edit's time names the message it edits, not one of its own.
     if outgoing && !edit {
         // Written from another device of ours: as when written here (`send.rs`), that accepts
@@ -892,7 +990,6 @@ async fn handle_content(
     if edit {
         // An edit of an edit names the one before; what it edits is the message first sent.
         let target = original(ctx, &id, message.reference()).await;
-        keep_edit_if_dropped(&ctx.tables, &id, &target, content).await;
         if let Some(edited_at) = message.edited_at
             && let Err(error) = ctx.tables.record_edit_time(&id, &target, edited_at).await
         {
@@ -901,6 +998,9 @@ async fn handle_content(
         // Edited from another device of ours: sent again, until a receipt names the edit.
         if outgoing && let Err(error) = ctx.tables.sent_again(&id, target.timestamp).await {
             warn!(error = %crate::scrub::chain(&error), "failed to note an edited message as sent");
+        }
+        if prefetching {
+            prefetch(ctx, &message);
         }
         return events.sent(Event::Edited {
             conversation: id,
@@ -923,7 +1023,21 @@ async fn handle_content(
             }
         }
     }
+    if prefetching {
+        prefetch(ctx, &message);
+    }
     events.sent(Event::Message(message))
+}
+
+/// Downloads in the background what of `message` is downloaded as it comes
+/// ([`crate::attachments::prefetched`]), so that its chat shows it without waiting.
+fn prefetch(ctx: &Ctx, message: &crate::ChatMessage) {
+    let Some(downloads) = &ctx.downloads else {
+        return;
+    };
+    for attachment in crate::attachments::prefetched(message) {
+        tokio::task::spawn_local(crate::attachments::prefetch(downloads.clone(), attachment));
+    }
 }
 
 /// Removes what presage stored of `content`, if it is still there as its sender's.
@@ -933,9 +1047,9 @@ async fn forget_stored(manager: &Mgr, content: &Content) {
     };
     let at = stored_at(content);
     let mut store = manager.store().clone();
-    if let Ok(Some(stored)) = store.message(&thread, at).await
-        && stored.metadata.sender == content.metadata.sender
-        && let Err(error) = store.delete_message(&thread, at).await
+    if let Err(error) = store
+        .delete_message(&thread, &content.metadata.sender, at)
+        .await
     {
         warn!(error = %crate::scrub::chain(&error), "failed to forget a message from someone blocked");
     }
@@ -958,8 +1072,68 @@ fn named_conversation(
     Some(conversation_id(&thread))
 }
 
+/// Messages another of our devices deleted for itself alone: presage has taken them out of the
+/// store by now (by author and time, as named), so they go from the list and from what b33p
+/// keeps about them.
+async fn on_deleted_for_me_elsewhere(ctx: &Ctx, delete: &sync_message::DeleteForMe) {
+    use presage::proto::{addressable_message::Author, conversation_identifier::Identifier};
+    for deletes in &delete.message_deletes {
+        let conversation = match deletes
+            .conversation
+            .as_ref()
+            .and_then(|c| c.identifier.as_ref())
+        {
+            Some(Identifier::ThreadServiceId(aci)) => {
+                named_conversation(ctx, Some(aci), None, None)
+            }
+            Some(Identifier::ThreadServiceIdBinary(aci)) => {
+                named_conversation(ctx, None, Some(aci), None)
+            }
+            Some(Identifier::ThreadGroupId(id)) => named_conversation(ctx, None, None, Some(id)),
+            Some(Identifier::ThreadE164(_)) | None => None,
+        };
+        let Some(conversation) = conversation else {
+            debug!("a delete-for-me names no conversation b33p knows");
+            continue;
+        };
+        let targets: Vec<MessageRef> = deletes
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let author = match message.author.as_ref()? {
+                    Author::AuthorServiceId(id) => ServiceId::parse_from_service_id_string(id),
+                    Author::AuthorServiceIdBinary(id) => {
+                        ServiceId::parse_from_service_id_binary(id)
+                    }
+                    Author::AuthorE164(_) => None,
+                }?;
+                Some(MessageRef {
+                    author_id: author.service_id_string(),
+                    timestamp: message.sent_timestamp?,
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        let forgotten: Vec<_> = targets
+            .iter()
+            .map(|target| (conversation.clone(), target.clone()))
+            .collect();
+        if let Err(error) = ctx.tables.forget(&forgotten).await {
+            warn!(error = %crate::scrub::chain(&error), "failed to forget messages deleted elsewhere");
+        }
+        checkpoint(ctx).await;
+        ctx.events.send(Event::Expired {
+            conversation,
+            targets,
+        });
+    }
+}
+
 /// The phone's whole list of whom we block: everything else is unblocked.
 async fn on_blocked_elsewhere(manager: &Mgr, ctx: &Ctx, blocked: &sync_message::Blocked) {
+    super::send::remember_blocked_list(ctx, blocked).await;
     let mut now_blocked = std::collections::HashSet::new();
     for aci in &blocked.acis {
         now_blocked.extend(named_conversation(ctx, Some(aci), None, None));
@@ -1047,9 +1221,6 @@ async fn on_answered_elsewhere(
         let mut store = manager.store().clone();
         match store.clear_thread(&thread).await {
             Ok(()) => {
-                if let Err(error) = ctx.tables.forget_collided_chat(&id).await {
-                    warn!(error = %crate::scrub::chain(&error), "failed to forget what was kept of a deleted chat");
-                }
                 checkpoint(ctx).await;
                 ctx.events.send(Event::Cleared(id));
             }
@@ -1206,14 +1377,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                     .await;
                 match stored {
                     Ok(Some(thread)) => conversation_id(&thread),
-                    _ => match ctx
-                        .tables
-                        .collided_conversation(&message.author_id, timestamp)
-                        .await
-                    {
-                        Ok(Some(conversation)) => conversation,
-                        _ => continue,
-                    },
+                    _ => continue,
                 }
             }
         };
@@ -1237,7 +1401,7 @@ async fn on_read_elsewhere(manager: &Mgr, ctx: &Ctx, reads: &[sync_message::Read
                 warn!(error = %crate::scrub::chain(&error), "failed to remember what was read")
             }
         }
-        let timers = stored_timers(manager, &ctx.tables, &conversation, &messages).await;
+        let timers = stored_timers(manager, &conversation, &messages).await;
         start_timers(ctx, &conversation, &timers, now).await;
     }
 }
@@ -1470,5 +1634,26 @@ mod tests {
         assert!(!removed_from_account(&PresageError::ServiceError(
             ServiceError::Timeout { attempts: 3 }
         )));
+    }
+
+    /// 499, on connecting or on a request, is Signal calling this version too old; nothing
+    /// else is.
+    #[test]
+    fn only_499_means_this_version_is_too_old() {
+        use presage::libsignal_service::push_service::ServiceError;
+        use presage::libsignal_service::websocket::{HandshakeError, WebSocketError};
+        let refused = |status: u16| {
+            let status = reqwest::StatusCode::from_u16(status).unwrap();
+            PresageError::ServiceError(ServiceError::WebSocket(WebSocketError::Handshake(
+                HandshakeError::UnexpectedStatusCode(status),
+            )))
+        };
+        assert!(too_old(&refused(499)));
+        assert!(!too_old(&refused(403)));
+        assert!(!too_old(&refused(500)));
+        assert!(too_old(&PresageError::ServiceError(
+            ServiceError::DeprecatedVersion
+        )));
+        assert!(!removed_from_account(&refused(499)));
     }
 }

@@ -77,7 +77,8 @@ stopped between the decrypt and the end of handling that first item: in presage'
 run again, with the watcher, until it hangs.
 
 Record: `target/testbox-correct-record/run/1794149039/1/linked/` in the worktree
-`/home/rafael/code/beep-deps`.
+`/home/rafael/code/beep-deps`, which a cleanup by another session deleted on 2026-11-09 with
+every record in it.
 
 ### Slint, storage: Signal-Android's nickname screen
 
@@ -115,7 +116,14 @@ worktree.
 
 `cargo testbox run --ui gpui --rounds 20` on `origin/main` (1e6423b, with #157), 10:14 to 12:20:
 7 rounds and part of an 8th (stopped in its attachments phase) for these two failures. Record:
-`target/testbox-correct-record/run/1794215681/` in `/home/rafael/code/beep-deps`.
+`target/testbox-correct-record/run/1794215681/` in `/home/rafael/code/beep-deps`, deleted since
+(see above).
+
+Run again with `--capture` from the worktree `/home/rafael/code/beep-hunt` (be05835, with #160),
+19:20 to 21:05, 2 rounds and part of a 3rd before a benchmark needed the machine: the Android
+box's setup passed both (17/0), the network check failed in round 1 and passed in round 2, core
+passed both (8/0), the watcher never fired. Record:
+`target/testbox-correct-record/run/1794252007/` in that worktree.
 
 ### Android box, setup: "Android registers" (3 of 7 rounds), a regression from #157, fixed
 
@@ -128,29 +136,46 @@ field. #160 skips the echo wait for `Echo::Anything` (its only use is that code)
 `cargo testbox test android --ui gpui` passed 3 of 3 (registering in 15 s). The agent's message
 reaching the driver whole is #157's other half at work.
 
-### Network: "a picture from b33p reaches Desktop over it" (4 of 7 rounds), cause not found yet
+### Network: "a picture from b33p reaches Desktop over it" (4 of 7 rounds, then 1 of 2): a CDN connection closing under the upload
 
-Desktop waited the check's 120 s for the picture. b33p never sent it: in exactly the 4 failing
-rounds (1, 4, 5, 7) b33p logged one
+Desktop waited the check's 120 s for the picture. b33p never sent it: in exactly the failing
+rounds (1, 4, 5, 7, and round 1 of the run with `--capture`) b33p logged one
 `failed to upload “…”: … client error (SendRequest): connection closed before message completed`,
-and in no passing round.
+and in no passing round. The request was the upload's first, the tus create
+(`POST /upload/attachments`): the CDN3 log has one create fewer in the failing rounds, the
+picture's.
 
-- The failing request is the upload's first, the tus create (`POST /upload/attachments`, from
-  libsignal-service's `upload_attachment`): the CDN3 log has 13 creates in the failing rounds and
-  14 in the passing ones, and the missing one is the picture's. The request never reached
-  wrangler.
-- hyper's `connection closed before message completed` is a request written on a pooled
-  keep-alive connection whose other end had closed. b33p's last use of CDN3 before it was about
-  12 s earlier (round 1: 09:18:35 to 09:18:47).
-- The connection to CDN3 runs b33p → `front` (testbox/tools `front.rs`, which takes the TLS and
-  copies bytes to wrangler, closing a client's connection when wrangler closes its side, and
-  logged no error) → wrangler. So wrangler, `front`, or the slow and lossy link closed it; the
-  logs can't tell which.
-- Not the dependency update: #155 changed neither hyper nor reqwest in b33p's lock file.
-- The network phase passed in both runs of 2026-11-08 above, in 3 of these 7 (rounds 2, 3, 6),
-  and in the 2 rounds of `cargo testbox test network --ui gpui --capture` run since, neither of
-  which logged a failed upload.
+Why, from the capture of round 1 of the run with `--capture` (`wire/connections.jsonl`,
+`wire/events.jsonl`, and the packets of `wire/raw/capture.pcap`), connection 80, b33p's to CDN3
+(port 8446), times UTC:
 
-Next: `cargo testbox test network --ui gpui --capture` until it fails, and read in the capture
-who closed that connection and when. If the CDN side closes idle connections, b33p should try
-an upload's first request again on a new connection, as a real CDN may do the same.
+- 19:24:24.060 to 24.104: b33p uploads an earlier file on it (create, `HEAD`, `PATCH`, all
+  answered); 24.146 its last ACK. Then nothing.
+- 29.276: the CDN side sends a 24-byte TLS record (a close_notify) and at 29.307 its FIN,
+  5.17 s after the connection went idle.
+- b33p had already written the picture's create on the same connection: the 508-byte request
+  carries ACK 56069, the sequence before the close_notify, so b33p sent it before the close
+  reached it. Through netem's 150 ± 40 ms it shows at 29.395, and again, retransmitted, at
+  29.584. Nothing answers it; hyper then reads the close and fails the request with
+  `IncompleteMessage`, which it does not retry once the request was written.
+
+Who closes: every connection to CDN3, from b33p, Desktop or presage, ends 5.0 to 5.3 s after its
+last answer. `front` (testbox/tools `front.rs`) has no timer of its own and closes a client's
+connection only when wrangler closes its side, so wrangler closes connections idle for about 5 s
+(the default keep-alive timeout of Node's HTTP server, which `wrangler dev` likely uses; not
+checked further).
+
+Why so often: b33p's HTTP client keeps idle connections far longer than 5 s, and the checks'
+steady pace puts the picture's upload about 5 s after the file before it, at the edge of the
+timeout; netem's delay holds the close back from b33p for about 150 ms, so a request written in
+that time goes out on a connection already closed. The network phase alone never failed (12
+rounds, and 6 with the attachments phase before it): there the uploads come at other times.
+
+Not a fault of the test box: a real CDN closes idle connections as well, and on a slow link the
+same race loses an upload. Signal-Android's HTTP client (OkHttp) tries a request again when a
+kept-alive connection fails under it; b33p didn't.
+
+Fix (`upload-retry-stale-connection`): b33p uploads an attachment once more, on a new
+connection, when the first try failed with hyper's `IncompleteMessage`
+(`signal::errors::closed_under_request`); the request never got an answer, so the second try is
+safe. A test serves a request and closes without an answer, as the CDN did.

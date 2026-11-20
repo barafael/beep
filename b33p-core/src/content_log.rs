@@ -38,11 +38,13 @@ fn note(line: serde_json::Value) {
     let Some(path) = file() else {
         return;
     };
+    // In one write: the stress checks read the file while b33p writes it.
+    let line = format!("{line}\n");
     let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
-        .and_then(|mut file| writeln!(file, "{line}"));
+        .and_then(|mut file| file.write_all(line.as_bytes()));
     if let Err(error) = written {
         warn!(error = %crate::scrub::chain(&error), "failed to log a content");
     }

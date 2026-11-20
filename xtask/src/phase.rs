@@ -33,6 +33,8 @@ pub(crate) enum AndroidPhase {
     // Twenty presage-cli members more: b33p's account's second group, a large one.
     #[strum(serialize = "large-group")]
     LargeGroup,
+    // Pictures through Desktop, Android and b33p, for `--capture` to compare.
+    Media,
 }
 
 /// The stress phases (pending/stress.md), each on a box of its own (`PlainBox` there), and

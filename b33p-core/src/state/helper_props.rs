@@ -177,7 +177,7 @@ proptest! {
     fn list_time_and_day_labels_never_panic(t in any::<u64>(), n in any::<i64>()) {
         let now = jiff::Timestamp::from_millisecond(n.rem_euclid(253_402_207_200_000 - 86_400_000))
             .unwrap()
-            .to_zoned(jiff::tz::TimeZone::system());
+            .to_zoned_datetime(jiff::tz::TimeZone::system());
         drop((format_list_time_at(t, &now), day_label(t, &now)));
     }
 

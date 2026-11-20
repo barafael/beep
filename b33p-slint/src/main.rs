@@ -16,8 +16,7 @@ use b33p_core::{
     Failure, Picture, QrMatrix,
 };
 use b33p_notify::{Action, AppInfo, Notification, Notifier};
-// What b33p asks of the desktop, shared with the other window (b33p-gpui): under the names
-// these modules had here.
+// What b33p asks of the desktop: under the names these modules had here.
 use b33p_platform::{audio, autostart, clipboard, instance, logging, motion};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 

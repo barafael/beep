@@ -1,6 +1,6 @@
 # b33p-dioxus
 
-b33p for Android: the same Signal client as `b33p-slint` and `b33p-gpui`, with its window
+b33p for Android: the same Signal client as `b33p-slint`, with its window
 drawn by [Dioxus](https://dioxuslabs.com) in the system's WebView. Everything that isn't the
 window is `b33p-core` (the chat state and the backends); this crate is the screens, written
 for a phone: the chat list, then the chat opened from it, and Back to return.

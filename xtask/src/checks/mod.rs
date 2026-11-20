@@ -20,6 +20,7 @@ mod family;
 mod groups;
 mod large_group;
 mod lost;
+mod media;
 mod mixed;
 mod network;
 mod presage;
@@ -145,7 +146,6 @@ pub(crate) fn run(
         return Err(RunError::CaptureWithStress { phase: stress }.into());
     }
     containers.capture(*capture);
-    containers.set_ui(b33p.ui);
     let sockets = Sockets::new(containers);
     let files = containers.files_dir();
     let linked = chosen(phases, Phase::Linked);
@@ -274,6 +274,18 @@ pub(crate) fn run(
             AndroidPhase::Groups => groups::groups(checks, fixture, containers, &sockets),
             AndroidPhase::Storage => storage::storage(checks, fixture),
             AndroidPhase::LargeGroup => large_group::large_group(checks, fixture, containers),
+            AndroidPhase::Media => media::media(
+                checks,
+                fixture,
+                containers,
+                &sockets,
+                &files,
+                &std::env::var_os("TESTBOX_MEDIA_PHOTO").map_or_else(
+                    || repo.join("docs/screenshots/01-chats.png"),
+                    std::path::PathBuf::from,
+                ),
+                &repo.join("docs/screenshots/01-chats.png"),
+            ),
         },
     );
     for phase in StressPhase::VARIANTS

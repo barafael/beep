@@ -175,10 +175,6 @@ pub(crate) struct B33pOptions {
     /// instead of as a debug build.
     #[arg(long)]
     pub(crate) optimized: bool,
-    /// Which window b33p is: b33p-slint (the default) or b33p-gpui, the same client drawn with
-    /// GPUI. A GPUI b33p's screenshots are its display's, not its harness's.
-    #[arg(long, value_enum, default_value_t = pod::Ui::Slint, env = "TESTBOX_UI")]
-    pub(crate) ui: pod::Ui,
     /// The app on the Android emulator: Signal-Android, or Molly (a hardened fork of it, on an
     /// older release: docs/onboarding-molly.md), which the phases that drive Android then drive.
     #[arg(long, value_enum, default_value_t = pod::AndroidApp::Signal, env = "TESTBOX_ANDROID_APP")]
@@ -304,7 +300,6 @@ fn repo_root() -> PathBuf {
 }
 
 fn up(pod: &Pod, clients: &[Client], b33p: B33pOptions) -> Result<(), PodError> {
-    pod.set_ui(b33p.ui);
     let b33ps = b33p.b33ps.unwrap_or(1);
     pod.up(clients, b33ps, b33p.optimized)?;
     b33p.limit_memory(pod, b33ps)
