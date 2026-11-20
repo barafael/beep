@@ -101,8 +101,8 @@ By how much they matter, most first:
   `storiesDisabled` from the storage service (the transfer from the phone has them too, but the
   first sync after linking reads them anyway); (2) work out a list's
   recipients: connections (accepted 1:1 chats, not blocked, not requests) as the list says,
-  only those with sealed-sender access (a story is stored without its sender), all
-  connections before the phone set anything; (3) send without a group context to each
+  all connections before the phone set anything (each can be sent one: presage seals a story
+  with any access key, which the server doesn't check for stories); (3) send without a group context to each
   (libsignal-service's `story=true`, one multi-recipient request where it can), and sync it
   with the list's id so the phone files it under My Story; own stories without a group, ours
   or the phone's, go in a "My Story" ring; (4) the composer offers My Story and the lists
