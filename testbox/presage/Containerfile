@@ -17,6 +17,11 @@ ARG RUSQLITE_REV=3475a314b4c98bcc006eb8143de5ef7bfeda8cbb
 RUN git init -q /opt/presage && cd /opt/presage \
     && git fetch -q --depth 1 https://github.com/barafael/presage "$PRESAGE_REV" \
     && git checkout -q FETCH_HEAD
+# `sync --linger-ms`: presage-cli answers a sync request (Desktop's, after linking) from tasks of
+# the receiving loop, which `sync --stop-after-empty-queue` took with it when it exited; the
+# checks keep it a few seconds (xtask/src/checks/setup.rs `desktop_inbox`).
+COPY testbox/patches/presage-cli-linger.patch /tmp/
+RUN cd /opt/presage && git apply /tmp/presage-cli-linger.patch
 
 # Its lock as that patch has it (testbox/presage/presage-cli.lock: presage's own, updated only for
 # the patch, `cargo metadata` with the same `--config`), so the build is `--locked` too.

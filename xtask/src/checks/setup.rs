@@ -327,7 +327,7 @@ pub(super) fn linked_desktop(
 ) -> Result<Desktop, Failure> {
     let mut desktop = linking_desktop(checks, socket, primary)?;
     checks.require("Desktop shows its inbox", || {
-        Ok(desktop_inbox(&mut desktop)?)
+        desktop_inbox(&mut desktop, primary)
     })?;
     Ok(desktop)
 }
@@ -398,37 +398,48 @@ pub(super) fn android_box<'pod>(
     checks.require("a presage-cli peer registers", || {
         Ok(peer.register().map(drop)?)
     })?;
-    // Desktop syncs after linking (driver.ts `inbox`): while Android and b33p set up.
+    // Desktop syncs after linking (driver.ts `inbox`): while Android and b33p set up. It asks the
+    // peer for its contacts at once, and the peer answers while they do ([`answer_desktop`]),
+    // so that its inbox is up when they are done.
     let mut desktop = linking_desktop(checks, &sockets.desktop, &peer)?;
+    let (mut android, b33p, android_aci) = std::thread::scope(|scope| -> Result<_, Failure> {
+        let answering = scope.spawn(|| answer_desktop(&peer));
+        // The driver listens once the emulator has booted and the agent listens.
+        containers.await_ready(Ready::Android, None, START)?;
+        let mut android = Android::connect(&sockets.android)?;
+        checks.require("Android registers", || {
+            Ok(android.call(drivers::Android::Register {
+                number: ANDROID_NUMBER.to_owned(),
+                name: "Android".to_owned(),
+            })?)
+        })?;
+        checks.require("Android writes a note to itself", || {
+            Ok(android.call(drivers::Android::NoteToSelf {
+                text: NOTE.to_owned(),
+            })?)
+        })?;
 
-    // The driver listens once the emulator has booted and the agent listens.
-    containers.await_ready(Ready::Android, None, START)?;
-    let mut android = Android::connect(&sockets.android)?;
-    checks.require("Android registers", || {
-        Ok(android.call(drivers::Android::Register {
-            number: ANDROID_NUMBER.to_owned(),
-            name: "Android".to_owned(),
-        })?)
-    })?;
-    checks.require("Android writes a note to itself", || {
-        Ok(android.call(drivers::Android::NoteToSelf {
-            text: NOTE.to_owned(),
-        })?)
-    })?;
-
-    containers.await_ready(Ready::B33p(0), None, START)?;
-    let mut b33p = Harness::connect(&sockets.b33p)?;
-    checks.require("b33p links to Android, with the message history", || {
-        link(&mut b33p, true, |url| {
-            android.call(drivers::Android::LinkDevice {
-                url: url.to_owned(),
-                transfer: true,
+        containers.await_ready(Ready::B33p(0), None, START)?;
+        let mut b33p = Harness::connect(&sockets.b33p)?;
+        checks.require("b33p links to Android, with the message history", || {
+            link(&mut b33p, true, |url| {
+                android.call(drivers::Android::LinkDevice {
+                    url: url.to_owned(),
+                    transfer: true,
+                })
             })
-        })
+        })?;
+        let android_aci =
+            checks.require("b33p knows Android's account", || Ok(own_aci(&mut b33p)?))?;
+        // The peer is used by one at a time: the answering is over before the checks go on.
+        answering
+            .join()
+            .map_err(|_| SetupError::Panicked { index: 0, count: 1 })?;
+        Ok((android, b33p, android_aci))
     })?;
-    let android_aci = checks.require("b33p knows Android's account", || Ok(own_aci(&mut b33p)?))?;
+    let mut b33p = b33p;
     checks.require("Desktop shows its inbox", || {
-        Ok(desktop_inbox(&mut desktop)?)
+        desktop_inbox(&mut desktop, &peer)
     })?;
 
     let conversation = checks.require("text from the peer reaches b33p", || {
@@ -461,12 +472,55 @@ fn link_desktop(desktop: &mut Desktop, primary: &Presage<'_>) -> Result<(), Fail
     Ok(primary.add_device(&url)?)
 }
 
-/// Waits for Desktop's inbox once it is linked: up to ten minutes, as Desktop waits for syncs
-/// nobody in the box answers (driver.ts `inbox`).
-fn desktop_inbox(desktop: &mut Desktop) -> Result<(), HarnessError> {
-    desktop.call(drivers::Desktop::Inbox {
-        timeout_ms: 10 * 60 * 1000,
-    })
+/// Runs presage-cli as the peer a few times, a few seconds apart, to answer what Desktop asks of it
+/// after linking ([`desktop_inbox`]): the first time is usually enough, and what fails or comes
+/// too early is repeated by the wait for the inbox itself.
+fn answer_desktop(peer: &Presage<'_>) {
+    for _ in 0..3 {
+        std::thread::sleep(ANSWER_EVERY);
+        if let Err(error) = peer.sync_answering(ANSWERING) {
+            println!("  answering Desktop: {}", testbox_tools::Report(&error));
+            return;
+        }
+    }
+}
+
+/// How long Desktop is given to show its inbox: ten minutes, as it waits for syncs that its
+/// primary has to answer (driver.ts `inbox`).
+const INBOX_PATIENCE: Duration = Duration::from_secs(10 * 60);
+/// How long one wait for the inbox lasts before the primary gets to answer what Desktop asked.
+const INBOX_POLL: Duration = Duration::from_secs(3);
+/// How long presage-cli stays running after what was queued, for the replies it sends from tasks
+/// of their own.
+const ANSWERING: Duration = Duration::from_secs(4);
+/// How often the peer answers while the rest of a box sets up ([`answer_desktop`]).
+const ANSWER_EVERY: Duration = Duration::from_secs(4);
+
+/// Waits for Desktop's inbox once it is linked to `primary`.
+///
+/// After linking, Desktop asks its primary for its contacts, configuration and blocked list, and
+/// shows no inbox until the contacts come ("Wait for critical post-registration syncs before
+/// showing inbox", ts/background.preload.ts); without an answer it gives up after two minutes
+/// (`waitForEvent`'s `short-lived` timeout). presage-cli answers a request when it receives
+/// (presage's `Received` loop), from tasks that end with it, so between waits of a few seconds it
+/// is run to receive what Desktop has sent by then and to stay a little after. What Desktop shows afterwards is what a
+/// phone's answer gives it, as in use; the check still fails if no inbox shows in ten minutes.
+fn desktop_inbox(desktop: &mut Desktop, primary: &Presage<'_>) -> Result<(), Failure> {
+    let started = Instant::now();
+    loop {
+        let waited = desktop.call(drivers::Desktop::Inbox {
+            timeout_ms: u64::try_from(INBOX_POLL.as_millis()).unwrap_or(u64::MAX),
+        });
+        match waited {
+            Ok(()) => return Ok(()),
+            // The driver's own timeout comes back as a refusal; anything else is no wait to
+            // repeat.
+            Err(HarnessError::Refused { .. }) if started.elapsed() < INBOX_PATIENCE => {
+                primary.sync_answering(ANSWERING)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Launches Desktop and links it to `primary`, without waiting for its inbox

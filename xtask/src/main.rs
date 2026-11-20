@@ -9,8 +9,11 @@
 
 #[cfg(unix)]
 mod checks;
+mod doctor;
 #[cfg(unix)]
 mod harness;
+#[cfg(unix)]
+mod jobs;
 mod phase;
 mod pins;
 mod pod;
@@ -95,7 +98,8 @@ enum Command {
     /// Builds the images, the Android image while the linked box runs, each build's output in
     /// target/testbox-build. The phases on one setup share a box (without `--fresh`): the pod
     /// plays from nothing, its volumes removed, then the setup's checks run once and the phases
-    /// one after the other. Each box's record is in `target/testbox-record/<box>/`. A pass shows
+    /// one after the other. Each box's record is in `target/testbox-record/test/<when it started>/<box>/`,
+    /// and `<box>` there leads to the latest. A pass shows
     /// agreement with Signal-Server's test mode at its pin, not with Signal's servers.
     Test {
         #[command(flatten)]
@@ -138,6 +142,20 @@ enum Command {
         /// The box's record: `target/testbox-record/<box>`.
         record: PathBuf,
     },
+    /// Lists the boxes on this machine by instance (pod, network, volumes, image tags), and
+    /// which are strays (leftovers of a box with no pod) or idle (a pod left up, nobody
+    /// holding it).
+    Doctor,
+    /// Takes the box `--instance` names away: pod, volumes, network, image tags and this
+    /// worktree's scratch directories for it (its record stays). Only looks without `--yes`.
+    Clean {
+        /// Every box with no pod and nobody holding it, instead of the one `--instance` names.
+        #[arg(long)]
+        strays: bool,
+        /// Removes; without it, `clean` only says what it would.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Prints containers' logs.
     Logs {
         /// The containers' names in testbox/pod.yaml.
@@ -164,6 +182,16 @@ pub(crate) struct TestOptions {
     /// decrypts. Not with the stress phases: their volume would fill the disk.
     #[arg(long)]
     pub(crate) capture: bool,
+    /// How many boxes play at once, each on a pod of its own (`<instance>-j1`, `-j2`, …): the
+    /// linked box, the Android box and each stress or mesh phase are units, with `--fresh` each
+    /// phase is, and the boxes take them as they come free. The images are built once. At
+    /// most two Android emulators run at a time. The output of a unit comes when it ends.
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
+    pub(crate) jobs: u8,
+    /// Plays the images the box of this pod name built, tagged for this box, instead of
+    /// building them: what `--jobs` gives the boxes it plays.
+    #[arg(long, hide = true, value_name = "POD")]
+    pub(crate) prebuilt: Option<String>,
     #[command(flatten)]
     pub(crate) b33p: B33pOptions,
 }
@@ -241,13 +269,22 @@ fn main() -> ExitCode {
             pod.holding(|| up(&pod, &clients, b33p))
                 .map_err(Failure::from)
         }
-        Command::Test { options } => pod.holding(|| test(&pod, &repo, "", &options)),
+        Command::Test { options } => pod.holding(|| {
+            // A directory of its own, by when it started, as `run`'s: the next `test` on this
+            // box doesn't replace this one's records (`<box>` leads to the latest).
+            let records = format!("test/{}", process::now()?);
+            test(&pod, &repo, &records, &options)
+        }),
         Command::Run { rounds, options } => pod.holding(|| run(&pod, &repo, rounds, &options)),
         Command::Vnc { interactive } => vnc(&pod, &repo, interactive),
         Command::Web { interactive } => web(&pod, &repo, interactive),
         Command::Qr => qr(&pod),
         Command::Down { wipe } => pod.holding(|| pod.down(wipe)).map_err(Failure::from),
         Command::Wire { record } => wire::decode(&record).map_err(Failure::from),
+        Command::Doctor => doctor::doctor(),
+        Command::Clean { strays, yes } => {
+            doctor::clean(&repo, cli.instance.as_deref(), strays, yes)
+        }
         Command::Logs { services } => {
             let services: Vec<&str> = services.iter().map(String::as_str).collect();
             pod.logs(&services).map_err(Failure::from)
@@ -320,10 +357,15 @@ fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<(),
         }
         outcomes.push((round, outcome.is_ok()));
     }
-    println!(
-        "== summary (records in {})",
-        pod.record_dir().join(&run).display()
-    );
+    if options.jobs > 1 && options.prebuilt.is_none() {
+        // The boxes' own, which the units' summaries name (`jobs`).
+        println!("== summary");
+    } else {
+        println!(
+            "== summary (records in {})",
+            pod.record_dir().join(&run).display()
+        );
+    }
     for (round, passed) in &outcomes {
         let outcome = if *passed { "passed" } else { "FAILED" };
         println!("round {round}: {outcome}");
@@ -339,7 +381,11 @@ fn run(pod: &Pod, repo: &Path, rounds: u32, options: &TestOptions) -> Result<(),
 /// The phases' checks once, each box's record in `target/testbox-record/<records>/<box>/`.
 #[cfg(unix)]
 fn test(pod: &Pod, repo: &Path, records: &str, options: &TestOptions) -> Result<(), Failure> {
-    checks::run(pod, repo, records, options)
+    if options.jobs > 1 && options.prebuilt.is_none() {
+        jobs::run(pod, options)
+    } else {
+        checks::run(pod, repo, records, options)
+    }
 }
 
 #[cfg(unix)]

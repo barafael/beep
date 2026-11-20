@@ -390,6 +390,21 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
             .map(|received| self.noting_lost(received))
     }
 
+    /// Receives what is queued and stays `linger` after, for the answers to sync requests that
+    /// presage-cli sends from tasks of their own (testbox/patches/presage-cli-linger.patch).
+    pub(super) fn sync_answering(
+        &self,
+        linger: std::time::Duration,
+    ) -> Result<String, PresageError> {
+        let linger = linger.as_millis().to_string();
+        self.cli(
+            "sync",
+            &["--stop-after-empty-queue", "--linger-ms", &linger],
+            "",
+        )
+        .map(|received| self.noting_lost(received))
+    }
+
     /// Receives what is queued; fails unless presage-cli printed `expected`.
     pub(super) fn sync_printing(&self, expected: &str) -> Result<(), PresageError> {
         let received = self.sync()?;

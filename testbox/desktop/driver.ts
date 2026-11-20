@@ -368,6 +368,9 @@ interface Timeout {
   timeout_ms: number;
 }
 
+/** Whether `app-loaded` was taken from SignalCI already (`inbox`). */
+let appLoaded = false;
+
 /** The calls, by `drivers::Desktop`'s method names, with their params. */
 const methods = {
   launch: async () => {
@@ -386,7 +389,12 @@ const methods = {
    * "Wait for critical post-registration syncs before showing inbox"), which presage-cli doesn't
    * answer, until those waits give up. */
   inbox: async ({ timeout_ms }: Timeout) => {
-    await signalCiEvent('app-loaded', timeout_ms);
+    // Called again after a timeout (the xtask answers Desktop's sync requests between waits):
+    // SignalCI hands an event out once, so one taken stays taken.
+    if (!appLoaded) {
+      await signalCiEvent('app-loaded', timeout_ms);
+      appLoaded = true;
+    }
     await leftPane().waitFor({ timeout: timeout_ms });
     return null;
   },

@@ -1,0 +1,59 @@
+diff --git a/presage-cli/src/main.rs b/presage-cli/src/main.rs
+index 6124b97..165c9ba 100644
+--- a/presage-cli/src/main.rs
++++ b/presage-cli/src/main.rs
+@@ -158,6 +158,12 @@ enum Cmd {
+             help = "Exit after processing the messages in the queue (similar to the syncing of Signal Desktop)"
+         )]
+         stop_after_empty_queue: bool,
++        #[clap(
++            long,
++            value_name = "MS",
++            help = "With --stop-after-empty-queue, keep running this long after the queue is empty, for the answers to sync requests (contacts, blocked list) that the receiving loop sends from tasks of their own"
++        )]
++        linger_ms: Option<u64>,
+     },
+     #[clap(about = "List groups")]
+     ListGroups {
+@@ -595,6 +601,7 @@ async fn receive<S: Store>(
+     mut manager: Manager<S, Registered>,
+     notifications: bool,
+     stop_after_empty_queue: bool,
++    linger_ms: Option<u64>,
+ ) -> anyhow::Result<()> {
+     let attachments_tmp_dir = attachments_tmp_dir()?;
+     let messages = manager
+@@ -608,6 +615,12 @@ async fn receive<S: Store>(
+             Received::QueueEmpty => {
+                 println!("done with synchronization");
+                 if stop_after_empty_queue {
++                    // The answers to sync requests go out from tasks the receiving loop spawned
++                    // (presage `registered.rs`, `RequestType::Contacts`): they run while this
++                    // task waits, and are gone with the process.
++                    if let Some(ms) = linger_ms {
++                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
++                    }
+                     break;
+                 }
+             }
+@@ -743,9 +756,10 @@ async fn run<S: Store>(subcommand: Cmd, store: S) -> anyhow::Result<()> {
+         Cmd::Sync {
+             notifications,
+             stop_after_empty_queue,
++            linger_ms,
+         } => {
+             let manager = Manager::load_registered(store).await?;
+-            receive(manager, notifications, stop_after_empty_queue).await?;
++            receive(manager, notifications, stop_after_empty_queue, linger_ms).await?;
+         }
+         Cmd::AddDevice { url } => {
+             let mut manager = load_registered_and_receive(store).await?;
+@@ -1115,7 +1129,7 @@ async fn load_registered_and_receive<S: Store + Send>(
+ ) -> anyhow::Result<Manager<S, Registered>> {
+     let manager = Manager::load_registered(store).await?;
+     let manager_receive = manager.clone();
+-    tokio::task::spawn_local(receive(manager_receive, false, false));
++    tokio::task::spawn_local(receive(manager_receive, false, false, None));
+     Ok(manager)
+ }
+ 

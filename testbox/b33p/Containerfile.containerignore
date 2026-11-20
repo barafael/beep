@@ -1,0 +1,27 @@
+# What b33p's image build copies (`COPY . .`, testbox/b33p/Containerfile): the workspace's sources,
+# not the build output (the repository's .containerignore says so for the images that take the
+# whole of it; a Containerfile's own ignore file replaces that one, so its entries are here too)
+# and not what a build of b33p doesn't read: without this, a change to the xtask, the docs or
+# another image's files made the layer new, and every workspace crate compiled again (about
+# 45 s with Slint's and GPUI's dependencies built, minutes without).
+target
+testbox/tools/target
+.git
+
+# The workspace's xtask member keeps its manifest (cargo reads every member's); the Containerfile
+# puts an empty main.rs in place of its sources.
+xtask/src
+xtask/tests
+
+# Documents, notes and packaging: nothing in a crate includes them.
+docs
+pending
+packaging
+.github
+*.md
+justfile
+deny.toml
+
+# testbox/tools is a path dependency of the xtask; every other image's files are not b33p's.
+testbox/*
+!testbox/tools
