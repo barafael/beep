@@ -85,6 +85,14 @@ export component AppWindow inherits Window {
     // then go nowhere until a click.
     in-out property <int> escaped;
     changed escaped => { keys.focus(); }
+    // The stories' viewer and composer take the focus, and close by other ways than Esc too
+    // (✕, the last story, posting): the focus comes back as it does after Esc.
+    property <bool> stories-up: Panels.stories-open || Panels.story-composer-open;
+    changed stories-up => {
+        if !self.stories-up {
+            root.escaped += 1;
+        }
+    }
 
     // Shortcuts that work wherever the focus is; see `shortcut`.
     keys := FocusScope {

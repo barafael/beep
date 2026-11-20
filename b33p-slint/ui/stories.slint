@@ -118,9 +118,10 @@ export component StoryViewer inherits FadeIn {
     property <duration> hold: 250ms;
     property <duration> held;
     property <bool> paused;
-    // A picture still on its way: its time starts once it is there.
+    // A picture still on its way: its time starts once it is there. One that failed to come
+    // isn't waited for: it offers to be fetched again, and goes on meanwhile.
     property <bool> waiting: !Panels.story.text-story && !Panels.story.picture.video
-        && Panels.story.picture.picture.width == 0;
+        && Panels.story.picture.picture.width == 0 && !Panels.story.picture.can-retry;
     property <bool> running: Panels.story.shown && !card-touch.pressed && !root.paused && !root.waiting;
     property <float> progress: root.elapsed / root.length;
     property <string> key: Panels.story.key;
@@ -266,7 +267,22 @@ export component StoryViewer inherits FadeIn {
                 }
             }
         }
-        // A video plays in the desktop's player.
+        card-touch := TouchArea {
+            // From the press itself, not a change handler: a quick tap's press and release can
+            // come in one go, and the handler would then not run, leaving the last hold's time.
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    root.held = 0;
+                }
+            }
+            clicked => {
+                if root.held < root.hold {
+                    root.step(self.mouse-x < self.width / 3 ? -1 : 1);
+                }
+            }
+        }
+        // A video plays in the desktop's player. After the card's area, so that its buttons
+        // get the clicks rather than stepping on.
         if !Panels.story.text-story && Panels.story.picture.video: VerticalLayout {
             alignment: center;
             HorizontalLayout {
@@ -279,16 +295,23 @@ export component StoryViewer inherits FadeIn {
                 }
             }
         }
-
-        card-touch := TouchArea {
-            changed pressed => {
-                if self.pressed {
-                    root.held = 0;
-                }
+        // A picture that failed to come: why, and asking again (over the card's area too).
+        if !Panels.story.text-story && !Panels.story.picture.video
+            && Panels.story.picture.can-retry && Panels.story.picture.picture.width == 0: VerticalLayout {
+            alignment: center;
+            padding: Theme.space-l;
+            spacing: Theme.space-s;
+            if Panels.story.picture.status != "": Text {
+                text: Panels.story.picture.status;
+                color: Theme.on-stage;
+                wrap: word-wrap;
+                horizontal-alignment: center;
             }
-            clicked => {
-                if root.held < root.hold {
-                    root.step(self.mouse-x < self.width / 3 ? -1 : 1);
+            HorizontalLayout {
+                alignment: center;
+                Button {
+                    text: "Try again";
+                    clicked => { OpenChat.fetch-attachment(Panels.story.picture.id); }
                 }
             }
         }

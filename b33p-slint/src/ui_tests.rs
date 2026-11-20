@@ -146,7 +146,6 @@ fn a_text_story_can_be_clicked_through() {
         shown: true,
         author: "Ferris".into(),
         time: "11:42".into(),
-        position: "1 / 1".into(),
         text_story: true,
         text: "cargo build --release 🦀".into(),
         foreground: slint::Color::from_rgb_u8(255, 255, 255),

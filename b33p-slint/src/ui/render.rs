@@ -529,9 +529,6 @@ pub(super) fn render_stickers(window: &AppWindow, chat: &ChatState) {
 
 /// Stories: the rings over the chat list, the groups to post to, the one shown.
 pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Images) {
-    window
-        .global::<Panels>()
-        .set_unviewed_stories(chat.unviewed_stories() as i32);
     let rings: Vec<RingItem> = chat
         .story_rings()
         .iter()
@@ -594,7 +591,6 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
                 time: state::format_time(story.timestamp).into(),
                 index: at as i32,
                 count: count as i32,
-                position: format!("{} / {count}", at + 1).into(),
                 ..Default::default()
             };
             match &story.content {
