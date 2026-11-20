@@ -18,8 +18,10 @@ signal = ["b33p-core/signal"]
 # only; never part of a release build.
 harness = ["dep:b33p-harness", "b33p-harness/core", "dep:serde", "dep:serde_json", "dep:i-slint-backend-testing"]
 test-servers = ["b33p-core/test-servers"]
-# What draws the window on Linux, in Slint's Fluent style. On the other platforms Slint's own
-# winit window and FemtoVG draw it whichever of these is on.
+# What draws the window on Linux, in Slint's Fluent style. Elsewhere Slint's own winit window
+# and FemtoVG draw it, but Cargo features can't be per platform: built there with these on, Skia
+# comes along (and its prebuilt binaries have no Windows build of the set it asks for), so the
+# other platforms build with `--no-default-features --features signal`, as CI and releases do.
 #   gpu-skia      Slint's winit backend (Wayland and X11) with Skia, Vulkan if the driver has it
 #                 and OpenGL if not (the default).
 #   gpu-femtovg   the same with FemtoVG on OpenGL; lighter to build, heavier to run.
