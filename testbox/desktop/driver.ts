@@ -819,6 +819,19 @@ const methods = {
       if (await offered.isVisible()) {
         // Its label, as Desktop's test clicks it: the box itself is drawn over.
         await offered.getByText(rendered(group, false)).click();
+        // My Story the first time asks who may see it first (SendStoryModal.dom.tsx,
+        // `hasFirstStoryPostExperience`, Page.SetMyStoriesPrivacy): as it is, saved. Saving
+        // goes back to the list with My Story not chosen yet.
+        // A modal page of its own (`SendStoryModal__my-stories-privacy`), not inside
+        // `.SendStoryModal`.
+        const save = page().getByRole('button', { name: 'Save', exact: true });
+        const asked = await save
+          .waitFor({ state: 'visible', timeout: 2_000 })
+          .then(() => true, () => false);
+        if (asked) {
+          await save.click();
+          await offered.getByText(rendered(group, false)).click();
+        }
       } else {
         // Chosen there, it comes back ticked.
         await page().getByRole('button', { name: 'New', exact: true }).click();
