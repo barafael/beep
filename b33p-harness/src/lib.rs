@@ -34,6 +34,16 @@ pub enum Call {
     Act { action: Action },
     /// Writes the window, as drawn, to `path` as a PNG. Answered with [`Shot`].
     Screenshot { path: String },
+    /// Moves the pointer to `x`, `y` (logical pixels from the window's top left), as if the
+    /// mouse went there: hover effects follow. Answered with [`Moved`].
+    Pointer { x: f32, y: f32 },
+}
+
+/// The answer to [`Call::Pointer`]: the window's scale factor, physical pixels (as in a
+/// screenshot) per logical pixel.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    pub scale: f32,
 }
 
 /// The answer to request `id`: `{"id": …, "result": …}` or `{"id": …, "error": "…"}`.

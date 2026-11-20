@@ -229,6 +229,16 @@ impl Window {
         callbacks::chat::edit(shared, &self.0, index);
     }
 
+    /// Moves the pointer to `x`, `y`, in logical pixels, as the mouse would; the scale factor.
+    #[cfg(all(feature = "harness", target_family = "unix"))]
+    pub fn move_pointer(&self, x: f32, y: f32) -> f32 {
+        let window = self.0.window();
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
+        window.scale_factor()
+    }
+
     /// Writes the window as drawn to `path`, a PNG; its size in pixels.
     #[cfg(all(feature = "harness", target_family = "unix"))]
     pub fn screenshot(&self, path: &std::path::Path) -> Result<(u32, u32), HarnessError> {

@@ -18,6 +18,9 @@
 //! ← `{"event":"update","seq":1,"snapshot":{…}}` — pushed after every redraw
 //! → `{"id":5,"method":"screenshot","path":"/somewhere/shot.png"}`
 //! ← `{"id":5,"result":{"width":1000,"height":680}}` — the window as drawn, as a PNG
+//! → `{"id":6,"method":"pointer","x":300,"y":200}`
+//! ← `{"id":6,"result":{"scale":1.25}}` — the pointer moved there, in logical pixels; a
+//!   screenshot's pixels are these times `scale`
 //!
 //! Errors come as `{"id":…,"error":"…"}`, including for requests that didn't parse; `id` is
 //! then 0 or missing, and the connection stays open.
@@ -37,8 +40,8 @@ use std::rc::{Rc, Weak};
 use b33p_harness::{
     Acted, Action, Answer, AttachmentKind, AttachmentSnapshot, Call, ChatSearchSnapshot,
     ConversationSnapshot, Delivery, DetailsSnapshot, Download, FolderSnapshot, JoinSnapshot,
-    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, NotifySnapshot, Outcome, Pong, Pushed,
-    PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
+    LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Moved, NotifySnapshot, Outcome, Pong,
+    Pushed, PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
     ScreenSnapshot, SearchResultSnapshot, SettingsChange, SettingsSnapshot, Shot, Snapshot,
     StickerPackSnapshot, StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed,
     Unsubscribed, ViewerSnapshot, WindowSnapshot,
@@ -274,6 +277,13 @@ fn answer(shared: &Rc<Shared>, connection: u64, reply: &Outbound, request: Reque
             perform(shared, action).map(|command_sent| Acted { command_sent }),
         ),
         Call::Screenshot { path } => send(reply, id, screenshot(shared, &path)),
+        Call::Pointer { x, y } => send(
+            reply,
+            id,
+            window(shared).map(|window| Moved {
+                scale: window.move_pointer(x, y),
+            }),
+        ),
     }
 }
 
