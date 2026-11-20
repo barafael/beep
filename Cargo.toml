@@ -35,6 +35,7 @@ slint-build = { git = "https://github.com/barafael/slint", rev = "076293d905450b
 i-slint-core = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
 i-slint-common = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
 i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22" }
+i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "076293d905450b1ddfc71a54d2c37f9dde341a22", default-features = false }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
 # requests, one commit per theme (2026-11-09), new code in modules of their own
