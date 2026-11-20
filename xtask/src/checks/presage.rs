@@ -390,6 +390,23 @@ for text; do presage-cli --sqlite-db-path "$db" send --uuid "$to" --message "$te
             .map(|received| self.noting_lost(received))
     }
 
+    /// Receives what is queued, stories too (testbox/patches/presage-cli-stories.patch: presage-cli
+    /// asks the server for them, which drops them for it otherwise, and prints each as
+    /// "new story: …"). What it printed.
+    pub(super) fn sync_stories(&self) -> Result<String, PresageError> {
+        self.cli(
+            "sync",
+            &["--stop-after-empty-queue", "--receive-stories"],
+            "",
+        )
+        .map(|received| self.noting_lost(received))
+    }
+
+    /// Which account it is.
+    pub(super) fn account(&self) -> Account {
+        self.account
+    }
+
     /// Receives what is queued and stays `linger` after, for the answers to sync requests that
     /// presage-cli sends from tasks of their own (testbox/patches/presage-cli-linger.patch).
     pub(super) fn sync_answering(

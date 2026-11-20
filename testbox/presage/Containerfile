@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # presage at the revision b33p pins (Cargo.toml). presage itself pins upstream libsignal-service,
 # which has no servers of one's own (`SignalServers::Custom`); b33p's Cargo.toml patches it to
 # its fork, and so does this build, through `--config` for this build only.
-ARG PRESAGE_REV=4d485de9ec44612e7299cbf0d371cec9e2065b45
+ARG PRESAGE_REV=cfa78084874d67f5b4a65239c52cbc7409c0bb32
 ARG LIBSIGNAL_SERVICE_REV=5ef972a7f34b04918a531faefbe152eccf7fc45b
 # b33p's SQLCipher too (Cargo.toml's libsqlite3-sys): presage's own still tears SQLCipher down at
 # exit, and presage-cli, exiting while a connection was still in use, crashed there.
@@ -22,6 +22,11 @@ RUN git init -q /opt/presage && cd /opt/presage \
 # checks keep it a few seconds (xtask/src/checks/setup.rs `desktop_inbox`).
 COPY testbox/patches/presage-cli-linger.patch /tmp/
 RUN cd /opt/presage && git apply /tmp/presage-cli-linger.patch
+# `sync --receive-stories`: presage-cli asks for stories (presage's `receive_stories`, off by
+# default), which the server otherwise drops for it, and prints each; the stories phase has a
+# presage-cli member among the people a story to My Story goes to.
+COPY testbox/patches/presage-cli-stories.patch /tmp/
+RUN cd /opt/presage && git apply /tmp/presage-cli-stories.patch
 
 # Its lock as that patch has it (testbox/presage/presage-cli.lock: presage's own, updated only for
 # the patch, `cargo metadata` with the same `--config`), so the build is `--locked` too.

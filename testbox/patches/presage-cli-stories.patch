@@ -1,0 +1,32 @@
+diff --git a/presage-cli/src/main.rs b/presage-cli/src/main.rs
+index 6ea390686..cf0586a91 100644
+--- a/presage-cli/src/main.rs
++++ b/presage-cli/src/main.rs
+@@ -164,6 +164,11 @@ enum Cmd {
+             help = "With --stop-after-empty-queue, keep running this long after the queue is empty, for the answers to sync requests (contacts, blocked list) that the receiving loop sends from tasks of their own"
+         )]
+         linger_ms: Option<u64>,
++        #[clap(
++            long,
++            help = "Ask the server for stories too (X-Signal-Receive-Stories), which it otherwise drops for this device; each is printed as \"new story: …\""
++        )]
++        receive_stories: bool,
+     },
+     #[clap(about = "List groups")]
+     ListGroups {
+@@ -771,8 +776,15 @@ async fn run<S: Store>(subcommand: Cmd, store: S) -> anyhow::Result<()> {
+             notifications,
+             stop_after_empty_queue,
+             linger_ms,
++            receive_stories,
+         } => {
+             let manager = Manager::load_registered(store).await?;
++            if receive_stories {
++                manager.set_settings(presage::manager::Settings {
++                    receive_stories: true,
++                    ..manager.settings()
++                });
++            }
+             receive(manager, notifications, stop_after_empty_queue, linger_ms).await?;
+         }
+         Cmd::AddDevice { url } => {

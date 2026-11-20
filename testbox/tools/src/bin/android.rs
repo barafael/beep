@@ -376,6 +376,9 @@ enum UiError {
     ScreencapFailed { status: ExitStatus, length: usize },
     #[error("screencap format {format}, not RGBA_8888")]
     ScreencapFormat { format: u32 },
+    /// My Stories had no story under My Story to open.
+    #[error("no story of the account's own under My Story to look for {text:?} in")]
+    NoOwnStory { text: String },
     /// The screenshot is kept at `kept`.
     #[error("no reaction bar with its heart after a long press on {text:?} ({kept})")]
     NoReactionBar { text: String, kept: String },
@@ -1337,6 +1340,10 @@ impl Driver {
             Android::SetTimer { seconds } => self.set_timer(seconds),
             Android::SetNickname { given } => self.set_nickname(&given),
             Android::PostStory { group, text } => self.post_story(&group, &text),
+            Android::MyStoryPrivacy { except } => self.my_story_privacy(&except),
+            Android::OwnStoryShows { text, timeout_ms } => {
+                self.own_story_shows(&text, Duration::from_millis(timeout_ms))
+            }
             Android::Send { text } => self.send(&text),
             Android::WaitFor { wanted, timeout_ms } => self
                 .first_shown(vec![wanted], Duration::from_millis(timeout_ms))
@@ -1514,6 +1521,19 @@ impl Driver {
             .is_ok()
         {
             self.tap(group, PATIENCE)?;
+            // The first story to My Story asks who may see it (strings.xml
+            // `ChooseInitialMyStoryMembershipFragment__my_story_privacy`): all connections.
+            if self
+                .first_shown(vec![agent::Wanted::label("My Story Privacy")], GLANCE)
+                .is_ok()
+            {
+                self.tap("All Signal connections", PATIENCE)?;
+                self.tap("Save", PATIENCE)?;
+                self.agent.act(agent::Call::WaitGone {
+                    wanted: vec![agent::Wanted::label("My Story Privacy")],
+                    timeout_ms: timeout_ms(PATIENCE),
+                })?;
+            }
         } else {
             self.tap("New", PATIENCE)?;
             self.tap("Group story", PATIENCE)?;
@@ -1537,6 +1557,82 @@ impl Driver {
             timeout_ms: timeout_ms(PATIENCE),
         })?;
         self.launch()
+    }
+
+    /// Stories, its menu's Story privacy, My Story (strings.xml `StoriesLandingFragment__story_privacy`,
+    /// `MyStorySettingsFragment__*`): "All Signal connections", or "All except…" and each of
+    /// `except` chosen there; back in the chats after.
+    fn my_story_privacy(&mut self, except: &[String]) -> Result<(), UiError> {
+        self.launch()?;
+        self.tap("Stories", PATIENCE)?;
+        self.tap("More options", PATIENCE)?;
+        self.tap("Story privacy", PATIENCE)?;
+        self.tap("My Story", PATIENCE)?;
+        self.element("Who can view this story", PATIENCE)?;
+        if except.is_empty() {
+            self.tap("All Signal connections", PATIENCE)?;
+        } else {
+            self.tap("All except…", PATIENCE)?;
+            for name in except {
+                self.tap(name, PATIENCE)?;
+            }
+            // The choice's own screen (`ChangeMyStoryMembershipFragment__all_except`).
+            let shown = self.first_shown(
+                vec![
+                    agent::Wanted::control("Done"),
+                    agent::Wanted::control("Save"),
+                ],
+                PATIENCE,
+            )?;
+            self.tap_at(&shown.node)?;
+            self.element("Who can view this story", PATIENCE)?;
+        }
+        back()?;
+        back()?;
+        self.tap("Chats", PATIENCE)?;
+        self.launch()
+    }
+
+    /// Stories, My Stories, the first of them opened: the viewer goes through them all, so the
+    /// one with `text` shows within their time (strings.xml `StoriesLandingFragment__my_stories`).
+    fn own_story_shows(&mut self, text: &str, patience: Duration) -> Result<(), UiError> {
+        self.launch()?;
+        self.tap("Stories", PATIENCE)?;
+        self.tap("My Stories", PATIENCE)?;
+        let found = (|| -> Result<(), UiError> {
+            let first = self.first_shown(
+                vec![
+                    agent::Wanted::containing(text),
+                    agent::Wanted::label("My Story"),
+                ],
+                PATIENCE,
+            )?;
+            if first.which == 0 {
+                return Ok(());
+            }
+            // Below My Story's heading: its newest story's row, opened with a touch on what
+            // the row shows first (its time, its views).
+            let row = first
+                .screen
+                .iter()
+                .filter(|node| {
+                    node.y > first.node.y
+                        && (!node.text.trim().is_empty() || !node.content_desc.trim().is_empty())
+                })
+                .min_by_key(|node| node.y)
+                .cloned()
+                .ok_or_else(|| UiError::NoOwnStory {
+                    text: text.to_owned(),
+                })?;
+            self.agent.click(&row, false)?;
+            self.first_shown(vec![agent::Wanted::containing(text)], patience)?;
+            Ok(())
+        })();
+        back()?;
+        back()?;
+        self.tap("Chats", PATIENCE)?;
+        self.launch()?;
+        found
     }
 
     /// Opens the menu of the chat list's row showing `text` (a long click on it); the menu's own

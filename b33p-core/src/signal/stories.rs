@@ -79,7 +79,11 @@ pub(super) async fn send_to_list(
         .outbox
         .story_to_list(list, to.clone(), message.clone(), timestamp)
         .await?;
-    info!(reached = reached.len(), of = to.len(), "posted a story to a list");
+    info!(
+        reached = reached.len(),
+        of = to.len(),
+        "posted a story to a list"
+    );
     if reached.is_empty() && !to.is_empty() {
         return Err(SendFailure::NobodyReached);
     }

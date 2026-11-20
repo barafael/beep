@@ -324,11 +324,24 @@ pub enum Android {
     SetNickname {
         given: String,
     },
-    /// Posts a text story with `text` to the group `group` names, from the Stories tab; back in
-    /// the chats after.
+    /// Posts a text story with `text` to the group `group` names, or to "My Story", from the
+    /// Stories tab; back in the chats after. The first story to My Story asks who may see it
+    /// (ChooseInitialMyStoryMembershipFragment): all of the account's Signal connections.
     PostStory {
         group: String,
         text: String,
+    },
+    /// Sets who sees My Story, from the Stories tab's Story privacy (MyStorySettingsFragment):
+    /// all Signal connections, or with `except` named, all but them ("All except…"). Kept in the
+    /// storage service, where linked devices read it.
+    MyStoryPrivacy {
+        except: Vec<String>,
+    },
+    /// Waits up to `timeout_ms` for a story of the account's own with `text` among its My
+    /// Stories (MyStoriesFragment), opened; back in the chats after.
+    OwnStoryShows {
+        text: String,
+        timeout_ms: u64,
     },
     Send {
         text: String,

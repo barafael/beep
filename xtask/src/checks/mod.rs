@@ -30,6 +30,7 @@ mod setup;
 mod signal_cli;
 mod signalmeow;
 mod storage;
+mod stories;
 mod stress;
 mod tour;
 
@@ -260,6 +261,7 @@ pub(crate) fn run(
             AndroidPhase::Groups => groups::groups(checks, fixture, containers, &sockets),
             AndroidPhase::Storage => storage::storage(checks, fixture),
             AndroidPhase::LargeGroup => large_group::large_group(checks, fixture, containers),
+            AndroidPhase::Stories => stories::stories(checks, fixture, containers),
             AndroidPhase::Media => media::media(
                 checks,
                 fixture,
