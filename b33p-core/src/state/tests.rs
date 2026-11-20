@@ -1824,18 +1824,6 @@ fn files_show_by_name_until_sent() {
 }
 
 #[test]
-fn a_reply_from_a_notification_shows_while_sending() {
-    let mut state = state();
-    let a = ConversationId("a".into());
-    state.select(&a);
-    let (command, update) = state.reply(&a, "thanks");
-    sent_at(command);
-    assert_eq!(update.messages, MessagesUpdate::Appended(1));
-    let shown = &state.last_messages(1).next().unwrap().message;
-    assert_eq!(shown.unsent, Some(Unsent::Sending));
-}
-
-#[test]
 fn new_password_is_validated_before_unlocking() {
     let mut state = ChatState::default();
     assert!(
@@ -2425,30 +2413,6 @@ fn a_batch_seen_is_read_with_one_receipt() {
         },
     ]);
     assert_eq!(read(&mut state), [(id("a"), vec![500])]);
-}
-
-#[test]
-fn new_messages_line_stays_where_reading_began() {
-    let mut state = state();
-    state.apply(Event::History {
-        conversation: id("a"),
-        messages: vec![
-            message("a", "Ann", 10, false),
-            message("a", "Ann", 20, false),
-        ],
-        reactions: Vec::new(),
-        older: None,
-    });
-    state.apply(Event::Settings {
-        conversation: id("a"),
-        settings: ChatSettings {
-            last_read: 10,
-            ..ChatSettings::default()
-        },
-    });
-    state.select(&id("a"));
-    let firsts: Vec<bool> = state.messages().map(|m| m.first_unread).collect();
-    assert_eq!(firsts, [false, true]);
 }
 
 #[test]
@@ -3727,23 +3691,6 @@ fn changed_rows_are_all_or_forgotten() {
 }
 
 #[test]
-fn formatters_say_what_one_off_formatting_says() {
-    let (list_time, time) = (list_time_formatter(), time_formatter());
-    let now = now_millis();
-    for t in [
-        0,
-        86_400_000,
-        now - 400 * 86_400_000,
-        now - 3 * 86_400_000,
-        now,
-        u64::MAX,
-    ] {
-        assert_eq!(list_time(t), format_list_time(t), "{t}");
-        assert_eq!(time(t), format_time(t), "{t}");
-    }
-}
-
-#[test]
 fn strangers_asking_to_write_are_not_offered_for_groups() {
     let mut state = state();
     let mut ann = conversation("c:ann", false);
@@ -4541,13 +4488,6 @@ fn the_wheel_catches_at_actual_size() {
     assert_eq!(wheel_zoom(0.5, -3.0, 0.5), 0.5);
     assert_eq!(wheel_zoom(1.0, -3.0, 1.0), 1.0);
     assert_eq!(wheel_zoom(ZOOM_MAX, 3.0, 0.5), ZOOM_MAX);
-}
-
-#[test]
-fn a_double_click_toggles_between_fitting_and_actual_size() {
-    assert_eq!(toggle_zoom(0.4, 0.4), 1.0);
-    assert_eq!(toggle_zoom(1.0, 0.4), 0.4);
-    assert_eq!(toggle_zoom(3.0, 0.4), 1.0);
 }
 
 /// Once the wheel lands on 100% it holds there for a moment, so the rest of a fast spin

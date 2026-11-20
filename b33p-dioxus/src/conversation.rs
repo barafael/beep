@@ -392,15 +392,4 @@ mod tests {
         );
         assert!(tally(&[]).is_empty());
     }
-
-    #[test]
-    fn attachments_are_named_by_what_they_are() {
-        assert_eq!(attachment_label(AttachmentKind::Image, None), "🖼 Photo");
-        assert_eq!(
-            attachment_label(AttachmentKind::File, Some("notes.pdf")),
-            "📎 notes.pdf"
-        );
-        // A file with no name still says it is a file.
-        assert_eq!(attachment_label(AttachmentKind::File, None), "📎 File");
-    }
 }

@@ -2,25 +2,25 @@
 # Looks at b33p on a display of its own, which only ever holds b33p (testbox/tools
 # `with-display`: cage and wayvnc, in a container), never the host's desktop.
 #
-#   testbox/gpui-view/view.sh start [env=value...]   runs the built binary on the mock
-#   testbox/gpui-view/view.sh shot <name>            writes target/gpui-view/shots/<name>.png
-#   testbox/gpui-view/view.sh logs | stop
+#   testbox/view/view.sh start [env=value...]   runs the built binary on the mock
+#   testbox/view/view.sh shot <name>            writes target/view/shots/<name>.png
+#   testbox/view/view.sh logs | stop
 #
 # VIEW_BIN: another binary to run (default target/debug/b33p);
-# VIEW_IMAGE: another image (default b33p-gpui-view; b33p-bench-view has the Vulkan driver);
-# VIEW_GPU=1: draw on the host's GPU through its render node, as bench.py does.
+# VIEW_IMAGE: another image (default b33p-view);
+# VIEW_GPU=1: draw on the host's GPU through its render node.
 #
 # Needs: `cargo build -p b33p-slint` (add `--features harness` to drive it through
-# target/gpui-view/run/agent.sock), the image from the Containerfile beside this script
-# (`podman build -t b33p-gpui-view -f testbox/gpui-view/Containerfile testbox/gpui-view`), and
+# target/view/run/agent.sock), the image from the Containerfile beside this script
+# (`podman build -t b33p-view -f testbox/view/Containerfile testbox/view`), and
 # the tools: `CARGO_TARGET_DIR=target/testbox-workspaces cargo build --manifest-path
 # testbox/tools/Cargo.toml --bin with-display --features display` and testbox/shot's.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
-out=$root/target/gpui-view
+out=$root/target/view
 tools=$root/target/testbox-workspaces/debug
 # A worktree of its own has its own container, named after it.
-name=b33p-gpui-view-$(basename "$root")
+name=b33p-view-$(basename "$root")
 case ${1:-} in
 start)
     shift
@@ -45,7 +45,7 @@ start)
         -v "$out/view:/run/view" -v "$out/run:/run/b33p" -v "$out/data:/tmp/home" \
         -e HOME=/tmp/home -e B33P_MOCK=1 -e B33P_AGENT_SOCKET=/run/b33p/agent.sock \
         -e RUST_LOG="${RUST_LOG:-info}" "${mount_args[@]}" "${env_args[@]}" \
-        "${VIEW_IMAGE:-localhost/b33p-gpui-view}" with-display /run/view 1280x900 -- "${run_cmd[@]}" >/dev/null
+        "${VIEW_IMAGE:-localhost/b33p-view}" with-display /run/view 1280x900 -- "${run_cmd[@]}" >/dev/null
     for _ in $(seq 60); do [ -S "$out/view/watch" ] && break; sleep 0.5; done
     ;;
 shot)

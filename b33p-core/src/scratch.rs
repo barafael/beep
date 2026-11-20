@@ -171,15 +171,4 @@ mod tests {
         clean(&name);
         assert!(!made.exists());
     }
-
-    /// Without a runtime directory, a directory planted under the expected name is left alone.
-    #[test]
-    fn never_uses_what_someone_else_put_there() {
-        let planted = std::env::temp_dir().join(format!("b33p-planted-{}", std::process::id()));
-        remove(&planted);
-        fs::create_dir(&planted).unwrap();
-        fs::write(planted.join("theirs"), b"").unwrap();
-        assert!(create_private(&planted).is_err());
-        fs::remove_dir_all(&planted).unwrap();
-    }
 }

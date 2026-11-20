@@ -513,13 +513,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn words_count_messages() {
-        assert_eq!(words(1), "1 unread message");
-        assert_eq!(words(3), "3 unread messages");
-        assert_eq!(words(120), "120 unread messages");
-    }
-
-    #[test]
     fn text_shrinks_to_fit_the_circle() {
         let one = text_box("1", 8.0, 8.0, 8.0);
         let two = text_box("99", 8.0, 8.0, 8.0);

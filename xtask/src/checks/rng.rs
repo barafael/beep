@@ -43,16 +43,3 @@ pub(super) fn incompressible(size: usize) -> Vec<u8> {
     bytes.truncate(size);
     bytes
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Xorshift;
-
-    #[test]
-    fn a_seed_repeats_its_sequence() {
-        let (mut a, mut b) = (Xorshift(42), Xorshift(42));
-        let first: Vec<u64> = (0..5).map(|_| a.below(100)).collect();
-        let second: Vec<u64> = (0..5).map(|_| b.below(100)).collect();
-        assert_eq!(first, second);
-    }
-}

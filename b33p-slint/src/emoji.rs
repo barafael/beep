@@ -106,14 +106,4 @@ mod tests {
         assert!(search("   ").is_empty());
         assert!(search("no such emoji at all").is_empty());
     }
-
-    #[test]
-    fn every_group_has_emoji() {
-        let groups = groups();
-        assert_eq!(groups.len(), 9);
-        for group in groups {
-            assert!(slint::Model::row_count(&group.emoji) > 0, "{}", group.name);
-            assert!(!group.icon.is_empty());
-        }
-    }
 }

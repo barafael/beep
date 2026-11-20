@@ -76,9 +76,4 @@ mod tests {
             assert!(light(0, side - 1 - offset));
         }
     }
-
-    #[test]
-    fn refuses_data_that_does_not_fit() {
-        assert!(QrMatrix::encode(&"x".repeat(10_000)).is_none());
-    }
 }

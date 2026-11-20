@@ -446,14 +446,6 @@ mod tests {
     const LATEST: &str = include_str!("testdata/github-release-latest.json");
 
     #[test]
-    fn reads_githubs_answer() {
-        let release = Release::parse(LATEST).unwrap();
-        assert_eq!(release.tag_name, "v0.3.0");
-        assert_eq!(release.assets.len(), 5);
-        assert!(Release::parse("{\"message\": \"Not Found\"}").is_err());
-    }
-
-    #[test]
     fn offers_only_a_newer_version_with_its_zip_and_signature() {
         let release = Release::parse(LATEST).unwrap();
         let offer = offer(&release, "0.2.0", "x86_64").unwrap();

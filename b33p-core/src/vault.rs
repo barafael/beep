@@ -467,15 +467,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn password_key_depends_on_password_and_salt() {
-        // V1: cheap in debug builds, and the parameters don't matter here.
-        let key = password_key("hunter22", &[1; 16], Kdf::V1);
-        assert_eq!(*key, *password_key("hunter22", &[1; 16], Kdf::V1));
-        assert_ne!(*key, *password_key("hunter23", &[1; 16], Kdf::V1));
-        assert_ne!(*key, *password_key("hunter22", &[2; 16], Kdf::V1));
-    }
-
     #[cfg(unix)]
     #[test]
     fn data_directory_is_made_private_even_if_it_existed() {

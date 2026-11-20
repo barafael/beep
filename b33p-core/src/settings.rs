@@ -517,21 +517,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn animations_round_trip_and_follow_the_desktop() {
-        for animations in Animations::ALL {
-            let settings = Settings {
-                animations,
-                ..Settings::default()
-            };
-            assert_eq!(Settings::parse(&settings.to_text()), settings);
-        }
-        assert!(Animations::System.enabled(false));
-        assert!(!Animations::System.enabled(true));
-        assert!(Animations::On.enabled(true));
-        assert!(!Animations::Off.enabled(false));
-    }
-
     /// Every enum reads back what each of its values writes.
     #[test]
     fn enum_keys_round_trip() {

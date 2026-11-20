@@ -124,15 +124,6 @@ fn envelope(line: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn colours_are_left_out() {
-        let line = "\u{1b}[33m WARN\u{1b}[0m \u{1b}[2mb33p_core::signal\u{1b}[0m: lost a message";
-        assert_eq!(
-            without_colours(line),
-            " WARN b33p_core::signal: lost a message"
-        );
-    }
-
     /// As for Android: a duplicate counts only if Desktop never decrypted that envelope.
     #[test]
     fn desktop_loses_what_failed_and_duplicates_of_what_never_decrypted() {

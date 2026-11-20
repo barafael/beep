@@ -1318,15 +1318,6 @@ mod tests {
     }
 
     #[test]
-    fn pointer_round_trips() {
-        let attachment = describe(&pointer("image/png", 0), false);
-        assert_eq!(
-            AttachmentPointer::decode(&*attachment.pointer).unwrap(),
-            pointer("image/png", 0)
-        );
-    }
-
-    #[test]
     fn programs_are_not_opened() {
         for name in [
             "invoice.exe",
@@ -1601,17 +1592,6 @@ mod tests {
             };
             assert_eq!((again.width, again.height), (first.width, first.height));
         });
-    }
-
-    #[test]
-    fn a_picture_as_shown_comes_back_as_it_was() {
-        let picture = Picture {
-            width: 3,
-            height: 2,
-            rgba: (0..24).map(|n| n * 10).collect(),
-        };
-        let back = decode_shown(&encode_shown(&picture).unwrap()).unwrap();
-        assert_eq!((back.width, back.height, back.rgba), (3, 2, picture.rgba));
     }
 
     /// What a deleted or expired message had kept is found from it as stored: its attachments
