@@ -79,6 +79,8 @@ pub(crate) enum Step {
     ReadPreferences,
     KeepPreferences,
     KeepFolders,
+    ReadStoryListsRead,
+    KeepStoryLists,
     ReadNames,
     KeepNames,
     ReadVerifications,
@@ -96,6 +98,8 @@ impl std::fmt::Display for Step {
             Self::ReadPreferences => "read the account's settings as the phone said them last",
             Self::KeepPreferences => "keep the account's settings as the phone says them",
             Self::KeepFolders => "keep the chat folders",
+            Self::ReadStoryListsRead => "read whether the story lists were read",
+            Self::KeepStoryLists => "keep the story lists",
             Self::ReadNames => "read the contacts' names as the phone said them last",
             Self::KeepNames => "keep the contacts' names as the phone says them",
             Self::ReadVerifications => "read the verifications as the phone said them last",
@@ -180,7 +184,12 @@ pub(crate) async fn sync(
         .contact_names_read()
         .await
         .map_err(at(Step::ReadNames))?;
-    let known = if first || names_unread {
+    // And the story lists.
+    let lists_unread = !tables
+        .story_lists_read()
+        .await
+        .map_err(at(Step::ReadStoryListsRead))?;
+    let known = if first || names_unread || lists_unread {
         0
     } else {
         tables
@@ -208,6 +217,7 @@ pub(crate) async fn sync(
                     | identifier::Type::Groupv2
                     | identifier::Type::Account
                     | identifier::Type::ChatFolder
+                    | identifier::Type::StoryDistributionList
             )
         })
         .map(|id| id.raw.clone())
@@ -220,6 +230,7 @@ pub(crate) async fn sync(
     let mut folders = Vec::new();
     let mut account_preferences = None;
     let mut own_profile_key = None;
+    let mut story_lists = crate::StoryLists::default();
     for keys in wanted.chunks(BATCH) {
         let records = read(&service, keys.to_vec(), ikm).await?;
         for record in records {
@@ -263,6 +274,7 @@ pub(crate) async fn sync(
                     );
                 }
                 Record::Account(account) => {
+                    story_lists.disabled = account.stories_disabled;
                     own_profile_key = <[u8; 32]>::try_from(account.profile_key.as_slice()).ok();
                     account_preferences = Some(AccountPreferences {
                         read_receipts: account.read_receipts,
@@ -274,6 +286,9 @@ pub(crate) async fn sync(
                         .iter()
                         .filter_map(pinned_conversation)
                         .collect();
+                }
+                Record::StoryDistributionList(list) => {
+                    story_lists.lists.extend(story_list(list));
                 }
                 Record::ChatFolder(folder) => {
                     use presage::proto::chat_folder_record::FolderType;
@@ -323,6 +338,15 @@ pub(crate) async fn sync(
         .await
         .map_err(at(Step::KeepFolders))?;
     events.send(Event::Folders(folders));
+    // My Story first, the account's own lists after by name, as Signal's apps list them.
+    story_lists
+        .lists
+        .sort_by_cached_key(|list| (!list.is_my_story(), list.name.to_lowercase()));
+    tables
+        .set_story_lists(&story_lists)
+        .await
+        .map_err(at(Step::KeepStoryLists))?;
+    events.send(Event::StoryLists(story_lists));
     // Verifications the phone changed since last time; ours stand otherwise. The caller takes
     // them over (with notes in the chats) and then keeps what the phone said.
     let verified_before = tables
@@ -483,6 +507,33 @@ fn contact_conversation(service_id: &str, binary: &[u8]) -> Option<ConversationI
     let who = ServiceId::parse_from_service_id_string(service_id)
         .or_else(|| ServiceId::parse_from_service_id_binary(binary))?;
     Some(ConversationId::contact(&who.service_id_string()))
+}
+
+/// A story list as the storage service has it; `None` once deleted (the record stays a while,
+/// so other devices hear of it).
+fn story_list(list: presage::proto::StoryDistributionListRecord) -> Option<crate::StoryList> {
+    if list.deleted_at_timestamp != 0 || list.identifier.len() != 16 {
+        return None;
+    }
+    // As strings or, from newer apps, as bytes: either says it.
+    let members = list
+        .recipient_service_ids
+        .iter()
+        .filter_map(|id| ServiceId::parse_from_service_id_string(id))
+        .chain(
+            list.recipient_service_ids_binary
+                .iter()
+                .filter_map(|id| ServiceId::parse_from_service_id_binary(id)),
+        )
+        .map(|id| id.service_id_string());
+    let mut seen = HashSet::new();
+    Some(crate::StoryList {
+        id: list.identifier,
+        name: list.name,
+        excluding: list.is_block_list,
+        members: members.filter(|id| seen.insert(id.clone())).collect(),
+        allows_replies: list.allows_replies,
+    })
 }
 
 fn chat_folder(folder: presage::proto::ChatFolderRecord) -> crate::ChatFolder {
@@ -1328,6 +1379,40 @@ mod tests {
 
     /// The phone's verifications are taken from contact records, with the key they are for; a
     /// key that doesn't decode is no verification.
+    #[test]
+    fn story_lists_are_read_from_their_records() {
+        use presage::proto::StoryDistributionListRecord;
+        let aci = "8d3ea3a6-6c5b-4c7d-9a3e-2f1e0b7c9d01";
+        let other = "0f1e2d3c-4b5a-4968-8776-655443322110";
+        let binary = ServiceId::parse_from_service_id_string(other)
+            .unwrap()
+            .service_id_binary();
+        let my_story = StoryDistributionListRecord {
+            identifier: crate::StoryList::MY_STORY.to_vec(),
+            is_block_list: true,
+            allows_replies: true,
+            recipient_service_ids: vec![aci.into(), other.into()],
+            // The same person again, as newer apps write both.
+            recipient_service_ids_binary: vec![binary],
+            ..Default::default()
+        };
+        let list = story_list(my_story).unwrap();
+        assert!(list.is_my_story() && list.excluding && list.allows_replies);
+        assert_eq!(list.members, [aci, other]);
+        let deleted = StoryDistributionListRecord {
+            identifier: vec![1; 16],
+            name: "Gone".into(),
+            deleted_at_timestamp: 5,
+            ..Default::default()
+        };
+        assert!(story_list(deleted).is_none());
+        let unnamed_id = StoryDistributionListRecord {
+            identifier: vec![1; 3],
+            ..Default::default()
+        };
+        assert!(story_list(unnamed_id).is_none(), "not a UUID");
+    }
+
     #[test]
     fn reads_verifications_from_contact_records() {
         use presage::{

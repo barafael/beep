@@ -373,6 +373,11 @@ impl ChatState {
         }))
     }
 
+    /// My Story and the account's own story lists, and whether stories are off.
+    pub fn story_lists(&self) -> &crate::StoryLists {
+        &self.story_lists
+    }
+
     /// Groups a story can be posted to, by name.
     pub fn story_groups(&self) -> Vec<&Conversation> {
         let mut groups: Vec<&Conversation> = self
