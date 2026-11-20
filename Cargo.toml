@@ -88,13 +88,15 @@ i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "0
 #        the messages at its last time, so the next page misses none
 #   a thread's messages found by their time (`ts BETWEEN`), through the index b33p makes, and
 #        newest first the exact reverse of oldest first (no PR yet)
+#   a story to a story list (My Story) in one request with a sender key for the list,
+#        `send_story_to_list` (no PR yet; on libsignal-service's pr/story-list-send)
 # The branch before the rebase is tag archive/2026-11-19/langis/integration.
 # Rebase the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5" }
+presage = { git = "https://github.com/barafael/presage", rev = "4d485de9ec44612e7299cbf0d371cec9e2065b45" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "53b6295f9a51af4492884263072bda91435bb1c5", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "4d485de9ec44612e7299cbf0d371cec9e2065b45", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -115,14 +117,14 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # Branch langis/integration of our libsignal-service fork, built by its integration.sh: upstream
 # main (libsignal 0.106.2) with each of our pull request branches merged in, and those without a
 # pull request yet (servers of one's own, a sealed plaintext carrying only a decryption error, a
-# group send with a sender key in one request, sync messages and transcripts out of
-# `send_message`). The script lists them; a merge done by hand is kept as branch merge/<topic>.
+# group send with a sender key in one request, a story list's without a group id, sync messages
+# and transcripts out of `send_message`). The script lists them; a merge done by hand is kept as branch merge/<topic>.
 # Upstream merged five of them on 2026-11-19 (groups #473, provisioning read receipts #492,
 # the 30 s keepalive #494, device capabilities #503, contact sync panics #504); they're gone
 # from the list.
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "e0693ce07c782b9d83bcba8c689a8aed8e0c1eb5" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "5ef972a7f34b04918a531faefbe152eccf7fc45b" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when

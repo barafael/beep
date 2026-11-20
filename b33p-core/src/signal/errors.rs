@@ -110,11 +110,12 @@ pub(crate) fn storage_service_kind(
 }
 
 /// The kind of a send through the outbox: a session that ended first is
-/// [`ErrorKind::Unreachable`], since the next one may send it; presage's errors as
+/// [`ErrorKind::Unreachable`], since the next one may send it, as is a send to many that
+/// reached none (each failed on its own, most likely the network); presage's errors as
 /// [`kind_of`].
 pub(crate) fn send_kind(failure: &SendFailure) -> ErrorKind {
     match failure {
-        SendFailure::Stopped => ErrorKind::Unreachable,
+        SendFailure::Stopped | SendFailure::NobodyReached => ErrorKind::Unreachable,
         SendFailure::Presage(error) => kind_of(error),
     }
 }

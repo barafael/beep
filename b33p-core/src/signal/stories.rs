@@ -55,9 +55,11 @@ pub(super) async fn story_recipients(
     }
 }
 
-/// Sends a story to each of a story list's `recipients` (service ids), one by one: sealed,
-/// with `story=true`, as Signal's apps send My Story. Says whom it reached, for the sync
-/// message to our other devices, naming the list; fails only if it reached nobody.
+/// Sends a story to a story list's `recipients` (service ids), as Signal's apps send My Story:
+/// sealed, with `story=true`, in one multi-recipient request with our sender key for the list
+/// (presage's `send_story_to_list`; to each on their own where that can't be). Says whom it
+/// reached, for the sync message to our other devices naming the list; fails only if it
+/// reached nobody.
 pub(super) async fn send_to_list(
     ctx: &Ctx,
     message: &presage::proto::StoryMessage,
@@ -66,37 +68,22 @@ pub(super) async fn send_to_list(
     list: &[u8],
     allows_replies: bool,
 ) -> Result<Vec<sync_message::sent::StoryMessageRecipient>, SendFailure> {
-    let list = presage::libsignal_service::prelude::Uuid::from_slice(list)
-        .map(|id| id.to_string())
-        .unwrap_or_default();
-    let mut reached = Vec::new();
-    let mut failure = None;
-    for id in recipients {
-        let Some(to) = ServiceId::parse_from_service_id_string(id) else {
-            continue;
-        };
-        match ctx
-            .outbox
-            .message(to, ContentBody::StoryMessage(message.clone()), timestamp)
-            .await
-        {
-            Ok(()) => reached.push(to),
-            Err(error) => {
-                warn!(error = %crate::scrub::chain(&error), "failed to send a story to one of its list");
-                failure = Some(error);
-            }
-        }
+    let Ok(list) = <[u8; 16]>::try_from(list) else {
+        return Ok(Vec::new());
+    };
+    let to: Vec<ServiceId> = recipients
+        .iter()
+        .filter_map(|id| ServiceId::parse_from_service_id_string(id))
+        .collect();
+    let reached = ctx
+        .outbox
+        .story_to_list(list, to.clone(), message.clone(), timestamp)
+        .await?;
+    info!(reached = reached.len(), of = to.len(), "posted a story to a list");
+    if reached.is_empty() && !to.is_empty() {
+        return Err(SendFailure::NobodyReached);
     }
-    if reached.is_empty()
-        && let Some(failure) = failure
-    {
-        return Err(failure);
-    }
-    info!(
-        reached = reached.len(),
-        of = recipients.len(),
-        "posted a story to a list"
-    );
+    let list = presage::libsignal_service::prelude::Uuid::from_bytes(list).to_string();
     Ok(reached
         .into_iter()
         .map(|to| sync_message::sent::StoryMessageRecipient {
