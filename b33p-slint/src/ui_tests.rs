@@ -10,7 +10,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::generated::{
     Account, AppWindow, ChatList, ChatNotify, Composer, ConversationItem, DeliveryState, Groups,
-    MessageItem, OpenChat, Panels, Prefs, Screen, StoryItem, Viewer,
+    MessageItem, OpenChat, Panels, Prefs, ReaderItem, Screen, StoryItem, Viewer,
 };
 use crate::rows::Rows;
 
@@ -1098,6 +1098,44 @@ fn recent_times_move_on_with_the_clock() {
     crate::ui::render(&window, &chat, &images, update, false);
     settle(&window);
     assert_eq!(times(&window), ("5 min".into(), "5 min".into()));
+}
+
+/// In a group, the members who read up to a message show under it, the first three by picture
+/// and the rest counted, and a screen reader hears all of them; a message nobody read up to has
+/// none.
+#[test]
+fn readers_show_under_a_message() {
+    let (window, messages) = window_with_messages(2);
+    let reader = |name: &str| ReaderItem {
+        name: name.into(),
+        initials: name[..1].into(),
+        ..Default::default()
+    };
+    messages.set_row_data(
+        1,
+        MessageItem {
+            outgoing: true,
+            readers: ModelRc::new(VecModel::from(vec![
+                reader("Ann"),
+                reader("Bob"),
+                reader("Cid"),
+            ])),
+            more_readers: 2,
+            readers_label: "Read by Ann, Bob and 3 others".into(),
+            ..message("Slint it is, then.")
+        },
+    );
+    settle(&window);
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, "Read by Ann, Bob and 3 others").count(),
+        1,
+        "under the one message they read up to"
+    );
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, "+2").count(),
+        1,
+        "the rest counted"
+    );
 }
 
 /// The chat list follows events row by row: a chat with a new message moves to the top with

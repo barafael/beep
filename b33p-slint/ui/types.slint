@@ -99,6 +99,14 @@ export enum DeliveryState { incoming, sending, failed, sent, delivered, read }
 // An answer to a message request.
 export enum RequestAnswer { accept, delete, block }
 
+// A group member who read up to a message, under it.
+export struct ReaderItem {
+    name: string,
+    initials: string,
+    color: color,
+    avatar: image,
+}
+
 export struct MessageItem {
     // Which message it is, for acting on it (its row moves as messages come and go).
     key: string,
@@ -127,6 +135,11 @@ export struct MessageItem {
     quote-text: string,
     attachments: [AttachmentItem],
     reactions: [ReactionItem],
+    // In a group, the first members whose newest message of ours read is this one; how many
+    // more there are; and all of them in words ("Read by Ann, Bob and 2 others").
+    readers: [ReaderItem],
+    more-readers: int,
+    readers-label: string,
     // Plain text, for copying.
     text: string,
     delivery: DeliveryState,

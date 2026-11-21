@@ -4418,6 +4418,30 @@ fn readers_show_under_the_newest_message_they_read() {
     assert_eq!(names(&state, 0), ["bob"]);
     assert!(names(&state, 1).is_empty(), "not ours");
     assert_eq!(names(&state, 2), ["ann"]);
+    // The rows say the same, all worked out at once.
+    let rows: Vec<Vec<&str>> = state
+        .messages()
+        .map(|m| m.readers.iter().map(|p| p.name.as_str()).collect())
+        .collect();
+    assert_eq!(rows, [vec!["bob"], vec![], vec!["ann"]]);
+}
+
+/// A message's readers in words, for screen readers: two by name and the rest counted.
+#[test]
+fn readers_are_named_then_counted() {
+    let people: Vec<Person> = ["Ann", "Bob", "Cid", "Dan", "Eve"]
+        .into_iter()
+        .map(|name| Person {
+            service_id: name.to_lowercase(),
+            name: name.into(),
+        })
+        .collect();
+    let label = |n: usize| readers_label(&people.iter().take(n).collect::<Vec<_>>());
+    assert_eq!(label(0), "");
+    assert_eq!(label(1), "Read by Ann");
+    assert_eq!(label(2), "Read by Ann and Bob");
+    assert_eq!(label(3), "Read by Ann, Bob and Cid");
+    assert_eq!(label(5), "Read by Ann, Bob and 3 others");
 }
 
 fn full_picture(side: u32) -> FullPicture {
