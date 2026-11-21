@@ -101,7 +101,7 @@ Android image builds while the linked box runs.
 flowchart LR
     build["build the images"] --> linked["the linked box:<br/>desktop, attachments, network, core"]
     build -. "meanwhile" .-> image["build the Android image"]
-    linked --> android["the Android box:<br/>android, groups, storage, large-group, media"]
+    linked --> android["the Android box:<br/>android, groups, storage, large-group, media, stories"]
     image --> android
     linked -. "meanwhile" .-> watch["cargo testbox web<br/>or vnc"]
 ```
@@ -117,6 +117,7 @@ flowchart LR
 | `storage` | Android | chat settings through the storage service, between b33p, Android (the primary) and Desktop |
 | `large-group` | Android | a group of the peer and twenty presage-cli members more, made by b33p: its text to everyone (one sender-key request), and everyone's answers at once |
 | `media` | Android | pictures through all three clients: Desktop's to b33p and Android, b33p's to Desktop and Android, b33p's again after a restart and in its viewer, which b33p downloads once only, as they come (none of what it sent, nothing again when shown); with `--capture`, `compare.md`'s Attachments says what each client moved, check by check. A camera-sized photo through `TESTBOX_MEDIA_PHOTO` ([the 2026-11-19 run](../docs/testbox-media-traffic-2026-11-19.md)) |
+| `stories` | Android | stories to My Story, whose audience the phone keeps in the storage service: b33p's reaches the peer's Desktop and a presage-cli member in one sender-key request (`multi_recipient?story=true`) and is filed under My Story on the phone; Android's shows on b33p under My Story, the peer's under the peer; once Android leaves the peer out, b33p's next reaches the member only. Sets My Story back to everyone at its end |
 
 The linked box links b33p to a presage-cli primary and Desktop to a presage-cli peer; the
 Android box links b33p to Android and Desktop to the peer. On both, the peer's first message

@@ -43,8 +43,8 @@ use b33p_harness::{
     LinkPreviewSnapshot, MemberSnapshot, MessageSnapshot, Moved, NotifySnapshot, Outcome, Pong,
     Pushed, PushedEvent, QuoteSnapshot, ReactionSnapshot, ReceiptSnapshot, Reply, Request, Saved,
     ScreenSnapshot, SearchResultSnapshot, SettingsChange, SettingsSnapshot, Shot, Snapshot,
-    StickerPackSnapshot, StickerSnapshot, StickersSnapshot, StorySnapshot, Subscribed,
-    Unsubscribed, ViewerSnapshot, WindowSnapshot,
+    StickerPackSnapshot, StickerSnapshot, StickersSnapshot, StoryListSnapshot, StorySnapshot,
+    Subscribed, Unsubscribed, ViewerSnapshot, WindowSnapshot,
 };
 use serde::Serialize;
 
@@ -1022,6 +1022,25 @@ fn snapshot(chat: &ChatState, settings: &Settings, window: Option<&ui::Window>) 
                     b33p_core::StoryContent::Picture(_) => None,
                 },
             }),
+        story_lists: if chat.story_lists().disabled {
+            Vec::new()
+        } else {
+            // My Story whether the phone set it yet or not, then the account's own lists.
+            std::iter::once(b33p_core::StoryList::MY_STORY.to_vec())
+                .chain(
+                    chat.story_lists()
+                        .lists
+                        .iter()
+                        .filter(|l| !l.is_my_story())
+                        .map(|l| l.id.clone()),
+                )
+                .map(|id| StoryListSnapshot {
+                    id: ConversationId::story_list(&id).0,
+                    title: chat.story_list_title(&id),
+                    recipients: chat.story_recipients(&id).unwrap_or_default(),
+                })
+                .collect()
+        },
         stickers: match chat.sticker_packs() {
             None => StickersSnapshot::NotAsked,
             Some(None) => StickersSnapshot::Gathering,

@@ -3990,6 +3990,110 @@ fn people_are_chosen_for_a_group() {
     ));
 }
 
+/// A story to My Story goes to our connections (accepted 1:1 chats with an ACI, not blocked)
+/// but those the phone leaves out; an "only these" list goes to its members, still not the
+/// blocked; before the phone said anything, to every connection.
+#[test]
+fn story_lists_choose_among_connections() {
+    let mut state = state();
+    let person = |id: &str, accepted: bool, blocked: bool| {
+        let mut c = conversation(&format!("c:{id}"), false);
+        c.settings.accepted = accepted;
+        c.settings.blocked = blocked;
+        c
+    };
+    let mut me = person("me", true, false);
+    me.note_to_self = true;
+    state.apply(Event::Conversations(vec![
+        person("ann", true, false),
+        person("bob", true, false),
+        // A message request: not a connection.
+        person("cid", false, false),
+        person("dan", true, true),
+        person("PNI:eve", true, false),
+        me,
+    ]));
+    let my_story = crate::StoryList::MY_STORY;
+    assert_eq!(
+        state.story_recipients(&my_story).unwrap(),
+        ["ann", "bob"],
+        "every connection before the phone set My Story"
+    );
+    state.apply(Event::StoryLists(crate::StoryLists {
+        lists: vec![
+            crate::StoryList {
+                id: my_story.to_vec(),
+                excluding: true,
+                members: vec!["bob".into()],
+                ..Default::default()
+            },
+            crate::StoryList {
+                id: vec![7; 16],
+                name: "Climbers".into(),
+                members: vec!["cid".into(), "dan".into()],
+                ..Default::default()
+            },
+        ],
+        disabled: false,
+    }));
+    assert_eq!(state.story_recipients(&my_story).unwrap(), ["ann"]);
+    assert_eq!(
+        state.story_recipients(&[7; 16]).unwrap(),
+        ["cid"],
+        "the list's own members, but not the blocked"
+    );
+    assert!(state.story_recipients(&[9; 16]).is_none());
+}
+
+/// A story to My Story is sent to its recipients, with the list's say on replies, and our own
+/// stories in a list are in a ring of its name; nobody to send to sends nothing.
+#[test]
+fn a_story_goes_to_my_story() {
+    let mut state = state();
+    let mut ann = conversation("c:ann", false);
+    ann.settings.accepted = true;
+    state.apply(Event::Conversations(vec![ann]));
+    let my_story = ConversationId::story_list(&crate::StoryList::MY_STORY);
+    assert_eq!(
+        my_story.story_list_id().as_deref(),
+        Some(&crate::StoryList::MY_STORY[..])
+    );
+    assert!(matches!(
+        state.send_story(&my_story, crate::NewStory::Text("hi".into())),
+        Some(Command::SendStory { recipients, allows_replies: true, .. }) if recipients == ["ann"]
+    ));
+    state.apply(Event::StoryLists(crate::StoryLists {
+        lists: vec![crate::StoryList {
+            id: crate::StoryList::MY_STORY.to_vec(),
+            excluding: true,
+            members: vec!["ann".into()],
+            allows_replies: false,
+            ..Default::default()
+        }],
+        disabled: false,
+    }));
+    assert!(
+        state
+            .send_story(&my_story, crate::NewStory::Text("hi".into()))
+            .is_none(),
+        "nobody left to see it"
+    );
+    state.apply(Event::Stories(vec![crate::Story {
+        author_id: "me".into(),
+        author: "Me".into(),
+        conversation: my_story.clone(),
+        timestamp: 10,
+        content: crate::StoryContent::Text {
+            text: "hi".into(),
+            foreground: 0,
+            background: 0,
+        },
+        viewed: true,
+        outgoing: true,
+    }]));
+    assert_eq!(state.story_rings()[0].title, "My Story");
+}
+
 /// Past someone's last story the viewer goes on to the next one with stories not seen yet,
 /// as Signal's apps do; it closes once there are none.
 #[test]

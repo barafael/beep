@@ -95,10 +95,17 @@ By how much they matter, most first:
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.
-- **Stories:** posting to My Story and custom lists (their audiences are distribution lists
-  in the storage service, so this needs the storage write to be proven first); replies and
-  reactions; removing stories their author deleted; Signal's own setting for story receipts
-  (they follow read receipts now).
+- **Stories:** posting to My Story and the account's own lists is done: the lists (and
+  `storiesDisabled`) read from the storage service; a list's recipients are the account's
+  connections as it says (all of them before the phone set anything); a story to one goes
+  with a sender key for the list in one multi-recipient request (`story=true`, no group id;
+  presage `send_story_to_list`), synced to the phone naming the list; own stories without a
+  group go in a "My Story" ring; the composer offers My Story and the lists first, with how
+  many they reach. The testbox's `stories` phase checks it with Android, Desktop and
+  presage-cli ([the 2026-11-21 runs](docs/testbox-stories-run-2026-11-21.md)). Left: editing
+  who is on a list from b33p (needs the storage write proven first); replies and reactions;
+  removing stories their author deleted; Signal's own setting for story receipts (they follow
+  read receipts now).
 - **Media:** recording voice messages (audio input across desktops); animated GIFs and video
   thumbnails (need a video decoder).
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart

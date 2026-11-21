@@ -16,7 +16,7 @@ use presage::{
     manager::{GroupEdit, GroupJoin},
 };
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::signal::Mgr;
 
@@ -36,6 +36,9 @@ pub(crate) enum SendFailure {
     Stopped,
     #[error(transparent)]
     Presage(Box<PresageError>),
+    /// Sent to many, it reached none of them (each failure is logged as it happened).
+    #[error("it reached none of its recipients")]
+    NobodyReached,
 }
 
 /// What becomes of a send's outcome.
@@ -59,6 +62,15 @@ pub(crate) enum Send {
         body: ContentBody,
         timestamp: u64,
         reply: Reply<()>,
+    },
+    /// A story to a story list's `recipients`: one request with our sender key for the list
+    /// where presage can (`send_story_to_list`). Answers whom it reached.
+    StoryToList {
+        list: [u8; 16],
+        recipients: Vec<ServiceId>,
+        story: presage::proto::StoryMessage,
+        timestamp: u64,
+        reply: Reply<Vec<ServiceId>>,
     },
     /// Asks the primary device for the contacts.
     RequestContacts { reply: Reply<()> },
@@ -128,6 +140,18 @@ impl Sending {
                     .await
                     .map(drop),
             ),
+            Send::StoryToList {
+                list,
+                recipients,
+                story,
+                timestamp,
+                reply,
+            } => {
+                let results = manager
+                    .send_story_to_list(list, &recipients, story, timestamp)
+                    .await;
+                answer(reply, results.map(reached))
+            }
             Send::RequestContacts { reply } => answer(reply, manager.request_contacts().await),
             Send::SessionReset {
                 to,
@@ -147,6 +171,20 @@ impl Sending {
             Send::JoinGroup { link, reply } => answer(reply, manager.join_group(&link).await),
         }
     }
+}
+
+/// Whom a send to many reached, by its results; each that failed is logged.
+fn reached(results: Vec<presage::libsignal_service::sender::SendMessageResult>) -> Vec<ServiceId> {
+    results
+        .into_iter()
+        .filter_map(|result| match result {
+            Ok(sent) => Some(sent.recipient),
+            Err(error) => {
+                warn!(error = %crate::scrub::chain(&error), "a story didn't reach one of its list");
+                None
+            }
+        })
+        .collect()
 }
 
 fn answer<T>(reply: Reply<T>, result: Result<T, PresageError>) {
@@ -214,6 +252,15 @@ pub(crate) trait Sends {
         timestamp: u64,
         what: &'static str,
     );
+
+    /// Sends a story to a story list's `recipients` and waits; whom it reached.
+    async fn story_to_list(
+        &self,
+        list: [u8; 16],
+        recipients: Vec<ServiceId>,
+        story: presage::proto::StoryMessage,
+        timestamp: u64,
+    ) -> Result<Vec<ServiceId>, SendFailure>;
 
     async fn request_contacts(&self) -> Result<(), SendFailure>;
 
@@ -294,6 +341,23 @@ impl Sends for Outbox {
             reply: Reply::Log(what),
         };
         post(self, send).await;
+    }
+
+    async fn story_to_list(
+        &self,
+        list: [u8; 16],
+        recipients: Vec<ServiceId>,
+        story: presage::proto::StoryMessage,
+        timestamp: u64,
+    ) -> Result<Vec<ServiceId>, SendFailure> {
+        ask(self, |reply| Send::StoryToList {
+            list,
+            recipients,
+            story,
+            timestamp,
+            reply,
+        })
+        .await
     }
 
     async fn request_contacts(&self) -> Result<(), SendFailure> {

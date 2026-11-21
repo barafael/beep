@@ -690,6 +690,9 @@ impl ChatState {
                 self.folder = self.folder.filter(|&at| at < self.folders.len());
                 update.conversations = true;
             }
+            Event::StoryLists(lists) => {
+                self.story_lists = lists;
+            }
             Event::StickerPacks(packs) => {
                 self.sticker_packs = Some(Some(packs));
             }

@@ -444,6 +444,8 @@ pub struct ChatState {
     requests_known: bool,
     /// The phone's chat folders, and the one shown (`None` for all chats).
     folders: Vec<crate::ChatFolder>,
+    /// Who stories can go to besides groups, as the phone keeps it.
+    story_lists: crate::StoryLists,
     /// Each folder's chats picked by name, as sets: asked about every chat in the list.
     folder_chats: Vec<FolderChats>,
     folder: Option<usize>,

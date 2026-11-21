@@ -326,6 +326,17 @@ const SCHEMA: &[&str] = &[
         included TEXT NOT NULL,
         excluded TEXT NOT NULL
     )",
+    // The story lists as the storage service says them (`storage.rs`), in its order; `members`
+    // are service ids one per line. Whether it was read at all, and whether stories are off,
+    // are in `b33p_meta` (`story_lists`, `stories_disabled`).
+    "CREATE TABLE IF NOT EXISTS b33p_story_list (
+        position INTEGER PRIMARY KEY NOT NULL,
+        id BLOB NOT NULL,
+        name TEXT NOT NULL,
+        excluding INTEGER NOT NULL,
+        allows_replies INTEGER NOT NULL,
+        members TEXT NOT NULL
+    )",
     // Stories, kept for a day: presage doesn't keep them. `kind` 0 is a picture (`pointer` an
     // encoded attachment pointer), 1 text.
     "CREATE TABLE IF NOT EXISTS b33p_story (
@@ -805,6 +816,83 @@ impl LocalStore {
                 excluded: ids(row.get(6)),
             })
             .collect())
+    }
+
+    /// The story lists, as last read from the storage service.
+    pub(crate) async fn story_lists(&self) -> Result<crate::StoryLists, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, name, excluding, allows_replies, members
+             FROM b33p_story_list ORDER BY position",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        let disabled: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'stories_disabled'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(crate::StoryLists {
+            lists: rows
+                .into_iter()
+                .map(|row| crate::StoryList {
+                    id: row.get(0),
+                    name: row.get(1),
+                    excluding: row.get::<i64, _>(2) != 0,
+                    allows_replies: row.get::<i64, _>(3) != 0,
+                    members: row.get::<String, _>(4).lines().map(str::to_owned).collect(),
+                })
+                .collect(),
+            disabled: disabled.is_some_and(|d| d != 0),
+        })
+    }
+
+    /// Whether the story lists were read from the storage service yet: builds before them
+    /// read it again once to get them.
+    pub(crate) async fn story_lists_read(&self) -> Result<bool, sqlx::Error> {
+        let read: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'story_lists'")
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(read.is_some())
+    }
+
+    /// Replaces the story lists with what the storage service says now.
+    pub(crate) async fn set_story_lists(
+        &self,
+        lists: &crate::StoryLists,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM b33p_story_list")
+            .execute(&mut *tx)
+            .await?;
+        for (position, list) in lists.lists.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO b33p_story_list (position, id, name, excluding, allows_replies,
+                    members)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(position as i64)
+            .bind(&list.id)
+            .bind(&list.name)
+            .bind(list.excluding as i64)
+            .bind(list.allows_replies as i64)
+            .bind(list.members.join("\n"))
+            .execute(&mut *tx)
+            .await?;
+        }
+        for (key, value) in [
+            ("story_lists", 1),
+            ("stories_disabled", lists.disabled as i64),
+        ] {
+            sqlx::query(
+                "INSERT INTO b33p_meta (key, value) VALUES (?, ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(key)
+            .bind(value)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
     }
 
     /// Replaces the chat folders.
@@ -2628,6 +2716,46 @@ mod tests {
                 ChatNotify::default(),
                 "the storage service's side has none"
             );
+        });
+    }
+
+    #[test]
+    fn story_lists_are_kept_as_read() {
+        let dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let local = open(&dir).await;
+            assert!(!local.story_lists_read().await.unwrap());
+            assert_eq!(
+                local.story_lists().await.unwrap(),
+                crate::StoryLists::default()
+            );
+            let lists = crate::StoryLists {
+                lists: vec![
+                    crate::StoryList {
+                        id: crate::StoryList::MY_STORY.to_vec(),
+                        excluding: true,
+                        members: vec!["a".into(), "b".into()],
+                        allows_replies: true,
+                        ..Default::default()
+                    },
+                    crate::StoryList {
+                        id: vec![1; 16],
+                        name: "Climbers".into(),
+                        members: vec!["c".into()],
+                        ..Default::default()
+                    },
+                ],
+                disabled: true,
+            };
+            local.set_story_lists(&lists).await.unwrap();
+            assert!(local.story_lists_read().await.unwrap());
+            assert_eq!(local.story_lists().await.unwrap(), lists);
+            let fewer = crate::StoryLists {
+                lists: lists.lists[1..].to_vec(),
+                disabled: false,
+            };
+            local.set_story_lists(&fewer).await.unwrap();
+            assert_eq!(local.story_lists().await.unwrap(), fewer);
         });
     }
 

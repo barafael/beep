@@ -76,6 +76,25 @@ impl ConversationId {
         Self(format!("g:{key}"))
     }
 
+    /// Our stories to a story list (see [`StoryList`]): not a chat, but where they are kept and
+    /// listed, as a group's are under the group.
+    pub fn story_list(id: &[u8]) -> Self {
+        let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+        Self(format!("s:{id}"))
+    }
+
+    /// The story list's id, for [`Self::story_list`]'s.
+    pub fn story_list_id(&self) -> Option<Vec<u8>> {
+        let hex = self.0.strip_prefix("s:")?;
+        if hex.len() % 2 != 0 {
+            return None;
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+            .collect()
+    }
+
     /// The service ID of the person a 1:1 conversation is with.
     pub fn contact_id(&self) -> Option<&str> {
         self.0.strip_prefix("c:")
@@ -264,6 +283,38 @@ pub struct ChatFolder {
     pub all_groups: bool,
     pub included: Vec<ConversationId>,
     pub excluded: Vec<ConversationId>,
+}
+
+/// Who stories go to besides groups, as Signal keeps it in the storage service: My Story, or a
+/// list of one's own (a `StoryDistributionListRecord`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoryList {
+    /// A UUID's 16 bytes; all zero for My Story.
+    pub id: Vec<u8>,
+    /// Empty for My Story, which Signal names itself.
+    pub name: String,
+    /// `members` are those left out of all connections (My Story's "all except"); otherwise
+    /// they are the only ones it goes to.
+    pub excluding: bool,
+    /// Service ids, as strings.
+    pub members: Vec<String>,
+    pub allows_replies: bool,
+}
+
+impl StoryList {
+    /// My Story's id.
+    pub const MY_STORY: [u8; 16] = [0; 16];
+
+    pub fn is_my_story(&self) -> bool {
+        self.id == Self::MY_STORY
+    }
+}
+
+/// The story lists, and whether stories are turned off for the account (on the phone).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoryLists {
+    pub lists: Vec<StoryList>,
+    pub disabled: bool,
 }
 
 /// A story: shown for a day to the author's contacts, or to a group.
@@ -1023,6 +1074,8 @@ pub enum Event {
     GroupJoined(ConversationId),
     /// The chat folders, in their order (replacing those known before).
     Folders(Vec<ChatFolder>),
+    /// The story lists (replacing those known before).
+    StoryLists(StoryLists),
     /// The installed sticker packs, answering [`Command::LoadStickers`].
     StickerPacks(Vec<StickerPack>),
     /// A sticker pack was installed or removed on another device: the packs, if gathered,
@@ -1133,10 +1186,13 @@ pub enum Command {
     },
     /// A story was seen: told to its author (if read receipts are on) and our other devices.
     ViewStory(MessageRef),
-    /// Posts a story to a group.
+    /// Posts a story to a group, or to a story list (`conversation` its
+    /// [`ConversationId::story_list`]) and then to each of `recipients` (service ids).
     SendStory {
         conversation: ConversationId,
         story: NewStory,
+        recipients: Vec<String>,
+        allows_replies: bool,
     },
     /// Makes a group with us as its administrator and these members (service IDs); see
     /// [`Event::GroupCreated`].

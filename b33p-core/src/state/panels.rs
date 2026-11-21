@@ -266,9 +266,12 @@ impl ChatState {
                     ring_of.insert(&story.conversation, rings.len());
                     rings.push(StoryRing {
                         conversation: &story.conversation,
-                        title: self
-                            .conversation(&story.conversation)
-                            .map_or_else(|| story.author.clone(), |c| c.title.clone()),
+                        title: match story.conversation.story_list_id() {
+                            Some(list) => self.story_list_title(&list),
+                            None => self
+                                .conversation(&story.conversation)
+                                .map_or_else(|| story.author.clone(), |c| c.title.clone()),
+                        },
                         latest: story.timestamp,
                         count: 1,
                         unviewed: !story.viewed,
@@ -373,6 +376,60 @@ impl ChatState {
         }))
     }
 
+    /// My Story and the account's own story lists, and whether stories are off.
+    pub fn story_lists(&self) -> &crate::StoryLists {
+        &self.story_lists
+    }
+
+    /// The people a story to `list` (a [`crate::StoryList`]'s id) goes to, by service id: our
+    /// connections as the list says. My Story goes to all of them until the phone says
+    /// otherwise; `None` for another list we don't know. Whether each can be sent a story at
+    /// all (sealed sender) is for the backend to find out.
+    pub fn story_recipients(&self, list: &[u8]) -> Option<Vec<String>> {
+        let blocked = |id: &str| {
+            self.conversation(&ConversationId::contact(id))
+                .is_some_and(|c| c.settings.blocked)
+        };
+        let found = self.story_lists.lists.iter().find(|l| l.id == list);
+        let mut recipients: Vec<String> = match found {
+            // "Only these".
+            Some(only) if !only.excluding => only
+                .members
+                .iter()
+                .filter(|id| !blocked(id))
+                .cloned()
+                .collect(),
+            None if list != crate::StoryList::MY_STORY => return None,
+            // "All connections except", or My Story before the phone set it: all of them.
+            _ => {
+                let left_out = found.map_or(&[][..], |l| &l.members[..]);
+                self.story_connections()
+                    .filter(|id| !left_out.iter().any(|out| out == id))
+                    .map(str::to_owned)
+                    .collect()
+            }
+        };
+        recipients.sort();
+        recipients.dedup();
+        Some(recipients)
+    }
+
+    /// Our connections, as Signal's apps count them for stories (Desktop's
+    /// `isSignalConnection`): those we share our profile with, which for b33p is a 1:1 chat
+    /// we accepted or wrote in, with someone's ACI (not a number or PNI only), not blocked.
+    fn story_connections(&self) -> impl Iterator<Item = &str> {
+        self.conversations.iter().filter_map(|c| {
+            let id = c.id.contact_id()?;
+            (!c.is_group()
+                && !c.note_to_self
+                && !c.settings.blocked
+                && (c.settings.accepted || self.written_to.contains(&c.id))
+                && !id.starts_with("PNI:")
+                && !id.starts_with('+'))
+            .then_some(id)
+        })
+    }
+
     /// Groups a story can be posted to, by name.
     pub fn story_groups(&self) -> Vec<&Conversation> {
         let mut groups: Vec<&Conversation> = self
@@ -384,18 +441,49 @@ impl ChatState {
         groups
     }
 
-    /// Posts a story to a group.
+    /// Posts a story to a group, or to a story list ([`ConversationId::story_list`]): to
+    /// [`Self::story_recipients`], none of whom it may be for.
     pub fn send_story(&mut self, id: &ConversationId, story: crate::NewStory) -> Option<Command> {
-        self.conversation(id).filter(|c| c.is_group() && !c.left)?;
         if let crate::NewStory::Text(text) = &story
             && text.trim().is_empty()
         {
             return None;
         }
+        let (recipients, allows_replies) = match id.story_list_id() {
+            Some(list) => {
+                let recipients = self.story_recipients(&list).filter(|r| !r.is_empty())?;
+                let allows_replies = self
+                    .story_lists
+                    .lists
+                    .iter()
+                    .find(|l| l.id == list)
+                    // My Story before the phone set it: replies, as Signal's default.
+                    .is_none_or(|l| l.allows_replies);
+                (recipients, allows_replies)
+            }
+            None => {
+                self.conversation(id).filter(|c| c.is_group() && !c.left)?;
+                (Vec::new(), true)
+            }
+        };
         Some(Command::SendStory {
             conversation: id.clone(),
             story,
+            recipients,
+            allows_replies,
         })
+    }
+
+    /// What a story list is called: "My Story", or the name it was given.
+    pub fn story_list_title(&self, id: &[u8]) -> String {
+        if id == crate::StoryList::MY_STORY {
+            return "My Story".into();
+        }
+        self.story_lists
+            .lists
+            .iter()
+            .find(|l| l.id == id)
+            .map_or_else(|| "Story list".into(), |l| l.name.clone())
     }
 
     /// Opens the search in the selected conversation.

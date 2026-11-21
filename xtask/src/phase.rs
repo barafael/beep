@@ -35,6 +35,8 @@ pub(crate) enum AndroidPhase {
     LargeGroup,
     // Pictures through Desktop, Android and b33p, for `--capture` to compare.
     Media,
+    // Stories to My Story; changes Android's My Story, and sets it back at its end.
+    Stories,
 }
 
 /// The stress phases (pending/stress.md), each on a box of its own (`PlainBox` there), and

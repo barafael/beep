@@ -325,6 +325,18 @@ fn session(commands: &Inbox, events: &Events) -> bool {
         },
     ]));
 
+    // My Story, to everyone but Bob, as the phone may have set it.
+    events.send(Event::StoryLists(crate::StoryLists {
+        lists: vec![crate::StoryList {
+            id: crate::StoryList::MY_STORY.to_vec(),
+            excluding: true,
+            members: vec!["bob".into()],
+            allows_replies: true,
+            ..Default::default()
+        }],
+        disabled: false,
+    }));
+
     // Fixed at startup so repeated history loads return identical messages.
     let started = now_millis();
     // Like the real backend: each conversation's newest message, for sorting and previews.
@@ -564,6 +576,7 @@ fn session(commands: &Inbox, events: &Events) -> bool {
             Ok(Command::SendStory {
                 conversation,
                 story,
+                ..
             }) => {
                 let content = match story {
                     crate::NewStory::Text(text) => crate::StoryContent::Text {
