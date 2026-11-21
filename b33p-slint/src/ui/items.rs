@@ -145,6 +145,20 @@ pub(super) fn member_item(person: &b33p_core::Person, admin: bool) -> MemberItem
     }
 }
 
+/// How many readers' pictures show under a message; the rest are counted ("+2").
+const READERS_SHOWN: usize = 3;
+
+/// A member who read up to a message, with their picture if known.
+fn reader_item(chat: &ChatState, images: &Images, person: &b33p_core::Person) -> ReaderItem {
+    let id = ConversationId::contact(&person.service_id);
+    ReaderItem {
+        name: person.name.as_str().into(),
+        initials: state::initials(&person.name).into(),
+        color: avatar_color(&id),
+        avatar: avatar_image(chat, images, &id),
+    }
+}
+
 /// A chat's picture as the window shows it; empty without one.
 pub(super) fn avatar_image(chat: &ChatState, images: &Images, id: &ConversationId) -> slint::Image {
     chat.avatar(id)
@@ -215,6 +229,15 @@ pub(super) fn message_item(
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
         attachments: nested_model(attachments),
         reactions: nested_model(reaction_items(&m.reactions)),
+        readers: nested_model(
+            view.readers
+                .iter()
+                .take(READERS_SHOWN)
+                .map(|person| reader_item(chat, images, person))
+                .collect(),
+        ),
+        more_readers: view.readers.len().saturating_sub(READERS_SHOWN) as i32,
+        readers_label: state::readers_label(&view.readers).into(),
         text: if m.deleted { "" } else { view.body }.into(),
         delivery: match (m.outgoing, m.unsent, m.delivery) {
             (false, ..) => DeliveryState::Incoming,
@@ -367,9 +390,11 @@ pub(super) fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
     }
     same(&a.attachments, &b.attachments)
         && same(&a.reactions, &b.reactions)
+        && same(&a.readers, &b.readers)
         && MessageItem {
             attachments: b.attachments.clone(),
             reactions: b.reactions.clone(),
+            readers: b.readers.clone(),
             ..a.clone()
         } == *b
 }

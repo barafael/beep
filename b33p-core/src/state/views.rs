@@ -13,6 +13,8 @@ pub(super) struct Rows<'a> {
     pub(super) now_ms: u64,
     pub(super) tz: jiff::tz::TimeZone,
     pub(super) first_unread: Option<usize>,
+    /// In a group, who read up to which message of ours (by its time), as far as known.
+    pub(super) readers: HashMap<u64, Vec<&'a Person>>,
 }
 
 /// A message's local date, if its timestamp has one; `None` past either end of the history.
@@ -34,6 +36,7 @@ impl<'a> Rows<'a> {
             now_ms: u64::try_from(now.as_millisecond()).unwrap_or(0),
             tz,
             first_unread: read_mark.and_then(|mark| first_unread(history, mark)),
+            readers: readers(state),
         }
     }
 
@@ -86,6 +89,14 @@ impl<'a> Rows<'a> {
             revealed: state.revealed.contains(message_key(message)),
             highlighted: state.highlight.as_ref().is_some_and(|h| message.is(h)),
             selected: state.selection.contains(message_key(message)),
+            readers: if message.outgoing {
+                self.readers
+                    .get(&message.timestamp)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             sender_avatar: if self.group && !message.outgoing {
                 state.people_avatars.get(&message.sender_id)
             } else {
@@ -151,6 +162,37 @@ impl<'a> Iterator for Messages<'a> {
 }
 
 impl ExactSizeIterator for Messages<'_> {}
+
+/// The open group's members by the time of the newest message of ours each read; empty for a
+/// chat of two, where the ticks say it.
+fn readers(state: &ChatState) -> HashMap<u64, Vec<&Person>> {
+    let mut readers: HashMap<u64, Vec<&Person>> = HashMap::new();
+    let Some(group) = state.selected().filter(|c| c.is_group()) else {
+        return readers;
+    };
+    let Some(newest) = state.readers.get(&group.id) else {
+        return readers;
+    };
+    for member in &group.members {
+        if let Some(&read) = newest.get(&member.service_id) {
+            readers.entry(read).or_default().push(member);
+        }
+    }
+    readers
+}
+
+/// "Read by Ann", "Read by Ann and Bob", "Read by Ann, Bob and Cid", "Read by Ann, Bob and 2
+/// others": for a message's readers, as a screen reader says them.
+pub fn readers_label(readers: &[&Person]) -> String {
+    let names: Vec<&str> = readers.iter().map(|p| p.name.as_str()).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => format!("Read by {one}"),
+        [a, b] => format!("Read by {a} and {b}"),
+        [a, b, c] => format!("Read by {a}, {b} and {c}"),
+        [a, b, rest @ ..] => format!("Read by {a}, {b} and {} others", rest.len()),
+    }
+}
 
 /// Messages by the same person within a few minutes of each other, on the same day.
 pub(super) fn same_run(a: &ChatMessage, b: &ChatMessage, same_day: bool) -> bool {

@@ -38,19 +38,8 @@ impl ChatState {
     /// as Signal's apps put their pictures under it. Empty for others' messages and for a chat
     /// of two, where the ticks say it.
     pub fn readers_of(&self, index: usize) -> Vec<&Person> {
-        let Some(conversation) = self.selected().filter(|c| c.is_group()) else {
-            return Vec::new();
-        };
-        let Some(message) = self.selected_history().get(index).filter(|m| m.outgoing) else {
-            return Vec::new();
-        };
-        let Some(newest) = self.readers.get(&conversation.id) else {
-            return Vec::new();
-        };
-        conversation
-            .members
-            .iter()
-            .filter(|member| newest.get(&member.service_id) == Some(&message.timestamp))
-            .collect()
+        self.message_view(index)
+            .map(|view| view.readers)
+            .unwrap_or_default()
     }
 }

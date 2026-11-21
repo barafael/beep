@@ -709,6 +709,40 @@ export component Bubble inherits Rectangle {
                             }
                         }
                     }
+                    // In a group, who read up to here: their pictures overlapping, the rest
+                    // counted, as Signal's apps show them under the newest message each read.
+                    if item.readers.length > 0: HorizontalLayout {
+                        alignment: end;
+                        padding-right: 4px;
+                        spacing: -4px;
+                        accessible-role: text;
+                        accessible-label: item.readers-label;
+                        for reader in item.readers: Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: self.width / 2;
+                            // A ring in the window's colour, so the overlapping ones stay apart.
+                            background: Theme.surface;
+                            Avatar {
+                                x: 1px;
+                                y: 1px;
+                                width: 16px;
+                                initials: reader.initials;
+                                tint: reader.color;
+                                picture: reader.avatar;
+                                accessible-role: none;
+                            }
+                        }
+                        // Clear of the pictures, which overlap each other only.
+                        if item.more-readers > 0: HorizontalLayout {
+                            padding-left: 8px;
+                            Caption {
+                                text: "+" + item.more-readers;
+                                vertical-alignment: center;
+                                color: Theme.text-secondary;
+                            }
+                        }
+                    }
                 }
                 if !item.outgoing: MessageActions {
                     outgoing: false;

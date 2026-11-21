@@ -40,6 +40,7 @@ use history::*;
 pub use pins::PIN_LIMIT;
 pub use text::*;
 pub use viewer::*;
+pub use views::readers_label;
 use views::*;
 
 /// Minimum length for a newly chosen database password.
@@ -292,6 +293,9 @@ pub struct MessageView<'a> {
     pub highlighted: bool,
     /// Picked, with others, for an action on all of them; see [`ChatState::toggle_selected`].
     pub selected: bool,
+    /// In a group, the members whose newest message of ours read is this one, in the group's
+    /// order; see [`readers_label`].
+    pub readers: Vec<&'a Person>,
 }
 
 /// What a message deleted for everyone shows instead.
