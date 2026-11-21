@@ -107,7 +107,6 @@ pub(super) fn conversation_item(
             .map(|m| list_time(m.timestamp))
             .unwrap_or_default()
             .into(),
-        sent_minute: view.last_message.map_or(0, |m| sent_minute(m.timestamp)),
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
@@ -235,11 +234,6 @@ pub(super) fn avatar_color(id: &ConversationId) -> Color {
     Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
 }
 
-/// Minutes since the Unix epoch of a timestamp in milliseconds, for the UI to count from.
-fn sent_minute(timestamp: u64) -> i32 {
-    i32::try_from(timestamp / 60_000).unwrap_or(0)
-}
-
 /// A row's list of attachments or reactions. Most rows have none, and an empty `ModelRc` is
 /// free where an empty `VecModel` is two allocations a row (of tens of thousands in a long chat).
 fn nested_model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
@@ -299,7 +293,7 @@ pub(super) fn message_item(
         selected: view.selected,
         has_body: !view.body.is_empty(),
         time: view.time.as_str().into(),
-        sent_minute: sent_minute(m.timestamp),
+        show_time: view.show_time,
         outgoing: m.outgoing,
         show_sender: view.show_sender,
         day: view.day.as_deref().unwrap_or_default().into(),

@@ -85,6 +85,10 @@ impl<'a> Rows<'a> {
             time: format_clock_at(message.timestamp, self.now_ms),
             first_of_run,
             last_of_run: next.is_none_or(|n| !same_run(message, n, date == after)),
+            show_time: next.is_none_or(|n| {
+                !same_run(message, n, date == after)
+                    || n.timestamp / 60_000 != message.timestamp / 60_000
+            }),
             first_unread: self.first_unread == Some(i),
             revealed: state.revealed.contains(message_key(message)),
             highlighted: state.highlight.as_ref().is_some_and(|h| message.is(h)),

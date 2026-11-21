@@ -237,6 +237,7 @@ struct Row {
     day: Option<String>,
     first_of_run: bool,
     last_of_run: bool,
+    show_time: bool,
     show_sender: bool,
 }
 
@@ -283,6 +284,7 @@ fn row(chat: &ChatState, view: &MessageView) -> Row {
         day: view.day.clone(),
         first_of_run: view.first_of_run,
         last_of_run: view.last_of_run,
+        show_time: view.show_time,
         show_sender: view.show_sender,
     }
 }

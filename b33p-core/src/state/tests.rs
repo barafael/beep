@@ -1012,6 +1012,26 @@ fn midnight_is_when_tomorrow_starts() {
     assert!(!wait.is_zero() && wait.as_secs() <= 25 * 3600, "{wait:?}");
 }
 
+/// A time shows unless the next message is of the same run and the same minute: then it says
+/// the same, once, under the last of them.
+#[test]
+fn a_time_shows_once_per_run_and_minute() {
+    let mut state = state();
+    let base = 1_790_000_000_000 - 1_790_000_000_000 % 60_000;
+    for (sender, t) in [
+        ("Alice", 0),
+        ("Alice", 10_000),
+        ("Alice", 20_000),
+        ("Alice", 70_000),
+        ("Bob", 75_000),
+    ] {
+        state.apply(Event::Message(message("g", sender, base + t, false)));
+    }
+    state.select(&id("g"));
+    let shown: Vec<bool> = state.messages().map(|m| m.show_time).collect();
+    assert_eq!(shown, [false, false, true, true, true]);
+}
+
 #[test]
 fn runs_break_on_author_gap_and_day() {
     let mut state = state();
@@ -1053,6 +1073,7 @@ struct Shown {
     day: Option<String>,
     first_of_run: bool,
     last_of_run: bool,
+    show_time: bool,
     sender_avatar: Option<*const Picture>,
     first_unread: bool,
     revealed: bool,
@@ -1069,6 +1090,7 @@ fn shown_row(view: &MessageView) -> Shown {
         day: view.day.clone(),
         first_of_run: view.first_of_run,
         last_of_run: view.last_of_run,
+        show_time: view.show_time,
         sender_avatar: view.sender_avatar.map(Arc::as_ptr),
         first_unread: view.first_unread,
         revealed: view.revealed,
@@ -1124,6 +1146,9 @@ fn rows_from_scratch(state: &ChatState) -> Vec<Shown> {
                 day: new_day.then(|| day_label(message.timestamp, &now)),
                 first_of_run,
                 last_of_run: next.is_none_or(|n| !same_run(message, n)),
+                show_time: next.is_none_or(|n| {
+                    !same_run(message, n) || n.timestamp / 60_000 != message.timestamp / 60_000
+                }),
                 first_unread: first_unread == Some(i),
                 revealed: state.revealed.contains(message_key(message)),
                 highlighted: state.highlight.as_ref().is_some_and(|h| message.is(h)),
