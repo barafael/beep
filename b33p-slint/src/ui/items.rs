@@ -260,6 +260,7 @@ pub(super) fn message_item(
         can_edit: chat.can_edit(m),
         first_unread: view.first_unread,
         can_forward: ChatState::can_forward(m),
+        has_info: ChatState::has_info(m),
         preview_url: m.preview.as_ref().map_or("", |p| p.url.as_str()).into(),
         preview_title: m.preview.as_ref().map_or("", |p| p.title.as_str()).into(),
         preview_description: m

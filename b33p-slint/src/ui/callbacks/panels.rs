@@ -82,6 +82,14 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             }
         }
     });
+    window.global::<Receipts>().on_show({
+        let shared = shared.clone();
+        move |key| shared.command(|chat| row(chat, &key).and_then(|i| chat.open_message_info(i)))
+    });
+    window.global::<Receipts>().on_close({
+        let shared = shared.clone();
+        move || shared.edit(|chat| chat.close_message_info())
+    });
     window.global::<Groups>().on_open_details({
         let shared = shared.clone();
         move || shared.command(|chat| chat.open_details())

@@ -1,7 +1,7 @@
 // What the window shows and does, by area: Rust sets these (`window.global::<…>()`) and
 // takes the callbacks; the components read them where they're shown.
 
-import { ActivityItem, AttachmentItem, CalendarYear, CandidateItem, Confirm, ConversationItem, MemberItem, MessageItem, RequestAnswer, RingItem, Screen, SearchResult, SharedItem, StickerRow, StoryItem } from "types.slint";
+import { ReceiptItem, ActivityItem, AttachmentItem, CalendarYear, CandidateItem, Confirm, ConversationItem, MemberItem, MessageItem, RequestAnswer, RingItem, Screen, SearchResult, SharedItem, StickerRow, StoryItem } from "types.slint";
 
 // The account and the screens before the chats: unlocking, linking, catching up, failures;
 // asking before what can't be undone.
@@ -278,6 +278,19 @@ export global Composer {
 
 // The open chat's details page, changing a group, choosing people for one, and joining
 // one by its link.
+// A message's info: whom it went to, and when it arrived and was read, each.
+export global Receipts {
+    in property <bool> open;
+    // Asked for, not here yet.
+    in property <bool> busy;
+    // "Sent Mar  3, 14:05".
+    in property <string> sent;
+    in property <[ReceiptItem]> recipients;
+    // For the message with this key.
+    callback show(string);
+    callback close;
+}
+
 export global Groups {
     // The open chat's details page.
     in property <bool> details-open;

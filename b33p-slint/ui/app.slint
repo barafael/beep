@@ -14,14 +14,14 @@ import { FailedScreen, LinkScreen, PasswordScreen, SyncingScreen } from "screens
 import { SettingsPage } from "settings.slint";
 import { ChatListPane } from "chat-list.slint";
 import { StoryComposer, StoryViewer } from "stories.slint";
-import { GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog } from "overlays.slint";
-import { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
+import { GroupDraftDialog, ConfirmPrompt, JoinDialog, ForwardDialog, ReceiptsDialog } from "overlays.slint";
+import { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels, Receipts } from "state.slint";
 
 // What Rust reaches: the window, its data types and the globals it sets.
 export * from "types.slint";
 export { Motion } from "theme.slint";
 export { Playback } from "globals.slint";
-export { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels } from "state.slint";
+export { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels, Receipts } from "state.slint";
 export { Emojis, EmojiGroup } from "emoji.slint";
 export { Viewer } from "viewer.slint";
 
@@ -675,6 +675,7 @@ export component AppWindow inherits Window {
                                         Panels.forward-filter = "";
                                         Panels.forward(item.key);
                                     }
+                                    info => { Receipts.show(item.key); }
                                     selecting: OpenChat.selected-count > 0;
                                     pick-held: root.pick-held;
                                     toggle-select => { OpenChat.toggle-select(item.key); }
@@ -2102,6 +2103,9 @@ export component AppWindow inherits Window {
     }
 
     if Panels.forwarding: ForwardDialog {
+    }
+
+    if Receipts.open: ReceiptsDialog {
     }
 
     // A photo of the open chat, over everything.

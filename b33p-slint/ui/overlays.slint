@@ -4,7 +4,7 @@ import { Button, LineEdit, ListView, Spinner } from "std-widgets.slint";
 import { Motion, Theme } from "theme.slint";
 import { RequestAnswer, Confirm } from "types.slint";
 import { Avatar, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Hint, Icon, IconButton, Small } from "widgets.slint";
-import { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels } from "state.slint";
+import { Account, Prefs, ChatList, OpenChat, Composer, Groups, Panels, Receipts } from "state.slint";
 
 // Choosing people for a new group, or to add to the open one.
 export component GroupDraftDialog inherits Dialog {
@@ -222,6 +222,69 @@ export component JoinDialog inherits Dialog {
 
 // Choosing where to forward a message to, over everything else; then confirming it, since
 // it goes out at once.
+// A message of ours: when it was sent, and for each one it went to whether it arrived and was
+// read, and when, as Signal's apps' message details say.
+export component ReceiptsDialog inherits Dialog {
+    card-width: 400px;
+    card-height: min(layout.preferred-height, 560px);
+    dismissed => { Receipts.close(); }
+    layout := DialogLayout {
+        title: "Message info";
+        Small {
+            text: Receipts.sent;
+            color: Theme.text-secondary;
+        }
+        if Receipts.busy: HorizontalLayout {
+            alignment: center;
+            padding: Theme.space-m;
+            Spinner {
+                indeterminate: true;
+                accessible-label: "Gathering the receipts";
+            }
+        }
+        if !Receipts.busy && Receipts.recipients.length == 0: Small {
+            text: "No receipts yet.";
+            color: Theme.text-secondary;
+        }
+        ListView {
+            visible: !Receipts.busy && Receipts.recipients.length > 0;
+            vertical-stretch: 1;
+            min-height: min(Receipts.recipients.length * 48px, 360px);
+            for recipient in Receipts.recipients: HorizontalLayout {
+                height: 48px;
+                padding: 6px;
+                spacing: 10px;
+                accessible-role: text;
+                accessible-label: recipient.name + ": " + recipient.status;
+                Avatar {
+                    width: 36px;
+                    initials: recipient.initials;
+                    tint: recipient.color;
+                    picture: recipient.avatar;
+                }
+                Text {
+                    text: recipient.name;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    color: Theme.text;
+                }
+                Small {
+                    text: recipient.status;
+                    vertical-alignment: center;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+        DialogButtons {
+            Button {
+                text: "Close";
+                clicked => { Receipts.close(); }
+            }
+        }
+    }
+}
+
 export component ForwardDialog inherits Dialog {
     property <string> picked-id;
     property <string> picked-title;

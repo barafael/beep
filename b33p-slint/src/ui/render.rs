@@ -94,6 +94,7 @@ pub(crate) fn render(
     render_viewer(window, chat, images);
     render_stickers(window, chat);
     render_details(window, chat);
+    render_receipts(window, chat, images);
     render_notify(window, chat);
     render_stories(window, chat, images);
     let search = chat.chat_search();
@@ -633,6 +634,56 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
 }
 
 /// The details page.
+/// A message's info, while open: its receipts once they are here. Drawn at every redraw, since
+/// the receipts' arrival names no part of the window.
+fn render_receipts(window: &AppWindow, chat: &ChatState, images: &Images) {
+    let receipts = window.global::<Receipts>();
+    let Some((message, info)) = chat.message_info() else {
+        if receipts.get_open() {
+            receipts.set_open(false);
+            receipts.set_recipients(ModelRc::default());
+        }
+        return;
+    };
+    receipts.set_open(true);
+    receipts.set_busy(info.is_none());
+    receipts.set_sent(format!("Sent {}", state::format_time(message.timestamp)).into());
+    let mut recipients: Vec<&b33p_core::Receipt> = info
+        .map(|info| info.recipients.iter().collect())
+        .unwrap_or_default();
+    // Who read it first, then whom it reached, then the rest; by name within each.
+    recipients.sort_by_key(|r| {
+        (
+            r.read_at.is_none(),
+            r.delivered_at.is_none(),
+            r.person.name.to_lowercase(),
+        )
+    });
+    let items: Vec<ReceiptItem> = recipients
+        .into_iter()
+        .map(|receipt| {
+            let id = ConversationId::contact(&receipt.person.service_id);
+            ReceiptItem {
+                name: receipt.person.name.as_str().into(),
+                initials: state::initials(&receipt.person.name).into(),
+                color: avatar_color(&id),
+                avatar: avatar_image(chat, images, &id),
+                status: receipt_status(receipt).into(),
+            }
+        })
+        .collect();
+    receipts.set_recipients(ModelRc::new(VecModel::from(items)));
+}
+
+/// "Read Mar  3, 14:07", "Delivered 14:05", or "Sent" when neither came back.
+fn receipt_status(receipt: &b33p_core::Receipt) -> String {
+    match (receipt.read_at, receipt.delivered_at) {
+        (Some(read), _) => format!("Read {}", state::format_time(read)),
+        (None, Some(delivered)) => format!("Delivered {}", state::format_time(delivered)),
+        (None, None) => "Sent".into(),
+    }
+}
+
 pub(super) fn render_details(window: &AppWindow, chat: &ChatState) {
     let details = chat.details();
     window

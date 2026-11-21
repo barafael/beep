@@ -107,6 +107,16 @@ export struct ReaderItem {
     avatar: image,
 }
 
+// Someone a message of ours went to, and how far it got with them.
+export struct ReceiptItem {
+    name: string,
+    initials: string,
+    color: color,
+    avatar: image,
+    // "Read 14:07", "Delivered 14:05", "Sent".
+    status: string,
+}
+
 export struct MessageItem {
     // Which message it is, for acting on it (its row moves as messages come and go).
     key: string,
@@ -161,6 +171,8 @@ export struct MessageItem {
     // Just arrived or sent: it fades in as it is shown. Cleared again soon after, so it
     // doesn't when scrolled back to.
     fresh: bool,
+    // Ours and gone out: its info (whom it went to, and when it arrived) can be shown.
+    has-info: bool,
     can-forward: bool,
     // The search result last shown.
     highlighted: bool,

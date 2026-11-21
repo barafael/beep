@@ -3,12 +3,18 @@
 use super::*;
 
 impl ChatState {
+    /// Whether a message has info to show (whom it went to, delivered and read when): ours,
+    /// and gone out.
+    pub fn has_info(message: &ChatMessage) -> bool {
+        message.outgoing && !message.notice && message.unsent.is_none()
+    }
+
     /// Shows the info of the open chat's `index`th message, if it is ours and sent: who it
     /// went to, and when each received and read it. Returns the command that gathers that.
     pub fn open_message_info(&mut self, index: usize) -> Option<Command> {
         let conversation = self.selected.clone()?;
         let message = self.selected_history().get(index)?;
-        if !message.outgoing || message.notice || message.unsent.is_some() {
+        if !Self::has_info(message) {
             return None;
         }
         let target = message.reference();
