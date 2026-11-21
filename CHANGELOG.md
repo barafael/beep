@@ -42,6 +42,11 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### New
 
+- In groups, the pictures of the members who read up to a message of yours show under it (up
+  to three, the rest counted), as in Signal's apps.
+- **Info** in a message's menu shows whom a message of yours reached, and when each read it.
+- Pictures and videos sent together show as a grid; a click opens the one clicked.
+- Animated stickers play (not with reduced motion, nor while the window isn't focused).
 - The tray icon shows how many messages are unread, and so does the taskbar button on Windows.
 - On Windows, b33p installs itself when started from the zip, with a Start menu entry and an
   Installed apps entry that removes it again.
@@ -77,6 +82,8 @@ The release workflow takes a version's notes from here (the section headed with 
 
 ### Looks
 
+- Times from the last hour say how long ago they were ("now", "5 min"), in chats and in the
+  chat list.
 - One look throughout: the same colours, text sizes, corners, spacing, shadows and motion
   everywhere, from one place (`ui/theme.slint`), following the desktop's colours as before.
 - Icons instead of text symbols (play, pause, timer, verified, files), panels with a back
