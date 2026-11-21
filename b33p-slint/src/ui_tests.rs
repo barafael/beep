@@ -1243,6 +1243,63 @@ fn a_message_s_info_lists_its_receipts() {
     assert!(!window.global::<Receipts>().get_open());
 }
 
+/// Pictures sent together show as a grid, each opening itself; past five, the last cell counts
+/// the rest.
+#[test]
+fn an_album_opens_the_picture_clicked() {
+    use crate::generated::AttachmentItem;
+
+    let (window, messages) = window_with_messages(2);
+    let pixel = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1));
+    let album = |n: usize, shown: usize| -> ModelRc<AttachmentItem> {
+        let cells: Vec<AttachmentItem> = (0..shown)
+            .map(|i| AttachmentItem {
+                id: format!("p{}", i + 1).into(),
+                inline: true,
+                picture: pixel.clone(),
+                x: (i % 2) as f32 * 141.,
+                y: (i / 2) as f32 * 141.,
+                width: 139.,
+                height: 139.,
+                more: if i + 1 == shown {
+                    (n - shown) as i32
+                } else {
+                    0
+                },
+                ..Default::default()
+            })
+            .collect();
+        ModelRc::new(VecModel::from(cells))
+    };
+    let item = |key: &str, n, shown, height| MessageItem {
+        key: key.into(),
+        album: album(n, shown),
+        album_count: n as i32,
+        album_width: 280.,
+        album_height: height,
+        has_body: false,
+        ..message("")
+    };
+    messages.set_vec(vec![item("four", 4, 4, 280.)]);
+    let opened = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    window.global::<OpenChat>().on_open_attachment({
+        let opened = opened.clone();
+        move |id| opened.borrow_mut().push(id.into())
+    });
+    settle(&window);
+    find(&window, "Open picture 3 of 4")
+        .expect("the third cell")
+        .invoke_accessible_default_action();
+    assert_eq!(*opened.borrow(), ["p3"]);
+    messages.set_vec(vec![item("seven", 7, 5, 421.)]);
+    settle(&window);
+    assert_eq!(
+        ElementHandle::find_by_accessible_label(&window, "+2").count(),
+        1,
+        "seven pictures: five cells, the last counting two more"
+    );
+}
+
 /// The chat list follows events row by row: a chat with a new message moves to the top with
 /// its new preview, and the rows it passed move down.
 #[test]

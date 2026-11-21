@@ -1403,6 +1403,45 @@ fn history(id: &ConversationId, started: u64) -> Vec<ChatMessage> {
                 )],
                 ..message("rust", "Carol", "", ago(116), false)
             },
+            // Albums: three pictures in one message, and seven with a video among them.
+            ChatMessage {
+                attachments: (1..=3)
+                    .map(|n| {
+                        attachment(
+                            &format!("trip-{n}"),
+                            AttachmentKind::Image,
+                            "image/jpeg",
+                            None,
+                            (1200, 900),
+                        )
+                    })
+                    .collect(),
+                ..message("rust", "Eve", "From the trip", ago(116), false)
+            },
+            ChatMessage {
+                attachments: (1..=7)
+                    .map(|n| {
+                        if n == 4 {
+                            attachment(
+                                "meetup-video",
+                                AttachmentKind::Video,
+                                "video/mp4",
+                                None,
+                                (640, 360),
+                            )
+                        } else {
+                            attachment(
+                                &format!("meetup-{n}"),
+                                AttachmentKind::Image,
+                                "image/jpeg",
+                                None,
+                                (900, 1200),
+                            )
+                        }
+                    })
+                    .collect(),
+                ..message("rust", "Ferris", "", ago(116), false)
+            },
             // Ours, and read by two of the group: their pictures show under it.
             ChatMessage {
                 delivery: Delivery::Delivered,

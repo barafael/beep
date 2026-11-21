@@ -159,6 +159,66 @@ fn reader_item(chat: &ChatState, images: &Images, person: &b33p_core::Person) ->
     }
 }
 
+/// How wide an album's grid is: as wide as a single picture gets.
+const ALBUM_WIDTH: f32 = 280.0;
+/// Between an album's cells.
+const ALBUM_GAP: f32 = 2.0;
+
+/// Where a cell of an album's grid goes, in logical pixels from its top left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Cell {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// The cells of an album of `n` pictures, as Signal's apps lay them out: two side by side;
+/// three as one tall and two stacked; four in a square; five or more as two over three, the
+/// rest counted on the last (at most five cells).
+pub(super) fn album_cells(n: usize) -> Vec<Cell> {
+    let cell = |x, y, width, height| Cell {
+        x,
+        y,
+        width,
+        height,
+    };
+    let half = (ALBUM_WIDTH - ALBUM_GAP) / 2.0;
+    let second = half + ALBUM_GAP;
+    match n {
+        0 | 1 => Vec::new(),
+        2 => vec![cell(0.0, 0.0, half, half), cell(second, 0.0, half, half)],
+        3 => {
+            let small = 92.0;
+            let tall = 2.0 * small + ALBUM_GAP;
+            let wide = ALBUM_WIDTH - ALBUM_GAP - small;
+            let right = wide + ALBUM_GAP;
+            vec![
+                cell(0.0, 0.0, wide, tall),
+                cell(right, 0.0, small, small),
+                cell(right, small + ALBUM_GAP, small, small),
+            ]
+        }
+        4 => vec![
+            cell(0.0, 0.0, half, half),
+            cell(second, 0.0, half, half),
+            cell(0.0, second, half, half),
+            cell(second, second, half, half),
+        ],
+        _ => {
+            let third = (ALBUM_WIDTH - 2.0 * ALBUM_GAP) / 3.0;
+            let below = second;
+            vec![
+                cell(0.0, 0.0, half, half),
+                cell(second, 0.0, half, half),
+                cell(0.0, below, third, third),
+                cell(third + ALBUM_GAP, below, third, third),
+                cell(2.0 * (third + ALBUM_GAP), below, third, third),
+            ]
+        }
+    }
+}
+
 /// A chat's picture as the window shows it; empty without one.
 pub(super) fn avatar_image(chat: &ChatState, images: &Images, id: &ConversationId) -> slint::Image {
     chat.avatar(id)
@@ -198,11 +258,38 @@ pub(super) fn message_item(
     images: &Images,
 ) -> MessageItem {
     let m = view.message;
-    let attachments: Vec<_> = m
-        .attachments
+    // Two or more pictures and videos go together as a grid; the rest stack under it.
+    let in_album =
+        |a: &&Attachment| matches!(a.kind, AttachmentKind::Image | AttachmentKind::Video) && !a.gif;
+    let album_count = m.attachments.iter().filter(in_album).count();
+    let (album, attachments): (Vec<&Attachment>, Vec<&Attachment>) = if album_count >= 2 {
+        m.attachments.iter().partition(in_album)
+    } else {
+        (Vec::new(), m.attachments.iter().collect())
+    };
+    let item =
+        |a: &Attachment| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images);
+    let cells = album_cells(album.len());
+    let album_height = cells.iter().map(|c| c.y + c.height).fold(0.0, f32::max);
+    let album: Vec<AttachmentItem> = album
         .iter()
-        .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
+        .zip(&cells)
+        .enumerate()
+        .map(|(i, (a, cell))| AttachmentItem {
+            x: cell.x,
+            y: cell.y,
+            width: cell.width,
+            height: cell.height,
+            // The last cell says how many more there are.
+            more: if i + 1 == cells.len() {
+                (album.len() - cells.len()) as i32
+            } else {
+                0
+            },
+            ..item(a)
+        })
         .collect();
+    let attachments: Vec<_> = attachments.into_iter().map(item).collect();
     let in_group = in_group && !m.outgoing;
     let sender = ConversationId::contact(&m.sender_id);
     MessageItem {
@@ -228,6 +315,10 @@ pub(super) fn message_item(
         quote_author: m.quote.as_ref().map_or("", |q| q.author.as_str()).into(),
         quote_text: m.quote.as_ref().map_or("", |q| q.text.as_str()).into(),
         attachments: nested_model(attachments),
+        album: nested_model(album),
+        album_count: album_count as i32,
+        album_width: if album_count >= 2 { ALBUM_WIDTH } else { 0.0 },
+        album_height,
         reactions: nested_model(reaction_items(&m.reactions)),
         readers: nested_model(
             view.readers
@@ -390,10 +481,12 @@ pub(super) fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
         a.row_count() == b.row_count() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
     }
     same(&a.attachments, &b.attachments)
+        && same(&a.album, &b.album)
         && same(&a.reactions, &b.reactions)
         && same(&a.readers, &b.readers)
         && MessageItem {
             attachments: b.attachments.clone(),
+            album: b.album.clone(),
             reactions: b.reactions.clone(),
             readers: b.readers.clone(),
             ..a.clone()
@@ -488,6 +581,44 @@ pub(super) fn attachment_item(
         video: kind == AttachmentKind::Video,
         audio: matches!(kind, AttachmentKind::Audio | AttachmentKind::VoiceNote),
         gif: attachment.gif,
+        // Only in an album's grid.
+        x: 0.0,
+        y: 0.0,
+        more: 0,
+    }
+}
+
+#[cfg(test)]
+mod album_tests {
+    use super::*;
+
+    /// Every album fills the grid's width, its cells don't overlap, and no more than five show.
+    #[test]
+    fn album_cells_fit_side_by_side() {
+        assert!(album_cells(1).is_empty(), "one picture is no album");
+        for n in 2..=9 {
+            let cells = album_cells(n);
+            assert_eq!(cells.len(), n.min(5), "{n}");
+            for (i, a) in cells.iter().enumerate() {
+                assert!(
+                    a.x >= 0.0 && a.x + a.width <= ALBUM_WIDTH + 0.01,
+                    "{n}: {a:?}"
+                );
+                assert!(a.width > 80.0 && a.height > 80.0, "{n}: {a:?}");
+                for b in &cells[i + 1..] {
+                    let apart = a.x + a.width <= b.x
+                        || b.x + b.width <= a.x
+                        || a.y + a.height <= b.y
+                        || b.y + b.height <= a.y;
+                    assert!(apart, "{n}: {a:?} and {b:?} overlap");
+                }
+            }
+            let right = cells.iter().map(|c| c.x + c.width).fold(0.0, f32::max);
+            assert!(
+                (right - ALBUM_WIDTH).abs() < 0.01,
+                "{n}: as wide as a picture"
+            );
+        }
     }
 }
 

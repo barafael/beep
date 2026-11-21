@@ -57,6 +57,10 @@ export struct ConversationItem {
 
 export struct AttachmentItem {
     id: string,
+    // In an album's grid: where its cell is, and on the last cell how many more there are.
+    x: length,
+    y: length,
+    more: int,
     // Shown as a picture (photos, stickers); otherwise as a row with a label.
     inline: bool,
     // Not shown at all; fetched for its content (the full text of a long message).
@@ -144,6 +148,12 @@ export struct MessageItem {
     quote-author: string,
     quote-text: string,
     attachments: [AttachmentItem],
+    // Two or more pictures and videos, as a grid (at most five cells) over the rest; how many
+    // there are in all; the grid's size.
+    album: [AttachmentItem],
+    album-count: int,
+    album-width: length,
+    album-height: length,
     reactions: [ReactionItem],
     // In a group, the first members whose newest message of ours read is this one; how many
     // more there are; and all of them in words ("Read by Ann, Bob and 2 others").
