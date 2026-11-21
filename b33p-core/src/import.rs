@@ -67,8 +67,8 @@ pub(crate) struct Stats {
     pub groups: usize,
     pub messages: usize,
     pub reactions: usize,
-    /// Frames and chat items this version does not import (attachments-only messages, calls,
-    /// group updates, …).
+    /// Frames and chat items this version does not import (calls, group updates, messages
+    /// with neither text nor attachments, …).
     pub skipped: usize,
 }
 
