@@ -3,7 +3,7 @@ import { Motion, Theme } from "theme.slint";
 import { EmojiPicker } from "emoji.slint";
 import { ActivityItem, AttachmentItem, CalendarYear, CandidateItem, ConversationItem, MemberItem, MessageItem, RequestAnswer, RingItem, Screen, SearchResult, SharedItem, StickerRow, StoryItem, Confirm } from "types.slint";
 import { MuteChoices, TextSelection, TimerChoices } from "globals.slint";
-import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Display, EmptyState, FadeIn, Heading, Hint, Icon, IconButton, PanelHeader, Popover, Pressable, SectionTitle, SendButton, SettingRow, Small, SwitchRow, Tab, Title } from "widgets.slint";
+import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Display, EmptyState, FadeIn, Heading, Hint, Icon, IconButton, PanelHeader, PopIn, Popover, Pressable, SectionTitle, SendButton, SettingRow, Small, SwitchRow, Tab, Title } from "widgets.slint";
 import { ConversationMenu, ConversationRow } from "conversation-row.slint";
 import { AttachmentView } from "attachment.slint";
 import { Bubble } from "bubble.slint";
@@ -707,7 +707,7 @@ export component AppWindow inherits Window {
                                 label: parent.unseen > 0 ? "Newest messages, " + parent.unseen + " new" : "Newest messages";
                                 clicked => { message-list.go-to-end(); }
                             }
-                            if self.unseen > 0: Rectangle {
+                            if self.unseen > 0: PopIn {
                                 x: parent.width - self.width + 4px;
                                 y: -4px;
                                 height: 18px;

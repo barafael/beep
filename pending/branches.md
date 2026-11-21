@@ -14,9 +14,9 @@ until 2026-11-21; `git log -- pending/branches.md` has them.
 
 ## Slint (barafael/slint)
 
-b33p pins `slint/integration-branch` (`27f6992`, 2026-11-21): upstream master `2dbdba1` with the
+b33p pins `slint/integration-branch` (`2b08ac6`, 2026-11-21): upstream master `228e472` with the
 branches below merged in order by the branch's own `integration.sh` (`./integration.sh push`
-tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-21-076293d90`).
+tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-21-27f699280`).
 A topic that conflicts with an earlier one is listed as `merge/<topic>`: the topic with the earlier
 one merged in by hand.
 

@@ -67,6 +67,16 @@ export component FadeIn inherits Rectangle {
     animate opacity { duration: Motion.normal; easing: ease-out; }
 }
 
+// Grows into place from a little smaller as it appears: a badge, an icon taking another's place.
+export component PopIn inherits Rectangle {
+    property <float> grown: 0;
+    init => { self.grown = 1; }
+    animate grown { duration: Motion.normal; easing: ease-out; }
+    opacity: self.grown;
+    transform-scale: 0.6 + 0.4 * self.grown;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
+}
+
 // Something to click that isn't a button: a row, a tab, a tile. Lit while hovered or pressed,
 // tinted while selected.
 export component Pressable inherits Rectangle {
@@ -121,6 +131,11 @@ export component IconButton inherits Rectangle {
         : touch.pressed ? Theme.pressed
         : touch.has-hover ? Theme.hover : transparent;
     animate background { duration: Motion.fast; easing: ease-out; }
+    // Gives a little under the pointer while pressed.
+    property <float> size: touch.pressed ? 0.9 : 1;
+    animate size { duration: Motion.fast; easing: ease-out; }
+    transform-scale: self.size;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -168,6 +183,11 @@ export component SendButton inherits Rectangle {
         : touch.has-hover ? Theme.accent.brighter(0.1) : Theme.accent;
     animate background { duration: Motion.fast; easing: ease-out; }
     property <color> tint: root.enabled ? Theme.on-accent : Theme.text-faint;
+    // Gives a little under the pointer while pressed.
+    property <float> size: touch.pressed ? 0.92 : 1;
+    animate size { duration: Motion.fast; easing: ease-out; }
+    transform-scale: self.size;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
@@ -176,24 +196,29 @@ export component SendButton inherits Rectangle {
             text: @markdown("\{root.label}");
         }
     }
-    if !root.saving: Path {
-        // Nudged right of center, where a plane's weight is.
-        x: (parent.width - self.width) / 2 + 1px;
-        y: (parent.height - self.height) / 2;
-        width: 20px;
-        height: 20px;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        commands: "M 2.01 21 L 23 12 L 2.01 3 L 2 10 L 17 12 L 2 14 Z";
-        fill: root.tint;
-        accessible-role: none;
+    // The plane and the check mark pop in as they take each other's place.
+    if !root.saving: PopIn {
+        Path {
+            // Nudged right of center, where a plane's weight is.
+            x: (parent.width - self.width) / 2 + 1px;
+            y: (parent.height - self.height) / 2;
+            width: 20px;
+            height: 20px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M 2.01 21 L 23 12 L 2.01 3 L 2 10 L 17 12 L 2 14 Z";
+            fill: root.tint;
+            accessible-role: none;
+        }
     }
-    if root.saving: Icon {
-        source: @image-url("@lucide/check.svg");
-        tint: root.tint;
-        width: 20px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+    if root.saving: PopIn {
+        Icon {
+            source: @image-url("@lucide/check.svg");
+            tint: root.tint;
+            width: 20px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
     }
 }
 
@@ -258,6 +283,12 @@ export component Chip inherits Rectangle {
 
 // What floats over the window for a moment: the reaction bar, the pickers, tooltips of our own.
 export component Popover inherits FadeIn {
+    // Grows into place a little as it fades in, as a dialog's card does.
+    property <float> grown: 0;
+    init => { self.grown = 1; }
+    animate grown { duration: Motion.normal; easing: ease-out; }
+    transform-scale: 0.97 + 0.03 * self.grown;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
     border-radius: Theme.radius-l;
     background: Theme.surface-raised;
     border-width: 1px;
