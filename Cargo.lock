@@ -909,6 +909,7 @@ dependencies = [
  "mime_guess",
  "minisign-verify",
  "open",
+ "png 0.18.1",
  "presage",
  "presage-store-sqlite",
  "proptest",

@@ -917,7 +917,17 @@ pub struct Images {
     forgotten: Cell<u64>,
     /// The picture the viewer shows at full size: only that one, let go of once it closes.
     viewed: RefCell<Option<(Arc<Picture>, Image)>>,
+    /// Animated stickers' frames as Slint draws them, with their [`frame_ticks`]: made once,
+    /// so a row drawn again reuses them (and doesn't look changed).
+    animations: RefCell<HashMap<AttachmentId, Frames>>,
 }
+
+/// See [`Images::animation`].
+type Frames = (
+    Arc<b33p_core::Animation>,
+    slint::ModelRc<Image>,
+    slint::ModelRc<i32>,
+);
 
 impl Images {
     /// A small blurred picture for a BlurHash, with the shape of `width` × `height`; empty if
@@ -975,6 +985,40 @@ impl Images {
                 Some(AttachmentState::Ready(AttachmentContent::Picture(kept))) if Arc::ptr_eq(kept, picture)
             )
         });
+        self.animations.borrow_mut().retain(|id, (animation, ..)| {
+            matches!(
+                chat.attachment(id),
+                Some(AttachmentState::Ready(AttachmentContent::Animation(kept))) if Arc::ptr_eq(kept, animation)
+            )
+        });
+    }
+
+    /// An animated sticker's frames, and which shows in each 16 ms of its loop.
+    fn animation(
+        &self,
+        id: &AttachmentId,
+        animation: &Arc<b33p_core::Animation>,
+    ) -> (slint::ModelRc<Image>, slint::ModelRc<i32>) {
+        let mut animations = self.animations.borrow_mut();
+        if let Some((kept, frames, ticks)) = animations.get(id)
+            && Arc::ptr_eq(kept, animation)
+        {
+            return (frames.clone(), ticks.clone());
+        }
+        let frames: slint::ModelRc<Image> = slint::ModelRc::new(slint::VecModel::from(
+            animation
+                .frames
+                .iter()
+                .map(picture_image)
+                .collect::<Vec<_>>(),
+        ));
+        let ticks: slint::ModelRc<i32> =
+            slint::ModelRc::new(slint::VecModel::from(frame_ticks(&animation.delays_ms)));
+        animations.insert(
+            id.clone(),
+            (animation.clone(), frames.clone(), ticks.clone()),
+        );
+        (frames, ticks)
     }
 
     /// `body` as styled text; see [`markdown::rich_text`].
@@ -1043,6 +1087,32 @@ impl<K: std::hash::Hash + Eq + Clone> ImageCache<K> {
         images.insert(key.clone(), (picture.clone(), image.clone()));
         image
     }
+}
+
+/// The length of a step of [`frame_ticks`], as `AttachmentView` counts `animation-tick()`.
+const TICK_MS: u32 = 16;
+/// A loop longer than this is cut short: the table stays small.
+const LONGEST_LOOP_MS: u32 = 30_000;
+
+/// Which frame shows in each [`TICK_MS`] of an animation's loop, given how long each frame
+/// shows: the UI picks a frame by the clock alone, so a frame drawn late never delays the next.
+fn frame_ticks(delays_ms: &[u32]) -> Vec<i32> {
+    let total: u32 = delays_ms.iter().sum::<u32>().min(LONGEST_LOOP_MS);
+    let mut ticks = Vec::with_capacity((total / TICK_MS) as usize + 1);
+    let (mut frame, mut ends) = (0, delays_ms.first().copied().unwrap_or(0));
+    let mut at = 0;
+    while at < total {
+        while at >= ends && frame + 1 < delays_ms.len() {
+            frame += 1;
+            ends += delays_ms[frame];
+        }
+        ticks.push(frame as i32);
+        at += TICK_MS;
+    }
+    if ticks.is_empty() {
+        ticks.push(0);
+    }
+    ticks
 }
 
 /// A picture from the backend, for Slint.

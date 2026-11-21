@@ -734,11 +734,29 @@ impl std::fmt::Debug for Attachment {
     }
 }
 
+/// An animated picture (a sticker), scaled down for display: its frames, each shown for its
+/// delay, over and over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Animation {
+    pub frames: Vec<Picture>,
+    /// How long each frame shows, in milliseconds; as many as there are frames.
+    pub delays_ms: Vec<u32>,
+}
+
+impl Animation {
+    /// What its frames take in memory.
+    pub fn bytes(&self) -> usize {
+        self.frames.iter().map(|frame| frame.rgba.len()).sum()
+    }
+}
+
 /// A downloaded attachment, as far as UIs can show it; see [`Event::Attachment`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttachmentContent {
     /// Images and stickers, scaled down for display.
     Picture(Arc<Picture>),
+    /// An animated sticker, scaled down for display; see [`Animation`].
+    Animation(Arc<Animation>),
     /// Long message text.
     Text(String),
     /// Audio and voice messages, as downloaded (decoded by the player).

@@ -97,6 +97,9 @@ blake2 = "0.11"
 # A server that closes under a request (`signal::errors`), and time that stands still but where
 # a test sleeps (`signal/storage_sync.rs`).
 tokio = { version = "1.54", features = ["io-util", "test-util"] }
+# Animated PNGs of any length, for the animated stickers' limits (`attachments.rs`); the
+# version `image` decodes with.
+png = "0.18"
 
 # One OS credential store per platform. On Linux the Secret Service API is served by
 # GNOME Keyring as well as KWallet (KF 5.97+), so it covers both desktops.

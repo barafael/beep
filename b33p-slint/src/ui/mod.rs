@@ -62,7 +62,7 @@ pub enum HarnessError {
 pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     let window = AppWindow::new()?;
     #[cfg(windows)]
-    crate::keys::fix_ctrl_shortcuts(&window);
+    crate::keys::hook_window_events(&window);
     if Backend::mock_requested() {
         window.set_window_title("b33p — MOCK (nothing is sent)".into());
     }

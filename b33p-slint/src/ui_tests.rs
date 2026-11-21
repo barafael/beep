@@ -1300,6 +1300,70 @@ fn an_album_opens_the_picture_clicked() {
     );
 }
 
+/// Which frame shows when: each for its delay in 16 ms steps, over the whole loop; a loop too
+/// long is cut short.
+#[test]
+fn frames_follow_their_delays() {
+    assert_eq!(crate::frame_ticks(&[32, 48, 16]), [0, 0, 1, 1, 1, 2]);
+    assert_eq!(crate::frame_ticks(&[]), [0]);
+    assert_eq!(
+        crate::frame_ticks(&[60_000, 100]).len(),
+        crate::LONGEST_LOOP_MS.div_ceil(crate::TICK_MS) as usize
+    );
+}
+
+/// An animated sticker plays by the clock; it holds still with reduced motion, and while the
+/// window doesn't have the focus.
+#[test]
+fn an_animated_sticker_plays_while_it_may() {
+    use crate::generated::{AttachmentItem, Motion};
+
+    let (window, messages) = window_with_messages(1);
+    let frame = || slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
+    let sticker = AttachmentItem {
+        id: "sticker".into(),
+        inline: true,
+        picture: frame(),
+        frames: ModelRc::new(VecModel::from(vec![frame(), frame(), frame()])),
+        ticks: ModelRc::new(VecModel::from(crate::frame_ticks(&[100, 100, 100]))),
+        width: 128.,
+        height: 128.,
+        ..Default::default()
+    };
+    messages.set_vec(vec![MessageItem {
+        attachments: ModelRc::new(VecModel::from(vec![sticker])),
+        has_body: false,
+        ..message("")
+    }]);
+    settle(&window);
+    let shown = || -> std::collections::BTreeSet<String> {
+        (0..12)
+            .map(|_| {
+                i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(25));
+                slint::platform::update_timers_and_animations();
+                find(&window, "Animated sticker")
+                    .and_then(|e| e.accessible_value())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(shown().len(), 3, "every frame in turn");
+    window.global::<Motion>().set_scale(0.);
+    assert_eq!(
+        shown().into_iter().collect::<Vec<_>>(),
+        ["0"],
+        "reduced motion"
+    );
+    window.global::<Motion>().set_scale(1.);
+    window.global::<Motion>().set_focused(false);
+    assert_eq!(
+        shown().into_iter().collect::<Vec<_>>(),
+        ["0"],
+        "not focused"
+    );
+}
+
 /// The chat list follows events row by row: a chat with a new message moves to the top with
 /// its new preview, and the rows it passed move down.
 #[test]

@@ -239,6 +239,7 @@ pub(super) const KEPT_DOWNLOADS: usize = 160 * 1024 * 1024;
 pub(super) fn download_size(content: &AttachmentContent) -> usize {
     match content {
         AttachmentContent::Picture(picture) => picture.rgba.len(),
+        AttachmentContent::Animation(animation) => animation.bytes(),
         AttachmentContent::Audio(audio) => audio.len(),
         AttachmentContent::Text(text) => text.len(),
     }

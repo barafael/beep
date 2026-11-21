@@ -9,6 +9,8 @@ import { Palette } from "std-widgets.slint";
 // desktop's). Every animation's duration is multiplied by it, so 0 makes changes instant.
 export global Motion {
     in property <float> scale: 1;
+    // The window has the focus: what plays by itself (animated stickers) holds still without it.
+    in property <bool> focused: true;
     // Hover and press feedback, small things appearing.
     out property <duration> fast: 120ms * self.scale;
     // Panels, dialogs and screens coming and going; bars sliding open.
