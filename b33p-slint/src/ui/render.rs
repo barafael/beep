@@ -355,7 +355,7 @@ pub(crate) fn render(
 
     if update.conversations {
         let pinned = chat.pinned().len();
-        let list_time = state::list_time_formatter();
+        let list_time = chat.list_time_formatter();
         let changed = chat.take_changed_chats().filter(|_| !whole_list);
         let conversations = window.global::<ChatList>().get_conversations();
         let conversations = vec_model(&conversations);

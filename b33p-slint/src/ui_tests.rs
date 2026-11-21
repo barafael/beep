@@ -1019,6 +1019,87 @@ fn the_window_shows_the_chat_state() {
     );
 }
 
+/// A recent message's time says how long ago it was, in the chat and in the list, and moves on
+/// with the clock when its row is redrawn (as the half-minute timer does).
+#[test]
+fn recent_times_move_on_with_the_clock() {
+    use b33p_core::state::{ChatState, Clock, Update};
+    use b33p_core::{ChatMessage, ChatSettings, Conversation, ConversationId, Event};
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 500.));
+    crate::ui::set_up_models(&window);
+    let start = 1_700_000_000_000;
+    let clock = Clock::fixed(start);
+    let ann = ConversationId::contact("ann");
+    let mut chat = ChatState::default();
+    chat.set_clock(clock.clone());
+    chat.apply(Event::Linked {
+        account: "me".into(),
+        service_id: "me".into(),
+    });
+    chat.apply(Event::Synced);
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: ann.clone(),
+        title: "Ann".into(),
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    chat.select(&ann);
+    chat.apply(Event::History {
+        conversation: ann.clone(),
+        messages: vec![ChatMessage {
+            conversation: ann.clone(),
+            sender_id: "ann".into(),
+            sender: "Ann".into(),
+            body: "hi".into(),
+            timestamp: start - 30_000,
+            ..ChatMessage::default()
+        }],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let images = crate::Images::default();
+    crate::ui::render(
+        &window,
+        &chat,
+        &images,
+        Update {
+            screen: true,
+            ..Update::reset()
+        },
+        true,
+    );
+    window.show().unwrap();
+    settle(&window);
+    let times = |window: &AppWindow| {
+        let row = window
+            .global::<OpenChat>()
+            .get_messages()
+            .row_data(0)
+            .unwrap();
+        let listed = window
+            .global::<ChatList>()
+            .get_conversations()
+            .row_data(0)
+            .unwrap();
+        (row.time.to_string(), listed.time.to_string())
+    };
+    assert_eq!(times(&window), ("now".into(), "now".into()));
+
+    clock.set(start + 5 * 60_000);
+    let update = chat.note_recent();
+    crate::ui::render(&window, &chat, &images, update, false);
+    settle(&window);
+    assert_eq!(times(&window), ("5 min".into(), "5 min".into()));
+}
+
 /// The chat list follows events row by row: a chat with a new message moves to the top with
 /// its new preview, and the rows it passed move down.
 #[test]

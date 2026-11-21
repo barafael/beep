@@ -53,12 +53,36 @@ pub(crate) fn local_date_in(tz: &jiff::tz::TimeZone, timestamp: u64) -> Option<j
     Some(tz.to_datetime(time).date())
 }
 
+/// How long a time is told by how long ago it was ("5 min"), not by the clock.
+pub const RECENT_MS: u64 = 60 * 60 * 1000;
+
+/// "now" within the last minute, "5 min" within the last hour; `None` before that, or for a
+/// time more than a minute ahead (a sender's clock can be wrong by days). `now` and
+/// `timestamp` are ms since the epoch.
+pub fn format_elapsed(timestamp: u64, now: u64) -> Option<String> {
+    if timestamp > now.saturating_add(60_000) {
+        return None;
+    }
+    let seconds = now.saturating_sub(timestamp) / 1000;
+    match seconds {
+        0..60 => Some("now".into()),
+        60..3600 => Some(format!("{} min", seconds / 60)),
+        _ => None,
+    }
+}
+
 /// "14:05": the time of day, for message bubbles (days have their own separators).
 pub fn format_clock(timestamp: u64) -> String {
     zoned(timestamp).map_or_else(String::new, |time| time.strftime("%H:%M").to_string())
 }
 
-/// For the chat list: "14:05" today, "Mon" this week, "Oct 2" this year, "Oct 2, 2024" before.
+/// [`format_clock`], but [`format_elapsed`] for the last hour's.
+pub fn format_clock_at(timestamp: u64, now: u64) -> String {
+    format_elapsed(timestamp, now).unwrap_or_else(|| format_clock(timestamp))
+}
+
+/// For the chat list: "now" and "5 min" for the last hour (see [`format_elapsed`]), "14:05"
+/// today, "Mon" this week, "Oct 2" this year, "Oct 2, 2024" before.
 pub fn format_list_time(timestamp: u64) -> String {
     format_list_time_at(timestamp, &jiff::ZonedDateTime::now())
 }
@@ -86,6 +110,10 @@ pub(super) fn until_midnight_after(now: &jiff::ZonedDateTime) -> std::time::Dura
 }
 
 pub(super) fn format_list_time_at(timestamp: u64, now: &jiff::ZonedDateTime) -> String {
+    let now_ms = u64::try_from(now.timestamp().as_millisecond()).unwrap_or(0);
+    if let Some(elapsed) = format_elapsed(timestamp, now_ms) {
+        return elapsed;
+    }
     let Some(time) = zoned(timestamp) else {
         return String::new();
     };
