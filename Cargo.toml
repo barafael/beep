@@ -29,13 +29,13 @@ thiserror = "2"
 # Branch slint/integration-branch of our Slint fork: upstream master plus our open pull requests
 # (and edualc's `edualc-text`); the branch's `integration.sh` lists them and rebuilds it.
 # Go back to crates.io once a release carries what b33p uses.
-slint = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba", default-features = false }
-slint-build = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba" }
+slint = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f", default-features = false }
+slint-build = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f" }
 # The internals b33p names directly. Its helper crates come with the fork.
-i-slint-core = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba" }
-i-slint-common = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba" }
-i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba" }
-i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "2b08ac64731376a2246480de220f3f653bd3c7ba", default-features = false }
+i-slint-core = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f" }
+i-slint-common = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f" }
+i-slint-backend-testing = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f" }
+i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "e1185c98db67cce0dc0d84fbd1025d8735722b5f", default-features = false }
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
 # requests, one commit per theme (2026-11-09), new code in modules of their own

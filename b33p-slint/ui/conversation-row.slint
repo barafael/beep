@@ -2,13 +2,14 @@ import { Motion, Theme } from "theme.slint";
 import { ConversationItem, PreviewKind } from "types.slint";
 import { MuteChoices } from "globals.slint";
 import { Avatar, Caption, Icon, Pressable } from "widgets.slint";
+import { AppMenu } from "menu.slint";
 
 // What can be done with a conversation, in its context menu and the chat header's menu.
-export component ConversationMenu inherits ContextMenuArea {
+export component ConversationMenu inherits AppMenu {
     in property <ConversationItem> item;
-    // The chat header's menu. It opens against the window's right edge, where a submenu has no
-    // room beside it and would open over the menu itself, so it has none: muting for a while
-    // and the disappearing-messages timer are in the chat's details instead.
+    // The chat header's menu. It opens against the window's right edge, where a submenu would
+    // have to open over the menu itself, so it has none: muting for a while and the
+    // disappearing-messages timer are in the chat's details instead.
     in property <bool> in-header;
     callback toggle-pin;
     // Among the pinned chats: -1 up, 1 down.
@@ -22,51 +23,38 @@ export component ConversationMenu inherits ContextMenuArea {
     callback show-media;
     callback show-details;
     property <bool> unread: root.item.unread > 0 || root.item.marked-unread;
-    Menu {
-        MenuItem {
-            title: root.item.pinned ? "Unpin" : "Pin";
-            activated => { root.toggle-pin(); }
-        }
-        if root.item.can-move-up: MenuItem {
-            title: "Move up";
-            activated => { root.move-pin(-1); }
-        }
-        if root.item.can-move-down: MenuItem {
-            title: "Move down";
-            activated => { root.move-pin(1); }
-        }
-        MenuItem {
-            title: root.unread ? "Mark as read" : "Mark as unread";
-            activated => { root.mark-read(root.unread); }
-        }
-        if root.item.muted: MenuItem {
-            title: "Unmute";
-            activated => { root.mute(0); }
-        }
-        if !root.item.muted && !root.in-header: Menu {
-            title: "Mute";
-            for choice in MuteChoices.choices: MenuItem {
-                title: choice.label;
-                activated => { root.mute(choice.seconds); }
-            }
-        }
-        if root.in-header: MenuItem {
-            title: "Details";
-            activated => { root.show-details(); }
-        }
-        if root.in-header: MenuItem {
-            title: "Media, files and links";
-            activated => { root.show-media(); }
-        }
-        MenuSeparator {}
-        MenuItem {
-            title: root.item.blocked ? "Unblock" : "Block";
-            activated => { root.block(!root.item.blocked); }
-        }
-        MenuItem {
-            title: root.item.archived ? "Unarchive" : "Archive";
-            activated => { root.archive(!root.item.archived); }
-        }
+    property <bool> mute-sub: !root.item.muted && !root.in-header;
+    choices: [
+        { id: "pin", title: root.item.pinned ? "Unpin" : "Pin" },
+        { id: "up", title: "Move up", hidden: !root.item.can-move-up },
+        { id: "down", title: "Move down", hidden: !root.item.can-move-down },
+        { id: "read", title: root.unread ? "Mark as read" : "Mark as unread" },
+        { id: "unmute", title: "Unmute", hidden: !root.item.muted },
+        { id: "mute", title: "Mute", hidden: !root.mute-sub, sub: true },
+        { id: "details", title: "Details", hidden: !root.in-header },
+        { id: "media", title: "Media, files and links", hidden: !root.in-header },
+        { separator: true },
+        { id: "block", title: root.item.blocked ? "Unblock" : "Block" },
+        { id: "archive", title: root.item.archived ? "Unarchive" : "Archive" },
+    ];
+    // By the seconds each mutes for (each of `MuteChoices.choices`).
+    sub-choices: root.mute-sub ? [
+        { id: MuteChoices.choices[0].seconds, title: MuteChoices.choices[0].label },
+        { id: MuteChoices.choices[1].seconds, title: MuteChoices.choices[1].label },
+        { id: MuteChoices.choices[2].seconds, title: MuteChoices.choices[2].label },
+        { id: MuteChoices.choices[3].seconds, title: MuteChoices.choices[3].label },
+    ] : [];
+    chosen(id) => {
+        if id == "pin" { root.toggle-pin(); }
+        else if id == "up" { root.move-pin(-1); }
+        else if id == "down" { root.move-pin(1); }
+        else if id == "read" { root.mark-read(root.unread); }
+        else if id == "unmute" { root.mute(0); }
+        else if id == "details" { root.show-details(); }
+        else if id == "media" { root.show-media(); }
+        else if id == "block" { root.block(!root.item.blocked); }
+        else if id == "archive" { root.archive(!root.item.archived); }
+        else { root.mute(id.to-float()); }
     }
 }
 

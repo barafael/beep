@@ -4,6 +4,7 @@ import { TextSelection } from "globals.slint";
 import { Avatar, Caption, Chip, Icon, IconButton, Popover, Small } from "widgets.slint";
 import { AlbumCell, AttachmentView } from "attachment.slint";
 import { EmojiPicker } from "emoji.slint";
+import { AppMenu } from "menu.slint";
 
 // Quick reactions, as in Signal's own apps: a bar over the bubble, there while the pointer
 // rests on the message or on the bar itself; "+" opens every emoji.
@@ -800,74 +801,43 @@ export component Bubble inherits Rectangle {
     }
 
     // On top: it takes only right clicks.
-    menu := ContextMenuArea {
-        Menu {
-            if !item.notice: MenuItem {
-                title: item.selected ? "Unselect" : "Select";
-                activated => { root.toggle-select(); }
-            }
-            if !item.deleted && !item.notice: MenuItem {
-                title: "Reply";
-                activated => { root.reply(); }
-            }
-            if !item.deleted && !item.notice: MenuItem {
-                title: "React…";
-                activated => { root.picker-shown = true; }
-            }
-            if TextSelection.owner == root.index: MenuItem {
-                title: "Copy selection";
-                activated => { TextSelection.copy(); }
-            }
-            if item.text != "": MenuItem {
-                title: "Copy text";
-                activated => { root.copy-text(item.text); }
-            }
-            if item.can-forward: MenuItem {
-                title: "Forward…";
-                activated => { root.forward(); }
-            }
-            if item.has-info: MenuItem {
-                title: "Info";
-                activated => { root.info(); }
-            }
-            if item.can-edit: MenuItem {
-                title: "Edit";
-                activated => { root.edit(); }
-            }
-            // As Signal-Desktop's "Pin message for…", in a submenu instead of a dialog.
-            if root.can-pin && !root.pinned && !item.deleted && !item.notice && item.delivery != DeliveryState.sending
-                && item.delivery != DeliveryState.failed: Menu {
-                title: root.pins-full ? "Pin, replacing the oldest pin" : "Pin";
-                MenuItem {
-                    title: "For 24 hours";
-                    activated => { root.pin(24 * 3600); }
-                }
-                MenuItem {
-                    title: "For 7 days";
-                    activated => { root.pin(7 * 24 * 3600); }
-                }
-                MenuItem {
-                    title: "For 30 days";
-                    activated => { root.pin(30 * 24 * 3600); }
-                }
-                MenuItem {
-                    title: "Until unpinned";
-                    activated => { root.pin(0); }
-                }
-            }
-            if root.can-pin && root.pinned: MenuItem {
-                title: "Unpin";
-                activated => { root.unpin(); }
-            }
-            if !item.deleted && !item.notice: MenuSeparator {}
-            if !item.notice: MenuItem {
-                title: "Delete for me";
-                activated => { root.delete(false); }
-            }
-            if item.can-edit: MenuItem {
-                title: "Delete for everyone";
-                activated => { root.delete(true); }
-            }
+    menu := AppMenu {
+        // As Signal-Desktop's "Pin message for…", in a submenu instead of a dialog.
+        property <bool> can-pin-now: root.can-pin && !root.pinned && !item.deleted && !item.notice
+            && item.delivery != DeliveryState.sending && item.delivery != DeliveryState.failed;
+        choices: [
+            { id: "select", title: item.selected ? "Unselect" : "Select", hidden: item.notice },
+            { id: "reply", title: "Reply", hidden: item.deleted || item.notice },
+            { id: "react", title: "React…", hidden: item.deleted || item.notice },
+            { id: "copy-selection", title: "Copy selection", hidden: TextSelection.owner != root.index },
+            { id: "copy", title: "Copy text", hidden: item.text == "" },
+            { id: "forward", title: "Forward…", hidden: !item.can-forward },
+            { id: "edit", title: "Edit", hidden: !item.can-edit },
+            { id: "pin", title: root.pins-full ? "Pin, replacing the oldest pin" : "Pin", hidden: !self.can-pin-now, sub: true },
+            { id: "unpin", title: "Unpin", hidden: !(root.can-pin && root.pinned) },
+            { separator: true, hidden: item.deleted || item.notice },
+            { id: "delete", title: "Delete for me", hidden: item.notice },
+            { id: "delete-everyone", title: "Delete for everyone", hidden: !item.can-edit },
+        ];
+        // By the seconds each pins for, 0 until unpinned.
+        sub-choices: self.can-pin-now ? [
+            { id: 24 * 3600, title: "For 24 hours" },
+            { id: 7 * 24 * 3600, title: "For 7 days" },
+            { id: 30 * 24 * 3600, title: "For 30 days" },
+            { id: 0, title: "Until unpinned" },
+        ] : [];
+        chosen(id) => {
+            if id == "select" { root.toggle-select(); }
+            else if id == "reply" { root.reply(); }
+            else if id == "react" { root.picker-shown = true; }
+            else if id == "copy-selection" { TextSelection.copy(); }
+            else if id == "copy" { root.copy-text(item.text); }
+            else if id == "forward" { root.forward(); }
+            else if id == "edit" { root.edit(); }
+            else if id == "unpin" { root.unpin(); }
+            else if id == "delete" { root.delete(false); }
+            else if id == "delete-everyone" { root.delete(true); }
+            else { root.pin(id.to-float()); }
         }
     }
 }
