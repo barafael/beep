@@ -1,5 +1,8 @@
 # Tour: follow-ups, observations, notes
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 The testbox's `tour` phase runs several b33ps in one pod, each linked to a presage-cli primary of
 its own. They write to each other through every feature b33p has, in an order drawn from a seed,
 and after each step every b33p it reached is checked against a model of the chats. The work is on

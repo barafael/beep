@@ -1,5 +1,8 @@
 # Actors in b33p-core
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 A plan to move b33p-core's signal backend from tasks that share state to actors that own it,
 after [More actors with tokio](https://barafael.github.io/posts/more-actors-with-tokio/). The
 first one, `Sending` (b33p-core/src/outbox.rs, #60), is done; the steps below take the rest one

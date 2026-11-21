@@ -1,5 +1,8 @@
 # What a long-lived account has that the test box doesn't
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 The contact names (#149) were missing for a reason all the checks shared: the test box's accounts
 are a day old. Everyone there has a profile name, everyone has written to everyone, and nobody
 has an address book, nicknames, defaults set on the phone, or deletes made elsewhere. What only a

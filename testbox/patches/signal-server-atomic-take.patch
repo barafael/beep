@@ -3,7 +3,7 @@ returning ALL_OLD (`SingleUseECPreKeyStore.take`). Whoever gets the old item bac
 which relies on DynamoDB applying the delete atomically. Real DynamoDB does; DynamoDB Local
 doesn't. Two simultaneous deletes of one item both get it back, so two senders fetching a
 bundle at once get the same one-time key, and the second session's pre-key message fails to
-decrypt (pending/tour.md, finding 17). DynamoDB Local's conditional writes are atomic, so the
+decrypt (docs/testbox-tour.md, finding 17). DynamoDB Local's conditional writes are atomic, so the
 delete here only goes through while the key exists, and a delete that loses counts as no key,
 as an empty ALL_OLD does: `take` moves on to the next one. Against real DynamoDB this changes
 nothing.

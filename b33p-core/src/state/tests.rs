@@ -4119,7 +4119,7 @@ fn stories_are_watched_in_order() {
 }
 
 /// Blocking shows at once, while the backend takes the block in turn, after the commands ahead
-/// of it: a message it receives in between still comes, and isn't shown (pending/tour.md,
+/// of it: a message it receives in between still comes, and isn't shown (docs/testbox-tour.md,
 /// finding 5). What we send from another device still is, as the backend has it.
 #[test]
 fn a_message_after_blocking_isnt_shown() {
@@ -4138,7 +4138,7 @@ fn a_message_after_blocking_isnt_shown() {
 }
 
 /// A group's open details are read again when a change to it comes (its notice), so that a
-/// member leaving shows without opening them again (pending/tour.md, finding 3).
+/// member leaving shows without opening them again (docs/testbox-tour.md, finding 3).
 #[test]
 fn a_change_to_a_group_reloads_its_open_details() {
     let reloads = |state: &mut ChatState| {
