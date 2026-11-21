@@ -9,6 +9,8 @@ pub(super) struct Rows<'a> {
     pub(super) history: &'a [ChatMessage],
     pub(super) group: bool,
     pub(super) now: jiff::ZonedDateTime,
+    /// `now` in ms since the epoch.
+    pub(super) now_ms: u64,
     pub(super) tz: jiff::tz::TimeZone,
     pub(super) first_unread: Option<usize>,
 }
@@ -29,6 +31,7 @@ impl<'a> Rows<'a> {
             history,
             group: state.selected().is_some_and(Conversation::is_group),
             now: now.to_zoned_datetime(tz.clone()),
+            now_ms: u64::try_from(now.as_millisecond()).unwrap_or(0),
             tz,
             first_unread: read_mark.and_then(|mark| first_unread(history, mark)),
         }
@@ -76,6 +79,7 @@ impl<'a> Rows<'a> {
                 &message.mentions
             },
             day: (before != date).then(|| day_label(message.timestamp, &self.now)),
+            time: format_clock_at(message.timestamp, self.now_ms),
             first_of_run,
             last_of_run: next.is_none_or(|n| !same_run(message, n, date == after)),
             first_unread: self.first_unread == Some(i),

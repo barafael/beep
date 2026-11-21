@@ -470,6 +470,71 @@ fn typing_and_mutes_run_out_by_the_clock() {
     assert!(!state.conversation_view(&id("g")).unwrap().muted());
 }
 
+/// Times from the last hour say how long ago they were, by the state's clock, in the chat and
+/// in the list, and are noted for a redraw as they change; older ones tell the time.
+#[test]
+fn recent_times_say_how_long_ago() {
+    let start = 1_700_000_000_000;
+    let clock = Clock::fixed(start);
+    let mut state = state();
+    state.set_clock(clock.clone());
+    state.apply(Event::History {
+        conversation: id("a"),
+        messages: vec![
+            message("a", "Ann", start - 2 * 3_600_000, false),
+            message("a", "Ann", start - 10 * 60_000, false),
+            message("a", "Ann", start - 20_000, false),
+        ],
+        reactions: Vec::new(),
+        older: None,
+    });
+    state.select(&id("a"));
+    let times = |state: &ChatState| state.messages().map(|m| m.time).collect::<Vec<_>>();
+    let old = format_clock(start - 2 * 3_600_000);
+    assert_eq!(times(&state), [old.as_str(), "10 min", "now"]);
+    assert_eq!(state.list_time_formatter()(start - 20_000), "now");
+    assert!(state.shows_recent());
+
+    clock.set(start + 50 * 60_000);
+    assert_eq!(
+        times(&state),
+        [
+            old.clone(),
+            format_clock(start - 10 * 60_000),
+            "50 min".into()
+        ]
+    );
+    state.take_changed_rows();
+    state.take_changed_chats();
+    let update = state.note_recent();
+    assert!(update.rows && update.conversations);
+    // The one that just turned "14:05" too.
+    assert_eq!(state.take_changed_rows().map(|rows| rows.len()), Some(2));
+    assert!(state.take_changed_chats().unwrap().contains(&id("a")));
+
+    clock.set(start + 2 * 3_600_000);
+    assert!(!state.shows_recent());
+    assert_eq!(state.note_recent(), Update::default());
+}
+
+/// "now" within a minute (and a minute ahead), minutes within the hour, nothing after.
+#[test]
+fn elapsed_times_end_after_an_hour() {
+    let now = 1_700_000_000_000;
+    let at = |ago: i64| format_elapsed((now as i64 - ago) as u64, now);
+    assert_eq!(at(0).as_deref(), Some("now"));
+    assert_eq!(at(59_999).as_deref(), Some("now"));
+    assert_eq!(at(60_000).as_deref(), Some("1 min"));
+    assert_eq!(at(3_599_999).as_deref(), Some("59 min"));
+    assert_eq!(at(3_600_000), None);
+    assert_eq!(
+        at(-60_000).as_deref(),
+        Some("now"),
+        "a clock a little ahead"
+    );
+    assert_eq!(at(-60_001), None, "a clock far ahead");
+}
+
 /// A message without words is previewed by what it carries, in words with an icon (the
 /// emoji are for notifications); so is a change of the timer.
 #[test]

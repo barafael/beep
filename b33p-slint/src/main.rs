@@ -103,6 +103,8 @@ pub struct Shared {
     midnight_timer: slint::Timer,
     /// Redraws the open chat's messages once a minute while some of them disappear.
     expiry_timer: slint::Timer,
+    /// Redraws the times that say how long ago they were ("5 min").
+    recent_timer: slint::Timer,
     /// Audio and voice messages playing here.
     player: RefCell<audio::Player>,
     /// Asked to play once downloaded.
@@ -284,6 +286,25 @@ impl Shared {
             }
         } else {
             self.expiry_timer.stop();
+        }
+        // Times from the last hour say how long ago they were ("5 min"): redrawn every half
+        // minute, those alone, while any shows.
+        if chat.shows_recent() {
+            if !self.recent_timer.running() {
+                let me = self.me.clone();
+                self.recent_timer.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_secs(30),
+                    move || {
+                        if let Some(shared) = me.upgrade() {
+                            let update = shared.chat.borrow_mut().note_recent();
+                            shared.refresh_after_events(update);
+                        }
+                    },
+                );
+            }
+        } else {
+            self.recent_timer.stop();
         }
         // A download asked to play has arrived.
         let pending = self.pending_play.borrow().clone();
@@ -649,6 +670,7 @@ fn main() -> Result<(), slint::PlatformError> {
         typing_timer: slint::Timer::default(),
         midnight_timer: slint::Timer::default(),
         expiry_timer: slint::Timer::default(),
+        recent_timer: slint::Timer::default(),
         player: RefCell::default(),
         pending_play: RefCell::default(),
         playback_timer: slint::Timer::default(),

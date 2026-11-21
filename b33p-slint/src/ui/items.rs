@@ -82,7 +82,7 @@ pub(super) fn message_rows(model: &ModelRc<MessageItem>) -> &Rows<MessageItem> {
         .expect("the messages are Rows, set up in create")
 }
 
-/// `list_time` formats the time of the last message; see [`state::list_time_formatter`].
+/// `list_time` formats the time of the last message; see [`ChatState::list_time_formatter`].
 pub(super) fn conversation_item(
     view: &ConversationView,
     pinned: usize,
@@ -197,7 +197,7 @@ pub(super) fn message_item(
         body: images.text(view.body, view.styles, view.mentions, view.revealed),
         selected: view.selected,
         has_body: !view.body.is_empty(),
-        time: state::format_clock(m.timestamp).into(),
+        time: view.time.as_str().into(),
         sent_minute: sent_minute(m.timestamp),
         outgoing: m.outgoing,
         show_sender: view.show_sender,

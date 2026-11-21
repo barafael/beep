@@ -179,6 +179,59 @@ impl ChatState {
             .any(|m| m.expires_at.is_some() && !m.deleted)
     }
 
+    /// Whether a time shown says how long ago it was ("5 min", see [`format_elapsed`]), and so
+    /// changes as the clock goes on: the open chat's newest message, or a listed chat's last,
+    /// is from the last hour.
+    pub fn shows_recent(&self) -> bool {
+        let since = self.now().saturating_sub(RECENT_MS);
+        self.selected_history()
+            .last()
+            .is_some_and(|m| m.timestamp >= since)
+            || self
+                .conversations
+                .iter()
+                .any(|c| self.last_of(&c.id).is_some_and(|m| m.timestamp >= since))
+    }
+
+    /// Notes the rows and chats whose times say how long ago they were (see
+    /// [`ChatState::shows_recent`]) as changed, so that a redraw takes them alone. A minute
+    /// more than the last hour: the one that just turned "14:05" is redrawn too.
+    pub fn note_recent(&mut self) -> Update {
+        let since = self.now().saturating_sub(RECENT_MS + 60_000);
+        // Sorted by time, so the recent ones are at the end.
+        let rows: Vec<MessageRef> = self
+            .selected_history()
+            .iter()
+            .rev()
+            .take_while(|m| m.timestamp >= since)
+            .map(ChatMessage::reference)
+            .collect();
+        let chats: Vec<ConversationId> = self
+            .conversations
+            .iter()
+            .filter(|c| self.last_of(&c.id).is_some_and(|m| m.timestamp >= since))
+            .map(|c| c.id.clone())
+            .collect();
+        let update = Update {
+            rows: !rows.is_empty(),
+            conversations: !chats.is_empty(),
+            ..Update::default()
+        };
+        self.changed_rows.get_mut().note(rows);
+        for chat in chats {
+            self.changed_chats.get_mut().note(Some(chat));
+        }
+        update
+    }
+
+    /// [`list_time_formatter`] by the state's clock.
+    pub fn list_time_formatter(&self) -> impl Fn(u64) -> String + use<> {
+        let now = jiff::Timestamp::from_millisecond(self.now() as i64)
+            .unwrap_or_else(|_| jiff::Timestamp::now())
+            .to_zoned_datetime(jiff::tz::TimeZone::system());
+        move |timestamp| format_list_time_at(timestamp, &now)
+    }
+
     /// Whether the open chat has older messages that aren't being fetched already.
     pub fn can_load_older(&self) -> bool {
         self.selected.as_ref().is_some_and(|id| {

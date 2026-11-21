@@ -276,6 +276,9 @@ pub struct MessageView<'a> {
     pub mentions: &'a [Mention],
     /// "Today", "Yesterday", "Monday", "Oct 2": set on the first message of each day.
     pub day: Option<String>,
+    /// When it was sent: "now" and "5 min" for the last hour by the state's clock, else
+    /// "14:05" (see [`format_clock_at`]).
+    pub time: String,
     /// Messages by the same person within a few minutes form a run, drawn close together.
     pub first_of_run: bool,
     pub last_of_run: bool,
