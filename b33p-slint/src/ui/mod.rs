@@ -200,10 +200,12 @@ impl Window {
         } else {
             i_slint_core::context::MotionPreference::Reduced
         };
-        let _ = i_slint_core::context::with_global_context(
+        if let Err(error) = i_slint_core::context::with_global_context(
             || Err(slint::PlatformError::NoPlatform),
             |context| context.set_motion_preference(preference),
-        );
+        ) {
+            tracing::warn!(%error, "failed to set Slint's reduced motion");
+        }
     }
 
     /// What "Check for updates" found (`version`, empty if nothing) and is doing.
