@@ -14,8 +14,6 @@ export struct ConversationItem {
     preview: string,
     // When the newest message came: "14:05", "Mon", "Oct 2".
     time: string,
-    // Minutes since the Unix epoch of the newest message, 0 if unknown.
-    sent-minute: int,
     // Under the title in the chat header: a phone number, "4 members", …
     subtitle: string,
     unread: int,
@@ -133,8 +131,8 @@ export struct MessageItem {
     body: styled-text,
     has-body: bool,
     time: string,
-    // Minutes since the Unix epoch of the message, 0 if unknown.
-    sent-minute: int,
+    // Show the time and ticks: not when the next message is of the same run and minute.
+    show-time: bool,
     outgoing: bool,
     // Show the sender above the bubble (groups, first of a run).
     show-sender: bool,

@@ -283,6 +283,9 @@ pub struct MessageView<'a> {
     /// Messages by the same person within a few minutes form a run, drawn close together.
     pub first_of_run: bool,
     pub last_of_run: bool,
+    /// Show its time (and ticks): not when the next message is of its run and its minute,
+    /// which shows the same.
+    pub show_time: bool,
     /// The sender's picture, if known (for incoming group messages).
     pub sender_avatar: Option<&'a Arc<Picture>>,
     /// The first message that arrived after the conversation was last read.

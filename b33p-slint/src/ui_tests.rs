@@ -53,6 +53,7 @@ fn message(text: &str) -> MessageItem {
         text: text.into(),
         first: true,
         last: true,
+        show_time: true,
         ..Default::default()
     }
 }
@@ -583,7 +584,7 @@ fn scrolling_to_the_top_asks_for_older_messages() {
 fn older_messages_put_in_above_leave_the_view_in_place() {
     let (window, messages) = window_with_messages(60);
     // Away from the bottom, so the list no longer follows new messages.
-    for _ in 0..6 {
+    for _ in 0..4 {
         scroll(&window, 300.);
     }
     let label = (20..60)
