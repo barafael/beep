@@ -123,6 +123,8 @@ export component Bubble inherits Rectangle {
     callback copy-text(string);
     callback reveal;
     callback forward;
+    // Shows whom it went to, and when it arrived and was read.
+    callback info;
     // Pinned in the chat, and whether messages can be pinned there; see `OpenChat.pins`.
     in property <bool> pinned;
     in property <bool> can-pin;
@@ -808,6 +810,10 @@ export component Bubble inherits Rectangle {
             if item.can-forward: MenuItem {
                 title: "Forward…";
                 activated => { root.forward(); }
+            }
+            if item.has-info: MenuItem {
+                title: "Info";
+                activated => { root.info(); }
             }
             if item.can-edit: MenuItem {
                 title: "Edit";

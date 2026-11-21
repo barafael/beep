@@ -569,6 +569,8 @@ fn close_front(shared: &Rc<Shared>, window: &AppWindow) -> bool {
         chat.close_group_draft();
     } else if chat.forwarding() {
         chat.cancel_forward();
+    } else if chat.message_info().is_some() {
+        chat.close_message_info();
     } else if chat.has_selection() {
         let update = chat.clear_selection();
         drop(chat);

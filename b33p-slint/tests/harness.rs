@@ -471,6 +471,39 @@ fn attachments_are_fetched_and_saved() {
 }
 
 /// A photo opens in the picture viewer, which downloads it whole and zooms; only photos do.
+/// A message of ours in a group: its info names every member, with who read it and who only got
+/// it, as the backend says.
+#[test]
+fn a_group_message_s_info_names_its_readers() {
+    let (_app, mut agent) = app("info");
+    let chats = wait_for_chats(&mut agent);
+    agent.select(&id_of(&chats, "Rustaceans 🦀"));
+    // The history, not only the last message the list had: the indexes hold from then on.
+    let shown = agent.wait_for("the history", |s| {
+        s.messages.iter().any(|m| m.text == "Slint it is, then.")
+            && s.messages.iter().any(|m| !m.outgoing)
+    });
+    let ours = message(&shown, "Slint it is, then.").unwrap().index;
+    let theirs = shown.messages.iter().find(|m| !m.outgoing).unwrap().index;
+    assert!(!agent.act(Action::OpenMessageInfo { index: theirs }));
+    assert!(agent.act(Action::OpenMessageInfo { index: ours }));
+    let info = agent.wait_for("the receipts", |s| matches!(s.message_info, Some(Some(_))));
+    let receipts = info.message_info.unwrap().unwrap();
+    let read: Vec<&str> = receipts
+        .iter()
+        .filter(|r| r.read_at.is_some())
+        .map(|r| r.name.as_str())
+        .collect();
+    assert_eq!(read, ["Carol", "Dana"]);
+    assert!(
+        receipts
+            .iter()
+            .any(|r| r.name == "Eve" && r.delivered_at.is_some() && r.read_at.is_none())
+    );
+    agent.act(Action::CloseMessageInfo);
+    agent.wait_for("the info closed", |s| s.message_info.is_none());
+}
+
 #[test]
 fn photos_open_in_the_viewer() {
     let (_app, mut agent) = app("viewer");

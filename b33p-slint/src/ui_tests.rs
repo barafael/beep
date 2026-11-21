@@ -10,7 +10,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::generated::{
     Account, AppWindow, ChatList, ChatNotify, Composer, ConversationItem, DeliveryState, Groups,
-    MessageItem, OpenChat, Panels, Prefs, ReaderItem, Screen, StoryItem, Viewer,
+    MessageItem, OpenChat, Panels, Prefs, ReaderItem, Receipts, Screen, StoryItem, Viewer,
 };
 use crate::rows::Rows;
 
@@ -1136,6 +1136,111 @@ fn readers_show_under_a_message() {
         1,
         "the rest counted"
     );
+}
+
+/// A message's info opens over the chat, gathering first, then naming each recipient with how
+/// far it got (who read it first); Esc's way out closes it.
+#[test]
+fn a_message_s_info_lists_its_receipts() {
+    use b33p_core::state::{ChatState, Update};
+    use b33p_core::{
+        ChatMessage, ChatSettings, Conversation, ConversationId, Event, MessageInfo, Person,
+        Receipt,
+    };
+
+    i_slint_backend_testing::init_no_event_loop();
+    let window = AppWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(800., 600.));
+    crate::ui::set_up_models(&window);
+    let ann = ConversationId::contact("ann");
+    let mut chat = ChatState::default();
+    chat.apply(Event::Linked {
+        account: "me".into(),
+        service_id: "me".into(),
+    });
+    chat.apply(Event::Synced);
+    chat.apply(Event::Conversations(vec![Conversation {
+        id: ann.clone(),
+        title: "Ann".into(),
+        settings: ChatSettings {
+            accepted: true,
+            ..ChatSettings::default()
+        },
+        ..Conversation::default()
+    }]));
+    chat.select(&ann);
+    let sent = b33p_core::now_millis() - 60_000;
+    chat.apply(Event::History {
+        conversation: ann.clone(),
+        messages: vec![ChatMessage {
+            conversation: ann.clone(),
+            sender_id: "me".into(),
+            sender: "You".into(),
+            body: "hello".into(),
+            timestamp: sent,
+            outgoing: true,
+            ..ChatMessage::default()
+        }],
+        reactions: Vec::new(),
+        older: None,
+    });
+    let images = crate::Images::default();
+    let draw = |chat: &ChatState, update| {
+        crate::ui::render(&window, chat, &images, update, true);
+        settle(&window);
+    };
+    draw(
+        &chat,
+        Update {
+            screen: true,
+            ..Update::reset()
+        },
+    );
+    window.show().unwrap();
+    let Some(b33p_core::Command::LoadMessageInfo { target, .. }) = chat.open_message_info(0) else {
+        panic!("ours, and sent");
+    };
+    draw(&chat, Update::default());
+    assert!(find(&window, "Gathering the receipts").is_some());
+
+    let person = |name: &str| Person {
+        service_id: name.to_lowercase(),
+        name: name.into(),
+    };
+    chat.apply(Event::MessageInfo {
+        conversation: ann,
+        target,
+        info: MessageInfo {
+            recipients: vec![
+                Receipt {
+                    person: person("Bob"),
+                    delivered_at: None,
+                    read_at: None,
+                },
+                Receipt {
+                    person: person("Ann"),
+                    delivered_at: Some(sent + 1000),
+                    read_at: Some(sent + 2000),
+                },
+            ],
+        },
+    });
+    draw(&chat, Update::default());
+    assert!(find(&window, "Gathering the receipts").is_none());
+    let names: Vec<String> = window
+        .global::<Receipts>()
+        .get_recipients()
+        .iter()
+        .map(|r| r.name.to_string())
+        .collect();
+    assert_eq!(names, ["Ann", "Bob"], "who read it first");
+    assert!(find(&window, "Bob: Sent").is_some());
+
+    chat.close_message_info();
+    draw(&chat, Update::default());
+    assert!(!window.global::<Receipts>().get_open());
 }
 
 /// The chat list follows events row by row: a chat with a new message moves to the top with
