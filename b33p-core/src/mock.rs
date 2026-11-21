@@ -473,6 +473,10 @@ fn session(commands: &Inbox, events: &Events) -> bool {
                     AttachmentKind::Audio | AttachmentKind::VoiceNote => {
                         Ok(AttachmentContent::Audio(tone_wav().into()))
                     }
+                    // Stickers move, as many do.
+                    AttachmentKind::Sticker => {
+                        Ok(AttachmentContent::Animation(Arc::new(turning(128, 12))))
+                    }
                     _ => Ok(AttachmentContent::Picture(Arc::new(gradient(
                         Scale::get().picture,
                     )))),
@@ -1076,6 +1080,35 @@ pub fn tone_wav() -> Vec<u8> {
 }
 
 /// A diagonal gradient, standing in for a profile picture.
+/// [`gradient`] turning: `frames` frames, a tenth of a second each, its colours a step further
+/// round each time.
+fn turning(side: u32, frames: u32) -> crate::Animation {
+    let still = gradient(side);
+    crate::Animation {
+        frames: (0..frames)
+            .map(|frame| {
+                let shift = (frame * 255 / frames) as u8;
+                Picture {
+                    rgba: still
+                        .rgba
+                        .chunks(4)
+                        .flat_map(|p| {
+                            [
+                                p[0].wrapping_add(shift),
+                                p[1],
+                                p[2].wrapping_sub(shift),
+                                p[3],
+                            ]
+                        })
+                        .collect(),
+                    ..still.clone()
+                }
+            })
+            .collect(),
+        delays_ms: vec![100; frames as usize],
+    }
+}
+
 fn gradient(side: u32) -> Picture {
     let rgba = (0..side * side)
         .flat_map(|i| {

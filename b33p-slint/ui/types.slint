@@ -61,6 +61,10 @@ export struct AttachmentItem {
     x: length,
     y: length,
     more: int,
+    // An animated sticker's frames, and which frame shows in each 16 ms of its loop; empty for
+    // anything still, which shows `picture`.
+    frames: [image],
+    ticks: [int],
     // Shown as a picture (photos, stickers); otherwise as a row with a label.
     inline: bool,
     // Not shown at all; fetched for its content (the full text of a long message).

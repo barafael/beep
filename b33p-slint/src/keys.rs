@@ -1,4 +1,6 @@
-//! Ctrl shortcuts while an input method composes (Windows). With a Korean IME on, Windows
+//! What b33p takes from winit's window events itself: whether the window has the focus (for
+//! [`Motion`]'s `focused`: animated stickers hold still without it), and Ctrl shortcuts while
+//! an input method composes (Windows). With a Korean IME on, Windows
 //! reports Ctrl+C, Ctrl+V, Ctrl+A and the rest as the key `Process`, and so does winit, both for
 //! the key and for the key without modifiers; Slint finds no text in it and drops the press.
 //! Copy, paste and b33p's own shortcuts then do nothing until the IME is switched off. The
@@ -12,14 +14,22 @@ use slint::winit_030::winit::event::WindowEvent;
 use slint::winit_030::winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use slint::winit_030::{EventResult, WinitWindowAccessor};
 
-use crate::generated::AppWindow;
+use crate::generated::{AppWindow, Motion};
 
-/// Passes Ctrl+letter on to Slint as that letter while the IME holds the key.
-pub fn fix_ctrl_shortcuts(window: &AppWindow) {
+/// Tells the UI whether the window has the focus, and passes Ctrl+letter on to Slint as that
+/// letter while the IME holds the key. Winit takes one such hook per window, hence both here.
+pub fn hook_window_events(window: &AppWindow) {
     let modifiers = std::cell::Cell::new(ModifiersState::empty());
+    let app = window.as_weak();
     window
         .window()
         .on_winit_window_event(move |window, event| match event {
+            WindowEvent::Focused(focused) => {
+                if let Some(app) = app.upgrade() {
+                    app.global::<Motion>().set_focused(*focused);
+                }
+                EventResult::Propagate
+            }
             WindowEvent::ModifiersChanged(changed) => {
                 modifiers.set(changed.state());
                 EventResult::Propagate

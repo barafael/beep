@@ -134,10 +134,30 @@ export component AttachmentView inherits VerticalLayout {
             image-fit: cover;
             opacity: 1 - picture.opacity;
         }
+        // An animated sticker plays while the UI may move and the window has the focus; its
+        // frame follows the clock, so a slow frame never shifts the rest. Off screen, its row
+        // isn't made, so nothing plays there. A timer rather than a binding on
+        // `animation-tick()`, which would redraw the window at every frame of the display: this
+        // way it is redrawn only when the frame changes.
+        property <bool> animating: Motion.scale > 0 && Motion.focused && root.item.frames.length > 1;
+        property <int> frame;
+        Timer {
+            interval: 16ms;
+            running: parent.animating;
+            triggered => {
+                parent.frame = root.item.ticks[Math.mod(floor(animation-tick() / 16ms), root.item.ticks.length)];
+            }
+        }
+        // Which frame shows, for screen readers and tests.
+        if root.item.frames.length > 1: Rectangle {
+            accessible-role: image;
+            accessible-label: "Animated sticker";
+            accessible-value: parent.animating ? parent.frame : 0;
+        }
         picture := Image {
             width: parent.width;
             height: parent.height;
-            source: root.item.picture;
+            source: parent.animating ? root.item.frames[parent.frame] : root.item.picture;
             image-fit: contain;
             opacity: root.item.picture.width > 0 ? 1 : 0;
             animate opacity { duration: Motion.slow; easing: ease-out; }

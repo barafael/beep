@@ -504,9 +504,33 @@ pub(super) fn attachment_item(
         kind,
         AttachmentKind::Image | AttachmentKind::Sticker | AttachmentKind::Video
     );
-    let picture = match download {
-        Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => Some(picture),
-        _ => None,
+    // What shows, with its size: a picture, or an animated sticker's frames (its first
+    // standing for the picture).
+    let (shown, frames, ticks) = match download {
+        Some(AttachmentState::Ready(AttachmentContent::Picture(picture))) => (
+            Some((
+                images
+                    .attachments
+                    .get(&attachment.id, picture, crate::picture_image),
+                picture.width,
+                picture.height,
+            )),
+            ModelRc::default(),
+            ModelRc::default(),
+        ),
+        Some(AttachmentState::Ready(AttachmentContent::Animation(animation))) => {
+            let (frames, ticks) = images.animation(&attachment.id, animation);
+            let first = animation.frames.first();
+            (
+                frames
+                    .row_data(0)
+                    .zip(first)
+                    .map(|(image, f)| (image, f.width, f.height)),
+                frames,
+                ticks,
+            )
+        }
+        _ => (None, ModelRc::default(), ModelRc::default()),
     };
     // Fit into the bubble, keeping the shape the sender reported (or the picture has).
     let (max, fallback) = if kind == AttachmentKind::Sticker {
@@ -514,8 +538,8 @@ pub(super) fn attachment_item(
     } else {
         (280.0, (240.0, 180.0))
     };
-    let (w, h) = match picture {
-        Some(p) => (p.width as f32, p.height as f32),
+    let (w, h) = match &shown {
+        Some((_, width, height)) => (*width as f32, *height as f32),
         None if attachment.width > 0 && attachment.height > 0 => {
             (attachment.width as f32, attachment.height as f32)
         }
@@ -555,13 +579,9 @@ pub(super) fn attachment_item(
         inline,
         hidden: kind == AttachmentKind::LongText,
         fetch: download.is_none() && state::shown_inline(kind),
-        picture: picture
-            .map(|p| {
-                images
-                    .attachments
-                    .get(&attachment.id, p, crate::picture_image)
-            })
-            .unwrap_or_default(),
+        picture: shown.map(|(image, ..)| image).unwrap_or_default(),
+        frames,
+        ticks,
         width: w * scale,
         height: h * scale,
         label: label.into(),

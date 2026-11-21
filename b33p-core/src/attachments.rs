@@ -504,6 +504,17 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
                 size: attachment.size,
             });
         }
+        // A sticker may move: its frames come from the original (what is kept as shown is its
+        // first alone).
+        if attachment.kind == AttachmentKind::Sticker {
+            let data = downloads.original(&attachment).await?;
+            if let Some(animation) = animated(&downloads, data.clone()).await? {
+                return Ok(AttachmentContent::Animation(Arc::new(animation)));
+            }
+            return shown_picture(&downloads, &attachment, data)
+                .await
+                .map(|picture| AttachmentContent::Picture(Arc::new(picture)));
+        }
         if is_picture(attachment.kind) {
             // As shown before: small, and quick to decode.
             if let Some(shown) = downloads.cached(&attachment.id, Entry::Shown).await
@@ -537,6 +548,97 @@ pub(crate) async fn fetch(downloads: Rc<Downloads>, attachment: Attachment, even
         id: attachment.id,
         content: content.map_err(crate::Error::from),
     });
+}
+
+/// `data`, a sticker's original, as an animation if it is one (one decoding at a time).
+async fn animated(
+    downloads: &Downloads,
+    data: Vec<u8>,
+) -> Result<Option<crate::Animation>, AttachmentError> {
+    let _decoding = downloads
+        .decoding
+        .acquire()
+        .await
+        .map_err(AttachmentError::Ending)?;
+    tokio::task::spawn_blocking(move || decode_animation(&data, ANIMATED_EDGE))
+        .await
+        .map_err(|source| AttachmentError::Stopped {
+            step: "decoding the animation",
+            source,
+        })
+}
+
+/// An animated sticker's frames, at most this a side: as the chat shows a sticker.
+const ANIMATED_EDGE: u32 = 128;
+/// Animations larger than these stay still (their first frame shows): a sticker can't make
+/// b33p decode or hold more.
+const ANIMATED_CANVAS: u32 = 1024;
+const ANIMATED_FRAMES: usize = 150;
+const ANIMATED_BYTES: usize = 8 * 1024 * 1024;
+/// A frame shown for less than this shows this long, as browsers do: 0 ms means "as fast as
+/// you can", which would spin.
+const SHORTEST_FRAME_MS: u32 = 20;
+const SHORT_FRAME_MS: u32 = 100;
+
+/// The frames of an animated PNG or WebP, each within `edge` a side, with their delays; `None`
+/// for a still picture, something else, or one past the limits ([`ANIMATED_FRAMES`] and so on).
+pub(crate) fn decode_animation(data: &[u8], edge: u32) -> Option<crate::Animation> {
+    use image::AnimationDecoder;
+    use image::ImageDecoder;
+    let cursor = || std::io::Cursor::new(data);
+    let frames: image::Frames = match image::guess_format(data).ok()? {
+        image::ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::new(cursor()).ok()?;
+            if !decoder.is_apng().ok()? || !fits(decoder.dimensions()) {
+                return None;
+            }
+            decoder.apng().ok()?.into_frames()
+        }
+        image::ImageFormat::WebP => {
+            let decoder = image::codecs::webp::WebPDecoder::new(cursor()).ok()?;
+            if !decoder.has_animation() || !fits(decoder.dimensions()) {
+                return None;
+            }
+            decoder.into_frames()
+        }
+        _ => return None,
+    };
+    let mut animation = crate::Animation {
+        frames: Vec::new(),
+        delays_ms: Vec::new(),
+    };
+    for frame in frames.take(ANIMATED_FRAMES + 1) {
+        let frame = frame.ok()?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let delay = numerator.checked_div(denominator).unwrap_or(0);
+        let rgba = frame.into_buffer();
+        let full = Picture {
+            width: rgba.width(),
+            height: rgba.height(),
+            rgba: rgba.into_raw(),
+        };
+        let scale = (f64::from(edge) / f64::from(full.width.max(full.height))).min(1.0);
+        let (width, height) = crate::resample::scaled((full.width, full.height), scale);
+        let picture = if (width, height) == (full.width, full.height) {
+            full
+        } else {
+            crate::resample::shrink(&full, width, height).unwrap_or(full)
+        };
+        animation.frames.push(picture);
+        animation.delays_ms.push(if delay < SHORTEST_FRAME_MS {
+            SHORT_FRAME_MS
+        } else {
+            delay
+        });
+        if animation.frames.len() > ANIMATED_FRAMES || animation.bytes() > ANIMATED_BYTES {
+            return None;
+        }
+    }
+    (animation.frames.len() > 1).then_some(animation)
+}
+
+fn fits((width, height): (u32, u32)) -> bool {
+    width <= ANIMATED_CANVAS && height <= ANIMATED_CANVAS
 }
 
 /// `data`, the original of the picture `attachment`, decoded as the chat shows it (one at a
@@ -1225,6 +1327,67 @@ fn extension(content_type: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An animated PNG's and WebP's frames come with their delays; a still picture, or one
+    /// with a frame too short to mean it, as browsers take them.
+    #[test]
+    fn animated_stickers_keep_their_frames_and_delays() {
+        let apng = include_bytes!("../tests/fixtures/three-frames.apng");
+        let animation = decode_animation(apng, ANIMATED_EDGE).expect("animated");
+        assert_eq!(animation.delays_ms, [50, 100, 150]);
+        assert_eq!(animation.frames.len(), 3);
+        assert_eq!(
+            (animation.frames[0].width, animation.frames[0].height),
+            (32, 32)
+        );
+        // Red, green, blue: the frames are the frames, not the first again.
+        let strongest = |f: &Picture| (0..3).max_by_key(|&c| f.rgba[c]).unwrap();
+        let channels: Vec<usize> = animation.frames.iter().map(strongest).collect();
+        assert_eq!(channels, [0, 1, 2]);
+
+        let webp = include_bytes!("../tests/fixtures/two-frames.webp");
+        let animation = decode_animation(webp, ANIMATED_EDGE).expect("animated");
+        assert_eq!(animation.delays_ms, [80, 120]);
+
+        let still = include_bytes!("../tests/fixtures/still.png");
+        assert!(
+            decode_animation(still, ANIMATED_EDGE).is_none(),
+            "nothing moves"
+        );
+        assert!(decode_animation(b"not a picture", ANIMATED_EDGE).is_none());
+    }
+
+    /// Frames are shrunk to what the chat shows, and an animation past the limits stays still.
+    #[test]
+    fn animations_are_kept_small() {
+        let apng = include_bytes!("../tests/fixtures/three-frames.apng");
+        let small = decode_animation(apng, 16).unwrap();
+        assert!(small.frames.iter().all(|f| (f.width, f.height) == (16, 16)));
+        assert_eq!(small.bytes(), 3 * 16 * 16 * 4);
+        assert!(decode_animation(&apng_of(ANIMATED_FRAMES + 1, 1), ANIMATED_EDGE).is_none());
+        assert_eq!(
+            decode_animation(&apng_of(4, 0), ANIMATED_EDGE)
+                .unwrap()
+                .delays_ms,
+            [SHORT_FRAME_MS; 4],
+            "0 ms frames"
+        );
+    }
+
+    /// An animated PNG of `frames` 2×2 frames of `delay_ms` each.
+    fn apng_of(frames: usize, delay_ms: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_animated(frames as u32, 0).unwrap();
+        encoder.set_frame_delay(delay_ms, 1000).unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        for i in 0..frames {
+            writer.write_image_data(&[i as u8; 16]).unwrap();
+        }
+        writer.finish().unwrap();
+        out
+    }
 
     /// A photo's EXIF (here, where it was taken) doesn't go out, but its orientation does.
     #[test]
