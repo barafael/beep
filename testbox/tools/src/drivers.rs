@@ -332,8 +332,8 @@ pub enum Android {
         text: String,
     },
     /// Sets who sees My Story, from the Stories tab's Story privacy (MyStorySettingsFragment):
-    /// all Signal connections, or with `except` named, all but them ("All except…"). Kept in the
-    /// storage service, where linked devices read it.
+    /// all Signal connections, or with `except` named, all but them ("All except…"), each by the
+    /// name Android shows them by. Kept in the storage service, where linked devices read it.
     MyStoryPrivacy {
         except: Vec<String>,
     },
