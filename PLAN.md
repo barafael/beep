@@ -95,21 +95,17 @@ By how much they matter, most first:
 - **Storage service:** records for chats the phone has none for (only existing records are
   changed now); writing folders (create, edit); taking over the read-receipt and typing
   settings.
-- **Stories:** posting to My Story and custom lists. Their audiences are distribution lists in
-  the storage service (`StoryDistributionListRecord`; My Story is the all-zero id, either
-  "all connections except" or "only these"). In order: (1) read the lists and the account's
-  `storiesDisabled` from the storage service (the transfer from the phone has them too, but the
-  first sync after linking reads them anyway); (2) work out a list's
-  recipients: connections (accepted 1:1 chats, not blocked, not requests) as the list says,
-  all connections before the phone set anything (each can be sent one: presage seals a story
-  with any access key, which the server doesn't check for stories); (3) send without a group context to each
-  (libsignal-service's `story=true`, one multi-recipient request where it can), and sync it
-  with the list's id so the phone files it under My Story; own stories without a group, ours
-  or the phone's, go in a "My Story" ring; (4) the composer offers My Story and the lists
-  first, with how many will see it; (5) a testbox run: the phone's My Story shows it, a
-  contact sees it, an excluded one doesn't. Editing who is on a list needs the storage write
-  proven first. Also: replies and reactions; removing stories their author deleted; Signal's
-  own setting for story receipts (they follow read receipts now).
+- **Stories:** posting to My Story and the account's own lists is done: the lists (and
+  `storiesDisabled`) read from the storage service; a list's recipients are the account's
+  connections as it says (all of them before the phone set anything); a story to one goes
+  with a sender key for the list in one multi-recipient request (`story=true`, no group id;
+  presage `send_story_to_list`), synced to the phone naming the list; own stories without a
+  group go in a "My Story" ring; the composer offers My Story and the lists first, with how
+  many they reach. The testbox's `stories` phase checks it with Android, Desktop and
+  presage-cli ([the 2026-11-21 runs](docs/testbox-stories-run-2026-11-21.md)). Left: editing
+  who is on a list from b33p (needs the storage write proven first); replies and reactions;
+  removing stories their author deleted; Signal's own setting for story receipts (they follow
+  read receipts now).
 - **Media:** recording voice messages (audio input across desktops); animated GIFs and video
   thumbnails (need a video decoder).
 - **Known limits from M1:** the earlier text of someone else's edit is lost after a restart
