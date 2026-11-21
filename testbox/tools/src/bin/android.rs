@@ -1594,7 +1594,17 @@ impl Driver {
             self.tap("All Signal connections", PATIENCE)?;
         } else {
             self.tap("All except…", PATIENCE)?;
+            // The account's contacts, a long list on a box with many: each scrolled to.
             for name in except {
+                if self
+                    .first_shown(vec![agent::Wanted::control(name)], GLANCE)
+                    .is_err()
+                {
+                    self.agent.look(agent::Call::ScrollTo {
+                        label: name.clone(),
+                        timeout_ms: timeout_ms(PATIENCE),
+                    })?;
+                }
                 self.tap(name, PATIENCE)?;
             }
             // The choice's own screen (`ChangeMyStoryMembershipFragment__all_except`).

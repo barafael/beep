@@ -170,8 +170,16 @@ pub(super) fn stories(
     let left_out = checks.report(
         "the phone leaving the peer out of My Story reaches b33p",
         || {
+            // By the name Android shows: the peer's own, or a nickname given on the phone
+            // (`storage`), which b33p took from the storage service too.
+            let shown = b33p
+                .snapshot()?
+                .conversations
+                .iter()
+                .find(|c| &c.id == conversation)
+                .map_or_else(|| peer.name().into_owned(), |c| c.title.clone());
             android.call(drivers::Android::MyStoryPrivacy {
-                except: vec![peer.name().into_owned()],
+                except: vec![shown],
             })?;
             Ok(my_story_reaches(b33p, &[&member_aci], &[&peer_aci])?)
         },
