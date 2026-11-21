@@ -2,7 +2,7 @@ import { Motion, Theme } from "theme.slint";
 import { DeliveryState, MessageItem } from "types.slint";
 import { TextSelection } from "globals.slint";
 import { Avatar, Caption, Chip, Icon, IconButton, Popover, Small } from "widgets.slint";
-import { AttachmentView } from "attachment.slint";
+import { AlbumCell, AttachmentView } from "attachment.slint";
 import { EmojiPicker } from "emoji.slint";
 
 // Quick reactions, as in Signal's own apps: a bar over the bubble, there while the pointer
@@ -417,6 +417,21 @@ export component Bubble inherits Rectangle {
                                         overflow: elide;
                                         color: root.faint;
                                     }
+                                }
+                            }
+                            // Two or more pictures and videos, as a grid.
+                            if item.album.length > 0: Rectangle {
+                                width: item.album-width;
+                                height: item.album-height;
+                                border-radius: Theme.radius-m;
+                                clip: true;
+                                for cell[i] in item.album: AlbumCell {
+                                    item: cell;
+                                    number: i + 1;
+                                    count: item.album-count;
+                                    outgoing: item.outgoing;
+                                    fetch(id) => { root.fetch-attachment(id); }
+                                    open(id) => { root.open-attachment(id); }
                                 }
                             }
                             for attachment in item.attachments: AttachmentView {

@@ -21,6 +21,88 @@ component AttachmentAction inherits TouchArea {
     }
 }
 
+// A picture or video of an album, in its cell of the grid: cut to fill it, as Signal's apps
+// show them. A click opens it (the viewer goes on through the chat's other pictures); the last
+// cell says how many more there are.
+export component AlbumCell inherits Rectangle {
+    in property <AttachmentItem> item;
+    // Its place in the album, from 1, and the album's size: for screen readers.
+    in property <int> number;
+    in property <int> count;
+    in property <bool> outgoing;
+    callback fetch(string);
+    callback open(string);
+
+    property <color> ink: outgoing ? Theme.bubble-outgoing-text : Theme.bubble-incoming-text;
+    x: root.item.x;
+    y: root.item.y;
+    width: root.item.width;
+    height: root.item.height;
+    clip: true;
+    background: root.ink.with-alpha(Theme.fill);
+    // Only cells on screen are made, so only what is seen downloads.
+    init => {
+        if root.item.fetch { root.fetch(root.item.id); }
+    }
+    if root.item.placeholder.width > 0: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.item.placeholder;
+        image-fit: cover;
+        opacity: 1 - picture.opacity;
+    }
+    picture := Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.item.picture;
+        image-fit: cover;
+        opacity: root.item.picture.width > 0 ? 1 : 0;
+        animate opacity { duration: Motion.slow; easing: ease-out; }
+    }
+    if root.item.video && root.item.more == 0: Rectangle {
+        width: 40px;
+        height: 40px;
+        border-radius: self.height / 2;
+        background: Theme.scrim;
+        Icon {
+            source: @image-url("@lucide/play.svg");
+            tint: Theme.on-stage;
+            width: 18px;
+            // A triangle's weight is left of its box's centre.
+            x: (parent.width - self.width) / 2 + 2px;
+        }
+    }
+    if root.item.more > 0: Rectangle {
+        background: Theme.scrim;
+        Text {
+            text: "+" + root.item.more;
+            font-size: 1rem * Theme.display;
+            font-weight: 600;
+            color: Theme.on-stage;
+        }
+    }
+    // Not under the count, which says enough.
+    if root.item.picture.width == 0 && root.item.status == "" && !root.item.video && root.item.more == 0: Spinner {
+        indeterminate: true;
+        width: 20px;
+        height: 20px;
+    }
+    if root.item.picture.width == 0 && root.item.can-retry: TouchArea {
+        accessible-role: button;
+        accessible-label: "Download again";
+        accessible-action-default => { self.clicked(); }
+        mouse-cursor: pointer;
+        clicked => { root.fetch(root.item.id); }
+    }
+    if root.item.picture.width > 0 || root.item.video: TouchArea {
+        accessible-role: button;
+        accessible-label: (root.item.video ? "Play video " : "Open picture ") + root.number + " of " + root.count;
+        accessible-action-default => { self.clicked(); }
+        mouse-cursor: pointer;
+        clicked => { root.open(root.item.id); }
+    }
+}
+
 export component AttachmentView inherits VerticalLayout {
     in property <AttachmentItem> item;
     in property <bool> outgoing;
