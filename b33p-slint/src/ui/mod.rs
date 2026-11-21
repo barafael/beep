@@ -193,6 +193,19 @@ impl Window {
         self.0
             .global::<Motion>()
             .set_scale(if enabled { 1.0 } else { 0.0 });
+        // And Slint's own, such as a wheel turn easing the scroll. (Its backend on
+        // Windows reads the desktop's setting too, again whenever the window gains focus.)
+        let preference = if enabled {
+            i_slint_core::context::MotionPreference::NoPreference
+        } else {
+            i_slint_core::context::MotionPreference::Reduced
+        };
+        if let Err(error) = i_slint_core::context::with_global_context(
+            || Err(slint::PlatformError::NoPlatform),
+            |context| context.set_motion_preference(preference),
+        ) {
+            tracing::warn!(%error, "failed to set Slint's reduced motion");
+        }
     }
 
     /// What "Check for updates" found (`version`, empty if nothing) and is doing.

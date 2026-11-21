@@ -38,7 +38,8 @@ b33p-notify = { path = "../b33p-notify" }
 b33p-platform = { path = "../b33p-platform" }
 # Slint's defaults are off; each platform picks its backend and renderer below.
 slint = { workspace = true, features = ["std", "compat-1-2", "accessibility", "system-tray"] }
-# Only for whether the window is active (`WindowInner::active`), which slint's API lacks.
+# For whether the window is active (`WindowInner::active`) and for reduced motion
+# (`SlintContext::set_motion_preference`), which slint's API lacks.
 # Internal, so taken at the same revision as slint (see the workspace's fork pin).
 i-slint-core.workspace = true
 tracing = "0.1"
