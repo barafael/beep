@@ -5,6 +5,7 @@ import { ActivityItem, AttachmentItem, CalendarYear, CandidateItem, Conversation
 import { MuteChoices, TextSelection, TimerChoices } from "globals.slint";
 import { Avatar, Banner, Busy, Caption, Chip, ConfirmDialog, Dialog, DialogButtons, DialogLayout, Display, EmptyState, FadeIn, Heading, Hint, Icon, IconButton, PanelHeader, PopIn, Popover, Pressable, SectionTitle, SendButton, SettingRow, Small, SwitchRow, Tab, Title } from "widgets.slint";
 import { ConversationMenu, ConversationRow } from "conversation-row.slint";
+import { AppMenu, MenuRoom } from "menu.slint";
 import { AttachmentView } from "attachment.slint";
 import { Bubble } from "bubble.slint";
 import { PinBar } from "pins.slint";
@@ -24,14 +25,10 @@ export { Playback } from "globals.slint";
 export { Account, Prefs, ChatList, ChatNotify, OpenChat, Composer, Groups, Panels, Receipts } from "state.slint";
 export { Emojis, EmojiGroup } from "emoji.slint";
 export { Viewer } from "viewer.slint";
+export { MenuNav } from "menu.slint";
 
 // The open chat's menu, in its header: from a right click there, or from the "More" button.
 component OpenChatMenu inherits ConversationMenu {
-    // How wide the menu is, near enough, which Slint doesn't say: 194px with Fluent on Linux.
-    // It's in a popup window of its own, whose text doesn't follow our font size, so it can't
-    // be measured with a Text here. Guessed short, the menu still fits the window, only
-    // without the gap to its edge.
-    out property <length> menu-width: 196px;
     item: ChatList.current;
     in-header: true;
     property <string> id: ChatList.current.id;
@@ -72,6 +69,7 @@ export component AppWindow inherits Window {
         root.default-font-size = root.platform-font-size * Prefs.font-scale;
     }
     init => {
+        MenuRoom.window-width = self.width;
         // `default-font-size` reads 0 while unset; `1rem` resolves it to the platform's size.
         root.platform-font-size = 1rem;
         root.apply-settings();
@@ -84,7 +82,10 @@ export component AppWindow inherits Window {
     // One pane at a time: the list, or the open chat with a way back. Kept up to date when
     // the width changes rather than bound to it, since the layout depends on it in turn.
     out property <bool> narrow;
-    changed width => { root.narrow = root.width < 640px; }
+    changed width => {
+        root.narrow = root.width < 640px;
+        MenuRoom.window-width = self.width;
+    }
     // Ctrl is held: a click on a message picks it.
     property <bool> pick-held;
     // A key pressed anywhere (its text, and whether Control, Alt and Shift were held): whether
@@ -452,6 +453,7 @@ export component AppWindow inherits Window {
                                     // the area it was shown from.
                                     more-menu := OpenChatMenu {
                                         width: 32px;
+                                        align-end: true;
                                         height: 32px;
                                         IconButton {
                                             icon: @image-url("@lucide/ellipsis-vertical.svg");
@@ -459,7 +461,7 @@ export component AppWindow inherits Window {
                                             // Below it, a little off the window's edge.
                                             clicked => {
                                                 more-menu.show({
-                                                    x: root.width - Theme.space-xs - more-menu.menu-width - more-menu.absolute-position.x,
+                                                    x: root.width - Theme.space-xs - more-menu.absolute-position.x,
                                                     y: self.height + Theme.space-xs,
                                                 });
                                             }
@@ -1199,21 +1201,23 @@ export component AppWindow inherits Window {
                                                     // (it sits in the layout too, below the button).
                                                     clicked => {
                                                         member-menu.show({
-                                                            x: self.x - member-menu.x - 160px,
+                                                            x: self.x + self.width - member-menu.x,
                                                             y: self.y + self.height - member-menu.y,
                                                         });
                                                     }
                                                 }
-                                                member-menu := ContextMenuArea {
+                                                member-menu := AppMenu {
                                                     enabled: false;
-                                                    Menu {
-                                                        MenuItem {
-                                                            title: member.admin ? "Take admin rights" : "Make admin";
-                                                            activated => { Groups.set-member-admin(member.id, !member.admin); }
-                                                        }
-                                                        MenuItem {
-                                                            title: "Remove from group";
-                                                            activated => { Groups.remove-member(member.id); }
+                                                    align-end: true;
+                                                    choices: [
+                                                        { id: "admin", title: member.admin ? "Take admin rights" : "Make admin" },
+                                                        { id: "remove", title: "Remove from group" },
+                                                    ];
+                                                    chosen(id) => {
+                                                        if id == "admin" {
+                                                            Groups.set-member-admin(member.id, !member.admin);
+                                                        } else {
+                                                            Groups.remove-member(member.id);
                                                         }
                                                     }
                                                 }
@@ -1874,34 +1878,23 @@ export component AppWindow inherits Window {
                                 overflow: elide;
                                 accessible-role: none;
                             }
-                            ContextMenuArea {
+                            AppMenu {
                                 x: parent.pad-x;
                                 y: parent.pad-y;
                                 width: parent.width - 2 * parent.pad-x;
                                 height: parent.height - 2 * parent.pad-y;
-                                Menu {
-                                    MenuItem {
-                                        title: "Cut";
-                                        enabled: Composer.draft != "";
-                                        activated => { composer.cut(); composer-field.focus-in-place(); }
-                                    }
-                                    MenuItem {
-                                        title: "Copy";
-                                        enabled: Composer.draft != "";
-                                        activated => { composer.copy(); composer-field.focus-in-place(); }
-                                    }
-                                    MenuItem {
-                                        title: "Paste";
-                                        activated => {
-                                            Composer.paste();
-                                            composer-field.focus-in-place();
-                                        }
-                                    }
-                                    MenuItem {
-                                        title: "Select all";
-                                        enabled: Composer.draft != "";
-                                        activated => { composer.select-all(); composer-field.focus-in-place(); }
-                                    }
+                                choices: [
+                                    { id: "cut", title: "Cut", disabled: Composer.draft == "" },
+                                    { id: "copy", title: "Copy", disabled: Composer.draft == "" },
+                                    { id: "paste", title: "Paste" },
+                                    { id: "all", title: "Select all", disabled: Composer.draft == "" },
+                                ];
+                                chosen(id) => {
+                                    if id == "cut" { composer.cut(); }
+                                    else if id == "copy" { composer.copy(); }
+                                    else if id == "paste" { Composer.paste(); }
+                                    else { composer.select-all(); }
+                                    composer-field.focus-in-place();
                                 }
                                 // Scrolled by the wheel or by moving the caret; dragging selects.
                                 composer-scroll := Flickable {
@@ -2029,17 +2022,18 @@ export component AppWindow inherits Window {
                             }
                             VerticalLayout {
                                 alignment: center;
-                                delete-menu := ContextMenuArea {
+                                delete-menu := AppMenu {
                                     width: 32px;
                                     height: 32px;
-                                    Menu {
-                                        MenuItem {
-                                            title: "Delete for me";
-                                            activated => { OpenChat.delete-selection(false); }
-                                        }
-                                        if OpenChat.can-delete-selection-for-everyone: MenuItem {
-                                            title: "Delete for everyone…";
-                                            activated => { Account.confirm = Confirm.delete-selection-for-everyone; }
+                                    choices: [
+                                        { id: "me", title: "Delete for me" },
+                                        { id: "everyone", title: "Delete for everyone…", hidden: !OpenChat.can-delete-selection-for-everyone },
+                                    ];
+                                    chosen(id) => {
+                                        if id == "me" {
+                                            OpenChat.delete-selection(false);
+                                        } else {
+                                            Account.confirm = Confirm.delete-selection-for-everyone;
                                         }
                                     }
                                     IconButton {

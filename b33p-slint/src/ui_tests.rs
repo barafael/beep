@@ -261,6 +261,63 @@ fn a_failed_message_offers_a_retry() {
     assert_eq!(retried.borrow().as_deref(), Some("2:me"));
 }
 
+/// A message's menu (our own, not Slint's) opens on a right click, sized to its lines, and a
+/// line is chosen with the pointer or with the keyboard.
+#[test]
+fn a_messages_menu_opens_on_a_right_click() {
+    let (window, messages) = window_with_messages(1);
+    crate::ui::wire_menus(&window);
+    messages.set_row_data(
+        0,
+        MessageItem {
+            key: "1:ann".into(),
+            ..message("Message 0")
+        },
+    );
+    let deleted = Rc::new(std::cell::RefCell::new(Vec::new()));
+    window.global::<OpenChat>().on_delete({
+        let deleted = deleted.clone();
+        move |key, everyone| deleted.borrow_mut().push((key.to_string(), everyone))
+    });
+    settle(&window);
+    let open_menu = || {
+        find(&window, "Message 0")
+            .expect("shown")
+            .mock_single_click(PointerEventButton::Right);
+        settle(&window);
+    };
+
+    assert!(find(&window, "Delete for me").is_none(), "closed at first");
+    open_menu();
+    let line = find(&window, "Delete for me").expect("the menu is open");
+    assert!(
+        line.size().width > 50. && line.size().height > 10.,
+        "{:?}",
+        line.size()
+    );
+    line.mock_single_click(PointerEventButton::Left);
+    settle(&window);
+    assert_eq!(*deleted.borrow(), [("1:ann".to_string(), false)]);
+    assert!(
+        find(&window, "Delete for me").is_none(),
+        "closed once chosen"
+    );
+
+    // Up from none goes to the last line.
+    open_menu();
+    for key in [slint::platform::Key::UpArrow, slint::platform::Key::Return] {
+        let text = slint::SharedString::from(key);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+    }
+    settle(&window);
+    assert_eq!(deleted.borrow().len(), 2, "chosen with the keyboard");
+}
+
 /// Not a test: a fixed workload for callgrind (`cargo test ... bench_message_list -- --ignored`
 /// under `valgrind --tool=callgrind --toggle-collect='*phase_*'`), so that changes to the
 /// message list can be compared by instruction count.

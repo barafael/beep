@@ -1,0 +1,273 @@
+import { Motion, Theme } from "theme.slint";
+import { Icon } from "widgets.slint";
+
+// One line of a menu.
+export struct MenuChoice {
+    // What `activated` says when it is chosen.
+    id: string,
+    title: string,
+    // Left out, as an `if` would: menus are written as one list with the conditions in it.
+    hidden: bool,
+    // Shown greyed, not choosable.
+    disabled: bool,
+    // A line between groups instead (the other fields don't matter).
+    separator: bool,
+    // Opens the menu's `sub-choices` beside it instead of being chosen.
+    sub: bool,
+}
+
+// The keyboard's way through a menu, in Rust: Slint has no loops.
+export global MenuNav {
+    // The next line from `from` (-1 for none yet) in steps of `by` (1 or -1) that can be
+    // chosen, round the end; -1 if there is none.
+    pure callback step([MenuChoice], int, int) -> int;
+}
+
+// How wide the window is, for a submenu to open on the side where it has room. Set by the
+// window: a menu's popup can't see it.
+export global MenuRoom {
+    in-out property <length> window-width;
+}
+
+global MenuMetrics {
+    out property <length> line-padding-x: Theme.space-m;
+    out property <length> line-padding-y: 6px;
+    // Room for the arrow of a line that opens a submenu.
+    out property <length> arrow: Theme.icon-small + Theme.space-s;
+    out property <length> separator: 9px;
+    out property <length> frame-padding: Theme.space-xs;
+    out property <length> min-width: 120px;
+}
+
+component MenuLine inherits Rectangle {
+    in property <MenuChoice> choice;
+    in property <bool> current;
+    // Whether some line of the menu has an arrow: then all leave room for one.
+    in property <bool> arrows;
+    callback hovered;
+    callback clicked;
+    // Where it is, as it becomes the current line: a submenu opens beside it.
+    callback current-at(length);
+    changed current => {
+        if self.current { root.current-at(self.absolute-position.y); }
+    }
+    accessible-role: button;
+    accessible-label: root.choice.title;
+    accessible-enabled: !root.choice.disabled;
+    accessible-action-default => { root.clicked(); }
+    border-radius: Theme.radius-s;
+    background: root.current && !root.choice.disabled ? Theme.hover : transparent;
+    animate background { duration: Motion.fast; easing: ease-out; }
+    touch := TouchArea {
+        enabled: !root.choice.disabled;
+        changed has-hover => {
+            if self.has-hover { root.hovered(); }
+        }
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: MenuMetrics.line-padding-x;
+        padding-right: MenuMetrics.line-padding-x;
+        padding-top: MenuMetrics.line-padding-y;
+        padding-bottom: MenuMetrics.line-padding-y;
+        Text {
+            text: root.choice.title;
+            color: root.choice.disabled ? Theme.text-faint : Theme.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.arrows: Rectangle {
+            width: MenuMetrics.arrow;
+            if root.choice.sub: Icon {
+                x: parent.width - self.width;
+                source: @image-url("@lucide/chevron-right.svg");
+                width: Theme.icon-small;
+                tint: Theme.text-secondary;
+            }
+        }
+    }
+}
+
+// The frame and lines of a menu or submenu, in its popup: it fades in, unfolding a little from
+// its top, and takes the keyboard (arrows, Enter, Escape; Right and Left for a submenu).
+component MenuPanel inherits Rectangle {
+    in property <[MenuChoice]> choices;
+    in property <bool> arrows;
+    // The line picked with the keyboard or the pointer, -1 for none.
+    in-out property <int> current: -1;
+    callback chosen(MenuChoice);
+    // Right on a line with a submenu, or the pointer on it; with how far down the panel the
+    // current line is.
+    callback open-sub(length);
+    property <length> current-y;
+    // Escape; Left in a submenu.
+    callback dismissed;
+    callback back;
+    // The pointer on a line without a submenu: an open one closes.
+    callback close-sub;
+
+    public function take-focus() {
+        keys.focus();
+    }
+
+    property <float> opened;
+    init => {
+        self.opened = 1;
+        keys.focus();
+    }
+    animate opened { duration: Motion.normal; easing: ease-out; }
+    opacity: self.opened;
+    transform-scale-y: 0.96 + 0.04 * self.opened;
+    transform-origin: { x: self.width / 2, y: 0 };
+
+    accessible-role: list;
+    min-width: MenuMetrics.min-width;
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-m;
+    border-width: 1px;
+    border-color: Theme.divider;
+    drop-shadow-blur: Theme.popover-blur;
+    drop-shadow-color: Theme.popover-shadow;
+
+    function choosable(index: int) -> bool {
+        index >= 0 && index < root.choices.length && !root.choices[index].hidden
+            && !root.choices[index].separator && !root.choices[index].disabled
+    }
+    function activate(index: int) {
+        if !root.choosable(index) { return; }
+        if root.choices[index].sub {
+            root.open-sub(root.current-y);
+        } else {
+            root.chosen(root.choices[index]);
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                root.current = MenuNav.step(root.choices, root.current, 1);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.current = MenuNav.step(root.choices, root.current, -1);
+                return accept;
+            }
+            if event.text == Key.Return || event.text == " " {
+                root.activate(root.current);
+                return accept;
+            }
+            if event.text == Key.RightArrow && root.choosable(root.current) && root.choices[root.current].sub {
+                root.open-sub(root.current-y);
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                root.back();
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: MenuMetrics.frame-padding;
+            for choice[index] in root.choices: VerticalLayout {
+                if !choice.hidden && choice.separator: Rectangle {
+                    height: MenuMetrics.separator;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        height: 1px;
+                        background: Theme.divider;
+                    }
+                }
+                if !choice.hidden && !choice.separator: MenuLine {
+                    choice: choice;
+                    current: index == root.current;
+                    arrows: root.arrows;
+                    current-at(y) => { root.current-y = y - root.absolute-position.y; }
+                    hovered => {
+                        root.current = index;
+                        if choice.sub {
+                            root.open-sub(self.y + parent.y);
+                        } else {
+                            root.close-sub();
+                        }
+                    }
+                    clicked => { root.activate(index); }
+                }
+            }
+        }
+    }
+}
+
+// A menu of our own, in place of Slint's: drawn like our popovers, in our font size, and
+// animated. It opens on a right click in its area (and the Menu key), or with `show(position)`.
+// At most one line opens a submenu (`sub` set), with `sub-choices`.
+export component AppMenu inherits ContextMenuArea {
+    in property <[MenuChoice]> choices;
+    in property <[MenuChoice]> sub-choices;
+    // Opens with its right edge at the position given, not its left: under a button at the
+    // window's right edge.
+    in property <bool> align-end;
+    // A line was chosen: its id.
+    callback chosen(string);
+
+    // Lines leave room for an arrow while a submenu can open.
+    property <bool> arrows: root.sub-choices.length > 0;
+
+    // The submenu opens on the right of the menu, or on its left without room there.
+    property <bool> sub-left;
+    property <Point> at;
+    show(position) => {
+        root.at = position;
+        popup.show();
+    }
+
+    // As big as its lines: they can't be measured from outside it.
+    popup := PopupWindow {
+        x: root.at.x - (root.align-end ? self.width : 0px);
+        y: root.at.y;
+        close-policy: close-on-click-outside;
+        // The submenu opens beside the line with it.
+        property <length> sub-line-y;
+        panel := MenuPanel {
+            choices: root.choices;
+            arrows: root.arrows;
+            chosen(choice) => {
+                popup.close();
+                root.chosen(choice.id);
+            }
+            open-sub(line-y) => {
+                popup.sub-line-y = line-y - MenuMetrics.frame-padding;
+                // Taking the submenu to be as wide as the menu, near enough.
+                root.sub-left = root.absolute-position.x + popup.x + 2 * popup.width > MenuRoom.window-width;
+                sub-popup.show();
+            }
+            close-sub => { sub-popup.close(); }
+            dismissed => { popup.close(); }
+        }
+        sub-popup := PopupWindow {
+            x: root.sub-left ? MenuMetrics.frame-padding - self.width : popup.width - MenuMetrics.frame-padding;
+            y: popup.sub-line-y;
+            close-policy: close-on-click-outside;
+            MenuPanel {
+                choices: root.sub-choices;
+                current: 0;
+                chosen(choice) => {
+                    sub-popup.close();
+                    popup.close();
+                    root.chosen(choice.id);
+                }
+                back => {
+                    sub-popup.close();
+                    panel.take-focus();
+                }
+                dismissed => {
+                    sub-popup.close();
+                    popup.close();
+                }
+            }
+        }
+    }
+}

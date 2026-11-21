@@ -23,6 +23,7 @@ use crate::{Images, Shared, qr_image};
 
 mod callbacks;
 mod items;
+mod menu;
 mod notify;
 mod pins;
 mod render;
@@ -30,6 +31,7 @@ mod viewer;
 
 pub(crate) use items::set_up_models;
 use items::*;
+pub(crate) use menu::wire_menus;
 use notify::*;
 use pins::*;
 pub(crate) use render::render;
@@ -77,6 +79,7 @@ pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
         .global::<Account>()
         .set_device_name(shared.settings.borrow().device_name().into());
     set_up_models(&window);
+    wire_menus(&window);
     crate::emoji::set_up(&window, shared);
 
     callbacks::wire(&window, shared);

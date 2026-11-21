@@ -14,9 +14,9 @@ until 2026-11-21; `git log -- pending/branches.md` has them.
 
 ## Slint (barafael/slint)
 
-b33p pins `slint/integration-branch` (`2b08ac6`, 2026-11-21): upstream master `228e472` with the
+b33p pins `slint/integration-branch` (`e1185c9`, 2026-11-21): upstream master `7148ace` with the
 branches below merged in order by the branch's own `integration.sh` (`./integration.sh push`
-tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-21-27f699280`).
+tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-21-2b08ac647`).
 A topic that conflicts with an earlier one is listed as `merge/<topic>`: the topic with the earlier
 one merged in by hand.
 
@@ -29,3 +29,4 @@ one merged in by hand.
 | `merge/edualc-text` | none (felintusun's branches) | `edualc-text` with `inline-code-padding` merged in by hand |
 | `merge/incremental-text-shaping` | #14953 | overlaps ogoffart's #14742 (plain text only; ours covers StyledText and content widths): rebase onto it as a follow-up. Has `merge/edualc-text` merged in by hand; content widths shape the same U+FFFC text as drawing |
 | `fix/popup-follows-parent` | #15091 | draft, opened 11-21: an open popup moves when a layout moves its parent (the chat header's menu on a resize) |
+| `context-menu-own-popup` | #15097 | draft, opened 11-21: a `show` handler on a ContextMenuArea replaces the built-in menu (our own animated menus, `menu.slint`) |
