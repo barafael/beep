@@ -11,42 +11,17 @@ live as `// sigwin patch` hunks under `vendor/` (listed in its `vendor/PATCHES.m
 one, it goes to our Slint fork's `slint/integration-branch` (a line in its `integration.sh`) and
 upstream as a draft PR, not into a vendor directory.
 
-Status as of 2026-11-21. Most of the plan of 2026-11-07 has landed (#134–#148); what follows is
+Status as of 2026-11-21. Most of the plan of 2026-11-07 has landed (#134–#148, #182–#189); what follows is
 what is left, then what was done and found, for the record.
 
 ## Open
 
-### 1. The conversation's feel: no longer blocked
+### 1. The conversation's feel
 
-These waited for the gpui branch's Slint pass, which reworked `items.rs` and `types.slint`. That
-pass merged in #161; b33p-gpui itself was removed on 2026-11-19 (5b664ba). Nothing blocks them
-now. Each on its own branch:
-
-- **1.2 Elapsed times** ("now", "3 min") within the last hour, in bubbles and the chat list,
-  refreshed every 30 s (sigwin `d420ba4`). Formatting in b33p-core with the injected clock
-  (`state/clock.rs`), one 30 s timer in the slint crate. Reduced motion: text only, no animation.
-- **1.3 Readers in the UI**: in groups, up to three avatars and "+N" under the newest message each
-  member has read, from `readers_of` (`state/receipts.rs`; the core landed in #139). Label "Read
-  by A, B and 2 others". 1:1 chats show nothing beyond ✓✓.
-- **1.6 Message info**: a popup from the row's menu on `open_message_info`. The core and the
-  harness snapshot (`agent.rs`) exist; the Slint side doesn't.
-- **1.5 Time at the last line's right edge**, dropped on a row followed by one from the same run
-  and minute (sigwin `93dc607`, `9b2e99b`). `sent-minute` is in `types.slint` for this, unused so
-  far. Decide by `docs/screenshots/shoot.py` screenshots in light and dark, not ported blindly.
-- **2.3 Albums as a grid** (`a6a3a29`, `03c6120`): several pictures in one message as a grid; a
-  click opens the viewer (#145) on that picture.
-- **2.4 Animated stickers** (`501a825`, `98f6a16`, `58f3c11`), moved here from B.1 because a
-  sticker's picture is converted in `items.rs`. Today the first frame shows
-  (`attachments.rs`, "animated images show their first frame").
-  - Decode APNG (`image`/`png`) and animated WebP (`image-webp`) into frames with delays, capped
-    in frames and pixels against decompression bombs.
-  - One 16 ms-granular `Timer` in the slint crate for every sticker on screen; each frame is
-    chosen from `now - started`, so a slow frame never shifts the timing. Off-screen stickers
-    hold no frames: an LRU of decoded frames, about 32 MB.
-  - Reduced motion and an unfocused window show the first frame.
-  - Tests on two fixture files (frame times, the loop, the cap) and a ui test that the frame
-    follows the clock. In the testbox, check whether Desktop at `f3040f3e` can send one (it needs
-    a pack on the device); if not, the mock's sticker and a screenshot.
+Done on 2026-11-21 (see the table below), except **1.5 Time at the last line's right edge**:
+built in #183 (a time shows once per run and minute; on a one-line message's line), a draft
+until the owner has looked at the screenshots. Left over from 2.4: a testbox check that
+Signal-Desktop sends an animated sticker (the box's sticker pack is still PNGs).
 
 ### 2. Memory of the open chat (phase 3.3)
 
@@ -102,6 +77,11 @@ Measure first: the `mem:` line (`b33p-slint/src/memory.rs`) on a long chat scrol
 | D.3 Unread count on the tray and the taskbar button | #144, `badge.rs` |
 | D.4 Ctrl shortcuts during a Korean IME composition | #143, `keys.rs` |
 | D.5 Signed self-update, off by default | #147, `update.rs`, `release.yml` |
+| 1.2 Recent times as elapsed ("now", "5 min") | #182 |
+| 1.3 Readers' pictures under a group message | #184 |
+| 1.6 Message info, a dialog | #186 |
+| 2.3 Albums as a grid | #187 |
+| 2.4 Animated stickers | #189 |
 | Screen-capture exclusion on Windows (found by #144: it asked before the window existed) | #148 |
 
 ## Findings worth keeping
