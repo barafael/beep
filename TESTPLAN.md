@@ -5,11 +5,13 @@ Signal servers, the phone, and the desktop around b33p. Each check says what to 
 should happen. Note anything that differs, with the log (`RUST_LOG=b33p=debug` helps).
 
 Much of what this plan does by hand against Signal-Desktop and Signal-Android, the
-[test box](testbox/README.md) does automatically, against Signal-Server's test mode: a pass there
-doesn't stand in for these checks against Signal's servers and a real phone, but it is the quicker
-first look. A check marked *(box: phase)* is done by that phase of `cargo testbox run`, against
-Signal-Desktop or Signal-Android; by hand it still needs doing with a phone, but a failure there
-is less likely to be b33p's alone.
+[test box](testbox/README.md) does automatically: Signal-Server in its test mode, with
+Signal-Android and Signal-Desktop built from their sources (pinned; pointed at the box's servers),
+on accounts of their own. A pass there counts as a pass here. A check
+marked *(box: phase)* is done by that phase of `cargo testbox test`; ✅ and a date after it is the
+last full run that passed it (where the tag names part of a check, that part). What is left
+unmarked is for the pass by hand: what the box can't do (packages, a screen reader, a phone's
+own screens), and what only a long-lived account shows (pending items of PLAN.md's Parity).
 
 ## Before you start
 
@@ -35,7 +37,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    back); turn the network on: messages arrive, with no banner or bar.
 3. Link a fresh install with the history transfer: the same screen walks through waiting for
    the phone (with **Skip**), downloading and importing, then the catch-up, then the chats.
-   *(box: android)*
+   *(box: android)* ✅ 2026-11-21
 4. Leave b33p closed for a few days, with messages coming in meanwhile, then start it: while
    it catches up, a **Start** button appears after a moment. Clicking it shows the chats at
    once; the list says "Catching up…" until the rest is in, and the messages that are still
@@ -51,7 +53,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
      tooltip the count in words. On Windows the taskbar button shows it too, up to 99+.
 2. Open the chat.
    - The badge goes away. On **their** phone the message shows as read (two filled ticks),
-     if read receipts are on for both of you. *(box: storage)*
+     if read receipts are on for both of you. *(box: storage)* ✅ 2026-11-21
    - On **your** phone, the chat is no longer unread.
 3. Have them send another message, and read it on your **phone** first.
    - In b33p the chat's unread count goes away without opening it.
@@ -67,13 +69,13 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 8. With the chat open, have them edit a message you had read: on **their** phone the edited
    message shows as delivered, then read, as for a new message (Signal shows an edited
    message's ticks for the edit). With b33p's window in the background, it stays delivered
-   until you focus b33p. *(box: storage)*
+   until you focus b33p. *(box: storage)* ✅ 2026-11-21
 
 ### 1.2 Delivery ticks
 
 1. Send a message to someone whose phone is on.
    - Under it: ✓ when sent, ✓✓ when delivered, ✓✓ on a filled pill when they read it (if they
-     send read receipts). *(box: desktop, storage)*
+     send read receipts). *(box: desktop, storage)* ✅ 2026-11-21
 2. Restart b33p; the ticks of older messages stay.
 3. Turn the network off: the chat list says "Not connected · trying again", and sending is
    greyed out until b33p is connected and has caught up again; so is **Retry** on a message
@@ -83,14 +85,14 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    minutes). The bubble shows **Not sent · Retry**, and the banner says "A message couldn't
    be sent: Signal can't be reached. Retry on the message sends it." Once b33p is connected
    and caught up again, click **Retry**: the banner goes, "Sending…", then the ticks as in 1.
-   *(box: core, with the server paused; network, with the link dead)*
+   *(box: core, with the server paused; network, with the link dead)* ✅ 2026-11-21
 5. With your phone off (flight mode), have someone you have a chat with write to you while
    b33p runs, and again while b33p is closed, then start it.
    - On **their** phone both messages show as delivered (✓✓) once b33p has them: b33p sends
      the delivery receipt, not only your phone. Not so for a message request you haven't
-     accepted. *(box: core, while running)*
+     accepted. *(box: core, while running)* ✅ 2026-11-21
 6. Edit a message they have read: its ticks go back to ✓, then ✓✓ and read again as their
-   phone gets and reads the edit. *(box: storage)*
+   phone gets and reads the edit. *(box: storage)* ✅ 2026-11-21
 
 ### 1.3 Typing indicators
 
@@ -99,21 +101,21 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
      header. It goes away when they stop or after about 15 seconds.
 2. The same in a group: "<name> is typing…" appears in the right group.
 3. Type in b33p: on their phone, you show as typing. Clear the composer: it stops. *(box:
-   desktop, with Desktop for the phone)*
+   desktop, with Desktop for the phone)* ✅ 2026-11-21
 4. Turn **Settings → Privacy → Typing indicators** off: they no longer see you typing.
 
 ### 1.4 Edits and deletions
 
 1. Right-click one of your messages → **Edit**, change the text, Enter.
-   - It shows the new text and "edited"; on their phone too. *(box: desktop)*
+   - It shows the new text and "edited"; on their phone too. *(box: desktop)* ✅ 2026-11-21
 2. Press ↑ in an empty composer: your last message goes into editing. Esc cancels.
 3. Have them edit a message: it changes in b33p and shows "edited". *(box: desktop; android,
-   edited on your phone)*
+   edited on your phone)* ✅ 2026-11-21
 4. Right-click your message → **Delete for everyone**.
-   - It reads "This message was deleted." here and on their phone. *(box: desktop)*
+   - It reads "This message was deleted." here and on their phone. *(box: desktop)* ✅ 2026-11-21
 5. **Delete for me** on any message: it goes away here only.
 6. Have them delete a message for everyone: it shows as deleted here, also after a restart.
-   *(box: desktop, not the restart; android, deleted on your phone)*
+   *(box: desktop, not the restart; android, deleted on your phone)* ✅ 2026-11-21
 7. Ctrl+click two of your recent messages, then the bin in the bar over the composer →
    **Delete for everyone**: both read as deleted here and on their phone. (**Delete for
    everyone** is only offered while every selected message is yours and recent.)
@@ -121,26 +123,26 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
    on them as on others. Have them edit a message twice, then react to it, reply to it, and
    delete it for everyone: each shows on that message here. React to one of their edited
    messages and reply to it: on their phone the reaction sits on it and the reply quotes the
-   new text. The same with your own edited messages, from their side. *(box: desktop)*
+   new text. The same with your own edited messages, from their side. *(box: desktop)* ✅ 2026-11-21
 
 ### 1.5 Disappearing messages
 
 1. Chat ⋮ → **Disappearing messages → 30 seconds** (1:1 chat).
    - A notice "You set disappearing messages to 30 seconds.", with a timer icon before it. On
      their phone the timer is set. In the chat list, the preview has the timer icon too.
-     *(box: desktop)*
+     *(box: desktop)* ✅ 2026-11-21
 2. Send a message: it shows a timer icon with the time left and disappears after 30 seconds,
-   here and on their phone. *(box: desktop)*
+   here and on their phone. *(box: desktop)* ✅ 2026-11-21
 3. Have them send one: its timer starts when you read it.
 4. Change the timer on the phone: b33p shows the notice and the new timer in the header.
-   *(box: desktop, set on Desktop; android, set on the phone)*
+   *(box: desktop, set on Desktop; android, set on the phone)* ✅ 2026-11-21
 5. Group chats: see 3.1.
 
 ### 1.6 Formatting
 
 1. Send `*bold* _italic_ ~strike~ ` `` `mono` `` ` ||spoiler||`.
    - Shown formatted here and on their phone; the spoiler is hidden until clicked.
-     *(box: desktop, bold only)*
+     *(box: desktop, bold only)* ✅ 2026-11-21
 2. Have them send formatted text from their phone: shown formatted.
 
 ### 1.7 Mentions
@@ -148,7 +150,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. In a group, type `@` and part of a name: members are offered. Pick one with a click, Tab
    or Enter, and send.
    - On their phone it is a real mention (highlighted, notifies them).
-2. Mentions they send show as "@Name". *(box: groups)*
+2. Mentions they send show as "@Name". *(box: groups)* ✅ 2026-11-21
 
 ### 1.8 Pinned, muted, archived chats
 
@@ -178,31 +180,31 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 1. On the phone, pin a chat, mute another, archive a third. Restart b33p.
    - b33p shows them pinned, muted, archived.
 2. With b33p running, change one of them on the phone.
-   - b33p follows within a few seconds. *(box: storage)*
+   - b33p follows within a few seconds. *(box: storage)* ✅ 2026-11-21
 3. Pin a chat only in b33p, then pin a different one on the phone.
    - The phone's pins come first; b33p's own pin stays after them.
 
 ### 1.11 Note to Self
 
 1. Note to Self is in the list even before you wrote there; messages to it arrive on the
-   phone. *(box: android)*
+   phone. *(box: android)* ✅ 2026-11-21
 
 ### 1.12 Long messages
 
 1. Send a message of a few thousand characters: it arrives whole on their phone and desktop
    (Signal carries the first 2000 characters inline and the whole text as an attachment; a
    phone drops a message with more inline as invalid). Have them send one: it shows whole here.
-   *(box: desktop, android)*
+   *(box: desktop, android)* ✅ 2026-11-21
 
 ### 1.13 Pinned messages
 
 1. Pin one of your messages from its menu, for 24 hours: the bar above the chat shows it, and
-   their phone and desktop show it pinned. *(box: desktop)*
+   their phone and desktop show it pinned. *(box: desktop)* ✅ 2026-11-21
 2. Have them pin one of yours and one of theirs: both show in the bar, newest first, with
    "… pinned a message." in the chat. A click on the bar shows the message and turns to the
-   next pin. *(box: desktop, one pin)*
+   next pin. *(box: desktop, one pin)* ✅ 2026-11-21
 3. Unpin from the bar's button, and have them unpin one: gone here and there.
-   *(box: desktop)*
+   *(box: desktop)* ✅ 2026-11-21
 4. Pin a fourth: the oldest pin goes, here and on their side (the menu says so first).
 5. In a group where only admins may change its details, a member has no **Pin**; pins from
    such a member don't take.
@@ -215,7 +217,7 @@ Mark each check: ✅ works, ❌ broken (say how), ➖ couldn't test.
 
 1. Right-click a message with a photo → **Forward…**, search for a chat, pick it.
    - The copy arrives there with the photo, here and on the recipient's phone. *(box:
-     attachments, to Desktop)*
+     attachments, to Desktop)* ✅ 2026-11-21
 2. Forward a long message after opening it (its full text shows): the full text arrives.
 3. Ctrl+click one message, Shift+click another a few below, then the arrow in the bar over
    the composer: the dialog says "N messages"; after picking a chat, all of them arrive
@@ -265,7 +267,7 @@ drops the selection.
 
 1. Have someone who isn't in your contacts and has never been written to write to you.
    - The chat says "Message request", there is no composer but Block / Delete / Accept, and they
-     don't get a read receipt. *(box: groups)*
+     don't get a read receipt. *(box: groups)* ✅ 2026-11-21
 2. **Accept**: the composer appears; they can see your name and picture; your phone no longer
    shows it as a request.
 3. With another request: **Delete** removes the chat, also on the phone. **Block** blocks them.
@@ -281,7 +283,7 @@ drops the selection.
 ### 2.9 Media
 
 1. Receive a photo: a blurred preview shows until it has downloaded. *(box: attachments, the
-   download)*
+   download)* ✅ 2026-11-21
 2. Receive a video and a GIF: tiles with ▶ / GIF; clicking opens the system player.
 3. Photos with a caption: the caption shows under them.
 
@@ -291,7 +293,7 @@ drops the selection.
    opens the link.
 2. Turn **Settings → Privacy → Link previews** on and send a link (https).
    - The message goes out with a preview, on their phone too. (Off: no preview.) *(box:
-     desktop)*
+     desktop)* ✅ 2026-11-21
 
 ### 2.11 Stickers
 
@@ -304,7 +306,7 @@ drops the selection.
 1. Make a folder on the phone (Settings → Chats → Chat folders), e.g. with two chats, or "all
    groups". Restart b33p.
    - Its tab shows above the chat list and filters it as on the phone; the "only unread" and
-     "muted" options are respected. *(box: storage, the tab)*
+     "muted" options are respected. *(box: storage, the tab)* ✅ 2026-11-21
 2. Delete the folder on the phone: the tab goes after the next sync.
 
 ### 2.13 Writing settings to the phone — carefully
@@ -319,7 +321,7 @@ after each.
 3. Unpin it again: unpinned on the phone.
 4. Mute, archive, block, mark unread one chat each: the phone follows each time.
 5. Make a change on the phone and, within a few seconds, a different one in b33p: both
-   survive (b33p reads the phone's change first, then writes its own). *(box: storage)*
+   survive (b33p reads the phone's change first, then writes its own). *(box: storage)* ✅ 2026-11-21
 6. If anything on the phone changed that shouldn't have: turn the setting off and send me the
    log (`wrote to the storage service` lines).
 
@@ -341,13 +343,13 @@ part of a test. Every change below reaches all members' phones.
 1. **+** above the chat list → pick two people → name the group → **Create**.
    - The group opens; it reads "You created the group." On their phones the group appears with
      both of you as members, and they can write to it; their messages arrive in b33p.
-   - On **your** phone the group appears too. *(box: groups; large-group, with 21 others)*
+   - On **your** phone the group appears too. *(box: groups; large-group, with 21 others)* ✅ 2026-11-21
 2. Group details (click its name) → change the **name**, then the **description**.
    - Notices "You changed the group name to …" here, and the change on every phone.
-     *(box: groups, the name)*
+     *(box: groups, the name)* ✅ 2026-11-21
 3. Chat ⋮ → **Disappearing messages → 1 minute** in the group.
    - A notice here and on every phone; messages then disappear for everyone. *(box: groups,
-     the notice)*
+     the notice)* ✅ 2026-11-21
 4. Details → **Add members** → pick someone.
    - "You added …"; the new member sees the group and its name, and can write.
 5. Member ⋮ → **Make admin**, then **Remove as admin**: their role changes on the phones.
@@ -356,7 +358,7 @@ part of a test. Every change below reaches all members' phones.
 7. Changes by others: have someone rename the group, add or remove someone, change the timer
    on their phone.
    - b33p shows a notice for each ("Alice changed the group name to …") and the new state.
-     *(box: groups: name, description, picture, leaving)*
+     *(box: groups: name, description, picture, leaving)* ✅ 2026-11-21
 8. Restart b33p: the notices of 1–7 are still there.
 9. A group where you are not an admin and only admins may edit (set on the phone): b33p says
    the change failed (the error shows), and nothing changes.
@@ -382,7 +384,7 @@ part of a test. Every change below reaches all members' phones.
     their phone asks to join: open the details again, and their request is listed. **Let in**
     makes them a member (everyone sees "You accepted …'s request to join."); **Turn down**
     drops the request, and tells nobody. *(box: groups, the request shown and approved on the
-    phone)*
+    phone)* ✅ 2026-11-21
 17. **Reset**: a new link, and the old one no longer works on a phone. **Off**: the link goes;
     the old one tells a phone that it isn't active.
 18. Chat list → link icon → paste a link from a phone (group settings → Group link → Share):
@@ -396,7 +398,7 @@ part of a test. Every change below reaches all members' phones.
 ### 3.2 Voice messages and audio
 
 1. Have someone send a voice message from their phone (hold the mic button).
-   - It shows as a row with ▶ and its length. *(box: attachments, its arrival)* Click ▶: it plays, the bar fills, the time counts
+   - It shows as a row with ▶ and its length. *(box: attachments, its arrival)* ✅ 2026-11-21 Click ▶: it plays, the bar fills, the time counts
      up. ⏸ pauses, ▶ goes on.
 2. Start another voice message while one plays: the first stops.
 3. An audio file sent as an attachment (MP3, M4A, Ogg): plays the same way.
@@ -405,22 +407,34 @@ part of a test. Every change below reaches all members' phones.
 ### 3.3 Stories
 
 1. Have someone post a story on their phone (text, then a photo), visible to you.
-   - ◎ above the chat list gets a dot. Click it: their ring is listed with the time. *(box:
-     groups, a text story to a group from your own phone and from Desktop)*
-2. Click the ring: the story shows full size; ‹ › move between their stories, Esc
-   closes the story, Esc again the list.
+   - Their ring appears in the strip above the chat list, ringed in the accent while unseen.
+     *(box: groups, a text story to a group from your own phone and from Desktop; stories, the
+     peer's My Story from Desktop)* ✅ 2026-11-21
+2. Click the ring: the story fills the window, a bar per story at the top filling as it plays;
+   it goes on by itself after 5 s. Click the left third to go back, the rest to go on; ← and →
+   step, holding the card or Space pauses, Esc closes. Past their last story it goes on to the
+   next ring with unseen stories, and closes when there is none.
    - On **their** phone your view is counted (if you send read receipts / view receipts are on).
-     *(box: groups, counted on Desktop)*
+     *(box: groups, counted on Desktop)* ✅ 2026-11-21
    - On **your** phone the story counts as viewed too.
 3. A story posted to a group you are in shows under the group's name.
-4. Your own stories posted on the phone show in the list too, without sending yourself receipts.
-5. **New story** (bottom of the list): pick a test group, type text, **Post**.
-   - It appears in the group's stories on the members' phones, with the text on a blue
-     background, and on your phone under "My stories". *(box: groups, on Desktop)*
+4. Your own stories posted on the phone show too, without sending yourself receipts: to a group
+   under the group, to My Story under "My Story". *(box: stories, Android's to My Story)* ✅ 2026-11-21
+5. **+ New** (first in the strip): "Shared with" offers **My Story · N people** first (N your
+   Signal connections, less those your phone's My Story leaves out), then your own story lists,
+   then groups. Type text, **Post**.
+   - To My Story: it reaches your connections, with the text on a blue background; on your
+     phone it is under My Story, counting their views. *(box: stories, in one request, to the
+     peer's Desktop and a presage-cli member)* ✅ 2026-11-21
+   - To a test group: it appears in the group's stories on the members' phones. *(box: groups,
+     on Desktop)* ✅ 2026-11-21
 6. **Photo…** → pick a picture → it is posted the same way, as a photo story.
-7. 24 hours after posting, stories are gone from the list (also after restarting).
-8. Stories from someone whose chat is an unanswered message request, or whom you blocked, don't
-   show (watching would tell them you're active). Accept the request: their stories appear.
+7. On your phone, set My Story to "All except…" someone: b33p's count drops by one, and your
+   next story from b33p doesn't reach them. Set it back. *(box: stories)* ✅ 2026-11-21
+8. Turn stories off on your phone: the strip and **+ New** go from b33p.
+9. 24 hours after posting, stories are gone from the list (also after restarting).
+10. Stories from someone whose chat is an unanswered message request, or whom you blocked, don't
+    show (watching would tell them you're active). Accept the request: their stories appear.
 
 ## 4. Review fixes (October 2026)
 
@@ -536,7 +550,7 @@ Back up `~/.local/share/b33p` before these; some delete it on purpose.
 9. Settings → **Unlink this device…** → **Unlink and delete**: the phone no longer lists it,
    b33p shows a linking code, and the chats are gone here.
 10. Take the network away while chatting: the chat list says "Not connected · trying again";
-    back: "Catching up…", then nothing. *(box: network: the link dead for 90 s, and flapping)*
+    back: "Catching up…", then nothing. *(box: network: the link dead for 90 s, and flapping)* ✅ 2026-11-21
 11. Settings → About → **Open log folder**: `b33p.log` is there. Search it for a contact's
     number, name, or a word you sent: none of them appear.
 12. Start the 0.2.0 build on the data of a newer test build whose migrations it doesn't know

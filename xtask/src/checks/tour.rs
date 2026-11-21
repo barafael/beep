@@ -1,4 +1,4 @@
-//! The tour (pending/stress.md): every feature b33p has, between the b33ps of a mesh, in an order
+//! The tour (docs/testbox-tour.md): every feature b33p has, between the b33ps of a mesh, in an order
 //! drawn from a seed (`TESTBOX_SEED`, printed at the start), each step checked on every b33p it
 //! reaches against a model of what each should show. Each kind of step comes up
 //! `TESTBOX_TOUR_REPEAT` times (two by default), when what it needs is there: an edit once there

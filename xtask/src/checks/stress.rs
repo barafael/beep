@@ -1,4 +1,4 @@
-//! b33p run harder than the other phases run it (pending/stress.md): many messages at once,
+//! b33p run harder than the other phases run it (docs/testbox-stress.md): many messages at once,
 //! b33p or the server stopped at awkward moments, texts and files b33p hasn't seen, several
 //! clients at once, and a long run of mixed traffic. Each check says what b33p must still show
 //! afterwards; what it measures on the way (how long, how much memory) it prints.
@@ -1156,7 +1156,7 @@ pub(super) struct Sample {
     /// grows. Not its container's cgroup, which counts wayvnc too, and while a viewer or the
     /// screenshots are connected that is some 150 MiB; nor `memory.current`, which counts the
     /// page cache too, the files b33p read and wrote, and which grows on its own after a restart
-    /// (pending/tour.md).
+    /// (docs/testbox-tour.md).
     pub(super) memory: u64,
     /// The container's page cache (cgroup `memory.stat` `file`), in bytes, beside it.
     pub(super) cache: u64,

@@ -6,7 +6,8 @@
 //! transit CDN. We wait for its location, download it and decrypt it with keys derived from
 //! that one-time key and our ACI, then import it (see [`crate::import`]).
 //!
-//! For now only contacts, groups and text messages are imported.
+//! Imported: contacts, groups, messages with their reactions, quotes and stickers, and
+//! attachments as pointers, those still on the transit CDN (see [`crate::import`]).
 
 use std::{
     path::{Path, PathBuf},

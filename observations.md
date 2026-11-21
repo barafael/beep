@@ -196,7 +196,7 @@ and 19 WARN lines in a run where every check passed):
   ERROR lines per start in every record; `cage -- -x`/an option to not try Xwayland, or a
   grep in `with-display`, would keep the record's ERRORs meaningful.
 - `trusting new identity` twice: first contact, as designed. It also means a safety-number
-  change never happens in the box (already listed in `pending/testbox-review.md`).
+  change never happens in the box (already listed in `docs/testbox-review.md`).
 
 Host load during the baseline's end: loadavg 20, IO pressure `full avg60=13.9`. Not the box's
 own doing: a second, unrelated job on this machine is compiling a Rust workspace
@@ -606,7 +606,7 @@ own key logs with the new checks in: linked 13, desktop 22, attachments 11, core
 
 ## Opportunities to broaden and deepen the coverage
 
-`pending/testbox-review.md` already lists the user flows the phases miss (long text, typing
+`docs/testbox-review.md` already lists the user flows the phases miss (long text, typing
 with Desktop, read receipts to Desktop, disappearing with Desktop, forwarding, link previews with
 Desktop, blocking via the storage service, invite links with Android, safety-number change,
 unlink and relink, SIGKILL while receiving, a CDN that drops mid-upload). Everything below is in
@@ -1075,7 +1075,7 @@ wanted the whole; it now wants what b33p puts inline (`inline_head`), and passed
 Under `--b33p-memory 768`, content passed (the huge pictures took b33p to 702 MiB) and
 concurrency found Desktop's 003 missing on b33p: it came at the millisecond presage-cli's 002
 did, from the same account, and one of two such messages is kept, as Signal-Android keeps one
-(pending/stress.md finding 8). The check tells such a set from a loss now; five rounds of
+(docs/testbox-stress.md finding 8). The check tells such a set from a loss now; five rounds of
 concurrency under the cap passed after.
 
 ## The sweep on the forks of 6 Nov (`forks-1106`)

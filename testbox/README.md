@@ -178,7 +178,7 @@ run only when named, each on a box of its own, after the others: bursts of messa
 sends and saves; awkward texts, broken and huge pictures, odd file names; several clients
 sending at once; half an hour of mixed traffic (`TESTBOX_SOAK_MINUTES`, from a seed it prints,
 which `TESTBOX_SEED` repeats) while b33p's memory and open files are watched
-([pending/stress.md](../pending/stress.md)).
+([docs/testbox-stress.md](../docs/testbox-stress.md)).
 
 `signal-cli` runs only when named, on a box of its own: b33p linked to a presage-cli primary, with
 a presage-cli peer and [signal-cli](https://github.com/AsamK/signal-cli), registered as an account

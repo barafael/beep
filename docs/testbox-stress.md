@@ -1,5 +1,8 @@
 # A stress run for b33p
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 Run b33p in ways the six phases never do (volume, interruptions, awkward content, concurrency,
 long runtimes) and give every failure a root cause, whether it lies in b33p, presage,
 libsignal-service, Slint, Qt or rusqlite. It reuses what the box has: the agent harness,
@@ -97,7 +100,7 @@ Each group is a phase of about ten minutes, except E.
   libsignal-service, Slint or Qt, rusqlite.
 - The fix goes upstream or onto the fork's `langis/integration`; the narrowed check stays in its
   phase.
-- Findings are listed here, below, as [branches.md](branches.md) lists branches.
+- Findings are listed here, below.
 
 ## Found out first
 
@@ -327,7 +330,7 @@ same millisecond. Two accounts in one chat is the likelier: about 2 a year for a
 stored messages a day spread evenly, more in bursts. In the box every client shares one clock and
 sends every 75 ms or so.
 
-The findings this went through, and how each was re-derived: `pending/same-millisecond.md`.
+The findings this went through, and how each was re-derived, were in `pending/same-millisecond.md`, removed once all were settled (in git history).
 
 ### What Group C and D found right
 
