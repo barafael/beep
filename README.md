@@ -11,11 +11,9 @@ messages.
 | ![The chat list](docs/screenshots/01-chats.png) | ![A conversation with attachments and notices](docs/screenshots/02-conversation.png) | ![A draft in the composer](docs/screenshots/03-composing.png) |
 | ![A group chat](docs/screenshots/05-group.png) | ![A message request waiting to be accepted](docs/screenshots/06-request.png) | ![The desktop's dark scheme](docs/screenshots/07-chats-dark.png) |
 
-In the desktop's dark scheme, and in the other widget style the settings offer:
+In the desktop's dark scheme:
 
-| | | |
-|---|---|---|
-| ![Dark scheme](docs/screenshots/08-answered-dark.png) | ![Fusion, light](docs/screenshots/09-answered-fusion-light.png) | ![Fusion, dark](docs/screenshots/10-answered-fusion-dark.png) |
+![Dark scheme](docs/screenshots/08-answered-dark.png)
 
 In motion: an agent selects a chat, types word by word, sends, and watches the message get
 read, answered and reacted to:

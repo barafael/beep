@@ -76,6 +76,11 @@ The release workflow takes a version's notes from here (the section headed with 
 - Photos open in b33p's own viewer, over the window: the wheel zooms (stopping at 100% on the
   way), dragging moves a zoomed photo, a double click switches between fitting and 100%, ← and
   → go through the chat's photos, and **Save** and **Open with…** are at hand.
+- Stories to **My Story**, as in Signal's apps: **+ New** offers "My Story · N people" first,
+  then your own story lists, then groups. It goes to your Signal connections, less those your
+  phone's My Story settings leave out, in one request; your phone files it under My Story. Your
+  own stories without a group, posted here or on the phone, show under "My Story". With stories
+  turned off on the phone, b33p shows none either.
 - Notifications per chat, in its details beside muting: only for mentions of you and replies
   to your messages, without the message text, or without a sound. Kept on this computer; the
   phone doesn't have these.
@@ -91,9 +96,14 @@ The release workflow takes a version's notes from here (the section headed with 
 - Chat previews of a photo, video, voice message, file or sticker, and changes of the
   disappearing-message timer, have an icon instead of an emoji (notifications keep theirs).
 - The chat list's title row is as tall as the chat's header beside it.
+- Stories as rings above the chat list, and a viewer over the whole window: a bar per story
+  going on by itself, a click to go back or on, holding or Space to pause; past someone's last
+  story it goes on to the next with unseen stories.
 
 ### Fixed
 
+- The reaction bar over a message stays while the pointer moves onto it, and is drawn over the
+  message above it rather than under its buttons.
 - b33p no longer stops taking messages when many arrive at once while it reads the storage
   service (a large group's members all answering, say): it took none after the first few
   until restarted.
