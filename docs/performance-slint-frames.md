@@ -2,7 +2,7 @@
 
 > 2026-11-21: `performance-multiway.html` and `bench.py` went with the GPUI client (#178). The
 > fork's current pin and the upstream PRs' state are in
-> [pending/branches.md](../pending/branches.md).
+> [PLAN.md](../PLAN.md), section 2.
 
 Found 2026-11-09, from the multi-way benchmark (`performance-multiway.html`), which showed the
 FemtoVG and Skia builds using 3 to 4 times GPUI's CPU with messages arriving (15 to 16 % against

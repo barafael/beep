@@ -1,5 +1,8 @@
 # What b33p can take from sigwin
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 [Othereum/sigwin](https://github.com/Othereum/sigwin) (inspected at `88ea8a5`, 2026-11-07) is a
 Windows Signal client on the same stack: presage, libsignal-service, Slint. It is AGPL-3.0-only like
 b33p, so code may be ported, not only ideas. A ported commit says so in its body

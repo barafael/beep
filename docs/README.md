@@ -17,18 +17,19 @@ What there is to read beyond the [README](../README.md), and which of it is kept
   Flare's backend).
 - [.devcontainer/README.md](../.devcontainer/README.md): the development container.
 
-## Plans and open work (`pending/`)
+## Plans and open work
 
-- [branches.md](../pending/branches.md): the forks b33p builds on; the Slint fork's topics.
-- [followups.md](../pending/followups.md): smaller things left to do.
-- [actors.md](../pending/actors.md): moving the signal backend to actors, step by step.
-- [account-parity.md](../pending/account-parity.md): what a long-lived account has that the test
-  box's don't.
-- [sigwin.md](../pending/sigwin.md): what is left to take from sigwin, a client on the same stack.
-- [testbox-review.md](../pending/testbox-review.md): the test box looked back on, October 2026.
-- Findings logs, kept as the runs go; code comments cite their finding numbers, so they stay
-  where they are: [tour.md](../pending/tour.md), [stress.md](../pending/stress.md),
-  [wire.md](../pending/wire.md), [same-millisecond.md](../pending/same-millisecond.md).
+Every open item is in [PLAN.md](../PLAN.md); it says which branch of each fork carries what
+(section 2). The designs and findings behind its items:
+
+- [actors.md](actors.md): moving the signal backend to actors, step by step.
+- [account-parity.md](account-parity.md): what a long-lived account has that the test box's
+  don't.
+- [sigwin.md](sigwin.md): what is left to take from sigwin, a client on the same stack.
+- [testbox-review.md](testbox-review.md): the test box looked back on, October 2026.
+- Findings logs, kept as the runs go; code comments cite their finding numbers:
+  [testbox-tour.md](testbox-tour.md), [testbox-stress.md](testbox-stress.md),
+  [testbox-wire.md](testbox-wire.md).
 
 ## Records (dated, kept as written)
 
