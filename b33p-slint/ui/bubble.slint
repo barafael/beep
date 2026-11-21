@@ -103,6 +103,52 @@ component MessageActions inherits HorizontalLayout {
     }
 }
 
+// What a message says of itself at its end: that it was edited, when it was sent and how far
+// it got.
+component Meta inherits HorizontalLayout {
+    in property <MessageItem> item;
+    in property <color> ink;
+    in property <color> faint;
+    spacing: Theme.space-xs;
+    if item.edited: Caption {
+        text: "edited";
+        font-italic: true;
+        vertical-alignment: center;
+        color: root.faint;
+    }
+    if item.show-time: Small {
+        text: item.time;
+        vertical-alignment: center;
+        color: root.faint;
+    }
+    // ✓ sent, ✓✓ delivered; read: ✓✓ cut out of a filled pill, so it tells from delivered at a
+    // glance.
+    if item.show-time && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: 18px;
+            height: 13px;
+            border-radius: self.height / 2;
+            background: item.delivery == DeliveryState.read ? root.ink : transparent;
+            accessible-role: text;
+            accessible-label: item.delivery == DeliveryState.sent ? "Sent" : item.delivery == DeliveryState.delivered ? "Delivered" : "Read";
+            Icon {
+                source: item.delivery == DeliveryState.sent ? @image-url("@lucide/check.svg") : @image-url("@lucide/check-check.svg");
+                width: 11px;
+                tint: item.delivery == DeliveryState.read ? Theme.bubble-outgoing : root.faint;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+    if item.show-time && item.delivery == DeliveryState.sending: Caption {
+        text: "Sending…";
+        font-italic: true;
+        vertical-alignment: center;
+        color: root.faint;
+    }
+}
+
 export component Bubble inherits Rectangle {
     in property <MessageItem> item;
     in property <length> max-bubble-width;
@@ -219,8 +265,8 @@ export component Bubble inherits Rectangle {
     // Around the content, not under it: it stays hovered over the text and pictures, which
     // take the pointer themselves (links), so the message's button shows there too.
     hover := TouchArea {
-        // The time of a message within a run, which shows it only on the run's last.
-        if self.has-hover && !item.last && !item.notice && item.time != "": Tooltip {
+        // The time of a message that doesn't show its own (the next says the same).
+        if self.has-hover && !item.show-time && !item.notice && item.time != "": Tooltip {
             text: @markdown("\{item.time}");
         }
         VerticalLayout {
@@ -486,7 +532,8 @@ export component Bubble inherits Rectangle {
                                         }
                                     }
                                 }
-                                if !fold.long || fold.expanded: VerticalLayout {
+                                if !fold.long || fold.expanded: HorizontalLayout {
+                                        spacing: Theme.space-s;
                                         body := StyledText {
                                             text: item.body;
                                             // A long unbreakable word (a URL) must not widen the bubble past
@@ -533,6 +580,15 @@ export component Bubble inherits Rectangle {
                                                 }
                                             }
                                         }
+                                        // On the text's one line, at its end, when both fit.
+                                        if root.meta-inline: VerticalLayout {
+                                            alignment: end;
+                                            Meta {
+                                                item: item;
+                                                ink: root.ink;
+                                                faint: root.faint;
+                                            }
+                                        }
                                 }
                                 if fold.long && !fold.expanded: HorizontalLayout {
                                     alignment: start;
@@ -554,9 +610,9 @@ export component Bubble inherits Rectangle {
                                     }
                                 }
                             }
-                            // Once per run, on its last message; always if it changed, goes away or
-                            // failed to go out.
-                            if item.last || item.edited || item.expires != "" || item.delivery == DeliveryState.failed: HorizontalLayout {
+                            // Unless the next message says the same (its run, its minute); always if
+                            // it changed, goes away or failed to go out.
+                            if (item.show-time || item.edited || item.expires != "" || item.delivery == DeliveryState.failed) && !root.meta-inline: HorizontalLayout {
                                 alignment: end;
                                 spacing: Theme.space-xs;
                                 if item.expires != "": HorizontalLayout {
@@ -577,42 +633,10 @@ export component Bubble inherits Rectangle {
                                         color: root.faint;
                                     }
                                 }
-                                if item.edited: Caption {
-                                    text: "edited";
-                                    font-italic: true;
-                                    vertical-alignment: center;
-                                    color: root.faint;
-                                }
-                                if item.last: Small {
-                                    text: item.time;
-                                    vertical-alignment: center;
-                                    color: root.faint;
-                                }
-                                // ✓ sent, ✓✓ delivered; read: ✓✓ cut out of a filled pill, so it
-                                // tells from delivered at a glance.
-                                if item.last && (item.delivery == DeliveryState.sent || item.delivery == DeliveryState.delivered || item.delivery == DeliveryState.read): VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 18px;
-                                        height: 13px;
-                                        border-radius: self.height / 2;
-                                        background: item.delivery == DeliveryState.read ? root.ink : transparent;
-                                        accessible-role: text;
-                                        accessible-label: item.delivery == DeliveryState.sent ? "Sent" : item.delivery == DeliveryState.delivered ? "Delivered" : "Read";
-                                        Icon {
-                                            source: item.delivery == DeliveryState.sent ? @image-url("@lucide/check.svg") : @image-url("@lucide/check-check.svg");
-                                            width: 11px;
-                                            tint: item.delivery == DeliveryState.read ? Theme.bubble-outgoing : root.faint;
-                                            x: (parent.width - self.width) / 2;
-                                            y: (parent.height - self.height) / 2;
-                                        }
-                                    }
-                                }
-                                if item.last && item.delivery == DeliveryState.sending: Caption {
-                                    text: "Sending…";
-                                    font-italic: true;
-                                    vertical-alignment: center;
-                                    color: root.faint;
+                                Meta {
+                                    item: item;
+                                    ink: root.ink;
+                                    faint: root.faint;
                                 }
                                 // On every bubble that failed, not only a run's last.
                                 if item.delivery == DeliveryState.failed: Rectangle {
@@ -798,6 +822,25 @@ export component Bubble inherits Rectangle {
         visible: false;
         accessible-role: none;
     }
+
+    // The text on one line, to tell whether the meta fits beside it: only for a short one,
+    // which a line may hold (shaping a long one for nothing would cost every row).
+    text-probe := Text {
+        text: item.text.character-count < 120 ? item.text : "";
+        visible: false;
+        accessible-role: none;
+    }
+    meta-probe := Meta {
+        item: item;
+        visible: false;
+    }
+    // The meta goes on the text's line, at its end, if the text is one line with room for it;
+    // else under the text. Not with a countdown or a failure, which take more room.
+    property <bool> meta-inline: item.has-body && (item.show-time || item.edited)
+        && item.expires == "" && item.delivery != DeliveryState.failed
+        && item.text.character-count < 120
+        && text-probe.preferred-width + Theme.space-s + meta-probe.preferred-width
+            <= root.max-bubble-width - 2 * Theme.space-m;
 
     // On top: it takes only right clicks.
     menu := ContextMenuArea {
