@@ -39,7 +39,7 @@ pub(crate) enum AndroidPhase {
     Stories,
 }
 
-/// The stress phases (pending/stress.md), each on a box of its own (`PlainBox` there), and
+/// The stress phases (docs/testbox-stress.md), each on a box of its own (`PlainBox` there), and
 /// only when named: they stop b33p and the server on purpose, and the soak takes half an hour.
 #[derive(Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::VariantArray)]
 pub(crate) enum StressPhase {

@@ -1,5 +1,8 @@
 # Wire: what Signal's own clients say to the server, next to what b33p says
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 `cargo testbox test --capture` writes the wire down (tcpdump on the pod's loopback, and every
 server's TLS key log; testbox/capture) and xtask/src/wire decodes it. The output goes in the box
 record's `wire/`: `events.jsonl`, a transcript for each client, `compare.md`, and

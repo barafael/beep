@@ -1,7 +1,10 @@
 # The testbox, looked back on (October 2026)
 
+> Moved from `pending/` on 2026-11-21: its open items are in [PLAN.md](../PLAN.md); this is the
+> record (findings, causes, design), kept as it was written.
+
 What stood in the way of a green testbox, what the box would do better, and the user flows it
-doesn't check yet.
+doesn't check yet. Which branch carries what: Cargo.toml's comments and PLAN.md, section 2.
 
 **Since (2026-11-21):** much of this is done. Rounds and phases run at once (`--instance`,
 `--jobs`, `--fresh`); long text, typing, timers, forwarding, invite links and a killed b33p
@@ -41,7 +44,8 @@ run.
 9. **Work spread out.** The fix for the race was written and proven in other sessions, on
    branches named `integration-next` (since renamed `langis/integration`), `pr/session-lock`,
    `debug/session-trace-fixed`, with #69 open; finding what was where took longer than the
-   fix. `branches.md` is the remedy here.
+   fix. A list of the branches was the remedy then; Cargo.toml's comments and PLAN.md's
+   section 2 are now.
 
 ## How the box could be better
 

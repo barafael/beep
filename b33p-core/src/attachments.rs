@@ -330,7 +330,7 @@ pub(crate) struct Downloads {
     cache: Option<Arc<Cache>>,
     limit: Semaphore,
     /// One picture decoded at a time: a picture may take up to [`decode_limited`]'s 512 MiB
-    /// decoded, and several arriving together took b33p past 2 GiB (pending/stress.md).
+    /// decoded, and several arriving together took b33p past 2 GiB (docs/testbox-stress.md).
     decoding: Semaphore,
     /// What [`prefetch`] may take of `limit`: leaves the rest for what is shown.
     prefetching: Semaphore,

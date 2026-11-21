@@ -1,6 +1,6 @@
 # Review plan: snappiness, memory, usability, architecture, look
 
-> Done and merged; what was left is in [pending/followups.md](../pending/followups.md). The paths
+> Done and merged; what was left is in [PLAN.md](../PLAN.md). The paths
 > (`state.rs`, `signal.rs`, `ui.rs`) predate the module splits.
 
 What the review of 2026-10-24 found, and how to address all of it. Phases go in order; within a

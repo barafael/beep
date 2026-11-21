@@ -155,7 +155,7 @@ mod tests {
     }
 
     /// An upload that gets no answer (here, nothing listens) may go through later: it is no
-    /// refusal (pending/tour.md, finding 19).
+    /// refusal (docs/testbox-tour.md, finding 19).
     #[tokio::test]
     async fn no_answer_over_http_may_pass() {
         let error = reqwest::Client::new()
