@@ -14,9 +14,9 @@ until 2026-11-21; `git log -- pending/branches.md` has them.
 
 ## Slint (barafael/slint)
 
-b33p pins `slint/integration-branch` (`076293d`, 2026-11-20): upstream master `4e21b60` with the
+b33p pins `slint/integration-branch` (`27f6992`, 2026-11-21): upstream master `2dbdba1` with the
 branches below merged in order by the branch's own `integration.sh` (`./integration.sh push`
-tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-20-d206fd1d8`).
+tags the old tip `integration/<date>-<commit>`; the previous pin is `integration/2026-11-21-076293d90`).
 A topic that conflicts with an earlier one is listed as `merge/<topic>`: the topic with the earlier
 one merged in by hand.
 
@@ -28,3 +28,4 @@ one merged in by hand.
 | `inline-code-padding` | #14721 | parley 0.13 needs a U+FFFC under each in-flow inline box: the left padding's box now has one in the layout's text (`34293320d`); asked on the PR whether that's sane |
 | `merge/edualc-text` | none (felintusun's branches) | `edualc-text` with `inline-code-padding` merged in by hand |
 | `merge/incremental-text-shaping` | #14953 | overlaps ogoffart's #14742 (plain text only; ours covers StyledText and content widths): rebase onto it as a follow-up. Has `merge/edualc-text` merged in by hand; content widths shape the same U+FFFC text as drawing |
+| `fix/popup-follows-parent` | #15091 | draft, opened 11-21: an open popup moves when a layout moves its parent (the chat header's menu on a resize) |
