@@ -337,7 +337,9 @@ fn Message(row: Row) -> Element {
                     span { "{row.time}" }
                     if row.outgoing {
                         match row.unsent {
-                            Some(Unsent::Sending) => rsx! { span { class: "tick", "…" } },
+                            Some(Unsent::Sending) => rsx! {
+                                span { class: "tick", "…" }
+                            },
                             Some(Unsent::Failed) => rsx! {
                                 button {
                                     class: "retry",
@@ -349,8 +351,7 @@ fn Message(row: Row) -> Element {
                                 span { class: "retry", "Signal refused this message" }
                             },
                             None => rsx! {
-                                span {
-                                    class: if row.delivery == Delivery::Read { "tick read" } else { "tick" },
+                                span { class: if row.delivery == Delivery::Read { "tick read" } else { "tick" },
                                     match row.delivery {
                                         Delivery::Sent => "✓",
                                         Delivery::Delivered | Delivery::Read => "✓✓",
@@ -362,7 +363,7 @@ fn Message(row: Row) -> Element {
                 }
                 if !row.reactions.is_empty() {
                     div { class: "reactions",
-                        for (emoji , count) in &row.reactions {
+                        for (emoji, count) in &row.reactions {
                             span { class: "reaction",
                                 "{emoji}"
                                 if *count > 1 {
@@ -417,9 +418,21 @@ fn RequestBar(id: ConversationId) -> Element {
         div { class: "request",
             p { "This person isn't in your contacts. Accepting shares your name and picture with them." }
             div { class: "actions",
-                button { class: "primary", onclick: respond(RequestResponse::Accept), "Accept" }
-                button { class: "secondary", onclick: respond(RequestResponse::Block), "Block" }
-                button { class: "danger", onclick: respond(RequestResponse::Delete), "Delete" }
+                button {
+                    class: "primary",
+                    onclick: respond(RequestResponse::Accept),
+                    "Accept"
+                }
+                button {
+                    class: "secondary",
+                    onclick: respond(RequestResponse::Block),
+                    "Block"
+                }
+                button {
+                    class: "danger",
+                    onclick: respond(RequestResponse::Delete),
+                    "Delete"
+                }
             }
         }
     }

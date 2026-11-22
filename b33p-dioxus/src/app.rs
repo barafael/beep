@@ -131,12 +131,20 @@ pub fn app() -> Element {
         style { dangerous_inner_html: STYLE }
         div { class: "app",
             match screen {
-                Screen::Syncing(stage) => rsx! { SyncingScreen { stage } },
-                Screen::Password { new, error } => rsx! { PasswordScreen { new, error } },
-                Screen::Link(qr) => rsx! { LinkScreen { qr } },
-                Screen::Failed { failure, message } => rsx! { FailedScreen { failure, message } },
-                // A phone shows one thing at a time: the list, or the chat opened from it.
+                Screen::Syncing(stage) => rsx! {
+                    SyncingScreen { stage }
+                },
+                Screen::Password { new, error } => rsx! {
+                    PasswordScreen { new, error }
+                },
+                Screen::Link(qr) => rsx! {
+                    LinkScreen { qr }
+                },
+                Screen::Failed { failure, message } => rsx! {
+                    FailedScreen { failure, message }
+                },
                 Screen::Chats if open => rsx! {
+                    // A phone shows one thing at a time: the list, or the chat opened from it.
                     ErrorBanner {}
                     Conversation {}
                 },

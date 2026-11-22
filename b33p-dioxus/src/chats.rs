@@ -54,7 +54,9 @@ pub fn Chats() -> Element {
         }
         match connection {
             Connection::Online => rsx! {},
-            Connection::CatchingUp => rsx! { div { class: "banner", "Catching up…" } },
+            Connection::CatchingUp => rsx! {
+                div { class: "banner", "Catching up…" }
+            },
             Connection::Offline => rsx! {
                 div { class: "banner warning", "Offline. Trying to connect…" }
             },

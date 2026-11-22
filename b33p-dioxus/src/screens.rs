@@ -93,7 +93,13 @@ pub fn PasswordScreen(new: bool, error: Option<String>) -> Element {
             if let Some(error) = error {
                 p { class: "error", role: "alert", "{error}" }
             }
-            button { r#type: "submit", class: "primary", if new { "Set password" } else { "Unlock" } }
+            button { r#type: "submit", class: "primary",
+                if new {
+                    "Set password"
+                } else {
+                    "Unlock"
+                }
+            }
             if can_start_over {
                 StartOver { asking: asking_to_start_over }
             }
