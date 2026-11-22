@@ -46,6 +46,12 @@ pub fn snippet(body: &str, query: &str) -> (String, Option<Range<usize>>) {
     (out, found)
 }
 
+/// The first line of `text` that has something on it, trimmed: what a one-line preview of a
+/// message shows.
+pub fn first_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 /// "Ann is typing…", "Ann and Bob are typing…"; empty if nobody is.
 pub fn typing_label(names: &[&str]) -> String {
     match names {

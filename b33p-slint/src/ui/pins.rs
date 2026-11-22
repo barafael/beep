@@ -36,14 +36,11 @@ pub(super) fn render_pins(window: &AppWindow, chat: &ChatState) {
 
 /// What a pinned message says in the bar: its first line, or what it is.
 fn pin_text(message: &b33p_core::ChatMessage) -> String {
-    let line = b33p_core::format::hide_spoilers(&message.body, &message.styles)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
+    let body = b33p_core::format::hide_spoilers(&message.body, &message.styles);
+    let line = state::first_line(&body).unwrap_or_default();
     match message.attachments.first() {
         Some(attachment) if line.is_empty() => state::describe_kind(attachment.kind).to_owned(),
-        _ => line,
+        _ => line.to_owned(),
     }
 }
 

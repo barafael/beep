@@ -266,12 +266,7 @@ impl ChatState {
                     ring_of.insert(&story.conversation, rings.len());
                     rings.push(StoryRing {
                         conversation: &story.conversation,
-                        title: match story.conversation.story_list_id() {
-                            Some(list) => self.story_list_title(&list),
-                            None => self
-                                .conversation(&story.conversation)
-                                .map_or_else(|| story.author.clone(), |c| c.title.clone()),
-                        },
+                        title: self.story_title(story),
                         latest: story.timestamp,
                         count: 1,
                         unviewed: !story.viewed,
@@ -283,7 +278,8 @@ impl ChatState {
         rings
     }
 
-    /// Stories not seen yet, e.g. for a dot on the stories button.
+    /// Stories not seen yet. No client shows the count yet; the rings mark unseen stories
+    /// one by one.
     pub fn unviewed_stories(&self) -> usize {
         self.stories
             .iter()
@@ -472,6 +468,16 @@ impl ChatState {
             recipients,
             allows_replies,
         })
+    }
+
+    /// What a story is shown under: its story list ("My Story"), its group, or its author.
+    pub fn story_title(&self, story: &crate::Story) -> String {
+        match story.conversation.story_list_id() {
+            Some(list) => self.story_list_title(&list),
+            None => self
+                .conversation(&story.conversation)
+                .map_or_else(|| story.author.clone(), |c| c.title.clone()),
+        }
     }
 
     /// What a story list is called: "My Story", or the name it was given.

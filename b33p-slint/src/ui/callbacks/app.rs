@@ -59,12 +59,7 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             let Some(window) = window.upgrade() else {
                 return;
             };
-            let settings = Settings {
-                // Not among the page's choices: named by `rename_device`, and picked emoji.
-                device_name: shared.settings.borrow().device_name.clone(),
-                recent_emoji: shared.settings.borrow().recent_emoji.clone(),
-                ..read_settings(&window)
-            };
+            let settings = read_settings(&window, &shared.settings.borrow());
             window
                 .global::<Prefs>()
                 .set_font_scale(settings.text_size.scale());

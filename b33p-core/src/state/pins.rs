@@ -15,8 +15,9 @@ impl ChatState {
             .collect()
     }
 
-    /// When the next of the open chat's pins runs out (ms since the epoch), for the window
-    /// to look again then.
+    /// When the next of the open chat's pins runs out (ms since the epoch). The Slint window
+    /// doesn't wait for it: it looks again every 30 s while there are pins (app.slint's
+    /// `check-pins` timer).
     pub fn next_pin_expiry(&self) -> Option<u64> {
         let now = self.now();
         self.pinned_messages()

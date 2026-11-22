@@ -107,7 +107,7 @@ enum CommandError {
     UnknownConversation { conversation: ConversationId },
     #[error("not a group")]
     NotAGroup { conversation: ConversationId },
-    #[error("stories go to groups here")]
+    #[error("stories go to groups and story lists here")]
     StoryNotToGroup { conversation: ConversationId },
     #[error("nothing was uploaded of the story's picture")]
     StoryNotUploaded,
@@ -594,14 +594,13 @@ async fn handle_command(
             allows_replies,
         } => {
             // A group's story goes to the group; a story list's to each recipient.
-            let list = conversation.story_list_id();
-            let group = match list {
-                Some(_) => None,
+            let (group, list) = match conversation.story_list_id() {
+                Some(list) => (None, list),
                 None => {
                     let Thread::Group(key) = thread(&conversation)? else {
                         return Err(CommandError::StoryNotToGroup { conversation }.into());
                     };
-                    Some(key)
+                    (Some(key), Vec::new())
                 }
             };
             let timestamp = now_millis();
@@ -655,20 +654,17 @@ async fn handle_command(
                 allows_replies: Some(allows_replies),
                 ..Default::default()
             };
-            let sync_recipients = match (group, list) {
-                (Some(key), _) => {
+            let sync_recipients = match group {
+                Some(key) => {
                     ctx.outbox
                         .group_message(key, ContentBody::StoryMessage(message.clone()), timestamp)
                         .await
                         .map_err(CommandError::PostStory)?;
                     story_recipients(manager, key).await
                 }
-                (None, list) => {
-                    let list = list.unwrap_or_default();
-                    send_to_list(ctx, &message, timestamp, &recipients, &list, allows_replies)
-                        .await
-                        .map_err(CommandError::PostStory)?
-                }
+                None => send_to_list(ctx, &message, timestamp, &recipients, &list, allows_replies)
+                    .await
+                    .map_err(CommandError::PostStory)?,
             };
             keep_story(ctx, &stored)
                 .await

@@ -12,26 +12,14 @@ impl ChatState {
         }
         self.read_seen();
         if self.selected.as_ref() != Some(id) {
-            self.media = None;
-            self.viewing = None;
-            self.details = None;
-            self.chat_search = None;
-            self.pending_jump = None;
-            self.highlight = None;
-            self.replying = None;
-            self.editing = None;
-            self.selection.clear();
-            self.selection_anchor = None;
-            self.keep_draft_mentions();
+            self.leave_chat();
             self.draft_mentions = self
                 .drafts
                 .get(id)
                 .map(|(_, m)| m.clone())
                 .unwrap_or_default();
-            self.staged.clear();
             self.read_mark = self.conversation(id).map(|c| c.settings.last_read);
             self.jump_to_unread = true;
-            self.forget_changed_rows();
         }
         self.selected = Some(id.clone());
         self.continue_unread_jump();
@@ -83,18 +71,30 @@ impl ChatState {
     /// Back to the chat list, e.g. on a narrow window that shows one or the other.
     pub fn deselect(&mut self) -> Update {
         self.read_seen();
-        self.keep_draft_mentions();
+        self.leave_chat();
         self.selected = None;
+        self.read_mark = None;
+        Update::reset()
+    }
+
+    /// Lets go of what belonged to the open chat, as another is opened or none: its panels
+    /// (media, details, search, a message's info), the viewer, the reply or edit, the picked
+    /// messages and the staged files. Its draft's mentions stay with its draft.
+    fn leave_chat(&mut self) {
+        self.media = None;
         self.viewing = None;
+        self.details = None;
+        self.chat_search = None;
+        self.message_info = None;
+        self.pending_jump = None;
+        self.highlight = None;
         self.replying = None;
         self.editing = None;
         self.selection.clear();
         self.selection_anchor = None;
-        self.read_mark = None;
-        self.draft_mentions.clear();
+        self.keep_draft_mentions();
         self.staged.clear();
         self.forget_changed_rows();
-        Update::reset()
     }
 
     /// A chat from someone the user hasn't accepted (here, on the phone, or by writing to

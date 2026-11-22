@@ -242,7 +242,8 @@ impl Shared {
         }
         match chat.typing_expires() {
             Some(at) => {
-                let wait = at.saturating_sub(b33p_core::now_millis()) + 50;
+                // By the state's clock, which `typing_expires` is.
+                let wait = at.saturating_sub(chat.now()) + 50;
                 self.refresh_after(
                     &self.typing_timer,
                     slint::TimerMode::SingleShot,

@@ -11,7 +11,7 @@ use b33p_core::state::{
 use b33p_core::timeline::{self, Stretch};
 use b33p_core::{
     Attachment, AttachmentContent, AttachmentId, AttachmentKind, Backend, ConversationId, Delivery,
-    Failure, HistoryTransfer, SyncStage, Unsent, now_millis,
+    Failure, HistoryTransfer, SyncStage, Unsent,
 };
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -40,7 +40,6 @@ use viewer::*;
 #[cfg(test)]
 pub(crate) use viewer::{open_picture, wire_zoom};
 
-/// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 /// What the agent harness asked of the window that it couldn't do.
 #[cfg(all(feature = "harness", target_family = "unix"))]
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +60,7 @@ pub enum HarnessError {
     NothingToShow { what: String },
 }
 
+/// Builds the window for `shared`, showing what `shared` holds. Not shown yet.
 pub fn create(shared: &Rc<Shared>) -> Result<Rc<Window>, slint::PlatformError> {
     let window = AppWindow::new()?;
     #[cfg(windows)]
@@ -353,97 +353,57 @@ impl Window {
 
 /// The settings page shows choices by index, in the order of these enums.
 fn show_settings(window: &AppWindow, settings: &Settings) {
-    window
-        .global::<Prefs>()
-        .set_theme(index_of(&Theme::ALL, settings.theme));
-    window
-        .global::<Prefs>()
-        .set_text_size(index_of(&TextSize::ALL, settings.text_size));
-    window
-        .global::<Prefs>()
-        .set_animations(index_of(&Animations::ALL, settings.animations));
-    window
-        .global::<Prefs>()
-        .set_show_avatars(settings.show_avatars);
-    window
-        .global::<Prefs>()
-        .set_notifications(settings.notifications);
-    window.global::<Prefs>().set_notification_content(index_of(
-        &NotificationContent::ALL,
+    let prefs = window.global::<Prefs>();
+    prefs.set_theme(index_of(Theme::ALL, settings.theme));
+    prefs.set_text_size(index_of(TextSize::ALL, settings.text_size));
+    prefs.set_animations(index_of(Animations::ALL, settings.animations));
+    prefs.set_show_avatars(settings.show_avatars);
+    prefs.set_notifications(settings.notifications);
+    prefs.set_notification_content(index_of(
+        NotificationContent::ALL,
         settings.notification_content,
     ));
-    window
-        .global::<Prefs>()
-        .set_close_to_tray(settings.close_to_tray);
-    window
-        .global::<Prefs>()
-        .set_screen_security(settings.screen_security);
-    window
-        .global::<Prefs>()
-        .set_update_supported(crate::updates::supported());
-    window
-        .global::<Prefs>()
-        .set_check_updates(settings.check_updates);
-    window
-        .global::<Prefs>()
-        .set_read_receipts(settings.preferences.read_receipts);
-    window
-        .global::<Prefs>()
-        .set_typing_indicators(settings.preferences.typing_indicators);
-    window
-        .global::<Prefs>()
-        .set_link_previews(settings.preferences.link_previews);
-    window
-        .global::<Prefs>()
-        .set_sync_to_phone(settings.preferences.sync_to_phone);
-    window
-        .global::<Prefs>()
-        .set_high_quality_pictures(settings.preferences.high_quality_pictures);
-    window
-        .global::<Prefs>()
-        .set_autostart_supported(crate::autostart::SUPPORTED);
-    window
-        .global::<Prefs>()
-        .set_screen_security_supported(crate::capture::SUPPORTED);
-    window
-        .global::<Prefs>()
-        .set_start_with_system(crate::autostart::enabled());
-    window
-        .global::<Prefs>()
-        .set_font_scale(settings.text_size.scale());
-    window
-        .global::<Prefs>()
-        .set_show_activity(settings.show_activity);
-    window
-        .global::<Prefs>()
-        .set_show_calendar(settings.show_calendar);
+    prefs.set_close_to_tray(settings.close_to_tray);
+    prefs.set_screen_security(settings.screen_security);
+    prefs.set_update_supported(crate::updates::supported());
+    prefs.set_check_updates(settings.check_updates);
+    prefs.set_read_receipts(settings.preferences.read_receipts);
+    prefs.set_typing_indicators(settings.preferences.typing_indicators);
+    prefs.set_link_previews(settings.preferences.link_previews);
+    prefs.set_sync_to_phone(settings.preferences.sync_to_phone);
+    prefs.set_high_quality_pictures(settings.preferences.high_quality_pictures);
+    prefs.set_autostart_supported(crate::autostart::SUPPORTED);
+    prefs.set_screen_security_supported(crate::capture::SUPPORTED);
+    prefs.set_start_with_system(crate::autostart::enabled());
+    prefs.set_font_scale(settings.text_size.scale());
+    prefs.set_show_activity(settings.show_activity);
+    prefs.set_show_calendar(settings.show_calendar);
 }
 
-fn read_settings(window: &AppWindow) -> Settings {
+/// The choices of the settings page, over `current`: what the page doesn't show (the device's
+/// name, the emoji picked lately) stays as it is.
+fn read_settings(window: &AppWindow, current: &Settings) -> Settings {
+    let prefs = window.global::<Prefs>();
     Settings {
-        theme: at_index(&Theme::ALL, window.global::<Prefs>().get_theme()),
-        animations: at_index(&Animations::ALL, window.global::<Prefs>().get_animations()),
-        text_size: at_index(&TextSize::ALL, window.global::<Prefs>().get_text_size()),
-        show_avatars: window.global::<Prefs>().get_show_avatars(),
-        notifications: window.global::<Prefs>().get_notifications(),
-        notification_content: at_index(
-            &NotificationContent::ALL,
-            window.global::<Prefs>().get_notification_content(),
-        ),
-        show_activity: window.global::<Prefs>().get_show_activity(),
-        show_calendar: window.global::<Prefs>().get_show_calendar(),
-        close_to_tray: window.global::<Prefs>().get_close_to_tray(),
-        screen_security: window.global::<Prefs>().get_screen_security(),
-        check_updates: window.global::<Prefs>().get_check_updates(),
-        device_name: None,
-        recent_emoji: Vec::new(),
+        theme: at_index(Theme::ALL, prefs.get_theme()),
+        animations: at_index(Animations::ALL, prefs.get_animations()),
+        text_size: at_index(TextSize::ALL, prefs.get_text_size()),
+        show_avatars: prefs.get_show_avatars(),
+        notifications: prefs.get_notifications(),
+        notification_content: at_index(NotificationContent::ALL, prefs.get_notification_content()),
+        show_activity: prefs.get_show_activity(),
+        show_calendar: prefs.get_show_calendar(),
+        close_to_tray: prefs.get_close_to_tray(),
+        screen_security: prefs.get_screen_security(),
+        check_updates: prefs.get_check_updates(),
         preferences: b33p_core::Preferences {
-            read_receipts: window.global::<Prefs>().get_read_receipts(),
-            typing_indicators: window.global::<Prefs>().get_typing_indicators(),
-            link_previews: window.global::<Prefs>().get_link_previews(),
-            sync_to_phone: window.global::<Prefs>().get_sync_to_phone(),
-            high_quality_pictures: window.global::<Prefs>().get_high_quality_pictures(),
+            read_receipts: prefs.get_read_receipts(),
+            typing_indicators: prefs.get_typing_indicators(),
+            link_previews: prefs.get_link_previews(),
+            sync_to_phone: prefs.get_sync_to_phone(),
+            high_quality_pictures: prefs.get_high_quality_pictures(),
         },
+        ..current.clone()
     }
 }
 

@@ -88,7 +88,8 @@ pub(super) fn wire(window: &AppWindow, shared: &Rc<Shared>) {
             let until = match seconds {
                 0 => None,
                 ..0 => Some(u64::MAX),
-                seconds => Some(now_millis() + seconds as u64 * 1000),
+                // By the state's clock, which tells whether the chat is muted.
+                seconds => Some(chat.now() + seconds as u64 * 1000),
             };
             chat.mute(id, until)
         }));

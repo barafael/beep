@@ -72,27 +72,18 @@ impl ConversationId {
 
     /// The group whose master key is `master_key`.
     pub fn group(master_key: &[u8]) -> Self {
-        let key: String = master_key.iter().map(|b| format!("{b:02x}")).collect();
-        Self(format!("g:{key}"))
+        Self(format!("g:{}", hex::encode(master_key)))
     }
 
     /// Our stories to a story list (see [`StoryList`]): not a chat, but where they are kept and
     /// listed, as a group's are under the group.
     pub fn story_list(id: &[u8]) -> Self {
-        let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
-        Self(format!("s:{id}"))
+        Self(format!("s:{}", hex::encode(id)))
     }
 
     /// The story list's id, for [`Self::story_list`]'s.
     pub fn story_list_id(&self) -> Option<Vec<u8>> {
-        let hex = self.0.strip_prefix("s:")?;
-        if hex.len() % 2 != 0 {
-            return None;
-        }
-        (0..hex.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
-            .collect()
+        hex::decode(self.0.strip_prefix("s:")?).ok()
     }
 
     /// The service ID of the person a 1:1 conversation is with.

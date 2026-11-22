@@ -444,8 +444,7 @@ impl Importer {
             .collect()
     }
 
-    /// The mentions among a text's ranges, as live messages carry them (formatting is dropped).
-    /// Mentions and formatting, spoilers among it.
+    /// A text's ranges as live messages carry them: mentions and formatting, spoilers among it.
     fn body_ranges(&self, ranges: &[proto::BodyRange]) -> Vec<presage::proto::BodyRange> {
         use presage::proto::body_range::AssociatedValue as Value;
         use proto::body_range::AssociatedValue;

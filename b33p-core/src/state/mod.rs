@@ -201,9 +201,7 @@ impl ConversationView<'_> {
     pub fn marked_unread(&self) -> bool {
         self.unread == 0 && self.conversation.settings.marked_unread
     }
-}
 
-impl ConversationView<'_> {
     /// First line of the newest message, prefixed with "You: " if we sent it.
     pub fn preview(&self) -> String {
         let Some(message) = self.last_message else {
@@ -213,17 +211,17 @@ impl ConversationView<'_> {
             return DELETED.into();
         }
         let body = format::hide_spoilers(&message.body, &message.styles);
-        let body = match body.lines().next() {
-            Some(line) => line.to_string(),
+        let body = match first_line(&body) {
+            Some(line) => line,
             None => message
                 .attachments
                 .first()
-                .map_or_else(String::new, |a| describe_kind(a.kind).to_string()),
+                .map_or("", |a| describe_kind(a.kind)),
         };
         if message.outgoing {
             format!("You: {body}")
         } else {
-            body.to_string()
+            body.to_owned()
         }
     }
 
@@ -284,7 +282,8 @@ pub struct MessageView<'a> {
     pub first_of_run: bool,
     pub last_of_run: bool,
     /// Show its time (and ticks): not when the next message is of its run and its minute,
-    /// which shows the same.
+    /// which shows the same clock time (or, within the last hour, at most a minute less ago:
+    /// by the clock's minute, so that a run's times don't come and go as the minutes pass).
     pub show_time: bool,
     /// The sender's picture, if known (for incoming group messages).
     pub sender_avatar: Option<&'a Arc<Picture>>,
@@ -377,9 +376,9 @@ pub struct ChatState {
     staged: Vec<std::path::PathBuf>,
     /// What the composer replies to; belongs to the selected conversation.
     replying: Option<Quote>,
-    /// Conversations whose stored history has arrived (its newest page, at least).
     /// Where each loaded conversation's next older page starts; `None` at the beginning.
-    /// Having an entry is what makes a conversation loaded.
+    /// Having an entry is what makes a conversation loaded: its stored history has arrived
+    /// (its newest page, at least).
     older: HashMap<ConversationId, Option<u64>>,
     /// Conversations whose next older page was asked for.
     loading_older: HashSet<ConversationId>,

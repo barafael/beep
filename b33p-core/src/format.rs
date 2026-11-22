@@ -75,20 +75,22 @@ fn span_at<'a>(rest: &'a str, before: &str) -> Option<(Style, &'a str, &'a str)>
         if body.starts_with(char::is_whitespace) || body.starts_with(marker) {
             return None;
         }
-        // The nearest closing marker that follows non-blank text and isn't inside a word.
+        // The nearest closing marker that follows non-blank text and isn't inside a word, on
+        // the same line.
         let mut from = 0;
         loop {
             let end = from + body[from..].find(marker)?;
+            // Only what this pass got to is new: before `from` there was no line break.
+            if body[from..end].contains('\n') {
+                return None;
+            }
             let inner = &body[..end];
             let after = &body[end + marker.len()..];
             let closes = !inner.is_empty()
                 && !inner.ends_with(char::is_whitespace)
                 && (marker == "||" || !after.starts_with(char::is_alphanumeric));
-            if closes && !inner.contains('\n') {
+            if closes {
                 return Some((style, inner, after));
-            }
-            if inner.contains('\n') {
-                return None;
             }
             from = end + marker.len();
         }

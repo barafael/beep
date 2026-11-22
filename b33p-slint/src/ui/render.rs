@@ -487,7 +487,13 @@ pub(super) fn render_stickers(window: &AppWindow, chat: &ChatState) {
         .set_stickers_busy(matches!(packs, Some(None)));
     let packs = packs.flatten().unwrap_or_default();
     let titles: Vec<SharedString> = packs.iter().map(|p| p.title.as_str().into()).collect();
-    if window.global::<Composer>().get_sticker_packs().row_count() != titles.len() {
+    // By what they say: a pack can take another's place, the count staying the same.
+    if !window
+        .global::<Composer>()
+        .get_sticker_packs()
+        .iter()
+        .eq(titles.iter().cloned())
+    {
         window
             .global::<Composer>()
             .set_sticker_packs(ModelRc::new(VecModel::from(titles)));
@@ -573,6 +579,7 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
     } else {
         chat.story_rings()
     };
+    let list_time = chat.list_time_formatter();
     let rings: Vec<RingItem> = rings
         .iter()
         .map(|ring| RingItem {
@@ -582,7 +589,7 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
             color: avatar_color(ring.conversation),
             avatar: avatar_image(chat, images, ring.conversation),
             unviewed: ring.unviewed,
-            time: state::format_list_time(ring.latest).into(),
+            time: list_time(ring.latest).into(),
         })
         .collect();
     update_list(&window.global::<Panels>().get_story_rings(), rings);
@@ -622,12 +629,7 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
     }
     let story = match chat.current_story() {
         Some((story, at, count)) => {
-            let title = match story.conversation.story_list_id() {
-                Some(list) => chat.story_list_title(&list),
-                None => chat
-                    .conversation(&story.conversation)
-                    .map_or_else(|| story.author.clone(), |c| c.title.clone()),
-            };
+            let title = chat.story_title(story);
             let title = title.as_str();
             let mut item = StoryItem {
                 shown: true,
@@ -654,12 +656,7 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
                     item.background = Color::from_argb_encoded(*background | 0xff00_0000);
                 }
                 b33p_core::StoryContent::Picture(picture) => {
-                    let shown = attachment_item(
-                        picture,
-                        chat.attachment(&picture.id),
-                        chat.saved(&picture.id),
-                        images,
-                    );
+                    let shown = attachment_item(picture, chat, images);
                     // Phone-shaped: as tall as the window allows.
                     let scale = (560. / shown.height.max(1.)).min(360. / shown.width.max(1.));
                     item.picture = AttachmentItem {
@@ -681,7 +678,6 @@ pub(super) fn render_stories(window: &AppWindow, chat: &ChatState, images: &Imag
     window.global::<Panels>().set_story(story);
 }
 
-/// The details page.
 /// A message's info, while open: its receipts once they are here. Drawn at every redraw, since
 /// the receipts' arrival names no part of the window.
 fn render_receipts(window: &AppWindow, chat: &ChatState, images: &Images) {
@@ -720,7 +716,10 @@ fn render_receipts(window: &AppWindow, chat: &ChatState, images: &Images) {
             }
         })
         .collect();
-    receipts.set_recipients(ModelRc::new(VecModel::from(items)));
+    // Only when they differ: a new model would rebuild the rows at every redraw.
+    if !receipts.get_recipients().iter().eq(items.iter().cloned()) {
+        receipts.set_recipients(ModelRc::new(VecModel::from(items)));
+    }
 }
 
 /// "Read Mar  3, 14:07", "Delivered 14:05", or "Sent" when neither came back.
@@ -732,6 +731,7 @@ fn receipt_status(receipt: &b33p_core::Receipt) -> String {
     }
 }
 
+/// The details page.
 pub(super) fn render_details(window: &AppWindow, chat: &ChatState) {
     let details = chat.details();
     window
@@ -812,7 +812,7 @@ pub(super) fn render_media(window: &AppWindow, chat: &ChatState, images: &Images
     let tiles: Vec<AttachmentItem> = overview
         .media
         .iter()
-        .map(|a| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images))
+        .map(|a| attachment_item(a, chat, images))
         .collect();
     update_list(&window.global::<Panels>().get_media_tiles(), tiles);
     let when = state::time_formatter();
@@ -820,7 +820,7 @@ pub(super) fn render_media(window: &AppWindow, chat: &ChatState, images: &Images
         .files
         .iter()
         .map(|(m, a)| SharedItem {
-            attachment: attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images),
+            attachment: attachment_item(a, chat, images),
             url: SharedString::new(),
             sender: m.sender.as_str().into(),
             when: when(m.timestamp).into(),

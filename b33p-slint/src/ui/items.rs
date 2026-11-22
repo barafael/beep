@@ -261,8 +261,7 @@ pub(super) fn message_item(
     } else {
         (Vec::new(), m.attachments.iter().collect())
     };
-    let item =
-        |a: &Attachment| attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images);
+    let item = |a: &Attachment| attachment_item(a, chat, images);
     let cells = album_cells(album.len());
     let album_height = cells.iter().map(|c| c.y + c.height).fold(0.0, f32::max);
     let album: Vec<AttachmentItem> = album
@@ -339,7 +338,7 @@ pub(super) fn message_item(
         timer_notice: m.notice && m.timer_change.is_some(),
         expires: m
             .expires_at
-            .map(|at| state::format_remaining(at, now_millis()))
+            .map(|at| state::format_remaining(at, chat.now()))
             .unwrap_or_default()
             .into(),
         can_edit: chat.can_edit(m),
@@ -365,7 +364,7 @@ pub(super) fn message_item(
             .as_ref()
             .and_then(|p| p.image.as_ref())
             .map(|a| {
-                let item = attachment_item(a, chat.attachment(&a.id), chat.saved(&a.id), images);
+                let item = item(a);
                 // A preview's picture stays small.
                 let scale = (150. / item.height.max(1.)).min(1.);
                 AttachmentItem {
@@ -381,7 +380,6 @@ pub(super) fn message_item(
     }
 }
 
-/// What kind of attachment it is, in words.
 /// The icon before a chat's preview.
 pub(super) fn preview_kind(kind: Option<state::PreviewKind>) -> PreviewKind {
     match kind {
@@ -487,12 +485,14 @@ pub(super) fn same_message(a: &MessageItem, b: &MessageItem) -> bool {
         } == *b
 }
 
+/// An attachment as the window shows it, with how its download and saving went.
 pub(super) fn attachment_item(
     attachment: &Attachment,
-    download: Option<&AttachmentState>,
-    save: Option<&SaveState>,
+    chat: &ChatState,
     images: &Images,
 ) -> AttachmentItem {
+    let download = chat.attachment(&attachment.id);
+    let save = chat.saved(&attachment.id);
     let kind = attachment.kind;
     let inline = matches!(
         kind,

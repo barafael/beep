@@ -18,7 +18,9 @@ impl ChatState {
         self.clock = clock;
     }
 
-    pub(super) fn now(&self) -> u64 {
+    /// The time by the state's [`Clock`], ms since the epoch: what the times it shows are
+    /// counted from.
+    pub fn now(&self) -> u64 {
         self.clock.now()
     }
 

@@ -826,10 +826,7 @@ impl LocalStore {
         )
         .fetch_all(&self.db)
         .await?;
-        let disabled: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'stories_disabled'")
-                .fetch_optional(&self.db)
-                .await?;
+        let disabled = meta(&self.db, "stories_disabled").await?;
         Ok(crate::StoryLists {
             lists: rows
                 .into_iter()
@@ -848,11 +845,7 @@ impl LocalStore {
     /// Whether the story lists were read from the storage service yet: builds before them
     /// read it again once to get them.
     pub(crate) async fn story_lists_read(&self) -> Result<bool, sqlx::Error> {
-        let read: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'story_lists'")
-                .fetch_optional(&self.db)
-                .await?;
-        Ok(read.is_some())
+        Ok(meta(&self.db, "story_lists").await?.is_some())
     }
 
     /// Replaces the story lists with what the storage service says now.
@@ -879,19 +872,8 @@ impl LocalStore {
             .execute(&mut *tx)
             .await?;
         }
-        for (key, value) in [
-            ("story_lists", 1),
-            ("stories_disabled", lists.disabled as i64),
-        ] {
-            sqlx::query(
-                "INSERT INTO b33p_meta (key, value) VALUES (?, ?)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            )
-            .bind(key)
-            .bind(value)
-            .execute(&mut *tx)
-            .await?;
-        }
+        set_meta(&mut *tx, "story_lists", 1).await?;
+        set_meta(&mut *tx, "stories_disabled", lists.disabled as i64).await?;
         tx.commit().await
     }
 
@@ -1044,11 +1026,7 @@ impl LocalStore {
     /// Whether contacts' names were ever read from the storage service: until then, the whole
     /// manifest is read again even if it didn't change.
     pub(crate) async fn contact_names_read(&self) -> Result<bool, sqlx::Error> {
-        let read: Option<i64> =
-            sqlx::query_scalar("SELECT value FROM b33p_meta WHERE key = 'contact_names'")
-                .fetch_optional(&self.db)
-                .await?;
-        Ok(read.is_some())
+        Ok(meta(&self.db, "contact_names").await?.is_some())
     }
 
     /// Keeps `names` as what the storage service names contacts by, in place of what it said
@@ -1068,12 +1046,7 @@ impl LocalStore {
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query(
-            "INSERT INTO b33p_meta (key, value) VALUES ('contact_names', 1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .execute(&mut *tx)
-        .await?;
+        set_meta(&mut *tx, "contact_names", 1).await?;
         tx.commit().await
     }
 

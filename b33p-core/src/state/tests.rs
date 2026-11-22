@@ -4507,6 +4507,50 @@ fn a_message_s_info_is_gathered_for_ours() {
     assert!(state.message_info().is_none());
 }
 
+/// What was open over a chat goes with it: left for another or for the list, and opened again,
+/// it shows nothing from before (a message's info, its media, details or search).
+#[test]
+fn panels_close_with_their_chat() {
+    let mut state = state();
+    let a = id("a");
+    let open_panels = |state: &mut ChatState| {
+        assert!(state.open_details().is_some());
+        assert!(state.open_media().is_some());
+        state.open_chat_search();
+    };
+    state.select(&a);
+    state.apply(Event::History {
+        conversation: a.clone(),
+        messages: vec![message("a", "Me", 20, true)],
+        reactions: Vec::new(),
+        older: None,
+    });
+    assert!(state.open_message_info(0).is_some());
+    state.select(&id("g"));
+    state.select(&a);
+    assert!(state.message_info().is_none(), "the info doesn't come back");
+    open_panels(&mut state);
+    assert!(state.open_message_info(0).is_some());
+    state.deselect();
+    assert!(state.details().is_none());
+    assert!(state.media().is_none());
+    assert!(state.chat_search().is_none());
+    state.select(&a);
+    assert!(state.message_info().is_none());
+}
+
+/// A preview shows the first line with something on it.
+#[test]
+fn a_preview_skips_blank_lines() {
+    let mut state = state();
+    state.apply(Event::Message(message("a", "Ann", 10, false)));
+    let mut blank_first = message("a", "Ann", 20, false);
+    blank_first.body = "\n  \n  Carol at 2".into();
+    state.apply(Event::Message(blank_first));
+    let view = state.conversations().find(|c| c.conversation.id == id("a"));
+    assert_eq!(view.unwrap().preview(), "Carol at 2");
+}
+
 /// In a group, each member's picture goes under the newest of our messages they read.
 #[test]
 fn readers_show_under_the_newest_message_they_read() {

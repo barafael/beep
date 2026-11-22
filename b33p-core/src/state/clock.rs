@@ -43,14 +43,18 @@ pub fn format_remaining(at: u64, now: u64) -> String {
 
 /// Signal's milliseconds as local time.
 pub(super) fn zoned(timestamp: u64) -> Option<jiff::ZonedDateTime> {
-    let time = jiff::Timestamp::from_millisecond(timestamp as i64).ok()?;
-    Some(time.to_zoned_datetime(jiff::tz::TimeZone::system()))
+    Some(instant(timestamp)?.to_zoned_datetime(jiff::tz::TimeZone::system()))
 }
 
 /// The day of Signal's milliseconds in `tz`: looked up once, for many messages.
 pub(crate) fn local_date_in(tz: &jiff::tz::TimeZone, timestamp: u64) -> Option<jiff::civil::Date> {
-    let time = jiff::Timestamp::from_millisecond(timestamp as i64).ok()?;
-    Some(tz.to_datetime(time).date())
+    Some(tz.to_datetime(instant(timestamp)?).date())
+}
+
+/// Signal's milliseconds as a point in time; `None` past what can be told (a sender's clock,
+/// or a forged time, can say anything, and `as i64` would make the largest times 1969's).
+fn instant(timestamp: u64) -> Option<jiff::Timestamp> {
+    jiff::Timestamp::from_millisecond(i64::try_from(timestamp).ok()?).ok()
 }
 
 /// How long a time is told by how long ago it was ("5 min"), not by the clock.

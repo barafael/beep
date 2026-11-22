@@ -68,13 +68,16 @@ pub(super) async fn send_to_list(
     list: &[u8],
     allows_replies: bool,
 ) -> Result<Vec<sync_message::sent::StoryMessageRecipient>, SendFailure> {
-    let Ok(list) = <[u8; 16]>::try_from(list) else {
-        return Ok(Vec::new());
-    };
+    // A list that isn't a UUID, or nobody to send to, reaches nobody: posted, it would be
+    // kept and synced as if it had gone out.
+    let list = <[u8; 16]>::try_from(list).map_err(|_| SendFailure::NobodyReached)?;
     let to: Vec<ServiceId> = recipients
         .iter()
         .filter_map(|id| ServiceId::parse_from_service_id_string(id))
         .collect();
+    if to.is_empty() {
+        return Err(SendFailure::NobodyReached);
+    }
     let reached = ctx
         .outbox
         .story_to_list(list, to.clone(), message.clone(), timestamp)
@@ -84,7 +87,7 @@ pub(super) async fn send_to_list(
         of = to.len(),
         "posted a story to a list"
     );
-    if reached.is_empty() && !to.is_empty() {
+    if reached.is_empty() {
         return Err(SendFailure::NobodyReached);
     }
     let list = presage::libsignal_service::prelude::Uuid::from_bytes(list).to_string();
@@ -341,8 +344,7 @@ mod tests {
         assert_eq!(recipient.is_allowed_to_reply, Some(true));
     }
 
-    /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise
-    /// stay for as long) is not shown, while a clock a little ahead is fine.
+    /// Our story synced from another device is filed under the list its recipients name.
     #[test]
     fn a_synced_story_names_its_list() {
         use sync_message::sent::StoryMessageRecipient;
@@ -360,6 +362,8 @@ mod tests {
         assert_eq!(sent_to_list(&[to(&[])]), None, "a group's names none");
     }
 
+    /// A story lasts a day from its timestamp; one dated far ahead (which would otherwise
+    /// stay for as long) is not shown, while a clock a little ahead is fine.
     #[test]
     fn stories_from_the_future_are_not_current() {
         const HOUR: u64 = 60 * 60 * 1000;

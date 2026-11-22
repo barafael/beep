@@ -3,38 +3,60 @@
 
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Theme {
-    /// Follow the desktop.
-    #[default]
-    System,
-    Light,
-    Dark,
+/// A choice among a few values, written to the settings file as each value's key. `ALL` is
+/// in the order the settings page lists them.
+macro_rules! choice {
+    (
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident = $key:literal,)+
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        pub enum $name {
+            $($(#[$variant_meta])* $variant,)+
+        }
+
+        impl $name {
+            pub const ALL: &[Self] = &[$(Self::$variant),+];
+
+            fn key(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $key,)+
+                }
+            }
+
+            fn from_key(key: &str) -> Option<Self> {
+                match key {
+                    $($key => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TextSize {
-    Small,
-    #[default]
-    Default,
-    Large,
+choice! {
+    pub enum Theme {
+        /// Follow the desktop.
+        #[default]
+        System = "system",
+        Light = "light",
+        Dark = "dark",
+    }
+}
+
+choice! {
+    pub enum TextSize {
+        Small = "small",
+        #[default]
+        Default = "default",
+        Large = "large",
+    }
 }
 
 impl TextSize {
-    pub const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Default => "default",
-            Self::Large => "large",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|size| size.key() == key)
-    }
-
     /// Factor applied to the platform's default font size.
     pub fn scale(self) -> f32 {
         match self {
@@ -45,19 +67,18 @@ impl TextSize {
     }
 }
 
-/// Whether the UI animates its changes (fades, slides).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Animations {
-    /// As the desktop says: off when it asks for reduced motion.
-    #[default]
-    System,
-    On,
-    Off,
+choice! {
+    /// Whether the UI animates its changes (fades, slides).
+    pub enum Animations {
+        /// As the desktop says: off when it asks for reduced motion.
+        #[default]
+        System = "system",
+        On = "on",
+        Off = "off",
+    }
 }
 
 impl Animations {
-    pub const ALL: [Self; 3] = [Self::System, Self::On, Self::Off];
-
     /// Whether to animate, given whether the desktop asks for reduced motion.
     pub fn enabled(self, system_reduces_motion: bool) -> bool {
         match self {
@@ -66,61 +87,16 @@ impl Animations {
             Self::Off => false,
         }
     }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::On => "on",
-            Self::Off => "off",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|animations| animations.key() == key)
-    }
 }
 
-/// How much of a message a desktop notification reveals.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NotificationContent {
-    #[default]
-    NameAndMessage,
-    NameOnly,
-    /// Only that there is a new message.
-    Nothing,
-}
-
-impl NotificationContent {
-    pub const ALL: [Self; 3] = [Self::NameAndMessage, Self::NameOnly, Self::Nothing];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::NameAndMessage => "name_and_message",
-            Self::NameOnly => "name_only",
-            Self::Nothing => "nothing",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|content| content.key() == key)
-    }
-}
-
-impl Theme {
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Light => "light",
-            Self::Dark => "dark",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.key() == key)
+choice! {
+    /// How much of a message a desktop notification reveals.
+    pub enum NotificationContent {
+        #[default]
+        NameAndMessage = "name_and_message",
+        NameOnly = "name_only",
+        /// Only that there is a new message.
+        Nothing = "nothing",
     }
 }
 
@@ -263,60 +239,40 @@ impl Settings {
     /// `key = value` lines. Unknown keys and values are ignored, so older and newer versions
     /// can share the file.
     fn parse(text: &str) -> Self {
+        /// Takes `value` if it was understood; otherwise `field` keeps what it has.
+        fn set<T>(field: &mut T, value: Option<T>) {
+            if let Some(value) = value {
+                *field = value;
+            }
+        }
         let mut settings = Self::default();
+        let preferences = &mut settings.preferences;
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
+            // `true` and `false` are the booleans' only values.
+            let flag = value.trim().parse::<bool>().ok();
             match (key.trim(), value.trim()) {
-                ("theme", value) => {
-                    if let Some(theme) = Theme::from_key(value) {
-                        settings.theme = theme;
-                    }
-                }
-                ("text_size", value) => {
-                    if let Some(text_size) = TextSize::from_key(value) {
-                        settings.text_size = text_size;
-                    }
-                }
-                ("animations", value) => {
-                    if let Some(animations) = Animations::from_key(value) {
-                        settings.animations = animations;
-                    }
-                }
-                ("show_avatars", "true") => settings.show_avatars = true,
-                ("show_avatars", "false") => settings.show_avatars = false,
-                ("notifications", "true") => settings.notifications = true,
-                ("notifications", "false") => settings.notifications = false,
-                ("notification_content", value) => {
-                    if let Some(content) = NotificationContent::from_key(value) {
-                        settings.notification_content = content;
-                    }
-                }
-                ("show_activity", "true") => settings.show_activity = true,
-                ("show_activity", "false") => settings.show_activity = false,
-                ("show_calendar", "true") => settings.show_calendar = true,
-                ("show_calendar", "false") => settings.show_calendar = false,
-                ("close_to_tray", "true") => settings.close_to_tray = true,
-                ("close_to_tray", "false") => settings.close_to_tray = false,
-                ("screen_security", "true") => settings.screen_security = true,
-                ("screen_security", "false") => settings.screen_security = false,
-                ("check_updates", "true") => settings.check_updates = true,
-                ("check_updates", "false") => settings.check_updates = false,
-                ("read_receipts", "true") => settings.preferences.read_receipts = true,
-                ("read_receipts", "false") => settings.preferences.read_receipts = false,
-                ("typing_indicators", "true") => settings.preferences.typing_indicators = true,
-                ("typing_indicators", "false") => settings.preferences.typing_indicators = false,
-                ("link_previews", "true") => settings.preferences.link_previews = true,
-                ("link_previews", "false") => settings.preferences.link_previews = false,
-                ("sync_to_phone", "true") => settings.preferences.sync_to_phone = true,
-                ("sync_to_phone", "false") => settings.preferences.sync_to_phone = false,
-                ("high_quality_pictures", "true") => {
-                    settings.preferences.high_quality_pictures = true;
-                }
-                ("high_quality_pictures", "false") => {
-                    settings.preferences.high_quality_pictures = false;
-                }
+                ("theme", value) => set(&mut settings.theme, Theme::from_key(value)),
+                ("text_size", value) => set(&mut settings.text_size, TextSize::from_key(value)),
+                ("animations", value) => set(&mut settings.animations, Animations::from_key(value)),
+                ("show_avatars", _) => set(&mut settings.show_avatars, flag),
+                ("notifications", _) => set(&mut settings.notifications, flag),
+                ("notification_content", value) => set(
+                    &mut settings.notification_content,
+                    NotificationContent::from_key(value),
+                ),
+                ("show_activity", _) => set(&mut settings.show_activity, flag),
+                ("show_calendar", _) => set(&mut settings.show_calendar, flag),
+                ("close_to_tray", _) => set(&mut settings.close_to_tray, flag),
+                ("screen_security", _) => set(&mut settings.screen_security, flag),
+                ("check_updates", _) => set(&mut settings.check_updates, flag),
+                ("read_receipts", _) => set(&mut preferences.read_receipts, flag),
+                ("typing_indicators", _) => set(&mut preferences.typing_indicators, flag),
+                ("link_previews", _) => set(&mut preferences.link_previews, flag),
+                ("sync_to_phone", _) => set(&mut preferences.sync_to_phone, flag),
+                ("high_quality_pictures", _) => set(&mut preferences.high_quality_pictures, flag),
                 ("device_name", value) => {
                     let name = clean_device_name(value);
                     settings.device_name = (!name.is_empty()).then_some(name);
@@ -520,16 +476,16 @@ mod tests {
     /// Every enum reads back what each of its values writes.
     #[test]
     fn enum_keys_round_trip() {
-        for theme in Theme::ALL {
+        for &theme in Theme::ALL {
             assert_eq!(Theme::from_key(theme.key()), Some(theme));
         }
-        for text_size in TextSize::ALL {
+        for &text_size in TextSize::ALL {
             assert_eq!(TextSize::from_key(text_size.key()), Some(text_size));
         }
-        for animations in Animations::ALL {
+        for &animations in Animations::ALL {
             assert_eq!(Animations::from_key(animations.key()), Some(animations));
         }
-        for content in NotificationContent::ALL {
+        for &content in NotificationContent::ALL {
             assert_eq!(NotificationContent::from_key(content.key()), Some(content));
         }
     }
