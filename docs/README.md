@@ -53,3 +53,5 @@ Test box runs and investigations, oldest first:
 - [testbox-media-traffic-2026-11-19.md](testbox-media-traffic-2026-11-19.md): media on the wire,
   b33p against Signal's apps.
 - [web-demo.md](web-demo.md): a study of running the mock in a browser.
+- [dioxus-spike-2026-11-22.md](dioxus-spike-2026-11-22.md): b33p in a WebView (Dioxus, for
+  Android) against the Slint client, measured, and what Android asked of it; the spike removed.

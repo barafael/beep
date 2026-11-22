@@ -331,18 +331,6 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("io.github", "barafael", "b33p")
 }
 
-/// The one directory a platform gives an application for everything of its own, where
-/// `directories` can't know it: Android's `filesDir`, which only the app can read. Set once, at
-/// the start, by the program that knows it; [`data_dir`], [`log_dir`] and the settings file
-/// then live under it, not where [`project_dirs`] says.
-static APP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Makes `dir` the directory all of b33p's files go under; see [`APP_DIR`]. Only the first
-/// call has an effect, and it returns whether this was that one.
-pub fn use_app_dir(dir: impl Into<PathBuf>) -> bool {
-    APP_DIR.set(dir.into()).is_ok()
-}
-
 /// Where the messages and keys are kept. `B33P_DATA_DIR` keeps a separate account, e.g. to
 /// link a second device for testing; a development aid, so release builds always use the
 /// standard place.
@@ -352,10 +340,7 @@ pub fn data_dir() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(dir));
     }
-    match APP_DIR.get() {
-        Some(app) => Some(app.join("data")),
-        None => Some(project_dirs()?.data_dir().to_path_buf()),
-    }
+    Some(project_dirs()?.data_dir().to_path_buf())
 }
 
 /// Where the log file goes: beside a separate data directory (`B33P_DATA_DIR`), else in the
@@ -364,10 +349,7 @@ pub fn log_dir() -> Option<PathBuf> {
     if custom_data_dir() {
         return Some(data_dir()?.join("logs"));
     }
-    match APP_DIR.get() {
-        Some(app) => Some(app.join("logs")),
-        None => Some(project_dirs()?.data_local_dir().join("logs")),
-    }
+    Some(project_dirs()?.data_local_dir().join("logs"))
 }
 
 /// Whether [`data_dir`] is the standard place.
@@ -403,11 +385,7 @@ pub enum SaveError {
 }
 
 fn path() -> Option<PathBuf> {
-    let dir = match APP_DIR.get() {
-        Some(app) => app.join("config"),
-        None => project_dirs()?.config_dir().to_path_buf(),
-    };
-    Some(dir.join("settings.conf"))
+    Some(project_dirs()?.config_dir().join("settings.conf"))
 }
 
 #[cfg(test)]
