@@ -18,7 +18,10 @@ use testbox_tools::Report;
 use testbox_vnc::{ConnectError, Frame, NamedKey, VncClient, X11Event};
 use tokio::sync::mpsc;
 
+// Edition 1.19's changes (repeaters sizing their parent, height-for-width cells of a fixed width,
+// binding loops) don't reach this window: its repeaters are all in layouts, no text wraps.
 slint::slint! {
+    #[edition = "1.19"]
     import { CheckBox, Palette } from "std-widgets.slint";
 
     export struct Screen {

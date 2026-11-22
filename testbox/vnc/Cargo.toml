@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 vnc-rs = "0.6"
 tokio = { version = "1", features = ["net", "time", "sync", "macros"] }
-landlock = "0.4.7"
+landlock = "0.4.8"
 testbox-tools = { path = "../tools" }
 thiserror = "2"
 
