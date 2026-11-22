@@ -38,8 +38,11 @@ android-phone:
 android-install:
     adb install -r target/dx/b33p-dioxus/debug/android/app/app/build/outputs/apk/debug/app-debug.apk
 
+# rustfmt leaves macros alone, so b33p-dioxus's `rsx!` goes through the Dioxus CLI first, where
+# it is installed (b33p-dioxus/README.md).
 [group('check')]
 fmt:
+    if command -v dx >/dev/null; then dx fmt -p b33p-dioxus; else echo "dx isn't installed: rsx! left as it is"; fi
     cargo fmt --all
     just each fmt --all
 
