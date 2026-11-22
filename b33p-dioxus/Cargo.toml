@@ -22,5 +22,8 @@ signal = ["b33p-core/signal"]
 b33p-core.workspace = true
 dioxus = { version = "0.7", features = [] }
 async-channel = "2"
+# Its timers, for what the clock alone changes (`app::use_clock`): the renderer runs a tokio
+# runtime with them enabled.
+tokio = { version = "1.54", features = ["time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

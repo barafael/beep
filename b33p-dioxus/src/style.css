@@ -74,6 +74,13 @@ button { cursor: pointer; }
 
 .banner { padding: 6px 14px; font-size: .85rem; background: var(--surface); color: var(--muted); }
 .banner.warning { color: var(--warning); }
+.error-banner {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 14px;
+  font-size: .85rem; color: var(--danger); background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.icon.dismiss { margin-left: 0; font-size: 1.5rem; color: var(--muted); }
 
 /* Chat list */
 .list { flex: 1; overflow-y: auto; overscroll-behavior: contain; }

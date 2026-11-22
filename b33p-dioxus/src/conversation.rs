@@ -60,11 +60,9 @@ fn tally(reactions: &[b33p_core::Reaction]) -> Vec<(String, usize)> {
 pub fn Conversation() -> Element {
     let store = use_context::<Store>();
     // What the textarea starts with: the draft kept for this chat. After that it is the
-    // textarea's own, and `draft` only follows it (see `sent`).
+    // textarea's own, and `draft` only follows it (see `send`).
     let initial_draft = use_hook(|| store.chat.peek().draft().to_owned());
     let mut draft = use_signal(|| initial_draft.clone());
-    // Raised on every send, so that the textarea is made anew and empty.
-    let mut sent = use_signal(|| 0u32);
 
     let (id, title, subtitle, typing, request, can_write, rows) = {
         let chat = store.chat.read();
@@ -125,13 +123,26 @@ pub fn Conversation() -> Element {
             let mut navigation = document::eval(
                 r#"
                 history.pushState({ b33pChat: true }, "");
-                window.addEventListener("popstate", () => dioxus.send("back"), { once: true });
+                window.b33pBack = () => dioxus.send("back");
+                window.addEventListener("popstate", window.b33pBack, { once: true });
                 "#,
             );
             if navigation.recv::<String>().await.is_ok() {
                 store.act(|chat| chat.deselect());
             }
         });
+    });
+    // However the chat closes (Back, the arrow, or the state closing it: archived elsewhere,
+    // cleared), the step it made goes with it, so that Back from the list leaves the app. After
+    // Back the step is gone already.
+    use_drop(|| {
+        document::eval(
+            r#"
+            if (window.b33pBack) window.removeEventListener("popstate", window.b33pBack);
+            window.b33pBack = null;
+            if (history.state && history.state.b33pChat) history.back();
+            "#,
+        );
     });
 
     // The keyboard opening shrinks the page, which leaves the newest messages behind it, unless
@@ -166,21 +177,18 @@ pub fn Conversation() -> Element {
         }
     }));
 
-    // The textarea made anew by a send has no focus: give it back, so that the keyboard stays.
-    let sends = sent();
-    use_effect(use_reactive!(|sends| {
-        if sends > 0 {
-            document::eval("document.getElementById('draft')?.focus();");
-        }
-    }));
-
     let can_compose = store.chat.read().can_compose(&draft.read());
     let mut send = move || {
         let text = draft.read().clone();
         if store.chat.peek().can_compose(&text) {
             store.command(|chat| chat.compose(&text).0);
             draft.set(String::new());
-            sent += 1;
+            // Emptied from the page's side, as the field is uncontrolled. (Not by giving it a
+            // new key: outside a list, Dioxus keeps the element.) The focus stays, and with it
+            // the keyboard.
+            document::eval(
+                "const d = document.getElementById('draft'); if (d) { d.value = ''; d.focus(); }",
+            );
         }
     };
 
@@ -189,9 +197,8 @@ pub fn Conversation() -> Element {
             button {
                 class: "icon back",
                 "aria-label": "Back to chats",
+                // The history step goes when the chat does (`use_drop` above).
                 onclick: move |_| {
-                    // The history entry the chat made goes with it.
-                    document::eval("history.back();");
                     store.act(|chat| chat.deselect());
                 },
                 "‹"
@@ -225,7 +232,6 @@ pub fn Conversation() -> Element {
                 // Uncontrolled: a value written back into the field races with the keystrokes
                 // typed meanwhile (and with the keyboard's composition), and drops them.
                 textarea {
-                    key: "{sent}",
                     id: "draft",
                     rows: "1",
                     placeholder: "Message",

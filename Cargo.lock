@@ -943,6 +943,7 @@ dependencies = [
  "async-channel",
  "b33p-core",
  "dioxus",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
