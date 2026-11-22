@@ -554,8 +554,7 @@ pub struct Building {
 /// `podman build`'s flag for builds that take their base images from the local store: every
 /// `FROM` is pinned by digest, and without it a build looks every one up in its registry (a GET
 /// of the manifest) even with all of them and every layer present, which Docker Hub throttles:
-/// 30 s of waiting a build for each of the testbox's ten images, minutes for a `test`, whatever
-/// else the machine does. 1 s a build instead.
+/// minutes of waiting for a `test`, whatever else the machine does.
 const PULL_NEVER: &str = "--pull=never";
 
 impl Building {

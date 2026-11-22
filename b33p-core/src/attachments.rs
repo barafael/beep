@@ -1223,8 +1223,7 @@ fn decode_picture(data: &[u8], (width, height): (u32, u32)) -> Option<Picture> {
         return Some(picture);
     }
     // Within the bounds, keeping its shape. `fast_image_resize` rather than `image`'s resize:
-    // a 12 MP photo took 295 ms with `image`'s triangle filter (release build), most of what
-    // showing one cost.
+    // `image`'s triangle filter was most of what showing a photo cost, even in a release build.
     let scale = (f64::from(width) / f64::from(picture.width))
         .min(f64::from(height) / f64::from(picture.height));
     let (width, height) = crate::resample::scaled((picture.width, picture.height), scale);

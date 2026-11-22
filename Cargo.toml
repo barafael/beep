@@ -127,7 +127,7 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "5ef972a7f34b04918a531faefbe152eccf7fc45b" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
-# 90 MiB attachment took one core four to ten minutes, and ML-KEM can overflow the stack when
+# large attachment took minutes, and ML-KEM can overflow the stack when
 # decrypting a PQXDH prekey message (as presage's own workspace notes).
 [profile.dev.package]
 aes = { opt-level = 3 }
@@ -139,8 +139,8 @@ libcrux-ml-kem = { opt-level = 3 }
 # The picture viewer resamples what it shows whenever the zoom changes: unoptimized, a photo
 # took seconds rather than milliseconds.
 fast_image_resize = { opt-level = 3 }
-# Decoding pictures, and the PNGs and JPEGs b33p makes of them: unoptimized, a 12 MP photo took
-# 3.4 s to decode rather than 83 ms, which hid in debug builds (and the test box's) what
+# Decoding pictures, and the PNGs and JPEGs b33p makes of them: unoptimized, a phone photo took
+# seconds to decode rather than milliseconds, which hid in debug builds (and the test box's) what
 # showing pictures costs in the builds people run.
 image = { opt-level = 3 }
 zune-jpeg = { opt-level = 3 }

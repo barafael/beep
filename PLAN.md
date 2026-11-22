@@ -230,8 +230,8 @@ docs/testbox-review.md, docs/testbox-stress.md, docs/testbox-tour.md, docs/testb
   writing in one; a shutdown that drops the context and awaits the actors in order instead of
   aborting them; a trait over `Sending`'s presage calls, to test its ordering with a fake.
 - **Speed:** batched saves for the history import: `ContentsStore::save_messages` (branch
-  `pr/batch-save-messages` of our presage, not in `langis/integration`; importing 5,000 messages
-  7.9 s → 0.19 s): rebase it onto the integration branch, append its migration, import with
+  `pr/batch-save-messages` of our presage, not in `langis/integration`; an import far faster
+  than one save a message): rebase it onto the integration branch, append its migration, import with
   `save_messages` about 1,000 at a time. (The thread index went another way: b33p's own
   `b33p_thread_messages_thread_ts_sender`, which our presage finds a thread's messages through;
   upstream #502 replaced our paged reads.) Store calls while catching up: reading
@@ -240,8 +240,8 @@ docs/testbox-review.md, docs/testbox-stress.md, docs/testbox-tour.md, docs/testb
   a few thousand messages in the testbox, to see whether one transaction per batch pays.
   `ChatMessage.quote` and `.preview` boxed, as `LinkPreview.image` is (that made a message about
   25% smaller): keep it if the mock's catch-up of a 200,000-message backlog
-  (`B33P_MOCK_SCALE`) saves more than a few MB. A picked message counted as it is picked (a keystroke takes 1.4 ms with
-  5,000 picked); an upload holding its file once, not twice; what the open chat holds in memory;
+  (`B33P_MOCK_SCALE`) saves more than a few MB. A picked message counted as it is picked (a keystroke's cost grows with
+  the number picked); an upload holding its file once, not twice; what the open chat holds in memory;
   presage keeping a working HTTP client. The chat pane a component of its own, as the chat list.
 
 ## 6. Ready for others

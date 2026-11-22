@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV ANDROID_HOME=/opt/android-sdk
 ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/bin:${ANDROID_HOME}/platform-tools
-# Not `ADD <url>`: buildah fetched this archive again on every build, 20 s for its 170 MB.
+# Not `ADD <url>`: buildah fetched this archive again on every build.
 RUN curl -fsSL -o /tmp/cmdline-tools.zip \
         https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip \
     && echo "04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7  /tmp/cmdline-tools.zip" \

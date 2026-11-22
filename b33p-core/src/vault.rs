@@ -34,7 +34,7 @@ pub enum KeySource {
 pub enum Kdf {
     /// The `argon2` crate's default, 19 MiB and 2 passes: databases made before `V2`.
     V1,
-    /// 64 MiB and 3 passes, about 60 ms on a current laptop. The key goes to SQLCipher raw, so
+    /// 64 MiB and 3 passes. The key goes to SQLCipher raw, so
     /// this cost is all that stands between a stolen database file and a password guess.
     V2,
 }

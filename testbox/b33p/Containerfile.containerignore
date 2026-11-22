@@ -2,8 +2,7 @@
 # not the build output (the repository's .containerignore says so for the images that take the
 # whole of it; a Containerfile's own ignore file replaces that one, so its entries are here too)
 # and not what a build of b33p doesn't read: without this, a change to the xtask, the docs or
-# another image's files made the layer new, and every workspace crate compiled again (about
-# 45 s with Slint's and GPUI's dependencies built, minutes without).
+# another image's files made the layer new, and every workspace crate compiled again.
 target
 testbox/tools/target
 .git
