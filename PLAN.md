@@ -106,6 +106,29 @@ Pull request states as of 2026-11-21:
 Contact discovery brings BoringSSL, so SQLCipher uses a crypto provider in Rust and nothing links
 OpenSSL (CI checks both). On Windows arm64, BoringSSL is built with Ninja and clang-cl.
 
+**What `cargo audit` still lists** (2026-11-22; `cargo deny` passes, as it checks only direct
+dependencies for being unmaintained), each with what takes it away:
+
+- `heapless` 0.7 (eight unsound) and `atomic-polyfill` (unmaintained): `phonenumber`, under
+  libsignal-service, takes `postcard`'s default features without using them.
+  whisperfish/rust-phonenumber#111 (not ours, open since 2026-09-28) turns them off. Tested on its
+  own: no findings left in `phonenumber`, its 101 tests pass, and the number database it encodes
+  is byte for byte the same; the same change on 0.3.10, under b33p, passes b33p-core's tests.
+  Once it lands and is released, libsignal-service moves to that release; a fork of ours at
+  0.3.10 with the change would end it sooner.
+- `zbus_names`, `zvariant`, `zvariant_derive` (unmaintained, merged into zbus 6): b33p-core,
+  b33p-notify and b33p-platform move to zbus 6 once accesskit (atspi), ksni, mundy,
+  secret-service and zbus-secret-service-keyring-store have; they take zbus 5's types now.
+- `proc-macro-error2` (unmaintained): `hax-lib` 0.3, under libcrux 0.0.10, which libsignal pins
+  (still in v0.108.5). `hax-lib` 0.4 doesn't use it.
+- `bincode` 1 (unmaintained): libsignal's zkgroup. `chrono` (unmaintained): libsignal, presage
+  and Slint; ignored in deny.toml.
+- `ttf-parser` (unmaintained): winit's Adwaita title bar on GNOME (`sctk-adwaita` with
+  `ab_glyph`), which our Slint fork turns on with `winit/wayland-csd-adwaita`. Going without
+  means title bars without their text there, or `crossfont` with FreeType.
+- `bincode` 2: only in Cargo.lock, never built. Slint's compiler uses `typed-index-collections`,
+  whose `bincode?/alloc` feature makes cargo record the optional dependency.
+
 Left: rebuild the integration branches when upstream moves or a pull request changes, and bump
 the revisions; drop each entry as it lands; open pull requests for the "to offer" items. When
 rebuilding presage's branch, its store migrations may only grow at the end: users' databases
