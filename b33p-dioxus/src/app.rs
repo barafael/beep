@@ -122,12 +122,19 @@ pub fn app() -> Element {
     });
 
     use_clock(store);
+    // What a screen reader calls the window is the page's title, which Dioxus's own page sets
+    // to "Dioxus app"; `document::Title` only names the native window.
+    use_hook(|| {
+        document::eval("document.title = 'b33p';");
+    });
 
     let (screen, open) = {
         let chat = store.chat.read();
         (chat.screen().clone(), chat.selected().is_some())
     };
     rsx! {
+        // The desktop's title bar ("Dioxus App" otherwise); the page's own title is set below.
+        document::Title { "b33p" }
         style { dangerous_inner_html: STYLE }
         div { class: "app",
             match screen {

@@ -1,7 +1,7 @@
 //! The chat list.
 
 use b33p_core::ConversationId;
-use b33p_core::state::{Connection, format_list_time};
+use b33p_core::state::{Connection, list_time_formatter};
 use dioxus::prelude::*;
 
 use crate::store::Store;
@@ -27,6 +27,7 @@ pub fn Chats() -> Element {
     let store = use_context::<Store>();
     let (rows, connection) = {
         let chat = store.chat.read();
+        let list_time = list_time_formatter();
         let rows: Vec<Row> = chat
             .conversations()
             .map(|view| Row {
@@ -35,7 +36,7 @@ pub fn Chats() -> Element {
                 preview: view.preview(),
                 time: view
                     .last_message
-                    .map(|message| format_list_time(message.timestamp))
+                    .map(|message| list_time(message.timestamp))
                     .unwrap_or_default(),
                 unread: view.unread,
                 marked_unread: view.marked_unread(),
@@ -99,15 +100,33 @@ fn ChatRow(row: Row) -> Element {
                         }
                     }
                     if row.pinned {
-                        span { class: "mark", title: "Pinned", "📌" }
+                        span {
+                            class: "mark",
+                            role: "img",
+                            "aria-label": "Pinned",
+                            "📌"
+                        }
                     }
                     if row.muted {
-                        span { class: "mark", title: "Muted", "🔕" }
+                        span {
+                            class: "mark",
+                            role: "img",
+                            "aria-label": "Muted",
+                            "🔕"
+                        }
                     }
                     if row.unread > 0 {
-                        span { class: "badge", "{row.unread}" }
+                        span {
+                            class: "badge",
+                            "aria-label": "{row.unread} unread",
+                            "{row.unread}"
+                        }
                     } else if row.marked_unread {
-                        span { class: "badge dot" }
+                        span {
+                            class: "badge dot",
+                            role: "img",
+                            "aria-label": "Marked unread",
+                        }
                     }
                 }
             }

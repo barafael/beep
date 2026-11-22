@@ -229,7 +229,8 @@ pub fn Conversation() -> Element {
             Avatar { id: id.clone(), title: title.clone(), small: true }
             div { class: "bar-title",
                 div { class: "title", "{title}" }
-                div { class: "subtitle",
+                // Spoken as it changes: someone starts or stops typing.
+                div { class: "subtitle", "aria-live": "polite",
                     if typing.is_empty() {
                         "{subtitle}"
                     } else {
@@ -238,7 +239,12 @@ pub fn Conversation() -> Element {
                 }
             }
         }
-        main { id: "messages", class: "messages",
+        // A log: what comes in is read out, politely, as it arrives.
+        main {
+            id: "messages",
+            class: "messages",
+            role: "log",
+            "aria-label": "Messages",
             for row in rows {
                 Message { key: "{row.key}", row }
             }
@@ -338,7 +344,7 @@ fn Message(row: Row) -> Element {
                     if row.outgoing {
                         match row.unsent {
                             Some(Unsent::Sending) => rsx! {
-                                span { class: "tick", "…" }
+                                span { class: "tick", "aria-label": "Sending", "…" }
                             },
                             Some(Unsent::Failed) => rsx! {
                                 button {
@@ -351,7 +357,15 @@ fn Message(row: Row) -> Element {
                                 span { class: "retry", "Signal refused this message" }
                             },
                             None => rsx! {
-                                span { class: if row.delivery == Delivery::Read { "tick read" } else { "tick" },
+                                // Said in words: the marks alone read as "check mark".
+                                span {
+                                    class: if row.delivery == Delivery::Read { "tick read" } else { "tick" },
+                                    role: "img",
+                                    "aria-label": match row.delivery {
+                                        Delivery::Sent => "Sent",
+                                        Delivery::Delivered => "Delivered",
+                                        Delivery::Read => "Read",
+                                    },
                                     match row.delivery {
                                         Delivery::Sent => "✓",
                                         Delivery::Delivered | Delivery::Read => "✓✓",
@@ -364,7 +378,10 @@ fn Message(row: Row) -> Element {
                 if !row.reactions.is_empty() {
                     div { class: "reactions",
                         for (emoji, count) in &row.reactions {
-                            span { class: "reaction",
+                            span {
+                                class: "reaction",
+                                role: "img",
+                                "aria-label": "{emoji} {count}",
                                 "{emoji}"
                                 if *count > 1 {
                                     " {count}"
