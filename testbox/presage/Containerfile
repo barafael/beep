@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # presage at the revision b33p pins (Cargo.toml). presage itself pins upstream libsignal-service,
 # which has no servers of one's own (`SignalServers::Custom`); b33p's Cargo.toml patches it to
 # its fork, and so does this build, through `--config` for this build only.
-ARG PRESAGE_REV=cfa78084874d67f5b4a65239c52cbc7409c0bb32
-ARG LIBSIGNAL_SERVICE_REV=5ef972a7f34b04918a531faefbe152eccf7fc45b
+ARG PRESAGE_REV=b7be595361b91b53b02278e42943ec5b65b69eaa
+ARG LIBSIGNAL_SERVICE_REV=f9690af3ec7421574ae6b70f18bb3c9e01db8fd7
 # b33p's SQLCipher too (Cargo.toml's libsqlite3-sys): presage's own still tears SQLCipher down at
 # exit, and presage-cli, exiting while a connection was still in use, crashed there.
 ARG RUSQLITE_REV=3475a314b4c98bcc006eb8143de5ef7bfeda8cbb

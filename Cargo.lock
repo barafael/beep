@@ -4833,7 +4833,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=5ef972a7f34b04918a531faefbe152eccf7fc45b#5ef972a7f34b04918a531faefbe152eccf7fc45b"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=f9690af3ec7421574ae6b70f18bb3c9e01db8fd7#f9690af3ec7421574ae6b70f18bb3c9e01db8fd7"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm",
@@ -6067,7 +6067,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -6570,7 +6570,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=cfa78084874d67f5b4a65239c52cbc7409c0bb32#cfa78084874d67f5b4a65239c52cbc7409c0bb32"
+source = "git+https://github.com/barafael/presage?rev=b7be595361b91b53b02278e42943ec5b65b69eaa#b7be595361b91b53b02278e42943ec5b65b69eaa"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6597,7 +6597,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=cfa78084874d67f5b4a65239c52cbc7409c0bb32#cfa78084874d67f5b4a65239c52cbc7409c0bb32"
+source = "git+https://github.com/barafael/presage?rev=b7be595361b91b53b02278e42943ec5b65b69eaa#b7be595361b91b53b02278e42943ec5b65b69eaa"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8295,6 +8295,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cfg-if",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -8369,6 +8370,7 @@ dependencies = [
  "bitflags 2.13.2",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.11.3",
  "dotenvy",
@@ -8397,6 +8399,7 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -8430,6 +8433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b6b78a34ddcb1db4046d462db8f79cee811019d7297b99fca8fac5de26672e"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "form_urlencoded",
  "futures-channel",
@@ -10366,7 +10370,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

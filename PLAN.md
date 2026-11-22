@@ -72,8 +72,9 @@ Pull request states as of 2026-11-22:
   - Merged upstream, gone from the branch: #473 create and change groups, #474 sync messages
     from other accounts dropped on the PNI path, #489, #492, #494, #503, #504.
   - Closed: #491 (a replenishment's keys saved together, and rotation), superseded by direc85's
-    #462, merged 2026-11-22. Upstream's pre-key rework replaces what our #491 and presage #483
-    did on the integration branches: the next rebuild takes upstream's.
+    #462, merged 2026-11-22. Both integration branches were rebuilt on upstream's pre-key rework
+    the same day (libsignal-service f9690af, presage b7be595); presage's carries the `IS NULL`
+    fix for its stale pre-keys, asked upstream in presage issue #510.
   - gferon's #507 starts moving the REST calls (sending, keys, devices) to gRPC; receiving
     stays on the websocket.
   - No pull request yet, to offer: `pr/sender-key-send` (a group message in one request),
@@ -142,10 +143,12 @@ dependencies for being unmaintained), each with what takes it away:
 
 Left: rebuild the integration branches when upstream moves or a pull request changes, and bump
 the revisions; drop each entry as it lands; open pull requests for the "to offer" items. When
-rebuilding presage's branch, its store migrations may only grow at the end: users' databases
-record every migration they ran, and sqlx refuses one whose migrations changed or went missing.
+rebuilding presage's branch, its store migrations may only be added to, never changed or
+dropped: users' databases record every migration they ran, and sqlx refuses one whose migrations
+changed or went missing. A new one may sort before migrations already run (upstream's pre-key
+migrations of October did, in the 2026-11-22 rebuild): sqlx runs every one not yet recorded.
 `presage_migrations_only_ever_grow` checks them against `b33p-core/tests/presage-migrations.txt`
-(9 at 0.2.0, 15 now). b33p's own tables carry a version (`SCHEMA_VERSION` in `local.rs`), raised
+(9 at 0.2.0, 19 now). b33p's own tables carry a version (`SCHEMA_VERSION` in `local.rs`), raised
 only for a change older builds would misread.
 
 ## 3. M4: close the gaps

@@ -1871,7 +1871,7 @@ dependencies = [
 [[package]]
 name = "libsignal-service"
 version = "0.1.0"
-source = "git+https://github.com/barafael/libsignal-service-rs?rev=5ef972a7f34b04918a531faefbe152eccf7fc45b#5ef972a7f34b04918a531faefbe152eccf7fc45b"
+source = "git+https://github.com/barafael/libsignal-service-rs?rev=f9690af3ec7421574ae6b70f18bb3c9e01db8fd7#f9690af3ec7421574ae6b70f18bb3c9e01db8fd7"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2434,7 +2434,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 [[package]]
 name = "presage"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=cfa78084874d67f5b4a65239c52cbc7409c0bb32#cfa78084874d67f5b4a65239c52cbc7409c0bb32"
+source = "git+https://github.com/barafael/presage?rev=b7be595361b91b53b02278e42943ec5b65b69eaa#b7be595361b91b53b02278e42943ec5b65b69eaa"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2461,7 +2461,7 @@ dependencies = [
 [[package]]
 name = "presage-store-sqlite"
 version = "0.8.0-dev"
-source = "git+https://github.com/barafael/presage?rev=cfa78084874d67f5b4a65239c52cbc7409c0bb32#cfa78084874d67f5b4a65239c52cbc7409c0bb32"
+source = "git+https://github.com/barafael/presage?rev=b7be595361b91b53b02278e42943ec5b65b69eaa#b7be595361b91b53b02278e42943ec5b65b69eaa"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3385,6 +3385,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cfg-if",
+ "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -3459,6 +3460,7 @@ dependencies = [
  "bitflags",
  "byteorder",
  "bytes",
+ "chrono",
  "crc",
  "digest 0.11.3",
  "dotenvy",
@@ -3487,6 +3489,7 @@ dependencies = [
  "base64 0.22.1",
  "bitflags",
  "byteorder",
+ "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -3520,6 +3523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b6b78a34ddcb1db4046d462db8f79cee811019d7297b99fca8fac5de26672e"
 dependencies = [
  "atoi",
+ "chrono",
  "flume",
  "form_urlencoded",
  "futures-channel",

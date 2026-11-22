@@ -38,17 +38,18 @@ i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "e
 
 # Not on crates.io. Branch langis/integration of our fork: upstream main plus our open pull
 # requests, one commit per theme (2026-11-09), new code in modules of their own
-# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs); rebased 2026-11-19 on
-# upstream main 7a5c2c7 (what a contacts sync saved #470, one sticker of a pack #507, message
-# reads with a limit and an order #502, which replaces our paged reads #443), built on
-# libsignal-service's with libsignal 0.106.2:
+# (registered/receive.rs, registered/groups.rs, keep.rs, settings.rs); rebased 2026-11-22 on
+# upstream main 10d41fc (the pre-key rework #466, a sticker pack's manifest #508; before them a
+# contacts sync's report #470, one sticker of a pack #507, message reads with a limit and an
+# order #502), built on libsignal-service's with libsignal 0.106.2:
 #   build on our libsignal-service fork: servers of one's own (`SignalServers::Custom`), the
 #        envelope ack handle, a linked secondary starting with read receipts on (#492 there)
 #   settings: one `Settings`, `Manager::set_settings`: automatic link previews off (#478) and
 #        stories delivered (#489)
 #   the store: identity changes reported only when real, noted, and
-#        pinned, the key a pin refused kept (#449, #450); a replenishment's pre-keys in one
-#        transaction, the write lock waited for 30 s (#483)
+#        pinned, the key a pin refused kept (#449, #450); a replenishment's one-time pre-keys
+#        in one transaction, the write lock waited for 30 s (#483); stale one-time pre-keys
+#        marked and cleaned up, `IS NULL` where #466 wrote `= NULL` (issue #510)
 #   receiving: the loop in a module of its own; `keep`, public and tested, and
 #        `Received::Content { content, kept }` saying what was kept; only a message's sender
 #        deletes or edits it (#453), an edit found by its latest edit's time (#475), a receipt
@@ -90,13 +91,13 @@ i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "e
 #        newest first the exact reverse of oldest first (no PR yet)
 #   a story to a story list (My Story) in one request with a sender key for the list,
 #        `send_story_to_list` (no PR yet; on libsignal-service's pr/story-list-send)
-# The branch before the rebase is tag archive/2026-11-19/langis/integration.
+# The branch before the rebase is tag archive/2026-11-22/langis/integration.
 # Rebase the branch when upstream moves or a PR changes; drop it once all have landed.
-presage = { git = "https://github.com/barafael/presage", rev = "cfa78084874d67f5b4a65239c52cbc7409c0bb32" }
+presage = { git = "https://github.com/barafael/presage", rev = "b7be595361b91b53b02278e42943ec5b65b69eaa" }
 # `cdsi`: Signal's contact discovery, to find someone by phone number (presage's feature). It
 # builds BoringSSL (needs cmake and clang), which can't be linked next to OpenSSL's libcrypto, so
 # SQLCipher is built with a crypto provider in pure Rust (RustCrypto) instead: no OpenSSL at all.
-presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "cfa78084874d67f5b4a65239c52cbc7409c0bb32", features = ["cdsi"] }
+presage-store-sqlite = { git = "https://github.com/barafael/presage", rev = "b7be595361b91b53b02278e42943ec5b65b69eaa", features = ["cdsi"] }
 
 # Signal's message-backup format, for the link-time history transfer. Same tag as the libsignal
 # that presage pins (see Cargo.lock), so the key and ID types are shared.
@@ -118,13 +119,12 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # main (libsignal 0.106.2) with each of our pull request branches merged in, and those without a
 # pull request yet (servers of one's own, a sealed plaintext carrying only a decryption error, a
 # group send with a sender key in one request, a story list's without a group id). The script
-# lists them; a merge done by hand is kept as branch merge/<topic>.
-# Upstream merged five of them on 2026-11-19 (groups #473, provisioning read receipts #492,
-# the 30 s keepalive #494, device capabilities #503, contact sync panics #504); they're gone
-# from the list.
+# lists them; a merge done by hand is kept as branch merge/<topic>. Rebuilt 2026-11-22 on
+# upstream's pre-key rework (#462), which replaced our #491; the branch before is tag
+# integration/2026-11-22-5ef972a7f.
 # Drop this once they have landed and presage takes them up.
 [patch."https://github.com/whisperfish/libsignal-service-rs"]
-libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "5ef972a7f34b04918a531faefbe152eccf7fc45b" }
+libsignal-service = { git = "https://github.com/barafael/libsignal-service-rs", rev = "f9690af3ec7421574ae6b70f18bb3c9e01db8fd7" }
 
 # Debug builds (the testbox's among them) with the crypto optimized: unoptimized, decrypting a
 # large attachment took minutes, and ML-KEM can overflow the stack when
