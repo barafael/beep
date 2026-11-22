@@ -212,7 +212,7 @@ impl<'pod> FlareBox<'pod> {
         self.cli(&["send", aci, text]).map(drop)
     }
 
-    /// Sends `text` to `aci`; the time it was sent at (the "To <thread> @ <ms>: <text>" line the
+    /// Sends `text` to `aci`; the time it was sent at (the `To <thread> @ <ms>: <text>` line the
     /// command prints for it).
     pub(super) fn send_stamped(&self, aci: &str, text: &str) -> Result<u64, FamilyError> {
         let printed = self.cli(&["send", aci, text])?;
@@ -287,7 +287,7 @@ impl<'pod> FlareBox<'pod> {
         self.cli(&["send-group", group, text]).map(drop)
     }
 
-    /// The groups it knows: "Group <id hex> "<name>" members <n>" a line.
+    /// The groups it knows: `Group <id hex> "<name>" members <n>` a line.
     fn groups(&self) -> Result<String, FamilyError> {
         self.cli(&["groups"])
     }
@@ -321,7 +321,7 @@ impl<'pod> FlareBox<'pod> {
     }
 }
 
-/// "ACI <uuid>" in what flare-box printed.
+/// `ACI <uuid>` in what flare-box printed.
 fn aci_printed(printed: &str) -> Result<String, FamilyError> {
     printed
         .lines()

@@ -2,8 +2,8 @@
 //! decrypting and decoding them on demand. Signal's servers keep them for about 45 days.
 //!
 //! What is downloaded is kept on disk, encrypted under the database's key ([`cache`]), and
-//! shown from there afterwards. Only [`save`] and [`open`] write a file anyone can read, and only
-//! because the user asked.
+//! shown from there afterwards. Only [`save`] and [`open`](fn@open) write a file anyone can
+//! read, and only because the user asked.
 
 pub(crate) mod cache;
 mod scale;

@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// Gives the window the models that [`render`] keeps up to date: the window owns them, and
-/// [`vec_model`] gets them back for updates.
+/// Gives the window the models that [`render`](super::render::render) keeps up to date: the
+/// window owns them, and [`vec_model`] gets them back for updates.
 pub(crate) fn set_up_models(window: &AppWindow) {
     window
         .global::<ChatList>()

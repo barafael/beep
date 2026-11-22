@@ -175,7 +175,7 @@ pub(super) async fn history_page(
 
 /// A thread's stored contents sent at `from` or later, newest first; `None` if they can't be
 /// read. One that doesn't decode is skipped. The store finds them through the thread's index
-/// (see [`LocalStore::index_messages`]).
+/// (see [`LocalStore::index_messages`](crate::local::LocalStore::index_messages)).
 pub(super) async fn stored_since(
     store: &SqliteStore,
     thread: &Thread,
@@ -395,7 +395,7 @@ pub(super) fn data_of(content: &Content) -> Option<(&DataMessage, bool)> {
 }
 
 /// Ours: sent from here (stored with us as the sender) or synced from another device (which
-/// sends it as us too; [`handle_content`] has dropped sync messages from anyone else).
+/// sends it as us too; `receive::handle_content` has dropped sync messages from anyone else).
 pub(super) fn is_outgoing(manager: &Mgr, content: &Content) -> bool {
     content.metadata.sender == own_id(manager)
 }
@@ -673,7 +673,7 @@ pub(super) async fn to_chat_message(
 }
 
 /// Messages of a thread with attachments (other than a long message's text) or links;
-/// newest first, at most [`MEDIA_MESSAGES`].
+/// newest first, at most `MEDIA_MESSAGES`.
 pub(super) async fn media(
     manager: &Mgr,
     thread: &Thread,
@@ -719,7 +719,7 @@ pub(super) async fn media(
 }
 
 /// Messages of a thread whose text contains `query`, ignoring case; newest first, at most
-/// [`SEARCH_HITS`].
+/// `SEARCH_HITS`.
 pub(super) async fn search(
     manager: &Mgr,
     thread: &Thread,

@@ -339,7 +339,7 @@ pub(super) fn attempt(
     result
 }
 
-/// The backend side of the command bridge (see [`run`]).
+/// The backend side of the command bridge (see [`run`](super::run)).
 pub(super) type CommandRx = tokio::sync::mpsc::UnboundedReceiver<Command>;
 
 pub(super) enum AfterFailure {

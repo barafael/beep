@@ -5,7 +5,7 @@
 //! (testbox/signalmeow, docs/onboarding-signalmeow.md).
 //!
 //! It is driven like presage-cli, by `podman exec` of testbox/signalmeow/driver, whose lines for
-//! what it received are presage-cli's ("From <aci> @ <timestamp>: <text>").
+//! what it received are presage-cli's (`From <aci> @ <timestamp>: <text>`).
 
 use std::io::{BufRead, BufReader, Read};
 

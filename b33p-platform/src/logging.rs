@@ -24,7 +24,7 @@ const PLAINTEXT_TARGETS: [&str; 3] = ["presage", "libsignal_service", "libsignal
 
 /// Builds the log filter from `RUST_LOG`.
 ///
-/// `RUST_LOG` still raises verbosity, but it cannot lift [`PLAINTEXT_TARGETS`] out of `info`.
+/// `RUST_LOG` still raises verbosity, but it cannot lift `PLAINTEXT_TARGETS` out of `info`.
 /// There is no way to redact this at the call site: by the time a value reaches a log statement
 /// it has already been formatted, so the filter has to be the thing that decides. Debugging
 /// b33p itself stays possible, since `b33p_core` is not capped.

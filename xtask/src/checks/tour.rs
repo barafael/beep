@@ -505,7 +505,7 @@ enum TourError {
     /// A step for a group drawn on a chat of two.
     #[error("{chat} isn't a group")]
     NotAGroup { chat: String },
-    /// A message searched for whose text has no "tour <n>:" to search by ([`search_term`]).
+    /// A message searched for whose text has no `tour <n>:` to search by ([`search_term`]).
     #[error("no term to search for in {text:?}")]
     NoSearchTerm { text: String },
     /// A block needs a b33p besides the two of the chat, to write after the blocked message.

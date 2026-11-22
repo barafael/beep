@@ -96,7 +96,7 @@ fn push_escaped(c: char, out: &mut String) {
 }
 
 /// Lets a line break inside a word longer than a bubble is wide (a hash, a key, an address)
-/// by putting an invisible break opportunity before every [`WORD_PART`]th character of it:
+/// by putting an invisible break opportunity before every `WORD_PART`th character of it:
 /// otherwise the bubble would be as wide as that word, past the chat's edge. `run` counts the
 /// word's characters so far.
 fn breakable(c: char, run: &mut usize, out: &mut String) {

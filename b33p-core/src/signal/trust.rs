@@ -438,7 +438,7 @@ fn verification_note(
 }
 
 /// Keeps the store's pin in step with a kept verification: a verified key is the only one sent
-/// to (a new one of theirs is refused for sending, see [`deliver`]); clearing it, or accepting
+/// to (a new one of theirs is refused for sending, see `send::deliver`); clearing it, or accepting
 /// a change, lifts that; a change not confirmed yet keeps it.
 pub(super) async fn pin_verified(
     manager: &Mgr,

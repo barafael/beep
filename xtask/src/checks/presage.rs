@@ -118,8 +118,8 @@ pub(super) struct Presage<'pod> {
     heard: std::sync::Mutex<String>,
 }
 
-/// The time of the message a line of presage-cli's says it received or sent ("From <who> @ 1793…:
-/// / text", "To <who> @ 1793… / text").
+/// The time of the message a line of presage-cli's says it received or sent
+/// (`From <who> @ 1793…: / text`, `To <who> @ 1793… / text`).
 fn printed_at(line: &str) -> Option<u64> {
     if !line.starts_with("From ") && !line.starts_with("To ") {
         return None;

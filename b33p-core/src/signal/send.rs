@@ -100,7 +100,8 @@ pub(super) async fn group_context(manager: &Mgr, key: &[u8; 32]) -> GroupContext
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SendError {
     /// The store refused the identity a contact has now for sending: one other than the
-    /// verified one pinned for them, see [`pin_verified`]. The refusal itself says no more.
+    /// verified one pinned for them, see [`pin_verified`](super::trust::pin_verified). The
+    /// refusal itself says no more.
     #[error("Their safety number changed since you verified it: confirm it to send.")]
     Untrusted { who: ServiceId },
     #[error(

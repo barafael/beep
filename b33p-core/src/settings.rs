@@ -157,7 +157,7 @@ impl Default for Settings {
 /// The longest device name taken, in characters; Signal's apps keep theirs about this short.
 pub const MAX_DEVICE_NAME: usize = 50;
 
-/// "b33p on <computer name>", so that several computers can be told apart on the phone.
+/// `b33p on <computer name>`, so that several computers can be told apart on the phone.
 pub fn default_device_name() -> String {
     let host = gethostname::gethostname();
     let host = host.to_string_lossy();

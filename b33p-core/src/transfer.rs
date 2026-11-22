@@ -199,7 +199,7 @@ async fn wait_for_archive(manager: &Mgr) -> Result<TransferArchive, TransferErro
 const DOWNLOAD_ATTEMPTS: u32 = 3;
 
 /// Streams the archive to `path`; it can be hundreds of megabytes.
-/// Fails [`ErrorKind::Unreachable`](crate::ErrorKind::Unreachable) when trying again may work.
+/// Fails [`ErrorKind::Unreachable`] when trying again may work.
 async fn download(
     manager: &Mgr,
     cdn: u32,
