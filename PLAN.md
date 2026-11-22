@@ -269,7 +269,10 @@ has the details and what is different on Android). In order:
    notifications and the app being stopped and started by Android (the backend dies with the
    process now); a release build that is signed. `dx`'s APK is debug-signed and `debuggable`
    (anyone with `adb` can read the app's files), so a build to hand out needs its own signing
-   and a non-debuggable variant.
+   and a non-debuggable variant. The activity made anew: tao ends the process when Android
+   destroys it, and the manifest's `configChanges` covers every change but the theme overlays
+   of a wallpaper's colours (b33p-dioxus/README.md); that needs tao, or a shell activity of our
+   own, to keep the process and its window across a new activity.
 3. **The screens the desktop client has:** attachments and the file picker, groups and their
    details, search, forwarding, stories, stickers, settings; text styling, links, mentions; older
    messages as one scrolls.

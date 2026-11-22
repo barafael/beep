@@ -20,18 +20,27 @@ mock:
 
 # The Android app on the offline mock, for the emulator (what to install first: b33p-dioxus/README.md).
 [group('android')]
-android-mock:
+android-mock: android-fresh-libs
     dx build --android --target x86_64-linux-android -p b33p-dioxus --features mobile
 
 # The Android client against Signal, for the emulator.
 [group('android')]
-android:
+android: android-fresh-libs
     dx build --android --target x86_64-linux-android -p b33p-dioxus --features mobile,signal
 
 # The Android client against Signal, for a phone (arm64).
 [group('android')]
-android-phone:
+android-phone: android-fresh-libs
     dx build --android --target aarch64-linux-android -p b33p-dioxus --features mobile,signal
+
+# dx copies the library it built into its Gradle project and never removes one built for another
+# target, so an x86_64 build after an arm64 one would pack both: the arm64 one stale, and the one
+# a phone runs. Each Android build starts without any, and without the last APK: Gradle packs
+# into it in place, and a library taken out leaves its bytes behind as a hole in the file.
+[private]
+android-fresh-libs:
+    rm -rf target/dx/b33p-dioxus/*/android/app/app/src/main/jniLibs
+    rm -rf target/dx/b33p-dioxus/*/android/app/app/build/outputs/apk
 
 # Installs the APK the last build made onto the one device or emulator that is connected.
 [group('android')]

@@ -75,7 +75,17 @@ needs no WebView libraries. `--features desktop` draws the same screens in a des
 - **Back** is the WebView's history: opening a chat pushes an entry, Back closes the chat, and
   from the list it leaves the app.
 - **Inputs are uncontrolled.** A value written back into a text field races with the keystrokes
-  typed meanwhile and drops them, so the fields only read theirs.
+  typed meanwhile and drops them, so the fields only read theirs. Sending empties the composer
+  from the page's side.
+- **The activity is never made anew.** When the configuration changes, Android destroys an
+  activity and creates it again unless the manifest says it handles that change itself. tao, under
+  Dioxus, can't follow: its event loop ends with its only window, and the process exits. So the
+  manifest's `configChanges` claims every change it can (dark mode, font size, language, rotation
+  and the rest). One remains: the theme overlays Android applies when the wallpaper's colours
+  change, which no manifest can claim, and which close b33p if it is open then.
+- **One library per build.** `dx` copies the library it built into its Gradle project and never
+  removes one built for another target, so the `android*` recipes clear them first; otherwise an
+  x86_64 build after an arm64 one packs both, the arm64 one stale.
 - **Logs** go to logcat (`adb logcat -s RustStdoutStderr`), scrubbed of messages, names and
   numbers as the desktop's file log is, but stricter: `info` and above, no `RUST_LOG`.
 - `Dioxus.toml` names the package (`io.github.barafael.b33p`); `android/AndroidManifest.xml` is the
