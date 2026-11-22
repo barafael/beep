@@ -3,7 +3,7 @@
 # else of it (`SignalServers::Custom`, testbox/family/lss-custom-servers.patch) and the three
 # `.clone()`s that the commit makes presage need (presage-servers-not-copy.patch). What differs from
 # b33p is the point: the clients keep their own presage and libsignal-service, which are older
-# than b33p's fork's by 31 and 27 commits (docs/onboarding-presage-family.md).
+# than b33p's fork's (docs/onboarding-presage-family.md).
 #
 #   gurk-rs   the terminal client, whole (ratatui); linked to a presage-cli primary, run in tmux
 #   flare-box testbox/family/flare-box, a one-shot driver on Flare's backend (flare-manager, the

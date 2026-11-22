@@ -57,8 +57,8 @@ a command with its requests, by the log's timestamps), data in the `signal-cli` 
 (`/signal-cli/cli`, `/signal-cli/linked`), each with its `log.txt` (`--log-file`), which the
 record keeps as `signal-cli-app.log`.
 
-The libsignal jars are 200 and 250 MB: libsignal's release build keeps line tables
-(`CARGO_PROFILE_RELEASE_DEBUG=1`). The image is 430 MB.
+The libsignal jars are large: libsignal's release build keeps line tables
+(`CARGO_PROFILE_RELEASE_DEBUG=1`).
 
 ## The checks
 

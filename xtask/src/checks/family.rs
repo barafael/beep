@@ -3,8 +3,8 @@
 //! presage-cli primary, a presage-cli peer, and the client, which writes to both and to b33p.
 //!
 //! What a pass shows: that the box's server and b33p agree with clients whose protocol code is
-//! another revision's than b33p's (31 and 27 commits behind the fork), which presage-cli at b33p's
-//! pin can't show, as it is b33p's own code.
+//! an older revision's than b33p's fork, which presage-cli at b33p's pin can't show, as it is
+//! b33p's own code.
 
 use std::time::{Duration, Instant};
 

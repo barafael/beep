@@ -64,7 +64,7 @@ still `Notify`s); 8 waits for presage#473, still open.
 | `sweep_expired`, `expire_stories` | `ctx.expiring` (`Notify`), the tables | `Expiry` (step 2) |
 | `follow_storage`, `write_storage` | `ctx.storage_changed`, `storage_read` | `Storage` (step 3; its merge is one transaction since #61) |
 | `AvatarFetcher` | `Rc<Cell<AvatarRun>>`, `threads` | `Avatars` (step 4, done: `signal/avatars.rs`) |
-| `ctx.threads`, `ctx.trust` | about 25 uses across `signal/*.rs` | `Registry` (step 5) |
+| `ctx.threads`, `ctx.trust` | uses across `signal/*.rs` | `Registry` (step 5) |
 | `receive`, the command loop | all of the above | sources that send to the actors (step 6) |
 | attachment fetch / save / open | `download_limit` only | stay tasks |
 

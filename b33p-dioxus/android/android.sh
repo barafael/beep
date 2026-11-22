@@ -195,7 +195,7 @@ setup_avd() {
     fi
     say "avd          creating $AVD (Pixel 7, Android 15)"
     echo no | avdmanager create avd -n "$AVD" -k "$IMAGE" -d pixel_7 >/dev/null
-    # Room for a 290 MB debug APK, the app's data and the copies Gradle makes.
+    # Room for the debug APK (hundreds of MB), the app's data and the copies Gradle makes.
     if grep -q '^disk.dataPartition.size' "$config"; then
         sed -i 's/^disk.dataPartition.size.*/disk.dataPartition.size = 6442450944/' "$config"
     else

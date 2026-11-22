@@ -93,7 +93,7 @@ jobs:
           mkdir "$NAME"
           cp target/release/b33p packaging/linux/io.github.barafael.B33p.desktop LICENSE README.md "$NAME/"
           cp b33p-slint/assets/b33p.svg "$NAME/io.github.barafael.B33p.svg"
-          # xz, as the .deb uses: 12.1 MB instead of gzip's 17.2 MB for this binary.
+          # xz, as the .deb uses: markedly smaller than gzip for this binary.
           tar -I "xz -9 -T0" -cf "$NAME.tar.xz" "$NAME"
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
