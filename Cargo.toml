@@ -63,7 +63,8 @@ i-slint-backend-selector = { git = "https://github.com/barafael/slint", rev = "e
 #        `renew_sender_key`
 #   what a linked device needs: the history archive (#447), the storage service (#444),
 #        `refresh_profile` (#487), `identified_push_service` public (#485)
-#   sending: a send that met a closed websocket goes again (#464), every story sealed (#490)
+#   sending: a send that met a closed websocket goes again (#464, closed: parked until sending
+#        moves to gRPC), every story sealed (#490)
 #   the client's user agent and languages, set by the application (#492)
 #   presage-cli's list-messages doesn't panic (#477)
 #   a linked device leaves the account to the primary: only its capabilities, no account
@@ -116,8 +117,8 @@ libsqlite3-sys = { version = "0.36.0", git = "https://github.com/barafael/rusqli
 # Branch langis/integration of our libsignal-service fork, built by its integration.sh: upstream
 # main (libsignal 0.106.2) with each of our pull request branches merged in, and those without a
 # pull request yet (servers of one's own, a sealed plaintext carrying only a decryption error, a
-# group send with a sender key in one request, a story list's without a group id, sync messages
-# and transcripts out of `send_message`). The script lists them; a merge done by hand is kept as branch merge/<topic>.
+# group send with a sender key in one request, a story list's without a group id). The script
+# lists them; a merge done by hand is kept as branch merge/<topic>.
 # Upstream merged five of them on 2026-11-19 (groups #473, provisioning read receipts #492,
 # the 30 s keepalive #494, device capabilities #503, contact sync panics #504); they're gone
 # from the list.

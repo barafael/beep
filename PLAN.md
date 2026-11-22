@@ -58,32 +58,43 @@ revision in Cargo.toml (and, for presage and libsignal-service, in testbox/presa
 and testbox/stickers/Cargo.toml; the `pins` test checks they agree). **What upstream would take
 is offered there**, in their style (short pull requests, commits and comments; `Assisted-by:`,
 not `Co-Authored-By:`, per their AGENTS.md). What only b33p needs stays a documented delta.
-Pull request states as of 2026-11-21:
+Pull request states as of 2026-11-22:
 
 - **libsignal-service-rs**, branch `langis/integration`, built by its `integration.sh`: upstream
   main with each topic branch merged in, in order (a merge done by hand kept as
   `merge/<topic>`).
-  - Open: #476 transcripts once (and its follow-up branch `pr/sync-message-send`), #481 a healthy
-    socket kept after a stall, #482 websocket errors that say what failed, #488 a session lock,
-    #490 a GET not failing on a closing connection, #491 a replenishment's keys saved together,
-    #442 (rubdos') the envelope ack handle, with our #489 merged into it; drafts: #493 stories
-    sent as stories, #495 Accept-Language, #496 a signed group change, #497 the group change log.
+  - Open: #476 transcripts once, #481 a healthy socket kept after a stall, #482 websocket errors
+    that say what failed, #488 a session lock (Othereum's test for it waits as our fork's #1),
+    #490 a GET not failing on a closing connection (trimmed to one comment as asked), #442
+    (rubdos') the envelope ack handle; drafts: #493 stories sent as stories, #495
+    Accept-Language, #496 a signed group change, #497 the group change log, #506 sync messages
+    and transcripts out of `send_message` (on #476).
   - Merged upstream, gone from the branch: #473 create and change groups, #474 sync messages
-    from other accounts dropped on the PNI path, #492, #494, #503, #504.
+    from other accounts dropped on the PNI path, #489, #492, #494, #503, #504.
+  - Closed: #491 (a replenishment's keys saved together, and rotation), superseded by direc85's
+    #462, merged 2026-11-22. Upstream's pre-key rework replaces what our #491 and presage #483
+    did on the integration branches: the next rebuild takes upstream's.
+  - gferon's #507 starts moving the REST calls (sending, keys, devices) to gRPC; receiving
+    stays on the websocket.
   - No pull request yet, to offer: `pr/sender-key-send` (a group message in one request),
     `pr/story-list-send` (the same without a group id, for story lists), `fix/sealed-plaintext`.
   - b33p's own: `pr/custom-servers` (servers of one's own, which the test box needs).
 - **presage**, branch `langis/integration`: upstream main with our changes as one commit per
   theme, rebased by hand (not cherry-picked pull requests); Cargo.toml's comment lists each.
-  - Open: #447 wait for the history archive, #449 only real identity changes, #450 a pinned
-    identity, #461 why a message failed to decrypt, #473 session steps one at a time, #476 one
-    transaction per envelope, #477, #478 link previews off, #483, #499 (work owed after a message
-    kept as jobs; it carries what #444, #453, #472, #475, #480 and #484–#487 were, now closed),
-    #503, #504; drafts: #448 create and change groups (its pin of libsignal-service to #473 is
-    obsolete now that #473 landed: rebase it and take it out of draft), #464, #489, #490, #491,
-    #492, #493.
-  - Merged or settled upstream: #442, #446, #454, #460 merged; #443 replaced by upstream's #502;
-    #445 closed, fixed by libsignal-service-rs #474.
+  - Open: #447 wait for the history archive, #448 create and change groups, #449 only real
+    identity changes, #450 a pinned identity, #461 why a message failed to decrypt (rzuasti's
+    libsignal-service-rs #484, retry requests, would change it), #473 session steps one at a
+    time, #476 one transaction per envelope, #477, #478 link previews off (gferon wants
+    persistent `Manager` settings instead; kept open for that discussion), #483 a
+    replenishment's pre-keys in one transaction (reworked onto upstream's
+    `store_one_time_pre_key_bundle`, no libsignal-service pull request needed now), #488 a
+    linked secondary with read receipts on, #499 (work owed after a message kept as jobs; it
+    carries what #444, #453, #472, #475, #480 and #484–#487 were, now closed), #503, #504;
+    drafts: #489, #490, #491, #492, #493. #448, #488 and #503 were rebased on 2026-11-22, their
+    pins of libsignal-service gone with #473, #492 and #503 landed.
+  - Merged or settled upstream: #442, #446, #454, #460 merged; #443 closed, replaced by
+    upstream's #502; #445 closed, fixed by libsignal-service-rs #474; #464 closed, parked by
+    gferon until sending moves to gRPC.
   - No pull request yet, to offer: `send_story_to_list` (on `pr/story-list-send`), a thread's
     messages found by `ts BETWEEN` through b33p's index.
   - b33p's own unless upstream wants it: `Manager::server_alerts`, and building on our
