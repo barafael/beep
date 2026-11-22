@@ -433,7 +433,7 @@ impl ChatState {
                     let message = &self.history[&id][pos];
                     // A photo or sticker alone says what it is.
                     let body = match (message.body.is_empty(), message.attachments.first()) {
-                        (true, Some(attachment)) => describe_kind_for_notice(attachment.kind),
+                        (true, Some(attachment)) => describe_kind_with_emoji(attachment.kind),
                         _ => format::hide_spoilers(&message.body, &message.styles),
                     };
                     let sender = message.sender.clone();

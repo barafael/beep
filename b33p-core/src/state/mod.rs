@@ -36,6 +36,7 @@ mod views;
 
 pub use attachments::*;
 pub use clock::*;
+pub use composer::ReadOnly;
 use history::*;
 pub use pins::PIN_LIMIT;
 pub use text::*;

@@ -18,6 +18,9 @@ export struct ConversationItem {
     subtitle: string,
     unread: int,
     pinned: bool,
+    // Nothing may be written here, for one of the reasons below (`ChatState::read_only`): no
+    // composer, the reason's bar instead.
+    read-only: bool,
     // A message request, waiting for Accept, Delete or Block.
     request: bool,
     blocked: bool,

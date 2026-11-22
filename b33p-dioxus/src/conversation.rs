@@ -1,7 +1,7 @@
 //! An open chat: its messages, and the composer.
 
-use b33p_core::state::format_clock;
-use b33p_core::{AttachmentKind, ConversationId, Delivery, RequestResponse, Unsent};
+use b33p_core::state::{ReadOnly, count_reactions, describe_kind_with_emoji, format_clock};
+use b33p_core::{Attachment, AttachmentKind, ConversationId, Delivery, RequestResponse, Unsent};
 use dioxus::prelude::*;
 
 use crate::store::Store;
@@ -31,29 +31,53 @@ struct Row {
     reactions: Vec<(String, usize)>,
 }
 
-fn attachment_label(kind: AttachmentKind, file_name: Option<&str>) -> String {
-    match kind {
-        AttachmentKind::Image => "🖼 Photo".into(),
-        AttachmentKind::Video => "🎞 Video".into(),
-        AttachmentKind::Audio => "🎵 Audio".into(),
-        AttachmentKind::VoiceNote => "🎤 Voice message".into(),
-        AttachmentKind::Sticker => "Sticker".into(),
-        AttachmentKind::LongText => "📄 Long message".into(),
-        AttachmentKind::ViewOnce => "👁 View once: open it on your phone".into(),
-        AttachmentKind::File => format!("📎 {}", file_name.unwrap_or("File")),
+fn attachment_label(attachment: &Attachment) -> String {
+    match (attachment.kind, attachment.file_name.as_deref()) {
+        (AttachmentKind::File, Some(name)) => format!("📎 {name}"),
+        (AttachmentKind::ViewOnce, _) => {
+            format!(
+                "{}: open it on your phone",
+                describe_kind_with_emoji(AttachmentKind::ViewOnce)
+            )
+        }
+        (kind, _) => describe_kind_with_emoji(kind),
     }
 }
 
-/// Reactions as Signal's apps show them: each emoji once, with how many chose it.
-fn tally(reactions: &[b33p_core::Reaction]) -> Vec<(String, usize)> {
-    let mut tally: Vec<(String, usize)> = Vec::new();
-    for reaction in reactions {
-        match tally.iter_mut().find(|(emoji, _)| *emoji == reaction.emoji) {
-            Some((_, count)) => *count += 1,
-            None => tally.push((reaction.emoji.clone(), 1)),
-        }
+/// What stands where the composer would when nothing may be written here, and what lifts it.
+#[derive(Clone, PartialEq)]
+enum Lock {
+    /// A message request: [`RequestBar`].
+    Request,
+    Said {
+        text: String,
+        lift: Option<Lift>,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Lift {
+    Unblock,
+    ConfirmSafetyNumber,
+}
+
+/// Worded as the desktop words it.
+fn lock(why: ReadOnly, title: &str, subtitle: &str) -> Lock {
+    let said = |text: String, lift| Lock::Said { text, lift };
+    match why {
+        ReadOnly::Request => Lock::Request,
+        ReadOnly::Blocked => said(
+            "You blocked this chat. You won't see new messages from it.".into(),
+            Some(Lift::Unblock),
+        ),
+        // It says how we came to be out of it.
+        ReadOnly::Left => said(subtitle.into(), None),
+        ReadOnly::Closed(why) => said(why.into(), None),
+        ReadOnly::SafetyNumberChanged => said(
+            format!("Your safety number with {title} changed since you verified it."),
+            Some(Lift::ConfirmSafetyNumber),
+        ),
     }
-    tally
 }
 
 #[component]
@@ -64,7 +88,7 @@ pub fn Conversation() -> Element {
     let initial_draft = use_hook(|| store.chat.peek().draft().to_owned());
     let mut draft = use_signal(|| initial_draft.clone());
 
-    let (id, title, subtitle, typing, request, can_write, rows) = {
+    let (id, title, subtitle, typing, lock, rows) = {
         let chat = store.chat.read();
         let Some(conversation) = chat.selected() else {
             return rsx! {};
@@ -89,18 +113,17 @@ pub fn Conversation() -> Element {
                         .quote
                         .as_ref()
                         .map(|quote| (quote.author.clone(), quote.text.clone())),
-                    attachments: message
-                        .attachments
-                        .iter()
-                        .map(|a| attachment_label(a.kind, a.file_name.as_deref()))
-                        .collect(),
+                    attachments: message.attachments.iter().map(attachment_label).collect(),
                     body: view.body.to_owned(),
                     deleted: message.deleted,
                     edited: message.edited_at.is_some(),
                     time: format_clock(message.timestamp),
                     delivery: message.delivery,
                     unsent: message.unsent,
-                    reactions: tally(&message.reactions),
+                    reactions: count_reactions(&message.reactions)
+                        .into_iter()
+                        .map(|reaction| (reaction.emoji.to_owned(), reaction.count))
+                        .collect(),
                 }
             })
             .collect();
@@ -109,8 +132,8 @@ pub fn Conversation() -> Element {
             conversation.title.clone(),
             conversation.subtitle.clone(),
             typing,
-            chat.is_request(conversation),
-            chat.can_write_to(conversation),
+            chat.read_only(conversation)
+                .map(|why| lock(why, &conversation.title, &conversation.subtitle)),
             rows,
         )
     };
@@ -203,7 +226,7 @@ pub fn Conversation() -> Element {
                 },
                 "‹"
             }
-            Avatar { name: title.clone(), small: true }
+            Avatar { id: id.clone(), title: title.clone(), small: true }
             div { class: "bar-title",
                 div { class: "title", "{title}" }
                 div { class: "subtitle",
@@ -220,38 +243,42 @@ pub fn Conversation() -> Element {
                 Message { key: "{row.key}", row }
             }
         }
-        if request {
-            RequestBar { id: id.clone() }
-        } else if can_write {
-            form {
-                class: "composer",
-                onsubmit: move |event| {
-                    event.prevent_default();
-                    send();
-                },
-                // Uncontrolled: a value written back into the field races with the keystrokes
-                // typed meanwhile (and with the keyboard's composition), and drops them.
-                textarea {
-                    id: "draft",
-                    rows: "1",
-                    placeholder: "Message",
-                    oninput: move |event| {
-                        let text = event.value();
-                        store.command(|chat| chat.draft_changed(&text));
-                        draft.set(text);
+        match lock {
+            Some(Lock::Request) => rsx! {
+                RequestBar { id: id.clone() }
+            },
+            Some(Lock::Said { text, lift }) => rsx! {
+                LockBar { id: id.clone(), text, lift }
+            },
+            None => rsx! {
+                form {
+                    class: "composer",
+                    onsubmit: move |event| {
+                        event.prevent_default();
+                        send();
                     },
-                    "{initial_draft}"
+                    // Uncontrolled: a value written back into the field races with the keystrokes
+                    // typed meanwhile (and with the keyboard's composition), and drops them.
+                    textarea {
+                        id: "draft",
+                        rows: "1",
+                        placeholder: "Message",
+                        oninput: move |event| {
+                            let text = event.value();
+                            store.command(|chat| chat.draft_changed(&text));
+                            draft.set(text);
+                        },
+                        "{initial_draft}"
+                    }
+                    button {
+                        r#type: "submit",
+                        class: "send",
+                        "aria-label": "Send",
+                        disabled: !can_compose,
+                        "➤"
+                    }
                 }
-                button {
-                    r#type: "submit",
-                    class: "send",
-                    "aria-label": "Send",
-                    disabled: !can_compose,
-                    "➤"
-                }
-            }
-        } else {
-            p { class: "readonly", "You can't send messages to this chat." }
+            },
         }
     }
 }
@@ -350,6 +377,34 @@ fn Message(row: Row) -> Element {
     }
 }
 
+/// Why nothing may be written here, where the composer would be, with what lifts it.
+#[component]
+fn LockBar(id: ConversationId, text: String, lift: Option<Lift>) -> Element {
+    let store = use_context::<Store>();
+    rsx! {
+        div { class: "readonly",
+            p { "{text}" }
+            match lift {
+                Some(Lift::Unblock) => rsx! {
+                    button {
+                        class: "secondary",
+                        onclick: move |_| store.command(|chat| chat.block(&id, false)),
+                        "Unblock"
+                    }
+                },
+                Some(Lift::ConfirmSafetyNumber) => rsx! {
+                    button {
+                        class: "secondary",
+                        onclick: move |_| store.command(|chat| chat.confirm_safety_number(&id)),
+                        "Continue"
+                    }
+                },
+                None => rsx! {},
+            }
+        }
+    }
+}
+
 /// A chat from someone not in our contacts: it waits for an answer before anything is sent.
 #[component]
 fn RequestBar(id: ConversationId) -> Element {
@@ -367,35 +422,5 @@ fn RequestBar(id: ConversationId) -> Element {
                 button { class: "danger", onclick: respond(RequestResponse::Delete), "Delete" }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use b33p_core::Reaction;
-
-    fn reaction(emoji: &str, sender: &str) -> Reaction {
-        Reaction {
-            emoji: emoji.into(),
-            sender_id: sender.into(),
-            sender: sender.into(),
-            outgoing: false,
-        }
-    }
-
-    #[test]
-    fn reactions_are_counted_per_emoji_in_the_order_they_came() {
-        let reactions = [
-            reaction("👍", "a"),
-            reaction("❤️", "b"),
-            reaction("👍", "c"),
-            reaction("👍", "d"),
-        ];
-        assert_eq!(
-            tally(&reactions),
-            vec![("👍".to_owned(), 3), ("❤️".to_owned(), 1)]
-        );
-        assert!(tally(&[]).is_empty());
     }
 }

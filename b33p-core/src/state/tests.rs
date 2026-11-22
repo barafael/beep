@@ -4808,3 +4808,65 @@ fn the_wheel_holds_at_actual_size_for_a_moment() {
     assert_eq!(wheel.turn(ZOOM_STEP, -1.0, 0.5, ms(131)), 1.0);
     assert_eq!(wheel.turn(1.0, -1.0, 0.5, ms(140)), 1.0);
 }
+
+/// Why a chat can't be written to: one reason, the first that holds, and none once it's lifted.
+#[test]
+fn a_chat_says_why_it_cannot_be_written_to() {
+    let mut state = state();
+    let ann = |state: &ChatState| state.conversation(&id("a")).unwrap().clone();
+    assert_eq!(state.read_only(&ann(&state)), None);
+    assert!(state.can_write_to(&ann(&state)));
+
+    state.apply(Event::StorageRead);
+    assert_eq!(state.read_only(&ann(&state)), Some(ReadOnly::Request));
+    assert!(state.respond(&id("a"), RequestResponse::Accept).is_some());
+    assert_eq!(state.read_only(&ann(&state)), None);
+
+    let mut chat = ann(&state);
+    chat.trust = crate::Trust::Changed;
+    assert_eq!(state.read_only(&chat), Some(ReadOnly::SafetyNumberChanged));
+    chat.closed = Some("Only admins can send messages to this group.".into());
+    assert_eq!(
+        state.read_only(&chat),
+        Some(ReadOnly::Closed(
+            "Only admins can send messages to this group."
+        ))
+    );
+    chat.left = true;
+    assert_eq!(state.read_only(&chat), Some(ReadOnly::Left));
+    chat.settings.blocked = true;
+    assert_eq!(state.read_only(&chat), Some(ReadOnly::Blocked));
+    assert!(!state.can_write_to(&chat));
+
+    // Not while catching up either, though nothing about the chat itself says no.
+    let mut catching_up = ChatState::default();
+    catching_up.apply(Event::Conversations(vec![conversation("a", false)]));
+    let chat = catching_up.conversation(&id("a")).unwrap();
+    assert_eq!(catching_up.read_only(chat), None);
+    assert!(!catching_up.can_write_to(chat));
+}
+
+/// Each emoji once, in the order it first came, counting everyone and noting if we're among them.
+#[test]
+fn reactions_are_counted_per_emoji() {
+    let reactions = [
+        reaction("👍", "a", false),
+        reaction("❤️", "b", false),
+        reaction("👍", "me", true),
+        reaction("👍", "c", false),
+    ];
+    let counts = count_reactions(&reactions);
+    let summary: Vec<_> = counts.iter().map(|c| (c.emoji, c.count, c.mine)).collect();
+    assert_eq!(summary, [("👍", 3, true), ("❤️", 1, false)]);
+    assert!(count_reactions(&[]).is_empty());
+}
+
+/// A chat keeps its colour, and different chats spread over the palette.
+#[test]
+fn avatar_colours_are_stable_and_varied() {
+    assert_eq!(avatar_color(&id("alice")), avatar_color(&id("alice")));
+    let colours: std::collections::HashSet<u32> = (0..50)
+        .map(|n| avatar_color(&id(&format!("chat {n}"))))
+        .collect();
+    assert!(colours.len() > 4, "{colours:x?}");
+}

@@ -110,6 +110,7 @@ pub(super) fn conversation_item(
         subtitle: c.subtitle.as_str().into(),
         unread: view.unread as i32,
         pinned: view.pinned(),
+        read_only: chat.read_only(c).is_some(),
         request: chat.is_request(c),
         blocked: c.settings.blocked,
         left: c.left,
@@ -225,13 +226,9 @@ pub(super) fn avatar_image(chat: &ChatState, images: &Images, id: &ConversationI
         .unwrap_or_default()
 }
 
-/// A stable colour per person or group, for avatars without a picture and group senders' names.
+/// [`state::avatar_color`], opaque.
 pub(super) fn avatar_color(id: &ConversationId) -> Color {
-    // Muted hues in the spirit of Signal's avatar palette; all readable with white text.
-    const PALETTE: [u32; 8] = [
-        0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0,
-    ];
-    Color::from_argb_encoded(0xff00_0000 | PALETTE[state::avatar_index(id, PALETTE.len())])
+    Color::from_argb_encoded(0xff00_0000 | state::avatar_color(id))
 }
 
 /// A row's list of attachments or reactions. Most rows have none, and an empty `ModelRc` is
@@ -396,26 +393,16 @@ pub(super) fn preview_kind(kind: Option<state::PreviewKind>) -> PreviewKind {
     }
 }
 
-/// One chip per emoji, in the order they first came, counting everyone who chose it.
+/// One chip per emoji (see [`state::count_reactions`]); clicking one of ours takes it back.
 pub(super) fn reaction_items(reactions: &[b33p_core::Reaction]) -> Vec<ReactionItem> {
-    let mut items: Vec<ReactionItem> = Vec::new();
-    for reaction in reactions {
-        match items
-            .iter_mut()
-            .find(|item| item.emoji.as_str() == reaction.emoji)
-        {
-            Some(item) => {
-                item.count += 1;
-                item.mine |= reaction.outgoing;
-            }
-            None => items.push(ReactionItem {
-                emoji: reaction.emoji.as_str().into(),
-                count: 1,
-                mine: reaction.outgoing,
-            }),
-        }
-    }
-    items
+    state::count_reactions(reactions)
+        .into_iter()
+        .map(|reaction| ReactionItem {
+            emoji: reaction.emoji.into(),
+            count: reaction.count as i32,
+            mine: reaction.mine,
+        })
+        .collect()
 }
 
 /// How long after a message faded in the next one may fade in.

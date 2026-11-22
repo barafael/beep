@@ -218,8 +218,8 @@ pub fn describe_kind(kind: AttachmentKind) -> &'static str {
     }
 }
 
-/// [`describe_kind`] with an emoji before it, for notifications, which have no icons.
-pub(super) fn describe_kind_for_notice(kind: AttachmentKind) -> String {
+/// [`describe_kind`] with an emoji before it, for notifications and windows without icons.
+pub fn describe_kind_with_emoji(kind: AttachmentKind) -> String {
     let emoji = match kind {
         AttachmentKind::Image => "📷 ",
         AttachmentKind::Video => "🎞 ",

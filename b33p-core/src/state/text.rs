@@ -120,6 +120,45 @@ pub fn initials(title: &str) -> String {
     }
 }
 
+/// One emoji among a message's reactions; see [`count_reactions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReactionCount<'a> {
+    pub emoji: &'a str,
+    /// How many chose it.
+    pub count: usize,
+    /// Whether we are one of them.
+    pub mine: bool,
+}
+
+/// Reactions as Signal's apps show them: each emoji once, in the order they first came.
+pub fn count_reactions(reactions: &[crate::Reaction]) -> Vec<ReactionCount<'_>> {
+    let mut counts: Vec<ReactionCount> = Vec::new();
+    for reaction in reactions {
+        match counts.iter_mut().find(|c| c.emoji == reaction.emoji) {
+            Some(count) => {
+                count.count += 1;
+                count.mine |= reaction.outgoing;
+            }
+            None => counts.push(ReactionCount {
+                emoji: &reaction.emoji,
+                count: 1,
+                mine: reaction.outgoing,
+            }),
+        }
+    }
+    counts
+}
+
+/// A stable colour per person or group (`0xRRGGBB`), for avatars without a picture and group
+/// senders' names: muted hues in the spirit of Signal's avatar palette, all readable with
+/// white text.
+pub fn avatar_color(id: &ConversationId) -> u32 {
+    const PALETTE: [u32; 8] = [
+        0x3a76f0, 0x7d4fc9, 0xc4314b, 0xd36c1c, 0x2b8a60, 0x1e8a9e, 0x9a5b3c, 0x5c6bc0,
+    ];
+    PALETTE[avatar_index(id, PALETTE.len())]
+}
+
 /// Stable index into a UI's avatar palette of `len` colors.
 pub fn avatar_index(id: &ConversationId, len: usize) -> usize {
     let hash =

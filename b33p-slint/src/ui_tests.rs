@@ -473,9 +473,18 @@ fn a_changed_safety_number_holds_the_composer() {
     });
     let notice = "Your safety number with Ann changed since you verified it. Compare it again, or continue without.";
     assert!(find(&window, notice).is_none());
+    let composer_height = || {
+        ElementHandle::find_by_element_id(&window, "AppWindow::composer-slot")
+            .next()
+            .expect("the composer's place")
+            .size()
+            .height
+    };
+    assert!(composer_height() > 0.0);
     let changed = ConversationItem {
         id: "a".into(),
         title: "Ann".into(),
+        read_only: true,
         safety_changed: true,
         ..Default::default()
     };
@@ -485,6 +494,7 @@ fn a_changed_safety_number_holds_the_composer() {
     window.global::<ChatList>().set_current(changed);
     settle(&window);
     assert!(find(&window, notice).is_some());
+    assert_eq!(composer_height(), 0.0, "no composer while it can't send");
     find(&window, "Show safety number")
         .expect("offered")
         .mock_single_click(PointerEventButton::Left);

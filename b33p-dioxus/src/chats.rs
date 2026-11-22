@@ -80,7 +80,7 @@ fn ChatRow(row: Row) -> Element {
         button {
             class,
             onclick: move |_| store.command(|chat| chat.select(&id)),
-            Avatar { name: row.title.clone() }
+            Avatar { id: row.id.clone(), title: row.title.clone() }
             div { class: "row-text",
                 div { class: "row-top",
                     span { class: "title", "{row.title}" }

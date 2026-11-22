@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// Why a conversation can't be written to; see [`ChatState::read_only`]. Each window words
+/// it, and offers what lifts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnly<'a> {
+    /// A message request not answered yet: writing would accept it.
+    Request,
+    Blocked,
+    /// A group we're no longer in.
+    Left,
+    /// A group nobody may write in though we're in it, and why (it ended; only admins send).
+    Closed(&'a str),
+    /// A contact whose verified safety number changed, until the new one is confirmed.
+    SafetyNumberChanged,
+}
+
 impl ChatState {
     /// Answers a conversation that needn't be the selected one, e.g. from a notification.
     /// Counts as reading it. Under the same conditions as the composer: not while catching
@@ -45,12 +60,25 @@ impl ChatState {
     /// sending (composing, replying from a notification, forwarding, stickers, reactions)
     /// goes by this.
     pub fn can_write_to(&self, conversation: &Conversation) -> bool {
-        self.synced
-            && !conversation.settings.blocked
-            && !conversation.left
-            && conversation.closed.is_none()
-            && conversation.trust != crate::Trust::Changed
-            && !self.is_request(conversation)
+        self.synced && self.read_only(conversation).is_none()
+    }
+
+    /// Why nothing may be sent to `conversation`, whatever the state of the connection; `None`
+    /// if it may be written to. When several hold, the one listed first in [`ReadOnly`].
+    pub fn read_only<'a>(&self, conversation: &'a Conversation) -> Option<ReadOnly<'a>> {
+        if self.is_request(conversation) {
+            Some(ReadOnly::Request)
+        } else if conversation.settings.blocked {
+            Some(ReadOnly::Blocked)
+        } else if conversation.left {
+            Some(ReadOnly::Left)
+        } else if let Some(why) = &conversation.closed {
+            Some(ReadOnly::Closed(why))
+        } else if conversation.trust == crate::Trust::Changed {
+            Some(ReadOnly::SafetyNumberChanged)
+        } else {
+            None
+        }
     }
 
     /// Accepts the new safety number of a contact whose verified one changed, so that they can
